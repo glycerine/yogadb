@@ -222,7 +222,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 			//wasActive = db.activeMT
 			//mt = &db.memtables[wasActive]
 		}
-		putKV := *s.puts[idx]
+		putKV := s.puts[idx]
 		newState := kvToState(putKV)
 		old, replaced := mt.put(putKV)
 		var oldState keyState
@@ -233,7 +233,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		}
 		db.adjustKeyCounters(oldState, newState)
 
-		encoded = kv128Encode(encoded[:0], *s.puts[idx])
+		encoded = kv128Encode(encoded[:0], s.puts[idx])
 		if len(mt.memWalBuf)+len(encoded) >= memtableWalBufCap {
 			mt.logFlushLocked()
 		}
@@ -302,14 +302,14 @@ type HLCInterval struct {
 	Endx  HLC // exclusive upper bound (one past last)
 }
 
-func kvLess(a, b KV) bool { return bytes.Compare(a.Key, b.Key) < 0 }
+func kvLess(a, b *KV) bool { return bytes.Compare(a.Key, b.Key) < 0 }
 
 // kvSizeApprox returns the approximate in-memory size of a KV (matches C kv_size).
-func kvSizeApprox(kv KV) int { return 24 + len(kv.Key) + len(kv.Value) }
+func kvSizeApprox(kv *KV) int { return 24 + len(kv.Key) + len(kv.Value) }
 
 // isTombstone returns true if this KV is a deletion marker.
 // A tombstone has nil Value and no VLOG pointer.
-func (kv KV) isTombstone() bool {
+func (kv *KV) isTombstone() bool {
 	return kv.Value == nil && !kv.HasVPtr
 }
 
@@ -327,7 +327,7 @@ func (kv KV) isTombstone() bool {
 
 const rawVlenVPtr = ^uint64(0) // 0xFFFF FFFF FFFF FFFF — sentinel for VLOG pointer
 
-func kv128Encode(buf []byte, kv KV) []byte {
+func kv128Encode(buf []byte, kv *KV) []byte {
 	recordStart := len(buf)
 	var hdr [20]byte
 	n := binary.PutUvarint(hdr[:], uint64(len(kv.Key)))
@@ -358,7 +358,7 @@ func kv128Encode(buf []byte, kv KV) []byte {
 	return buf
 }
 
-func kv128EncodedSize(kv KV) int {
+func kv128EncodedSize(kv *KV) int {
 	if kv.isTombstone() {
 		return varintSize(uint64(len(kv.Key))) + 1 + len(kv.Key) + 8 + 4
 	}
@@ -368,7 +368,7 @@ func kv128EncodedSize(kv KV) int {
 	return varintSize(uint64(len(kv.Key))) + varintSize(uint64(len(kv.Value)+1)) + len(kv.Key) + len(kv.Value) + 8 + 4
 }
 
-func kv128Decode(src []byte) (kv KV, n int, ok bool) {
+func kv128Decode(src []byte) (kv *KV, n int, ok bool) {
 	klen, kn := binary.Uvarint(src)
 	if kn <= 0 {
 		return
@@ -387,6 +387,7 @@ func kv128Decode(src []byte) (kv KV, n int, ok bool) {
 		if crc32.Checksum(src[:total], crc32cTable) != binary.LittleEndian.Uint32(src[total:total+4]) {
 			return
 		}
+		kv = &KV{}
 		kv.Key = make([]byte, klen)
 		copy(kv.Key, src[hdr:hdr+int(klen)])
 		kv.Hlc = HLC(binary.BigEndian.Uint64(src[total-8 : total]))
@@ -401,6 +402,7 @@ func kv128Decode(src []byte) (kv KV, n int, ok bool) {
 		if crc32.Checksum(src[:total], crc32cTable) != binary.LittleEndian.Uint32(src[total:total+4]) {
 			return
 		}
+		kv = &KV{}
 		kv.Key = make([]byte, klen)
 		copy(kv.Key, src[hdr:hdr+int(klen)])
 		kv.Vptr = decodeVPtr(src[hdr+int(klen) : hdr+int(klen)+vptrSize])
@@ -416,6 +418,7 @@ func kv128Decode(src []byte) (kv KV, n int, ok bool) {
 	if crc32.Checksum(src[:total], crc32cTable) != binary.LittleEndian.Uint32(src[total:total+4]) {
 		return
 	}
+	kv = &KV{}
 	kv.Key = make([]byte, klen)
 	copy(kv.Key, src[hdr:hdr+int(klen)])
 	kv.Value = make([]byte, vlen)
@@ -593,7 +596,7 @@ const (
 	ksTombstone
 )
 
-func kvToState(kv KV) keyState {
+func kvToState(kv *KV) keyState {
 	if kv.isTombstone() {
 		return ksTombstone
 	}
@@ -1195,7 +1198,7 @@ func (db *FlexDB) CumulativeMetrics() *Metrics {
 
 // resolveVPtr reads the value from the VLOG file for a KV that has HasVPtr set.
 // Returns the resolved value bytes, or an error.
-func (db *FlexDB) resolveVPtr(kv KV) ([]byte, error) {
+func (db *FlexDB) resolveVPtr(kv *KV) ([]byte, error) {
 	if !kv.HasVPtr {
 		return kv.Value, nil
 	}
@@ -1950,7 +1953,7 @@ func (db *FlexDB) writeLockHeldPut(key, value []byte) error {
 	}
 
 	// Build the KV for the memtable. Large values go to VLOG.
-	kv := KV{Key: key, Value: value, Hlc: hlcVal}
+	kv := &KV{Key: key, Value: value, Hlc: hlcVal}
 
 	if db.vlog != nil && value != nil && len(value) > vlogInlineThreshold {
 		// Write value to VLOG and fsync before WAL references it.
@@ -1959,7 +1962,7 @@ func (db *FlexDB) writeLockHeldPut(key, value []byte) error {
 		if err != nil {
 			return fmt.Errorf("flexdb: vlog append: %w", err)
 		}
-		kv = KV{Key: key, Vptr: vp, HasVPtr: true, Hlc: hlcVal}
+		kv = &KV{Key: key, Vptr: vp, HasVPtr: true, Hlc: hlcVal}
 	}
 
 	if db.memtables[db.activeMT].size >= memtableCap {
@@ -2129,7 +2132,7 @@ func (db *FlexDB) DeleteRange(includeLarge bool, begKey, endKey []byte, begInclu
 		}
 		// Collect keys first since writeLockHeldPut mutates the active memtable.
 		var keys [][]byte
-		db.memtables[mtIdx].bt.Ascend(KV{Key: begKey}, func(item KV) bool {
+		db.memtables[mtIdx].bt.Ascend(&KV{Key: begKey}, func(item *KV) bool {
 			if !deleteRangeInBounds(item.Key, begKey, endKey, begInclusive, endInclusive) {
 				// Past endKey — stop iteration.
 				if deleteRangePastEnd(item.Key, endKey, endInclusive) {
@@ -2194,7 +2197,7 @@ func (db *FlexDB) Clear(includeLarge bool) (allGone bool, err error) {
 			continue
 		}
 		var keys [][]byte
-		db.memtables[mtIdx].bt.Scan(func(item KV) bool {
+		db.memtables[mtIdx].bt.Scan(func(item *KV) bool {
 			if !item.isTombstone() && !item.HasVPtr {
 				keys = append(keys, append([]byte{}, item.Key...))
 			}
@@ -2233,9 +2236,9 @@ func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey []byte, begInclusive
 			continue
 		}
 		// Min key (first in ascending order).
-		var minKV KV
+		var minKV *KV
 		var minFound bool
-		db.memtables[i].bt.Scan(func(item KV) bool {
+		db.memtables[i].bt.Scan(func(item *KV) bool {
 			minKV = item
 			minFound = true
 			return false
@@ -2244,9 +2247,9 @@ func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey []byte, begInclusive
 			return false
 		}
 		// Max key (first in descending order).
-		var maxKV KV
+		var maxKV *KV
 		var maxFound bool
-		db.memtables[i].bt.Reverse(func(item KV) bool {
+		db.memtables[i].bt.Reverse(func(item *KV) bool {
 			maxKV = item
 			maxFound = true
 			return false
@@ -2655,7 +2658,7 @@ func (db *FlexDB) deleteRangeFlexSpaceClearSmall() (int64, error) {
 
 // decodeIntervalDirect reads and decodes an interval from FlexSpace
 // without using the interval cache. Returns the decoded KV slice.
-func (db *FlexDB) decodeIntervalDirect(anchor *dbAnchor, anchorLoff uint64) ([]KV, error) {
+func (db *FlexDB) decodeIntervalDirect(anchor *dbAnchor, anchorLoff uint64) ([]*KV, error) {
 	if anchor.psize == 0 {
 		return nil, nil
 	}
@@ -2665,7 +2668,7 @@ func (db *FlexDB) decodeIntervalDirect(anchor *dbAnchor, anchorLoff uint64) ([]K
 		return nil, fmt.Errorf("decodeIntervalDirect: read error: %w", err)
 	}
 
-	var kvs []KV
+	var kvs []*KV
 	src := buf
 	if slottedPageIsSlotted(src) {
 		decoded, consumed, err := slottedPageDecode(src)
@@ -2697,7 +2700,7 @@ func (db *FlexDB) decodeIntervalDirect(anchor *dbAnchor, anchorLoff uint64) ([]K
 // deleteRangeDedup deduplicates a sorted KV slice, keeping the highest-HLC
 // entry for each key. Simpler than intervalCacheDedup since we don't need
 // fingerprints or size tracking.
-func deleteRangeDedup(kvs []KV) []KV {
+func deleteRangeDedup(kvs []*KV) []*KV {
 	out := kvs[:0]
 	i := 0
 	for i < len(kvs) {
@@ -2822,7 +2825,7 @@ func (db *FlexDB) getPassthrough(key []byte) ([]byte, bool) {
 }
 
 // getPassthroughKV returns the full KV (including HLC) from the passthrough layer.
-func (db *FlexDB) getPassthroughKV(key []byte) (KV, bool) {
+func (db *FlexDB) getPassthroughKV(key []byte) (*KV, bool) {
 	var nh memSparseIndexTreeHandler
 	db.tree.findAnchorPos(key, &nh)
 	anchor := nh.node.anchors[nh.idx]
@@ -2833,12 +2836,12 @@ func (db *FlexDB) getPassthroughKV(key []byte) (KV, bool) {
 
 	idx, ok := intervalCacheEntryFindKeyEQ(fce, key)
 	if !ok {
-		return KV{}, false
+		return nil, false
 	}
 	return fce.kvs[idx], true
 }
 
-func (db *FlexDB) putPassthrough(kv KV, nh *memSparseIndexTreeHandler) {
+func (db *FlexDB) putPassthrough(kv *KV, nh *memSparseIndexTreeHandler) {
 	db.tree.treeNodeHandlerNextAnchor(nh, kv.Key)
 	anchor := nh.node.anchors[nh.idx]
 	anchorLoff := uint64(anchor.loff + nh.shift)
@@ -2861,7 +2864,7 @@ func (db *FlexDB) putPassthrough(kv KV, nh *memSparseIndexTreeHandler) {
 
 // putPassthroughInitial handles the first write to an anchor: allocates a
 // fixed-size slottedPageMaxSize page via ff.Insert and populates the cache.
-func (db *FlexDB) putPassthroughInitial(kv KV, nh *memSparseIndexTreeHandler, anchor *dbAnchor, partition *intervalCachePartition, fce *intervalCacheEntry) {
+func (db *FlexDB) putPassthroughInitial(kv *KV, nh *memSparseIndexTreeHandler, anchor *dbAnchor, partition *intervalCachePartition, fce *intervalCacheEntry) {
 	anchorLoff := uint64(anchor.loff + nh.shift)
 
 	// Insert into cache.
@@ -2891,7 +2894,7 @@ func (db *FlexDB) putPassthroughInitial(kv KV, nh *memSparseIndexTreeHandler, an
 	}
 }
 
-func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *dbAnchor, partition *intervalCachePartition, fce *intervalCacheEntry) {
+func (db *FlexDB) putPassthroughR(kv *KV, nh *memSparseIndexTreeHandler, anchor *dbAnchor, partition *intervalCachePartition, fce *intervalCacheEntry) {
 	idx, eq := intervalCacheEntryFindKeyGE(fce, kv.Key)
 
 	// Check if the new KV would fit in the fixed-size page.
@@ -2976,7 +2979,7 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 	newFce := newPartition.allocEntryForNewAnchor(newAnchor)
 
 	rightSize := fce.size - leftSize
-	newFce.kvs = make([]KV, rightCount)
+	newFce.kvs = make([]*KV, rightCount)
 	newFce.fps = make([]uint16, rightCount)
 	copy(newFce.kvs, fce.kvs[leftCount:fce.count])
 	copy(newFce.fps, fce.fps[leftCount:fce.count])
@@ -3348,11 +3351,11 @@ func (db *FlexDB) recovery() {
 // flexdbReadKVFromHandler reads the first KV (key only needed for anchor)
 // from a handler's current position (does NOT advance the handler).
 // Handles both slotted page and kv128 formats.
-func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte) (KV, bool) {
+func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte) (*KV, bool) {
 	var header [16]byte
 	n, err := fh.Read(header[:], 16)
 	if n < 1 || err != nil {
-		return KV{}, false
+		return nil, false
 	}
 
 	// Check if this is a slotted page.
@@ -3361,33 +3364,33 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte) (KV, bool) {
 		// [2B keyLen][2B valInfo][varint HLC][keyLen key bytes].
 		// We already have 16 bytes in header, which covers header(12) + keyLen(2) + valInfo(2).
 		if n < slottedPageHeaderSize+4 {
-			return KV{}, false
+			return nil, false
 		}
 		keyLen := int(binary.LittleEndian.Uint16(header[slottedPageHeaderSize : slottedPageHeaderSize+2]))
 		// Need header(12) + 4B slot + up to 10B varint + keyLen bytes.
 		needBytes := slottedPageHeaderSize + 4 + binary.MaxVarintLen64 + keyLen
 		if needBytes > len(buf) {
-			return KV{}, false
+			return nil, false
 		}
 		nr, err2 := fh.Read(buf[:needBytes], uint64(needBytes))
 		if nr < needBytes || err2 != nil {
-			return KV{}, false
+			return nil, false
 		}
 		key, ok := slottedPageFirstKey(buf[:nr])
 		if !ok {
-			return KV{}, false
+			return nil, false
 		}
-		return KV{Key: key}, true
+		return &KV{Key: key}, true
 	}
 
 	// Legacy kv128 format.
 	size, ok := kv128SizePrefix(header[:])
 	if !ok || size > len(buf) {
-		return KV{}, false
+		return nil, false
 	}
 	n, err = fh.Read(buf[:size], uint64(size))
 	if n != size || err != nil {
-		return KV{}, false
+		return nil, false
 	}
 	kv, _, ok2 := kv128Decode(buf[:size])
 	return kv, ok2
@@ -3487,9 +3490,9 @@ func (db *FlexDB) doFlush() {
 func (db *FlexDB) flushMemtable(mtIdx int) {
 	m := &db.memtables[mtIdx]
 	var nh memSparseIndexTreeHandler
-	batch := make([]KV, 0, memtableFlushBatch)
+	batch := make([]*KV, 0, memtableFlushBatch)
 
-	m.bt.Ascend(KV{}, func(item KV) bool {
+	m.bt.Ascend(&KV{}, func(item *KV) bool {
 		batch = append(batch, item)
 		if len(batch) >= memtableFlushBatch {
 			for _, kv := range batch {

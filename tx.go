@@ -38,10 +38,10 @@ type Tx struct {
 	state    int32 // atomic: txActive -> txCommitted or txCancelled
 
 	// Read snapshot (COW btree copies + ffMu.RLock)
-	mtSnaps [2]*btree.BTreeG[KV]
+	mtSnaps [2]*btree.BTreeG[*KV]
 
 	// Write buffer (writable only) — local btree, applied at Commit
-	wb *btree.BTreeG[KV]
+	wb *btree.BTreeG[*KV]
 }
 
 func (db *FlexDB) begin(writable bool) *Tx {
@@ -63,7 +63,7 @@ func (db *FlexDB) begin(writable bool) *Tx {
 	tx.mtSnaps[1] = db.memtables[inactive].bt.Copy()
 
 	if writable {
-		tx.wb = btree.NewBTreeG[KV](kvLess)
+		tx.wb = btree.NewBTreeG[*KV](kvLess)
 	}
 
 	return tx
@@ -104,7 +104,7 @@ func (db *FlexDB) View(fn func(tx *Tx) error) error {
 func (tx *Tx) Get(key []byte) ([]byte, bool) {
 	// Check write buffer first (highest priority for writable Tx)
 	if tx.writable && tx.wb != nil {
-		kv, ok := tx.wb.Get(KV{Key: key})
+		kv, ok := tx.wb.Get(&KV{Key: key})
 		if ok {
 			if kv.isTombstone() {
 				return nil, false // tombstone in write buffer
@@ -118,7 +118,7 @@ func (tx *Tx) Get(key []byte) ([]byte, bool) {
 	// Check memtable snapshots
 	for i := 0; i < 2; i++ {
 		if tx.mtSnaps[i] != nil {
-			kv, ok := tx.mtSnaps[i].Get(KV{Key: key})
+			kv, ok := tx.mtSnaps[i].Get(&KV{Key: key})
 			if ok {
 				if kv.isTombstone() {
 					return nil, false // tombstone
@@ -152,7 +152,7 @@ func (tx *Tx) Put(key, value []byte) error {
 	if len(key) > MaxKeySize {
 		return fmt.Errorf("flexdb: Key too large (max %d bytes)", MaxKeySize)
 	}
-	tx.wb.Set(KV{Key: dupBytes(key), Value: dupBytes(value)})
+	tx.wb.Set(&KV{Key: dupBytes(key), Value: dupBytes(value)})
 	return nil
 }
 
@@ -166,7 +166,7 @@ func (tx *Tx) Delete(key []byte) error {
 	if atomic.LoadInt32(&tx.state) != txActive {
 		return ErrTxDone
 	}
-	tx.wb.Set(KV{Key: dupBytes(key), Value: nil}) // tombstone, because Value==nil && HasVPtr == 0
+	tx.wb.Set(&KV{Key: dupBytes(key), Value: nil}) // tombstone, because Value==nil && HasVPtr == 0
 	return nil
 }
 
@@ -194,7 +194,7 @@ func (tx *Tx) Commit() error {
 
 	// Apply write buffer to database
 	if wb != nil {
-		wb.Ascend(KV{}, func(item KV) bool {
+		wb.Ascend(&KV{}, func(item *KV) bool {
 			tx.db.writeLockHeldPut(item.Key, item.Value)
 			return true
 		})

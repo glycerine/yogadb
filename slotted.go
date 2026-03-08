@@ -102,25 +102,25 @@ const (
 
 // slottedPageEncode encodes a sorted slice of KVs into a slotted page.
 // Returns the encoded page bytes. The input kvs must be sorted by key.
-func slottedPageEncode(kvs []KV) []byte {
+func slottedPageEncode(kvs []*KV) []byte {
 	return slottedPageEncodeInto(kvs, 0, 0)
 }
 
 // slottedPageEncodeWithUnsorted encodes KVs with the given unsorted count in the header.
-func slottedPageEncodeWithUnsorted(kvs []KV, unsorted uint8) []byte {
+func slottedPageEncodeWithUnsorted(kvs []*KV, unsorted uint8) []byte {
 	return slottedPageEncodeInto(kvs, unsorted, 0)
 }
 
 // slottedPageEncodePadded encodes KVs into a fixed-size page of targetSize bytes.
 // The page is zero-padded between the entry records and the values region.
 // Panics if the encoded content exceeds targetSize.
-func slottedPageEncodePadded(kvs []KV, targetSize int) []byte {
+func slottedPageEncodePadded(kvs []*KV, targetSize int) []byte {
 	return slottedPageEncodeInto(kvs, 0, targetSize)
 }
 
 // slottedPageEncodeInto is the common encoder. If targetSize > 0, the output is
 // padded to exactly targetSize bytes. Otherwise, output is tight (no padding).
-func slottedPageEncodeInto(kvs []KV, unsorted uint8, targetSize int) []byte {
+func slottedPageEncodeInto(kvs []*KV, unsorted uint8, targetSize int) []byte {
 	count := len(kvs)
 	if count == 0 {
 		if targetSize > 0 {
@@ -213,7 +213,7 @@ func slottedPageEncodeInto(kvs []KV, unsorted uint8, targetSize int) []byte {
 
 // slottedPageDecode decodes a slotted page into a slice of KVs.
 // Returns the decoded KVs and the total bytes consumed, or an error.
-func slottedPageDecode(src []byte) ([]KV, int, error) {
+func slottedPageDecode(src []byte) ([]*KV, int, error) {
 	if len(src) < slottedPageHeaderSize+slottedPageCRCSize {
 		return nil, 0, fmt.Errorf("slotted page: too short (%d bytes)", len(src))
 	}
@@ -302,8 +302,9 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 	}
 
 	// Build KV slice.
-	kvs := make([]KV, count)
+	kvs := make([]*KV, count)
 	for i := 0; i < count; i++ {
+		kvs[i] = &KV{}
 		kl := int(entries[i].keyLen)
 		kvs[i].Key = make([]byte, kl)
 		copy(kvs[i].Key, src[entries[i].keyOff:entries[i].keyOff+kl])
@@ -336,7 +337,7 @@ func slottedPageIsSlotted(src []byte) bool {
 }
 
 // slottedValInfo returns the valInfo uint16 for a KV entry.
-func slottedValInfo(kv KV) uint16 {
+func slottedValInfo(kv *KV) uint16 {
 	if kv.isTombstone() {
 		return slottedValInfoTombstone
 	}
@@ -347,7 +348,7 @@ func slottedValInfo(kv KV) uint16 {
 }
 
 // slottedValBytes returns the number of value bytes stored for a KV.
-func slottedValBytes(kv KV) int {
+func slottedValBytes(kv *KV) int {
 	if kv.isTombstone() {
 		return 0
 	}
@@ -358,7 +359,7 @@ func slottedValBytes(kv KV) int {
 }
 
 // slottedValBytesOf returns the raw value bytes to store for a KV.
-func slottedValBytesOf(kv KV) []byte {
+func slottedValBytesOf(kv *KV) []byte {
 	if kv.isTombstone() {
 		return nil
 	}
@@ -422,7 +423,7 @@ func slottedPageUnsorted(src []byte) uint8 {
 }
 
 // slottedPageComputeSize returns the encoded size of a slotted page for the given KVs.
-func slottedPageComputeSize(kvs []KV) int {
+func slottedPageComputeSize(kvs []*KV) int {
 	if len(kvs) == 0 {
 		return 0
 	}
@@ -447,7 +448,7 @@ func slottedPageComputeSize(kvs []KV) int {
 // slottedPageWouldFit returns true if adding newKV to the existing kvs
 // (with one entry possibly replaced at replaceIdx, or -1 for insert) would
 // still fit within targetSize bytes.
-func slottedPageWouldFit(kvs []KV, count int, newKV KV, replaceIdx int, targetSize int) bool {
+func slottedPageWouldFit(kvs []*KV, count int, newKV *KV, replaceIdx int, targetSize int) bool {
 	var hlcBuf [binary.MaxVarintLen64]byte
 
 	// Compute baseHLC considering all entries including newKV.

@@ -15,7 +15,7 @@ import (
 
 type memtable struct {
 	// backing in memory B-tree (was skiplist in C).
-	bt *btree.BTreeG[KV]
+	bt *btree.BTreeG[*KV]
 
 	memWalFD  vfs.File // FLEXDB.MEMWAL1 or FLEXDB.MEMWAL2
 	memWalBuf []byte
@@ -31,7 +31,7 @@ type memtable struct {
 func newMemtable(memWalFD vfs.File) *memtable {
 	return &memtable{
 		// default degree is 32, to change it:
-		bt:        btree.NewBTreeGOptions[KV](kvLess, btree.Options{Degree: 32}),
+		bt:        btree.NewBTreeGOptions[*KV](kvLess, btree.Options{Degree: 32}),
 		memWalFD:  memWalFD,
 		memWalBuf: make([]byte, 0, memtableWalBufCap),
 		empty:     true,
@@ -46,7 +46,7 @@ func (m *memtable) reset() {
 // caller should set m.empty to false after calling put()
 // (e.g. db.go:165 in Batch.Commit)
 // Returns the previous KV for the same key and whether it was replaced.
-func (m *memtable) put(kv KV) (KV, bool) {
+func (m *memtable) put(kv *KV) (*KV, bool) {
 	old, replaced := m.bt.Set(kv)
 	if replaced {
 		m.size -= int64(kvSizeApprox(old))
@@ -58,11 +58,11 @@ func (m *memtable) put(kv KV) (KV, bool) {
 	return old, replaced
 }
 
-func (m *memtable) get(key []byte) (KV, bool) {
-	return m.bt.Get(KV{Key: key})
+func (m *memtable) get(key []byte) (*KV, bool) {
+	return m.bt.Get(&KV{Key: key})
 }
 
-func (m *memtable) logAppend(kv KV) {
+func (m *memtable) logAppend(kv *KV) {
 	encoded := kv128Encode(nil, kv)
 	m.memWalMut.Lock()
 	defer m.memWalMut.Unlock()

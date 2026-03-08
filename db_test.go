@@ -303,9 +303,9 @@ func TestFlexDB_kv128RoundTrip(t *testing.T) {
 		{Key: []byte("big"), Vptr: VPtr{Offset: 1024, Length: 256}, HasVPtr: true, Hlc: 42},
 	}
 	for _, kv := range cases {
-		buf := kv128Encode(nil, kv)
-		if len(buf) != kv128EncodedSize(kv) {
-			t.Fatalf("size mismatch: encoded %d, predicted %d", len(buf), kv128EncodedSize(kv))
+		buf := kv128Encode(nil, &kv)
+		if len(buf) != kv128EncodedSize(&kv) {
+			t.Fatalf("size mismatch: encoded %d, predicted %d", len(buf), kv128EncodedSize(&kv))
 		}
 		got, n, ok := kv128Decode(buf)
 		if !ok {

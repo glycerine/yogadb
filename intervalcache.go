@@ -39,7 +39,7 @@ type dbAnchor struct {
 
 type intervalCacheEntry struct {
 	anchor    *dbAnchor
-	kvs       []KV     // decoded KV slice (sorted when unsorted==0)
+	kvs       []*KV    // decoded KV slice (sorted when unsorted==0)
 	fps       []uint16 // fingerprints per KV
 	size      int      // sum of kvSizeApprox for all kvs
 	count     int      // same as len(kvs)
@@ -360,7 +360,7 @@ func (p *intervalCachePartition) loadInterval(fce *intervalCacheEntry, anchor *d
 
 // intervalCacheDedup deduplicates a sorted KV slice (keeps highest HLC per key).
 // PRE: kvs must be sorted by ascending Key.
-func intervalCacheDedup(kvs []KV) ([]KV, []uint16, int) {
+func intervalCacheDedup(kvs []*KV) ([]*KV, []uint16, int) {
 	if len(kvs) == 0 {
 		return kvs, nil, 0
 	}
@@ -426,8 +426,8 @@ func intervalCacheEntryFindKeyEQ(fce *intervalCacheEntry, key []byte) (int, bool
 	return -1, false
 }
 
-func (p *intervalCachePartition) cacheEntryInsert(fce *intervalCacheEntry, kv KV, idx int) {
-	fce.kvs = append(fce.kvs, KV{})
+func (p *intervalCachePartition) cacheEntryInsert(fce *intervalCacheEntry, kv *KV, idx int) {
+	fce.kvs = append(fce.kvs, nil)
 	fce.fps = append(fce.fps, 0)
 	copy(fce.kvs[idx+1:], fce.kvs[idx:])
 	copy(fce.fps[idx+1:], fce.fps[idx:])
@@ -441,7 +441,7 @@ func (p *intervalCachePartition) cacheEntryInsert(fce *intervalCacheEntry, kv KV
 	p.mu.Unlock()
 }
 
-func (p *intervalCachePartition) cacheEntryReplace(fce *intervalCacheEntry, kv KV, idx int) {
+func (p *intervalCachePartition) cacheEntryReplace(fce *intervalCacheEntry, kv *KV, idx int) {
 	old := fce.kvs[idx]
 	oldSz := kvSizeApprox(old)
 	newSz := kvSizeApprox(kv)

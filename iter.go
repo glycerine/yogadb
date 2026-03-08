@@ -54,7 +54,7 @@ const maxPrefetchSpans = 24
 // prefetchSpan records a contiguous range within one interval's kvs slice.
 // Used to defer per-KV access from prefetchFill (under lock) to servePrefetch (no lock).
 type prefetchSpan struct {
-	kvs []KV // slice into cache interval, pre-sliced to [:count] for BCE
+	kvs []*KV // slice into cache interval, pre-sliced to [:count] for BCE
 	pos int  // next index to serve
 	end int  // forward: pos < end; reverse: pos >= end (end is lower bound)
 }
@@ -189,7 +189,7 @@ func (it *Iter) servePrefetch() bool {
 	for it.pfSpanIdx < it.pfSpanCount {
 		span := &it.pfSpans[it.pfSpanIdx]
 		for span.pos < span.end {
-			pkv := &span.kvs[span.pos]
+			pkv := span.kvs[span.pos]
 			span.pos++
 			if pkv.Value == nil && !pkv.HasVPtr { // tombstone
 				continue
@@ -221,17 +221,17 @@ func reuseAppend(buf, src []byte) []byte {
 
 // btreeSeekGE does a one-shot seek in a btree: finds the first item >= target.
 // If strict is true, skips exact matches (finds first item > target).
-func btreeSeekGE(bt *btree.BTreeG[KV], target []byte, strict bool) (KV, bool) {
-	var result KV
+func btreeSeekGE(bt *btree.BTreeG[*KV], target []byte, strict bool) (*KV, bool) {
+	var result *KV
 	var found bool
 	if target == nil {
-		bt.Scan(func(item KV) bool {
+		bt.Scan(func(item *KV) bool {
 			result = item
 			found = true
 			return false
 		})
 	} else {
-		bt.Ascend(KV{Key: target}, func(item KV) bool {
+		bt.Ascend(&KV{Key: target}, func(item *KV) bool {
 			if strict && bytes.Equal(item.Key, target) {
 				return true // skip exact match
 			}
@@ -245,17 +245,17 @@ func btreeSeekGE(bt *btree.BTreeG[KV], target []byte, strict bool) (KV, bool) {
 
 // btreeSeekLE does a one-shot seek in a btree: finds the last item <= target.
 // If strict is true, skips exact matches (finds last item < target).
-func btreeSeekLE(bt *btree.BTreeG[KV], target []byte, strict bool) (KV, bool) {
-	var result KV
+func btreeSeekLE(bt *btree.BTreeG[*KV], target []byte, strict bool) (*KV, bool) {
+	var result *KV
 	var found bool
 	if target == nil {
-		bt.Reverse(func(item KV) bool {
+		bt.Reverse(func(item *KV) bool {
 			result = item
 			found = true
 			return false
 		})
 	} else {
-		bt.Descend(KV{Key: target}, func(item KV) bool {
+		bt.Descend(&KV{Key: target}, func(item *KV) bool {
 			if strict && bytes.Equal(item.Key, target) {
 				return true // skip exact match
 			}
@@ -271,10 +271,10 @@ func btreeSeekLE(bt *btree.BTreeG[KV], target []byte, strict bool) (KV, bool) {
 
 // flexSpaceSeekGE finds the first KV >= target in FlexSpace via sparse index + cache.
 // If strict is true, skips exact matches. Caller must hold topMutRW.RLock().
-func (db *FlexDB) flexSpaceSeekGE(target []byte, strict bool) (KV, bool) {
+func (db *FlexDB) flexSpaceSeekGE(target []byte, strict bool) (*KV, bool) {
 	t := db.tree
 	if t == nil || t.root == nil {
-		return KV{}, false
+		return nil, false
 	}
 
 	var nh memSparseIndexTreeHandler
@@ -284,7 +284,7 @@ func (db *FlexDB) flexSpaceSeekGE(target []byte, strict bool) (KV, bool) {
 
 	if target == nil {
 		if t.leafHead == nil {
-			return KV{}, false
+			return nil, false
 		}
 		node = t.leafHead
 		anchorIdx = 0
@@ -299,14 +299,14 @@ func (db *FlexDB) flexSpaceSeekGE(target []byte, strict bool) (KV, bool) {
 	}
 
 	if node == nil || node.count == 0 {
-		return KV{}, false
+		return nil, false
 	}
 
 	for {
 		if anchorIdx >= node.count {
 			next := node.next
 			if next == nil {
-				return KV{}, false
+				return nil, false
 			}
 			node = next
 			anchorIdx = 0
@@ -342,7 +342,7 @@ func (db *FlexDB) flexSpaceSeekGE(target []byte, strict bool) (KV, bool) {
 		}
 		if idx < fce.count {
 			kv := fce.kvs[idx]
-			result := KV{Key: dupBytes(kv.Key), Value: dupBytes(kv.Value), Vptr: kv.Vptr, HasVPtr: kv.HasVPtr, Hlc: kv.Hlc}
+			result := &KV{Key: dupBytes(kv.Key), Value: dupBytes(kv.Value), Vptr: kv.Vptr, HasVPtr: kv.HasVPtr, Hlc: kv.Hlc}
 			partition.releaseEntry(fce)
 			return result, true
 		}
@@ -354,10 +354,10 @@ func (db *FlexDB) flexSpaceSeekGE(target []byte, strict bool) (KV, bool) {
 
 // flexSpaceSeekLE finds the last KV <= target in FlexSpace via sparse index + cache.
 // If strict is true, skips exact matches. Caller must hold topMutRW.RLock().
-func (db *FlexDB) flexSpaceSeekLE(target []byte, strict bool) (KV, bool) {
+func (db *FlexDB) flexSpaceSeekLE(target []byte, strict bool) (*KV, bool) {
 	t := db.tree
 	if t == nil || t.root == nil {
-		return KV{}, false
+		return nil, false
 	}
 
 	var node *memSparseIndexTreeNode
@@ -372,7 +372,7 @@ func (db *FlexDB) flexSpaceSeekLE(target []byte, strict bool) (KV, bool) {
 		}
 		anchorIdx = node.count - 1
 		if anchorIdx < 0 {
-			return KV{}, false
+			return nil, false
 		}
 		nh2 := memSparseIndexTreeHandler{node: node}
 		memSparseIndexTreeHandlerInfoUpdate(&nh2)
@@ -386,14 +386,14 @@ func (db *FlexDB) flexSpaceSeekLE(target []byte, strict bool) (KV, bool) {
 	}
 
 	if node == nil || node.count == 0 {
-		return KV{}, false
+		return nil, false
 	}
 
 	for {
 		if anchorIdx < 0 {
 			prev := node.prev
 			if prev == nil {
-				return KV{}, false
+				return nil, false
 			}
 			node = prev
 			anchorIdx = node.count - 1
@@ -401,7 +401,7 @@ func (db *FlexDB) flexSpaceSeekLE(target []byte, strict bool) (KV, bool) {
 			memSparseIndexTreeHandlerInfoUpdate(&nh2)
 			shift = nh2.shift
 			if anchorIdx < 0 {
-				return KV{}, false
+				return nil, false
 			}
 		}
 
@@ -434,7 +434,7 @@ func (db *FlexDB) flexSpaceSeekLE(target []byte, strict bool) (KV, bool) {
 		}
 		if idx >= 0 {
 			kv := fce.kvs[idx]
-			result := KV{Key: dupBytes(kv.Key), Value: dupBytes(kv.Value), Vptr: kv.Vptr, HasVPtr: kv.HasVPtr, Hlc: kv.Hlc}
+			result := &KV{Key: dupBytes(kv.Key), Value: dupBytes(kv.Value), Vptr: kv.Vptr, HasVPtr: kv.HasVPtr, Hlc: kv.Hlc}
 			partition.releaseEntry(fce)
 			return result, true
 		}
@@ -805,7 +805,7 @@ func (db *FlexDB) mergedSeekGE(target []byte, strict bool) (key, value []byte, h
 		active := db.activeMT
 		inactive := 1 - active
 
-		var candidates [3]KV
+		var candidates [3]*KV
 		var have [3]bool
 
 		candidates[0], have[0] = btreeSeekGE(db.memtables[active].bt, target, strict)
@@ -828,18 +828,16 @@ func (db *FlexDB) mergedSeekGE(target []byte, strict bool) (key, value []byte, h
 		}
 
 		// Pick highest-priority source at minKey
-		var bestKV KV
-		haveBest := false
+		var bestKV *KV
 		for i := 0; i < 3; i++ {
 			if have[i] && bytes.Equal(candidates[i].Key, minKey) {
-				if !haveBest {
+				if bestKV == nil {
 					bestKV = candidates[i]
-					haveBest = true
 				}
 			}
 		}
 
-		if !haveBest || bestKV.isTombstone() {
+		if bestKV == nil || bestKV.isTombstone() {
 			target = minKey
 			strict = true
 			continue // skip tombstone, seek past it
@@ -930,7 +928,7 @@ func (it *Iter) servePrefetchReverse() bool {
 	for it.pfSpanIdx < it.pfSpanCount {
 		span := &it.pfSpans[it.pfSpanIdx]
 		for span.pos > span.end {
-			pkv := &span.kvs[span.pos]
+			pkv := span.kvs[span.pos]
 			span.pos--
 			if pkv.Value == nil && !pkv.HasVPtr { // tombstone
 				continue
@@ -966,7 +964,7 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target []byte, strict bool) (kv *KV, f
 		active := db.activeMT
 		inactive := 1 - active
 
-		var candidates [3]KV
+		var candidates [3]*KV
 		var have [3]bool
 
 		// Memtables: one-shot seek (O(log n) but no lock held between calls)
@@ -979,7 +977,7 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target []byte, strict bool) (kv *KV, f
 		it.positionFlexCursorForSeek(target, strict)
 		if it.fc.positioned && it.fc.fce != nil && it.fc.kvIdx < it.fc.fce.count {
 			fkv := it.fc.fce.kvs[it.fc.kvIdx]
-			candidates[2] = KV{Key: fkv.Key, Value: fkv.Value, Vptr: fkv.Vptr, HasVPtr: fkv.HasVPtr, Hlc: fkv.Hlc}
+			candidates[2] = &KV{Key: fkv.Key, Value: fkv.Value, Vptr: fkv.Vptr, HasVPtr: fkv.HasVPtr, Hlc: fkv.Hlc}
 			have[2] = true
 		}
 
@@ -997,13 +995,11 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target []byte, strict bool) (kv *KV, f
 		}
 
 		// Pick highest-priority source at minKey
-		var bestKV KV
-		haveBest := false
+		var bestKV *KV
 		for i := 0; i < 3; i++ {
 			if have[i] && bytes.Equal(candidates[i].Key, minKey) {
-				if !haveBest {
+				if bestKV == nil {
 					bestKV = candidates[i]
-					haveBest = true
 				}
 			}
 		}
@@ -1013,7 +1009,7 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target []byte, strict bool) (kv *KV, f
 			db.flexCursorAdvance(&it.fc)
 		}
 
-		if !haveBest || bestKV.isTombstone() {
+		if bestKV == nil || bestKV.isTombstone() {
 			target = minKey
 			strict = true
 			continue
@@ -1041,7 +1037,7 @@ func (it *Iter) flexSpaceOnlySeekGE(target []byte, strict bool) (kv *KV, found b
 
 	for it.fc.positioned && it.fc.fce != nil && it.fc.kvIdx < it.fc.fce.count {
 		// Read directly from cache entry — zero-copy reference
-		kv = &it.fc.fce.kvs[it.fc.kvIdx]
+		kv = it.fc.fce.kvs[it.fc.kvIdx]
 
 		// Advance cursor position for next call (inline, no dupBytes)
 		it.db.flexCursorAdvance(&it.fc)
@@ -1117,7 +1113,7 @@ func (db *FlexDB) mergedSeekLE(target []byte, strict bool) (kv *KV, found bool) 
 		active := db.activeMT
 		inactive := 1 - active
 
-		var candidates [3]KV
+		var candidates [3]*KV
 		var have [3]bool
 
 		candidates[0], have[0] = btreeSeekLE(db.memtables[active].bt, target, strict)
@@ -1140,28 +1136,23 @@ func (db *FlexDB) mergedSeekLE(target []byte, strict bool) (kv *KV, found bool) 
 		}
 
 		// Pick highest-priority source at maxKey
-		var bestKV KV
-		haveBest := false
+		var bestKV *KV
 		for i := 0; i < 3; i++ {
 			if have[i] && bytes.Equal(candidates[i].Key, maxKey) {
-				if !haveBest {
+				if bestKV == nil {
 					bestKV = candidates[i]
-					haveBest = true
 				}
 			}
 		}
 
-		if !haveBest || bestKV.isTombstone() {
+		if bestKV == nil || bestKV.isTombstone() {
 			target = maxKey
 			strict = true
 			continue
 		}
 		found = true
 		if bestKV.HasVPtr {
-			kv = &KV{}
-			*kv = bestKV
-			kv.Key = dupBytes(maxKey)
-			kv.Value = nil
+			kv = &KV{Key: dupBytes(maxKey), Hlc: bestKV.Hlc, HasVPtr: true, Vptr: bestKV.Vptr}
 			return
 		}
 		val, err := db.resolveVPtr(bestKV)
@@ -1511,7 +1502,7 @@ func (it *Iter) FetchV() ([]byte, error) {
 	if !it.pKV.HasVPtr {
 		return it.pKV.Value, nil
 	}
-	return it.db.resolveVPtr(KV{HasVPtr: true, Vptr: it.pKV.Vptr})
+	return it.db.resolveVPtr(&KV{HasVPtr: true, Vptr: it.pKV.Vptr})
 }
 
 // ====================== Callback-based iteration ======================
@@ -1525,7 +1516,7 @@ func (it *Iter) iterResolvedValue() []byte {
 	if !it.pKV.HasVPtr {
 		return it.pKV.Value
 	}
-	val, err := it.db.resolveVPtr(KV{HasVPtr: true, Vptr: it.pKV.Vptr})
+	val, err := it.db.resolveVPtr(&KV{HasVPtr: true, Vptr: it.pKV.Vptr})
 	if err != nil {
 		return nil
 	}
