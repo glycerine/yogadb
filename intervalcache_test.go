@@ -92,10 +92,10 @@ isolation (no FlexDB/FlexSpace needed) by constructing cache structures directly
 
 ```go
 // Test data construction (no FlexDB needed)
-func makeKV(key, value string, hlc int64) KV
-func makeSortedKVs(keys []string) []KV          // sequential HLCs, default values
+func makeKV(key, value string, hlc int64) *KV
+func makeSortedKVs(keys []string) []*KV          // sequential HLCs, default values
 func makeAnchor(key string) *dbAnchor
-func makeCacheEntry(kvs []KV) *intervalCacheEntry      // computes fps, size, count
+func makeCacheEntry(kvs []*KV) *intervalCacheEntry      // computes fps, size, count
 func makePartition(capBytes int64) *intervalCachePartition
 
 // Invariant checkers (reused across tests and fuzz)
@@ -156,15 +156,15 @@ go test -count=1 ./...
 
 // ====================== Test Helpers ======================
 
-func makeKV(key, value string, hlc int64) KV {
-	return KV{Key: []byte(key), Value: []byte(value), Hlc: HLC(hlc)}
+func makeKV(key, value string, hlc int64) *KV {
+	return &KV{Key: []byte(key), Value: []byte(value), Hlc: HLC(hlc)}
 }
 
-func makeSortedKVs(keys []string) []KV {
+func makeSortedKVs(keys []string) []*KV {
 	sort.Strings(keys)
-	kvs := make([]KV, len(keys))
+	kvs := make([]*KV, len(keys))
 	for i, k := range keys {
-		kvs[i] = KV{Key: []byte(k), Value: []byte("v-" + k), Hlc: HLC(int64(i + 1))}
+		kvs[i] = &KV{Key: []byte(k), Value: []byte("v-" + k), Hlc: HLC(int64(i + 1))}
 	}
 	return kvs
 }
@@ -173,7 +173,7 @@ func makeAnchor(key string) *dbAnchor {
 	return &dbAnchor{key: []byte(key)}
 }
 
-func makeCacheEntry(kvs []KV) *intervalCacheEntry {
+func makeCacheEntry(kvs []*KV) *intervalCacheEntry {
 	fps := make([]uint16, len(kvs))
 	size := 0
 	for i, kv := range kvs {
@@ -275,7 +275,7 @@ func TestIntervalCache_DedupBasic(t *testing.T) {
 	}
 
 	// Single element
-	kvs := []KV{makeKV("a", "v1", 1)}
+	kvs := []*KV{makeKV("a", "v1", 1)}
 	out, fps, size = intervalCacheDedup(kvs)
 	if len(out) != 1 || len(fps) != 1 {
 		t.Fatalf("dedup single: len=%d fps=%d", len(out), len(fps))
@@ -285,14 +285,14 @@ func TestIntervalCache_DedupBasic(t *testing.T) {
 	}
 
 	// No duplicates (3 distinct keys)
-	kvs = []KV{makeKV("a", "v1", 1), makeKV("b", "v2", 2), makeKV("c", "v3", 3)}
+	kvs = []*KV{makeKV("a", "v1", 1), makeKV("b", "v2", 2), makeKV("c", "v3", 3)}
 	out, fps, size = intervalCacheDedup(kvs)
 	if len(out) != 3 || len(fps) != 3 {
 		t.Fatalf("dedup no-dups: len=%d", len(out))
 	}
 
 	// All duplicates (3 copies of same key)
-	kvs = []KV{makeKV("x", "v1", 1), makeKV("x", "v2", 5), makeKV("x", "v3", 3)}
+	kvs = []*KV{makeKV("x", "v1", 1), makeKV("x", "v2", 5), makeKV("x", "v3", 3)}
 	out, fps, size = intervalCacheDedup(kvs)
 	if len(out) != 1 {
 		t.Fatalf("dedup all-dups: len=%d, expected 1", len(out))
@@ -302,7 +302,7 @@ func TestIntervalCache_DedupBasic(t *testing.T) {
 	}
 
 	// Mixed: 2 keys with dups
-	kvs = []KV{
+	kvs = []*KV{
 		makeKV("a", "v1", 1), makeKV("a", "v2", 10),
 		makeKV("b", "v3", 3), makeKV("b", "v4", 2),
 	}
@@ -318,28 +318,28 @@ func TestIntervalCache_DedupBasic(t *testing.T) {
 
 func TestIntervalCache_DedupHLCWins(t *testing.T) {
 	// Ascending HLC: last entry wins
-	kvs := []KV{makeKV("k", "v1", 1), makeKV("k", "v2", 2), makeKV("k", "v3", 3)}
+	kvs := []*KV{makeKV("k", "v1", 1), makeKV("k", "v2", 2), makeKV("k", "v3", 3)}
 	out, _, _ := intervalCacheDedup(kvs)
 	if out[0].Hlc != 3 {
 		t.Fatalf("ascending HLC: got hlc=%d, want 3", out[0].Hlc)
 	}
 
 	// Descending HLC: first entry wins
-	kvs = []KV{makeKV("k", "v1", 3), makeKV("k", "v2", 2), makeKV("k", "v3", 1)}
+	kvs = []*KV{makeKV("k", "v1", 3), makeKV("k", "v2", 2), makeKV("k", "v3", 1)}
 	out, _, _ = intervalCacheDedup(kvs)
 	if out[0].Hlc != 3 {
 		t.Fatalf("descending HLC: got hlc=%d, want 3", out[0].Hlc)
 	}
 
 	// Middle HLC: middle entry wins
-	kvs = []KV{makeKV("k", "v1", 1), makeKV("k", "v2", 99), makeKV("k", "v3", 5)}
+	kvs = []*KV{makeKV("k", "v1", 1), makeKV("k", "v2", 99), makeKV("k", "v3", 5)}
 	out, _, _ = intervalCacheDedup(kvs)
 	if out[0].Hlc != 99 {
 		t.Fatalf("middle HLC: got hlc=%d, want 99", out[0].Hlc)
 	}
 
 	// Equal HLCs: first among equals
-	kvs = []KV{makeKV("k", "v1", 7), makeKV("k", "v2", 7), makeKV("k", "v3", 7)}
+	kvs = []*KV{makeKV("k", "v1", 7), makeKV("k", "v2", 7), makeKV("k", "v3", 7)}
 	out, _, _ = intervalCacheDedup(kvs)
 	if out[0].Hlc != 7 {
 		t.Fatalf("equal HLC: got hlc=%d, want 7", out[0].Hlc)
@@ -348,7 +348,7 @@ func TestIntervalCache_DedupHLCWins(t *testing.T) {
 
 func TestIntervalCache_DedupSortedOutput(t *testing.T) {
 	// Build 100 entries with 20 distinct keys (5 dups each)
-	var kvs []KV
+	var kvs []*KV
 	for i := 0; i < 20; i++ {
 		key := fmt.Sprintf("key-%03d", i)
 		for j := 0; j < 5; j++ {
@@ -662,7 +662,7 @@ func TestIntervalCache_Calibrate(t *testing.T) {
 	// Add entries that exceed the cap
 	entries := make([]*intervalCacheEntry, 5)
 	for i := 0; i < 5; i++ {
-		fce := makeCacheEntry([]KV{makeKV(fmt.Sprintf("k%d", i), "value", int64(i))})
+		fce := makeCacheEntry([]*KV{makeKV(fmt.Sprintf("k%d", i), "value", int64(i))})
 		fce.access = 0 // no second chance
 		entries[i] = fce
 		p.insertIntoClock(fce)
@@ -699,7 +699,7 @@ func TestIntervalCache_EvictionRefcntProtection(t *testing.T) {
 
 	// All entries pinned (refcnt > 0)
 	for i := 0; i < 5; i++ {
-		fce := makeCacheEntry([]KV{makeKV(fmt.Sprintf("k%d", i), "value", int64(i))})
+		fce := makeCacheEntry([]*KV{makeKV(fmt.Sprintf("k%d", i), "value", int64(i))})
 		fce.refcnt = 1 // pinned
 		fce.access = 0
 		p.insertIntoClock(fce)
@@ -717,7 +717,7 @@ func TestIntervalCache_EvictionRefcntProtection(t *testing.T) {
 	// Mix of pinned and unpinned
 	p2 := makePartition(50)
 	for i := 0; i < 5; i++ {
-		fce := makeCacheEntry([]KV{makeKV(fmt.Sprintf("k%d", i), "value", int64(i))})
+		fce := makeCacheEntry([]*KV{makeKV(fmt.Sprintf("k%d", i), "value", int64(i))})
 		if i%2 == 0 {
 			fce.refcnt = 1 // pinned
 		}
@@ -745,7 +745,7 @@ func TestIntervalCache_CalibrateAccessChance(t *testing.T) {
 
 	// Add entries with access > 0
 	for i := 0; i < 3; i++ {
-		fce := makeCacheEntry([]KV{makeKV(fmt.Sprintf("k%d", i), "value", int64(i))})
+		fce := makeCacheEntry([]*KV{makeKV(fmt.Sprintf("k%d", i), "value", int64(i))})
 		fce.access = 2 // two chances
 		p.insertIntoClock(fce)
 		p.size += int64(32 + fce.size)
@@ -842,7 +842,7 @@ func FuzzIntervalCache_Dedup(f *testing.F) {
 	f.Add([]byte("abc"), []byte("def"), []byte("abc"), int64(1), int64(2), int64(5))
 	f.Fuzz(func(t *testing.T, k1, k2, k3 []byte, h1, h2, h3 int64) {
 		// Build a sorted KV slice with potential duplicates
-		kvs := []KV{
+		kvs := []*KV{
 			{Key: k1, Value: []byte("v1"), Hlc: HLC(h1)},
 			{Key: k2, Value: []byte("v2"), Hlc: HLC(h2)},
 			{Key: k3, Value: []byte("v3"), Hlc: HLC(h3)},
@@ -913,10 +913,10 @@ func FuzzIntervalCache_FindKey(f *testing.F) {
 			return bytes.Compare(keys[i], keys[j]) < 0
 		})
 		// Remove duplicates
-		var uniq []KV
+		var uniq []*KV
 		for i, k := range keys {
 			if i == 0 || !bytes.Equal(k, keys[i-1]) {
-				uniq = append(uniq, KV{Key: k, Value: []byte("v"), Hlc: HLC(int64(i + 1))})
+				uniq = append(uniq, &KV{Key: k, Value: []byte("v"), Hlc: HLC(int64(i + 1))})
 			}
 		}
 		fce := makeCacheEntry(uniq)
@@ -971,7 +971,7 @@ func FuzzIntervalCache_Mutations(f *testing.F) {
 	f.Fuzz(func(t *testing.T, op uint8, key, val []byte) {
 		p := makePartition(1 << 30) // large cap to avoid eviction
 		fce := makeCacheEntry(makeSortedKVs([]string{"b", "d", "f", "h"}))
-		kv := KV{Key: key, Value: val, Hlc: 1}
+		kv := &KV{Key: key, Value: val, Hlc: 1}
 
 		switch op % 3 {
 		case 0: // Insert
@@ -1057,7 +1057,7 @@ func BenchmarkIntervalCache_FindKeyGE(b *testing.B) {
 
 func BenchmarkIntervalCache_Dedup(b *testing.B) {
 	// Build 1000 KVs with 200 distinct keys (5 dups each)
-	template := make([]KV, 1000)
+	template := make([]*KV, 1000)
 	for i := 0; i < 200; i++ {
 		key := fmt.Sprintf("key-%06d", i)
 		for j := 0; j < 5; j++ {
@@ -1067,7 +1067,7 @@ func BenchmarkIntervalCache_Dedup(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// Copy since dedup reuses the input slice
-		kvs := make([]KV, len(template))
+		kvs := make([]*KV, len(template))
 		copy(kvs, template)
 		intervalCacheDedup(kvs)
 	}

@@ -343,7 +343,7 @@ func TestFlexDB_kv128RoundTrip(t *testing.T) {
 // TestFlexDB_kv128CRC32C verifies CRC32C detection of corrupted records.
 func TestFlexDB_kv128CRC32C(t *testing.T) {
 	kv := KV{Key: []byte("testkey"), Value: []byte("testvalue"), Hlc: 42}
-	buf := kv128Encode(nil, kv)
+	buf := kv128Encode(nil, &kv)
 
 	// Verify clean decode works
 	_, _, ok := kv128Decode(buf)
@@ -371,7 +371,7 @@ func TestFlexDB_kv128CRC32C(t *testing.T) {
 
 	// Tombstone path
 	tomb := KV{Key: []byte("delme"), Hlc: 7}
-	tbuf := kv128Encode(nil, tomb)
+	tbuf := kv128Encode(nil, &tomb)
 	_, _, ok = kv128Decode(tbuf)
 	if !ok {
 		t.Fatal("tombstone decode failed")

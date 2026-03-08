@@ -412,7 +412,7 @@ func TestFlexDB_HLC_BatchInterval(t *testing.T) {
 // TestFlexDB_HLC_DedupByHLC verifies intervalCacheDedup keeps the highest-HLC entry.
 func TestFlexDB_HLC_DedupByHLC(t *testing.T) {
 	// Construct a sorted slice with duplicate keys and varying HLCs.
-	kvs := []KV{
+	kvs := []*KV{
 		{Key: []byte("aaa"), Value: []byte("old"), Hlc: 100},
 		{Key: []byte("aaa"), Value: []byte("new"), Hlc: 200},
 		{Key: []byte("bbb"), Value: []byte("only"), Hlc: 150},
