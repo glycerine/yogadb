@@ -343,7 +343,6 @@ type FlexSpace struct {
 	seqioEpoch  uint64
 	globalEpoch uint64
 
-	useCoW      bool // when true, use CoW persistence instead of greenpack
 	omitRedoLog bool // when true, skip redo log writes and SyncCoW on every Sync
 
 	// Write-byte counters (accessed atomically)
@@ -461,12 +460,7 @@ func (ff *FlexSpace) logRedo() {
 		i++
 	}
 	// Save the replayed state as a new checkpoint
-	if ff.useCoW {
-		panicOn(ff.tree.SyncCoW())
-	} else {
-		treePath := filepath.Join(ff.Path, "FLEXTREE")
-		panicOn(saveFlexTree(ff.tree, treePath))
-	}
+	panicOn(ff.tree.SyncCoW())
 }
 
 // OpenFlexSpaceCoW opens or creates a FlexSpace using CoW page-based persistence
@@ -487,7 +481,6 @@ func OpenFlexSpaceCoW(path string, omitRedoLog bool, fs vfs.FS) (*FlexSpace, err
 	ff := &FlexSpace{
 		Path:        path,
 		vfs:         fs,
-		useCoW:      true,
 		omitRedoLog: omitRedoLog,
 	}
 
@@ -579,12 +572,7 @@ func (ff *FlexSpace) Close() {
 	ff.Sync() // does syncR which does ff.bm.flush which does fsync on FLEXSPACE.KV128.BLOCKS
 
 	// Save the tree checkpoint
-	if ff.useCoW {
-		panicOn(ff.tree.SyncCoW())
-	} else {
-		treePath := filepath.Join(ff.Path, "FLEXTREE")
-		panicOn(saveFlexTree(ff.tree, treePath))
-	}
+	panicOn(ff.tree.SyncCoW())
 
 	// Truncate log (all changes now in checkpoint).
 	// When omitRedoLog=true, SyncCoW in Sync() already committed — skip truncate.
@@ -598,12 +586,10 @@ func (ff *FlexSpace) Close() {
 	panicOn(ff.fdKV128blocks.Close())
 	panicOn(ff.redoLogFD.Close())
 
-	if ff.useCoW {
-		// Close CoW file descriptors (SyncCoW already done above)
-		ff.tree.nodeFD.Close()
-		ff.tree.metaFD.Close()
-		ff.tree.cowEnabled = false
-	}
+	// Close CoW file descriptors (SyncCoW already done above)
+	ff.tree.nodeFD.Close()
+	ff.tree.metaFD.Close()
+	ff.tree.cowEnabled = false
 }
 
 // truncateTrailingBlocks shrinks FLEXSPACE.KV128_BLOCKS by removing empty blocks at the end.
@@ -649,19 +635,13 @@ func (ff *FlexSpace) syncR(isGC bool) {
 
 	if ff.omitRedoLog {
 		// No redo log — always commit tree via CoW
-		if ff.useCoW {
-			panicOn(ff.tree.SyncCoW())
-		}
+		panicOn(ff.tree.SyncCoW())
 	} else {
 		// Original path: sync redo log, checkpoint only when log is large
 		ff.redoLogFlushAndSync()
 		if uint64(ff.logTotalSize) >= FLEXSPACE_LOG_MAX_SIZE {
-			if ff.useCoW {
-				panicOn(ff.tree.SyncCoW())
-			} else {
-				treePath := filepath.Join(ff.Path, "FLEXTREE")
-				panicOn(saveFlexTree(ff.tree, treePath))
-			}
+			panicOn(ff.tree.SyncCoW())
+
 			ff.logTruncate()
 			ff.writeLogVersion()
 			ff.redoLogFlushAndSync()

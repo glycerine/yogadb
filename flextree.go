@@ -1215,14 +1215,6 @@ func (tree *FlexTree) rangeCount(loff, length uint64) uint64 {
 	return ret
 }
 
-func OpenFlexTree(fs vfs.FS, path string) *FlexTree {
-
-	// use the helper in saver.go now.
-	tree, err := openOrCreateFlexTree(fs, path)
-	panicOn(err)
-	return tree
-}
-
 func (tree *FlexTree) Close() {}
 
 func (tree *FlexTree) Sync() {}

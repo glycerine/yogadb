@@ -215,8 +215,9 @@ func TestFlextree_Test0(t *testing.T) {
 
 	vv("---test0 insertion and point lookup %v ---", count)
 
-	fs, _ := newTestFS(t)
-	ft := OpenFlexTree(fs, "")
+	fs, dir := newTestFS(t)
+	ft, err := OpenFlexTreeCoW(dir, fs)
+	panicOn(err)
 
 	randomInsert(t, ft, nil, count)
 	checkFlexTreeContiguity(t, ft, "Test0-afterInsert")
@@ -240,9 +241,11 @@ func TestFlextree_Test0(t *testing.T) {
 func TestFlextree_Test1(t *testing.T) {
 	count := uint64(500)
 
-	fs, _ := newTestFS(t)
+	fs, dir := newTestFS(t)
 
-	ft := OpenFlexTree(fs, "")
+	ft, err := OpenFlexTreeCoW(dir, fs)
+	panicOn(err)
+
 	bf := OpenBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
 
 	randomInsert(t, ft, bf, count)
@@ -281,7 +284,9 @@ func TestFlextree_Test2(t *testing.T) {
 	count := uint64(500)
 	fs, dir := newTestFS(t)
 	_ = dir
-	ft := OpenFlexTree(fs, "")
+	ft, err := OpenFlexTreeCoW(dir, fs)
+	panicOn(err)
+
 	bf := OpenBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
 
 	randomInsert(t, ft, bf, count)
@@ -301,7 +306,9 @@ func TestFlextree_Test3(t *testing.T) {
 	count := uint64(500)
 	fs, dir := newTestFS(t)
 	_ = dir
-	ft := OpenFlexTree(fs, "")
+	ft, err := OpenFlexTreeCoW(dir, fs)
+	panicOn(err)
+
 	bf := OpenBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
 
 	randomInsert(t, ft, bf, count)
@@ -346,9 +353,11 @@ func randomRangeQuery(t *testing.T, ft *FlexTree, bf *BruteForce, totalSize uint
 
 func TestFlextree_Test4(t *testing.T) {
 	count := uint64(500)
-	fs, _ := newTestFS(t)
+	fs, dir := newTestFS(t)
 
-	ft := OpenFlexTree(fs, "")
+	ft, err := OpenFlexTreeCoW(dir, fs)
+	panicOn(err)
+
 	bf := OpenBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
 
 	randomInsert(t, ft, bf, count)
@@ -364,9 +373,11 @@ func TestFlextree_Test4(t *testing.T) {
 
 func TestFlextree_Test6(t *testing.T) {
 	count := uint64(500)
-	fs, _ := newTestFS(t)
+	fs, dir := newTestFS(t)
 
-	ft := OpenFlexTree(fs, "")
+	ft, err := OpenFlexTreeCoW(dir, fs)
+	panicOn(err)
+
 	bf := OpenBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
 
 	randomInsert(t, ft, bf, count)
@@ -387,9 +398,11 @@ func TestFlextree_Test6(t *testing.T) {
 
 func TestFlextree_Test7(t *testing.T) {
 	count := uint64(500)
-	fs, _ := newTestFS(t)
+	fs, dir := newTestFS(t)
 
-	ft := OpenFlexTree(fs, "")
+	ft, err := OpenFlexTreeCoW(dir, fs)
+	panicOn(err)
+
 	bf := OpenBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
 
 	randomInsert(t, ft, bf, count)
@@ -423,9 +436,10 @@ func sequentialTagQuery(t *testing.T, ft *FlexTree, bf *BruteForce, totalSize ui
 
 func TestFlextree_Test8(t *testing.T) {
 	count := uint64(500)
-	fs, _ := newTestFS(t)
+	fs, dir := newTestFS(t)
 
-	ft := OpenFlexTree(fs, "")
+	ft, err := OpenFlexTreeCoW(dir, fs)
+	panicOn(err)
 	bf := OpenBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
 
 	randomInsert(t, ft, bf, count)
@@ -504,82 +518,6 @@ func flextreeCheck(t *testing.T, tree *FlexTree) {
 	if tree.GetMaxLoff() != totalLen {
 		t.Fatalf("flextreeCheck: max_loff=%d but total extent len=%d", tree.GetMaxLoff(), totalLen)
 	}
-}
-
-// TestFlextree_Test5 tests leaf linked list integrity across persistence cycles.
-// Mirrors C test5: insert, verify leaf counts via linked list vs tree walk,
-// close/reopen, delete range, verify, close/reopen, delete all, verify.
-func TestFlextree_Test5(t *testing.T) {
-	count := uint64(5000)
-	fs, dir := newTestFS(t)
-	fn := dir + sep + "test5_tree.dat"
-
-	ft := OpenFlexTree(fs, "")
-	bf := OpenBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
-
-	randomInsert(t, ft, bf, count)
-	checkFlexTreeContiguity(t, ft, "Test5-afterInsert")
-
-	// Count leaves via linked list and via tree recursion.
-	c1 := countLeafNodesLL(ft)
-	c2 := countLeafNodes(ft, ft.Root)
-	if c1 != c2 {
-		t.Fatalf("linked list count %d != tree walk count %d", c1, c2)
-	}
-
-	// Save and reload.
-	panicOn(saveFlexTree(ft, fn))
-	ft = OpenFlexTree(fs, fn)
-
-	// Verify linked list count survives persistence.
-	c1r := countLeafNodesLL(ft)
-	if c1r != c2 {
-		t.Fatalf("after reload: linked list count %d != original tree walk count %d", c1r, c2)
-	}
-
-	// Delete 3/4 of data.
-	ft.Delete(ft.GetMaxLoff()/4, ft.GetMaxLoff()/4*3)
-	bf.Delete(bf.GetMaxLoff()/4, bf.GetMaxLoff()/4*3)
-	checkFlexTreeContiguity(t, ft, "Test5-afterDelete3/4")
-	c2 = countLeafNodes(ft, ft.Root)
-
-	// Save and reload.
-	panicOn(saveFlexTree(ft, fn))
-	ft = OpenFlexTree(fs, fn)
-	checkFlexTreeContiguity(t, ft, "Test5-afterReload")
-
-	// Verify MaxLoff matches oracle.
-	if ft.GetMaxLoff() != bf.GetMaxLoff() {
-		t.Fatalf("MaxLoff mismatch: ft=%d bf=%d", ft.GetMaxLoff(), bf.GetMaxLoff())
-	}
-	sequentialQuery(t, ft, bf, ft.GetMaxLoff())
-
-	c1 = countLeafNodesLL(ft)
-	if c1 != c2 {
-		t.Fatalf("after delete+reload: linked list count %d != tree walk count %d", c1, c2)
-	}
-
-	// Delete everything.
-	ft.Delete(0, ft.GetMaxLoff())
-	bf.Delete(0, bf.GetMaxLoff())
-	c2 = countLeafNodes(ft, ft.Root)
-
-	// Save and reload.
-	panicOn(saveFlexTree(ft, fn))
-	ft = OpenFlexTree(fs, fn)
-
-	if ft.GetMaxLoff() != bf.GetMaxLoff() {
-		t.Fatalf("final MaxLoff mismatch: ft=%d bf=%d", ft.GetMaxLoff(), bf.GetMaxLoff())
-	}
-
-	c1 = countLeafNodesLL(ft)
-	if c1 != c2 {
-		t.Fatalf("final: linked list count %d != tree walk count %d", c1, c2)
-	}
-
-	sequentialQuery(t, ft, bf, ft.GetMaxLoff())
-	bf.Close()
-	ft.Close()
 }
 
 // TestFlextree_Test5_CoW is the same as Test5 but uses CoW page-based
@@ -668,10 +606,8 @@ func TestFlextree_Test9(t *testing.T) {
 	count := uint64(500)
 	fs, dir := newTestFS(t)
 
-	fn := dir + sep + "test9_tree.dat"
-
 	// Phase 1: sequential inserts with 128KB max extent size.
-	ft, err := openOrCreateFlexTree(fs, "")
+	ft, err := OpenFlexTreeCoW(dir, fs)
 	panicOn(err)
 	ft.MaxExtentSize = 128 << 10
 
@@ -679,19 +615,26 @@ func TestFlextree_Test9(t *testing.T) {
 	for i := uint64(0); i < fillCount; i++ {
 		ft.Insert(i*156, i*156, 156)
 	}
-	panicOn(saveFlexTree(ft, fn))
+	//panicOn(saveFlexTree(ft, fn))
+	ft.SyncCoW()
 
 	// Phase 2: repeated rounds of append, close/reopen, insert, close/reopen, check.
-	ft = OpenFlexTree(fs, fn)
+	ft, err = OpenFlexTreeCoW(dir, fs)
+	panicOn(err)
 	rounds := 10
 	for r := 0; r < rounds; r++ {
 		randomAppend(t, ft, nil, count)
-		panicOn(saveFlexTree(ft, fn))
-		ft = OpenFlexTree(fs, fn)
+		//panicOn(saveFlexTree(ft, fn))
+		ft.SyncCoW()
+		ft, err = OpenFlexTreeCoW(dir, fs)
+		panicOn(err)
 
 		randomInsert(t, ft, nil, count)
-		panicOn(saveFlexTree(ft, fn))
-		ft = OpenFlexTree(fs, fn)
+		ft.SyncCoW()
+		//panicOn(saveFlexTree(ft, fn))
+
+		ft, err = OpenFlexTreeCoW(dir, fs)
+		panicOn(err)
 
 		flextreeCheck(t, ft)
 		checkFlexTreeContiguity(t, ft, fmt.Sprintf("Test9-round%d", r))

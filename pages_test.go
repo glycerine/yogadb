@@ -2,7 +2,7 @@ package yogadb
 
 import (
 	"fmt"
-	"os"
+	//"os"
 	"path/filepath"
 	"testing"
 
@@ -913,6 +913,7 @@ func BenchmarkSyncCoW(b *testing.B) {
 	}
 }
 
+/*
 // BenchmarkSyncGreenpack measures the cost of greenpack (full-tree)
 // persistence after a single modification to a large tree. Greenpack
 // always serializes every node, so cost is O(N) regardless of how
@@ -966,3 +967,4 @@ func BenchmarkSyncGreenpack(b *testing.B) {
 		})
 	}
 }
+*/

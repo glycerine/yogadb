@@ -5,8 +5,7 @@ import (
 	"math"
 	"math/rand"
 	"testing"
-
-	"github.com/glycerine/vfs"
+	//"github.com/glycerine/vfs"
 )
 
 // ========================================================================
@@ -574,7 +573,17 @@ func FuzzFlexTree(f *testing.F) {
 	const fuzzMaxExtentSize = 256
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		ft := OpenFlexTree(vfs.Default, "")
+		// only real os based:
+		//dir := cryRand15B() + "_FuzzFlexTree.out"
+		//fs := vfs.Default
+		//panicOn(fs.MkdirAll(dir, 0777))
+		//defer fs.RemoveAll(dir)
+
+		// vs either -tags memfs or not:
+		fs, dir := newTestFS(t)
+
+		ft, err := OpenFlexTreeCoW(dir, fs)
+		panicOn(err)
 		bf := OpenBruteForce(fuzzMaxExtentSize)
 		ft.MaxExtentSize = fuzzMaxExtentSize
 		rng := rand.New(rand.NewSource(12345))
@@ -726,8 +735,9 @@ func TestFlexTree_RandomizedInvariants(t *testing.T) {
 		seed          = 98765
 	)
 
-	fs, _ := newTestFS(t)
-	ft := OpenFlexTree(fs, "")
+	fs, dir := newTestFS(t)
+	ft, err := OpenFlexTreeCoW(dir, fs)
+	panicOn(err)
 	ft.MaxExtentSize = maxExtentSize
 	bf := OpenBruteForce(maxExtentSize)
 	rng := rand.New(rand.NewSource(seed))
@@ -888,8 +898,10 @@ func TestFlexTree_RandomizedInvariants(t *testing.T) {
 // ========================================================================
 
 func TestFlexTree_LeafLinkedListBasic(t *testing.T) {
-	fs, _ := newTestFS(t)
-	ft := OpenFlexTree(fs, "")
+	fs, dir := newTestFS(t)
+	ft, err := OpenFlexTreeCoW(dir, fs)
+	panicOn(err)
+
 	ft.MaxExtentSize = 128
 
 	// Fill up enough extents to force several leaf splits
@@ -920,8 +932,9 @@ func TestFlexTree_OracleAgreementFocused(t *testing.T) {
 	const maxExtentSize = 256
 
 	fs, dir := newTestFS(t)
-	_ = dir
-	ft := OpenFlexTree(fs, "")
+	ft, err := OpenFlexTreeCoW(dir, fs)
+	panicOn(err)
+
 	ft.MaxExtentSize = maxExtentSize
 	bf := OpenBruteForce(maxExtentSize)
 	rng := rand.New(rand.NewSource(42))
@@ -968,9 +981,11 @@ func TestFlexTree_OracleAgreementFocused(t *testing.T) {
 // ========================================================================
 
 func TestFlexTree_TreeHeightBound(t *testing.T) {
-	fs, _ := newTestFS(t)
+	fs, dir := newTestFS(t)
 
-	ft := OpenFlexTree(fs, "")
+	ft, err := OpenFlexTreeCoW(dir, fs)
+	panicOn(err)
+
 	ft.MaxExtentSize = 128
 
 	// Insert enough extents to get several levels deep.

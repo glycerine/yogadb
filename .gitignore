@@ -1,0 +1,6 @@
+*~
+pebble_load/pebble_load
+load_yogadb/bench.db
+load_yogadb/load_yogadb
+*.db
+*.prof

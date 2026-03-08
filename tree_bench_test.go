@@ -5,8 +5,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"github.com/dgraph-io/badger/v3/skl"
-	"github.com/dgraph-io/badger/v3/y"
 	"os"
 	"time"
 
@@ -69,37 +67,6 @@ func randomKey2(rng *rand.Rand) []byte {
 	binary.LittleEndian.PutUint32(b, key)
 	binary.LittleEndian.PutUint32(b[4:], key2)
 	return b
-}
-
-// Standard test. Some fraction is read. Some fraction is write. Writes have
-// to go through mutex lock.
-func BenchmarkSklReadWrite(b *testing.B) {
-	value := newValue(123)
-	for i := 0; i <= 10; i++ {
-		readFrac := float32(i) / 10.0
-		b.Run(fmt.Sprintf("frac_%d", i), func(b *testing.B) {
-			l := skl.NewSkiplist(int64((b.N + 1) * skl.MaxNodeSize))
-			defer l.DecrRef()
-			b.ResetTimer()
-			var count int
-			b.RunParallel(func(pb *testing.PB) {
-				rng := rand.New(rand.NewSource(testBenchSeed))
-				var rkey [8]byte
-				for pb.Next() {
-					rk := randomKey(rng, rkey[:])
-
-					if rng.Float32() < readFrac {
-						v := l.Get(rk)
-						if v.Value != nil {
-							count++
-						}
-					} else {
-						l.Put(rk, y.ValueStruct{Value: value, Meta: 0, UserMeta: 0})
-					}
-				}
-			})
-		})
-	}
 }
 
 // Standard test. Some fraction is read. Some fraction is write. Writes have

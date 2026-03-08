@@ -466,6 +466,11 @@ func (t *FlexTree) syncCowRec(nodeID NodeID, freedSlots *[]int64) error {
 func OpenFlexTreeCoW(dirPath string, fs vfs.FS) (*FlexTree, error) {
 	//vv("OpenFlexTreeCoW has fs = '%#v'", fs)
 
+	// what OpenFlexTree/openOrCreateFlexTree does for empty dirPath
+	// strings (in many tests atm)
+
+	// back from OpenFlexTree/openOrCreateFlexTree
+
 	if dirPath == "" {
 		return nil, fmt.Errorf("cow: empty path")
 	}

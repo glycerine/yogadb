@@ -535,8 +535,9 @@ type Config struct {
 
 // ====================== FlexDB ======================
 
-// FlexDB is a persistent ordered key-value store backed by FlexSpace.
-// It is thread-safe.
+// FlexDB is a persistent ordered key-value store backed by FlexSpace. It is
+// thread-safe, except for iteration via Ascend/Descend--which allows deletions
+// and updates on the fly.
 type FlexDB struct {
 	// hlc must be first field for 64-bit alignment on 32-bit architectures.
 	hlc HLC // hybrid logical clock for timestamping every KV
@@ -1144,23 +1145,16 @@ func (db *FlexDB) CumulativeMetrics() *Metrics {
 	}
 
 	// Tree persistence files.
-	if db.ff.useCoW {
-		// CoW mode: FLEXTREE.PAGES + FLEXTREE.COMMIT files.
-		if db.ff.tree.nodeFD != nil {
-			if fi, err := db.ff.tree.nodeFD.Stat(); err == nil {
-				m.FlexTreePagesBytesWritten += fi.Size()
-			}
+
+	// CoW mode (always now): FLEXTREE.PAGES + FLEXTREE.COMMIT files.
+	if db.ff.tree.nodeFD != nil {
+		if fi, err := db.ff.tree.nodeFD.Stat(); err == nil {
+			m.FlexTreePagesBytesWritten += fi.Size()
 		}
-		if db.ff.tree.metaFD != nil {
-			if fi, err := db.ff.tree.metaFD.Stat(); err == nil {
-				m.FlexTreePagesBytesWritten += fi.Size()
-			}
-		}
-	} else {
-		// Greenpack mode: FLEXTREE file.
-		treePath := filepath.Join(db.ff.Path, "FLEXTREE")
-		if fi, err := db.vfs.Stat(treePath); err == nil {
-			m.FlexTreePagesBytesWritten = fi.Size()
+	}
+	if db.ff.tree.metaFD != nil {
+		if fi, err := db.ff.tree.metaFD.Stat(); err == nil {
+			m.FlexTreePagesBytesWritten += fi.Size()
 		}
 	}
 
@@ -1544,15 +1538,8 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 	ff.tree.MarkAllInternalsDirty()
 
 	// Checkpoint FlexTree (poffs changed, nodes are dirty).
-	if ff.useCoW {
-		if err := ff.tree.SyncCoW(); err != nil {
-			return stats, fmt.Errorf("vacuumkv: sync cow: %w", err)
-		}
-	} else {
-		treePath := filepath.Join(ff.Path, "FLEXTREE")
-		if err := saveFlexTree(ff.tree, treePath); err != nil {
-			return stats, fmt.Errorf("vacuumkv: save tree: %w", err)
-		}
+	if err := ff.tree.SyncCoW(); err != nil {
+		return stats, fmt.Errorf("vacuumkv: sync cow: %w", err)
 	}
 
 	// Truncate and rewrite redo log header.

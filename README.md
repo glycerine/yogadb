@@ -228,13 +228,121 @@ The Logical Illusion (FlexDB): FlexDB uses the insert-range API to shift logical
 
 The Extent Map (FlexSpace/FlexTree): The FlexTree maps those logical blocks to physical SSD blocks. Because it tracks large extents (megabytes of data at a time) rather than individual keys, it is also highly compressed and also fits entirely in RAM.
 
-# details
+# comment on the API / goroutine safety
 
-* API notes: all Go API calls are goroutine safe, except for iterator use (deliberately).
-Iterators are designed to allow concurrent mutation while scanning through
+* API notes: all Go API calls are goroutine safe, except 
+for iterator use (deliberately). Ascend and Descend iterators 
+are designed to allow concurrent mutation while scanning through
 the database, and hence by design they hold no locks. This allows the user
-to delete on the fly, rather than collect a separate long list of things
-to delete (which may overflow available memory).
+to delete keys on the fly, rather than collect a separate long list of things
+to delete (a hazardous approach since that list could overflow available memory).
+
+In short: users must bring their own synchronization during iteration. 
+In other words, do not allow other goroutines to operate on the database
+while you are iterating it.
+
+# getting started
+
+go get github.com/glycerine/yogadb
+
+import "github.com/glycerine/yogadb"
+
+The small example programs that have a single aim are probably the easiest way
+to understand how to embed yogadb. See cmd/yload to load a bunch of key/value
+pairs. See cmd/yview to dump them back out. See cmd/yvac to vacuum your
+database. load_yogadb does all of the above and was used for running
+some benchmarks; it is another example.
+
+# api summary
+
+the go doc:
+
+~~~
+package yogadb // import "."
+
+type Config struct {
+	CacheMB uint64 // default 32 (for 32 MB)
+
+	// NoDisk runs the entire database in-memory using MemVFS.
+	// No files are created on disk. Useful for testing.
+	NoDisk bool
+
+	// FS overrides the filesystem implementation. When nil, RealVFS{}
+	// is used (or MemVFS if NoDisk is true). Allows injecting a
+	// custom VFS for testing (e.g. fault injection).
+	FS vfs.FS
+
+	// DisableVLOG disables the value log. When true, all values are stored
+	// inline in FlexSpace regardless of size (original behavior).
+	DisableVLOG bool
+
+	// OmitFlexSpaceOpsRedoLog skips FlexSpace redo-log writes and instead
+	// calls SyncCoW() on every Sync(). This eliminates ~0.86x write
+	// amplification from the redo log at the cost of slightly more CoW
+	// tree page writes. The net effect is lower total write amp (~3.2x
+	// vs ~4.1x). 
+	// Safe either way.
+	OmitFlexSpaceOpsRedoLog bool
+
+	// LowBlockUtilizationPct sets the threshold (0.0–1.0) for counting
+	// blocks as "low utilization" in Metrics.BlocksWithLowUtilization.
+	// A block whose live bytes / FLEXSPACE_BLOCK_SIZE is below this
+	// fraction is counted. Default 0.25 (25%) when zero.
+	LowBlockUtilizationPct float64
+
+	// OmitMemWalFsync true means we do not durably fdatasync the MEMWAL1/2 files.
+	// This is useful for batch loading alot of data quickly, and then doing
+	// one fsync at the end for durability. The proviso of course is that
+	// if your process crashes you have no intermediate state and have to
+	// start again at the beginning; which may be fine.
+	OmitMemWalFsync bool
+}
+    Config allow configuration of a FlexDB.
+
+type FlexDB struct {
+	Path string
+
+	// Write-byte counters (accessed atomically)
+	MemWALBytesWritten  int64 // WAL (FLEXDB.MEMWAL1 + FLEXDB.MEMWAL2) bytes written
+	LogicalBytesWritten int64 // user payload bytes (key+value)
+
+	// Has unexported fields.
+}
+    FlexDB is a persistent ordered key-value store backed by FlexSpace. It is
+    thread-safe, except for iteration via Ascend/Descend--which allows deletions
+    and updates on the fly.
+
+func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error)
+func (db *FlexDB) Ascend(pivot []byte, iter func(key, value []byte) bool)
+func (db *FlexDB) AscendRange(greaterOrEqual, lessThan []byte, iter func(key, value []byte) bool)
+func (db *FlexDB) CheckIntegrity() []IntegrityError
+func (db *FlexDB) Clear(includeLarge bool) (allGone bool, err error)
+func (db *FlexDB) Close() *Metrics
+func (db *FlexDB) CumulativeMetrics() *Metrics
+func (db *FlexDB) Delete(key []byte) error
+func (db *FlexDB) DeleteRange(includeLarge bool, begKey, endKey []byte, begInclusive, endInclusive bool) (n int64, allGone bool, err error)
+func (db *FlexDB) Descend(pivot []byte, iter func(key, value []byte) bool)
+func (db *FlexDB) DescendRange(lessOrEqual, greaterThan []byte, iter func(key, value []byte) bool)
+func (db *FlexDB) Get(key []byte) ([]byte, bool)
+func (db *FlexDB) Len() int64
+func (db *FlexDB) LenBigSmall() (big int64, small int64)
+func (db *FlexDB) Merge(key []byte, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error
+func (db *FlexDB) NewBatch() (b *Batch)
+func (db *FlexDB) NewIter() *Iter
+func (db *FlexDB) Put(key, value []byte) error
+func (db *FlexDB) SessionMetrics() *Metrics
+func (db *FlexDB) Sync() error
+func (db *FlexDB) Update(fn func(tx *Tx) error) error
+func (db *FlexDB) VacuumKV() (*VacuumKVStats, error)
+func (db *FlexDB) VacuumVLOG() (*VacuumStats, error)
+func (db *FlexDB) View(fn func(tx *Tx) error) error
+~~~
+
+# grab bag of implementation notes 
+
+in no particular order -- and mostly for my reference. Users/casual readers can
+ignore the rest of this file(!)
+
 
 ~~~
 Current Architecture
@@ -280,12 +388,6 @@ notes:
 - The block manager buffer handles recent writes; pread handles committed data
 ~~~
 
-
-# grab bag of implementation notes
-
-in no particular order
-
-
 # VLOG: the Value Log (big values (those > 64 bytes) are kept here).
 
 ~~~
@@ -314,9 +416,9 @@ field 1: [header CRC: 4-byte CRC32C]  bytes [0:4)
 field 2: [8-byte HLC BE]              bytes [4:12)
 field 3: [8-byte length: N]           bytes [12:20)
 field 4: [value CRC: 4-byte CRC32C]   bytes [20:24)
-field 5: [N-byte value]
+field 5: [N-byte value]               bytes [24:Z) where Z=24+N
 
-where
+legend:
 [header CRC: 4-byte CRC32C] = covering bytes [4:24) also known as fields 2, 3, and 4: 
 from the HLC through the value CRC inclusive.
 
@@ -355,202 +457,6 @@ VacuumVLOG() is called explicitly.
 VacuumVLOG() walks all live intervals, copies live VPtr values
 to a new VLOG file (preserving HLCs), rewrites VPtrs
 in FlexSpace, then atomically renames new -> old.
-
-~~~
-
-# why we implemented COW page based rather than one-shot repeated serialization (for the FlexTree serialization part)
-~~~
-  Summary of BenchmarkSyncCoW versus BenchmarkSyncGreenpack
-
-  Both benchmarks follow the same pattern: build a tree 
-  with N random inserts (1K, 10K, 100K), then on each 
-  iteration perform a single-point insert and sync to disk. 
-  
-  This measures the incremental persistence cost - the dominant 
-  real-world workload.
-
-  Key results (100K-insert tree, 5,475 nodes):
-
-  ┌───────────────┬────────────┬─────────────────┬──────────────────┐
-  │               │    CoW     │    Greenpack    │  CoW advantage   │
-  ├───────────────┼────────────┼─────────────────┼──────────────────┤
-  │ Time          │ 42.6 ms/op │ 114.8 ms/op     │ 2.7× faster      │
-  ├───────────────┼────────────┼─────────────────┼──────────────────┤
-  │ Bytes written │ 4,236 B/op │ 16,149,047 B/op │ 3,812× less I/O  │
-  ├───────────────┼────────────┼─────────────────┼──────────────────┤
-  │ Dirty nodes   │ 4.1/op     │ 5,475 (all)     │ O(log N) vs O(N) │
-  ├───────────────┼────────────┼─────────────────┼──────────────────┤
-  │ Heap allocs   │ 78/op      │ 328,269/op      │ 4,208× fewer     │
-  └───────────────┴────────────┴─────────────────┴──────────────────┘
-
-  The CoW bytes_written/op stays nearly constant (~4 KB) across all 
-  tree sizes because only the root-to-leaf dirty path (3–5 nodes × 
-  1024 bytes + 64 byte FLEXTREE.COMMIT record) is written. Greenpack writes 
-  scale linearly with tree size: 180 KB -> 1.6 MB -> 16 MB.
-~~~
-
-raw output of another run:
-~~~
-
-BenchmarkSyncCoW
-BenchmarkSyncCoW/inserts_1000
-BenchmarkSyncCoW/inserts_1000-8            	      26	  44_670_466 ns/op	      3215 bytes_written/op	         3.077 dirty_nodes/op	        54.00 total_nodes/op	   27462 B/op	      31 allocs/op
-
-BenchmarkSyncCoW/inserts_10000
-BenchmarkSyncCoW/inserts_10000-8           	      25	  44_430_850 ns/op	      4242 bytes_written/op	         4.080 dirty_nodes/op	       548.0 total_nodes/op	   45921 B/op	      49 allocs/op
-
-BenchmarkSyncCoW/inserts_100000
-BenchmarkSyncCoW/inserts_100000-8          	      27	  44_110_721 ns/op	      4236 bytes_written/op	         4.074 dirty_nodes/op	      5475 total_nodes/op	   74049 B/op	      77 allocs/op
-
-BenchmarkSyncGreenpack
-BenchmarkSyncGreenpack/inserts_1000
-BenchmarkSyncGreenpack/inserts_1000-8      	      48	  26_240_206 ns/op	    164_549 bytes_written/op	        54.00 total_nodes/op	   56246 B/op	    3339 allocs/op
-
-BenchmarkSyncGreenpack/inserts_10000
-BenchmarkSyncGreenpack/inserts_10000-8     	      27	  45_412_641 ns/op	   1_619_307 bytes_written/op	       548.0 total_nodes/op	  525733 B/op	   32911 allocs/op
-
-BenchmarkSyncGreenpack/inserts_100000
-BenchmarkSyncGreenpack/inserts_100000-8    	       9	 118_718_165 ns/op	  16_146_466 bytes_written/op	      5475 total_nodes/op	 5214116 B/op	  328221 allocs/op
-
-
-transcript with the other benchmarks
-
-started at Sun Mar  1 10:03:22
-
-go test -v -run=xxx -bench=. -benchmem
-goos: darwin
-goarch: amd64
-pkg: github.com/glycerine/goflexspace
-cpu: Intel(R) Core(TM) i7-1068NG7 CPU @ 2.30GHz
-BenchmarkFlexspace_Insert
-BenchmarkFlexspace_Insert-8                	  428605	      2408 ns/op	1701.22 MB/s	      48 B/op	       1 allocs/op
-BenchmarkFlexspace_SequentialRead
-BenchmarkFlexspace_SequentialRead-8        	  812606	      1402 ns/op	2921.21 MB/s	       0 B/op	       0 allocs/op
-BenchmarkMarshalMsgBruteForce
-BenchmarkMarshalMsgBruteForce-8            	37094476	        32.01 ns/op	      80 B/op	       1 allocs/op
-BenchmarkAppendMsgBruteForce
-BenchmarkAppendMsgBruteForce-8             	209661574	         5.494 ns/op	 182.03 MB/s	       0 B/op	       0 allocs/op
-BenchmarkUnmarshalBruteForce
-BenchmarkUnmarshalBruteForce-8             	38643217	        29.39 ns/op	  34.03 MB/s	       0 B/op	       0 allocs/op
-BenchmarkEncodeBruteForce
-BenchmarkEncodeBruteForce-8                	35948038	        33.26 ns/op	 420.98 MB/s	      16 B/op	       1 allocs/op
-BenchmarkDecodeBruteForce
-BenchmarkDecodeBruteForce-8                	18890314	        62.59 ns/op	 223.66 MB/s	       0 B/op	       0 allocs/op
-BenchmarkMarshalMsgBruteForceExtent
-BenchmarkMarshalMsgBruteForceExtent-8      	36012325	        34.56 ns/op	      96 B/op	       1 allocs/op
-BenchmarkAppendMsgBruteForceExtent
-BenchmarkAppendMsgBruteForceExtent-8       	204466639	         5.938 ns/op	 168.41 MB/s	       0 B/op	       0 allocs/op
-BenchmarkUnmarshalBruteForceExtent
-BenchmarkUnmarshalBruteForceExtent-8       	37906490	        31.82 ns/op	  31.43 MB/s	       0 B/op	       0 allocs/op
-BenchmarkEncodeBruteForceExtent
-BenchmarkEncodeBruteForceExtent-8          	33239271	        36.90 ns/op	 542.07 MB/s	      16 B/op	       1 allocs/op
-BenchmarkDecodeBruteForceExtent
-BenchmarkDecodeBruteForceExtent-8          	17372379	        69.15 ns/op	 289.21 MB/s	       0 B/op	       0 allocs/op
-BenchmarkMarshalMsgCommonNode
-BenchmarkMarshalMsgCommonNode-8            	26384380	        41.63 ns/op	     128 B/op	       1 allocs/op
-BenchmarkAppendMsgCommonNode
-BenchmarkAppendMsgCommonNode-8             	147017896	         8.041 ns/op	 124.36 MB/s	       0 B/op	       0 allocs/op
-BenchmarkUnmarshalCommonNode
-BenchmarkUnmarshalCommonNode-8             	25666387	        45.99 ns/op	  21.74 MB/s	       0 B/op	       0 allocs/op
-BenchmarkEncodeCommonNode
-BenchmarkEncodeCommonNode-8                	32362620	        36.23 ns/op	 386.38 MB/s	      16 B/op	       1 allocs/op
-BenchmarkDecodeCommonNode
-BenchmarkDecodeCommonNode-8                	15251576	        78.50 ns/op	 178.35 MB/s	       0 B/op	       0 allocs/op
-BenchmarkMarshalMsgFlexTree
-BenchmarkMarshalMsgFlexTree-8              	16231210	        77.51 ns/op	     320 B/op	       1 allocs/op
-BenchmarkAppendMsgFlexTree
-BenchmarkAppendMsgFlexTree-8               	93178617	        11.82 ns/op	  84.62 MB/s	       0 B/op	       0 allocs/op
-BenchmarkUnmarshalFlexTree
-BenchmarkUnmarshalFlexTree-8               	14383398	        86.60 ns/op	  11.55 MB/s	       0 B/op	       0 allocs/op
-BenchmarkEncodeFlexTree
-BenchmarkEncodeFlexTree-8                  	32788125	        36.78 ns/op	 326.26 MB/s	       8 B/op	       1 allocs/op
-BenchmarkDecodeFlexTree
-BenchmarkDecodeFlexTree-8                  	 8346694	       145.4 ns/op	  82.52 MB/s	       0 B/op	       0 allocs/op
-BenchmarkMarshalMsgFlexTreeExtent
-BenchmarkMarshalMsgFlexTreeExtent-8        	38440520	        31.83 ns/op	      80 B/op	       1 allocs/op
-BenchmarkAppendMsgFlexTreeExtent
-BenchmarkAppendMsgFlexTreeExtent-8         	225433383	         5.415 ns/op	 184.66 MB/s	       0 B/op	       0 allocs/op
-BenchmarkUnmarshalFlexTreeExtent
-BenchmarkUnmarshalFlexTreeExtent-8         	40938327	        27.24 ns/op	  36.71 MB/s	       0 B/op	       0 allocs/op
-BenchmarkEncodeFlexTreeExtent
-BenchmarkEncodeFlexTreeExtent-8            	35557196	        33.38 ns/op	 539.18 MB/s	      16 B/op	       1 allocs/op
-BenchmarkDecodeFlexTreeExtent
-BenchmarkDecodeFlexTreeExtent-8            	19737956	        60.68 ns/op	 296.65 MB/s	       0 B/op	       0 allocs/op
-BenchmarkMarshalMsgFlexTreePath
-BenchmarkMarshalMsgFlexTreePath-8          	17741598	        67.49 ns/op	     112 B/op	       1 allocs/op
-BenchmarkAppendMsgFlexTreePath
-BenchmarkAppendMsgFlexTreePath-8           	36284377	        32.73 ns/op	1466.50 MB/s	       0 B/op	       0 allocs/op
-BenchmarkUnmarshalFlexTreePath
-BenchmarkUnmarshalFlexTreePath-8           	12120326	        91.93 ns/op	 522.16 MB/s	       0 B/op	       0 allocs/op
-BenchmarkEncodeFlexTreePath
-BenchmarkEncodeFlexTreePath-8              	14387042	        84.34 ns/op	 758.86 MB/s	      16 B/op	       1 allocs/op
-BenchmarkDecodeFlexTreePath
-BenchmarkDecodeFlexTreePath-8              	 4826005	       248.0 ns/op	 258.09 MB/s	       0 B/op	       0 allocs/op
-BenchmarkMarshalMsgFlextreeQueryResult
-BenchmarkMarshalMsgFlextreeQueryResult-8   	36304290	        34.84 ns/op	      96 B/op	       1 allocs/op
-BenchmarkAppendMsgFlextreeQueryResult
-BenchmarkAppendMsgFlextreeQueryResult-8    	204586672	         5.900 ns/op	 169.50 MB/s	       0 B/op	       0 allocs/op
-BenchmarkUnmarshalFlextreeQueryResult
-BenchmarkUnmarshalFlextreeQueryResult-8    	38515906	        33.14 ns/op	  30.17 MB/s	       0 B/op	       0 allocs/op
-BenchmarkEncodeFlextreeQueryResult
-BenchmarkEncodeFlextreeQueryResult-8       	31000598	        40.07 ns/op	 574.03 MB/s	      24 B/op	       1 allocs/op
-BenchmarkDecodeFlextreeQueryResult
-BenchmarkDecodeFlextreeQueryResult-8       	16894274	        71.90 ns/op	 319.90 MB/s	       0 B/op	       0 allocs/op
-BenchmarkMarshalMsgInternalChild
-BenchmarkMarshalMsgInternalChild-8         	44264338	        26.83 ns/op	      48 B/op	       1 allocs/op
-BenchmarkAppendMsgInternalChild
-BenchmarkAppendMsgInternalChild-8          	242837253	         4.961 ns/op	 201.57 MB/s	       0 B/op	       0 allocs/op
-BenchmarkUnmarshalInternalChild
-BenchmarkUnmarshalInternalChild-8          	52324213	        23.01 ns/op	  43.47 MB/s	       0 B/op	       0 allocs/op
-BenchmarkEncodeInternalChild
-BenchmarkEncodeInternalChild-8             	36125029	        33.20 ns/op	 511.98 MB/s	      16 B/op	       1 allocs/op
-BenchmarkDecodeInternalChild
-BenchmarkDecodeInternalChild-8             	22389864	        53.27 ns/op	 319.14 MB/s	       0 B/op	       0 allocs/op
-BenchmarkMarshalMsgInternalNode
-BenchmarkMarshalMsgInternalNode-8          	 2136025	       559.4 ns/op	    2304 B/op	       1 allocs/op
-BenchmarkAppendMsgInternalNode
-BenchmarkAppendMsgInternalNode-8           	 5315955	       220.3 ns/op	 830.56 MB/s	       0 B/op	       0 allocs/op
-BenchmarkUnmarshalInternalNode
-BenchmarkUnmarshalInternalNode-8           	 1470295	       821.7 ns/op	 222.72 MB/s	       0 B/op	       0 allocs/op
-BenchmarkEncodeInternalNode
-BenchmarkEncodeInternalNode-8              	  883243	      1374 ns/op	 514.55 MB/s	     528 B/op	      33 allocs/op
-BenchmarkDecodeInternalNode
-BenchmarkDecodeInternalNode-8              	  471559	      2580 ns/op	 274.06 MB/s	       0 B/op	       0 allocs/op
-BenchmarkMarshalMsgLeafNode
-BenchmarkMarshalMsgLeafNode-8              	 1445840	       816.3 ns/op	    4864 B/op	       1 allocs/op
-BenchmarkAppendMsgLeafNode
-BenchmarkAppendMsgLeafNode-8               	 5237744	       229.1 ns/op	 454.01 MB/s	       0 B/op	       0 allocs/op
-BenchmarkUnmarshalLeafNode
-BenchmarkUnmarshalLeafNode-8               	  764460	      1545 ns/op	  67.30 MB/s	       0 B/op	       0 allocs/op
-BenchmarkEncodeLeafNode
-BenchmarkEncodeLeafNode-8                  	  555592	      2098 ns/op	 547.28 MB/s	     984 B/op	      62 allocs/op
-BenchmarkDecodeLeafNode
-BenchmarkDecodeLeafNode-8                  	  312878	      3628 ns/op	 316.42 MB/s	       0 B/op	       0 allocs/op
-BenchmarkMarshalMsgOfflen
-BenchmarkMarshalMsgOfflen-8                	43877218	        27.35 ns/op	      48 B/op	       1 allocs/op
-BenchmarkAppendMsgOfflen
-BenchmarkAppendMsgOfflen-8                 	243821780	         4.893 ns/op	 204.37 MB/s	       0 B/op	       0 allocs/op
-BenchmarkUnmarshalOfflen
-BenchmarkUnmarshalOfflen-8                 	51542290	        22.55 ns/op	  44.35 MB/s	       0 B/op	       0 allocs/op
-BenchmarkEncodeOfflen
-BenchmarkEncodeOfflen-8                    	38312234	        29.53 ns/op	 338.62 MB/s	       8 B/op	       1 allocs/op
-BenchmarkDecodeOfflen
-BenchmarkDecodeOfflen-8                    	22825026	        52.94 ns/op	 188.88 MB/s	       0 B/op	       0 allocs/op
-BenchmarkMarshalMsgPos
-BenchmarkMarshalMsgPos-8                   	40332393	        29.57 ns/op	      64 B/op	       1 allocs/op
-BenchmarkAppendMsgPos
-BenchmarkAppendMsgPos-8                    	223899483	         5.135 ns/op	 194.75 MB/s	       0 B/op	       0 allocs/op
-BenchmarkUnmarshalPos
-BenchmarkUnmarshalPos-8                    	44891947	        28.20 ns/op	  35.47 MB/s	       0 B/op	       0 allocs/op
-BenchmarkEncodePos
-BenchmarkEncodePos-8                       	42495799	        30.64 ns/op	 228.48 MB/s	       3 B/op	       1 allocs/op
-BenchmarkDecodePos
-BenchmarkDecodePos-8                       	20502928	        58.09 ns/op	 120.50 MB/s	       0 B/op	       0 allocs/op
-
-PASS
-ok  	github.com/glycerine/goflexspace	184.844s
-
-finished at Sun Mar  1 10:06:27
 ~~~
 
 # Transactions (Tx)
@@ -562,6 +468,7 @@ simultaneously (when there is no writer).
 Read-only (View) and read-write (Update) transactions are available.
 
 ~~~
+
   In db.go:
    - topMutRW sync.RWMutex in FlexDB for serializing write transactions
    - Tx struct with atomic state, COW btree snapshots, write buffer
@@ -578,6 +485,7 @@ Read-only (View) and read-write (Update) transactions are available.
    - Cancel discards writes, Auto-cancel on return without Commit/Cancel
    - View rejects Put/Delete with ErrTxNotWritable
    - Serialized concurrent Updates (10 goroutines increment a counter to exactly 10)
+
 ~~~
 
 # Q & A
@@ -594,12 +502,14 @@ and the C version. The C/paper calls the top layer FlexDB.
 For the Go version, we call the top layer YogaDB (the 
 main/top-level file is db.go).
 
-```
+~~~
+
 FlexDB (kv store)               <- db.go
     └── FlexSpace (file layer)  <- flexspace.go
             └── FlexTree (B-tree extent index)  <- flextree.go
                     └── CoW persistence         <- pages.go
-```
+
+~~~
 
 ### (bottom) Layer 1: FlexTree (`flextree.h/.c` -> `flextree.go`)
 
@@ -636,7 +546,7 @@ top level memtable for the top YogaDB layer. This is nice since it has Copy-on-W
 
 A2: The dual-memtable design enables non-blocking writes during flush.
 
-With a single memtable, when it's time to flush to FlexSpace, you have two bad options:
+With a single memtable, when it's time to flush to FlexSpace, there are two (bad options:
 
 a) Block all writes while the flush completes (the memtable is being 
 read by the flush worker and can't accept new writes simultaneously)
@@ -659,6 +569,7 @@ We note when bytes are written to disk along the write path, to
 accurately measure write amplification.
 
 A. planning:
+
 ~~~
 File: flexspace.go
   --------------------------------------------------------
@@ -847,11 +758,8 @@ File: flexspace.go
   WA = (CoW_pages + REDO.LOG_buffer + KV128_BLOCKS + WAL_buffer) / original_kv_size
 
   ================================================================
-  EOF
-  cat /tmp/detailed_write_ops.txt
-  )
-  ⎿  Response:
-Perfect! Now let me create one final summary document with the complete mapping:
+
+summary document with the complete mapping:
 
 Summary
 
@@ -863,23 +771,23 @@ Total Unique Write Sites: 20 operations across 6 files
 
 Layer 1: FlexTree CoW Persistence (pages.go)
 
-┌──────┬───────────┬────────────────┬─────────────┬───────────┬─────────────────────┐
-│ Line │ Operation │       FD       │    Size     │   Type    │       Context       │
-├──────┼───────────┼────────────────┼─────────────┼───────────┼─────────────────────┤
-│ 373  │ WriteAt   │ nodeFD (FLEXTREE.PAGES) │ 1024B       │ Data      │ Leaf page write     │
-├──────┼───────────┼────────────────┼─────────────┼───────────┼─────────────────────┤
-│ 411  │ WriteAt   │ nodeFD (FLEXTREE.PAGES) │ 1024B       │ Data      │ Internal page write │
-├──────┼───────────┼────────────────┼─────────────┼───────────┼─────────────────────┤
-│ 332  │ WriteAt   │ metaFD (FLEXTREE.COMMIT)  │ 64B         │ Meta      │ Commit record       │
-├──────┼───────────┼────────────────┼─────────────┼───────────┼─────────────────────┤
-│ 306  │ fdatasync │ nodeFD (FLEXTREE.PAGES) │ -           │ Sync      │ Data flush          │
-├──────┼───────────┼────────────────┼─────────────┼───────────┼─────────────────────┤
-│ 335  │ fdatasync │ metaFD (FLEXTREE.COMMIT)  │ -           │ Sync      │ Data flush          │
-├──────┼───────────┼────────────────┼─────────────┼───────────┼─────────────────────┤
-│ 274  │ fallocate │ nodeFD (FLEXTREE.PAGES) │ 2x previous │ Pre-alloc │ Doubling growth     │
-├──────┼───────────┼────────────────┼─────────────┼───────────┼─────────────────────┤
-│ 278  │ Sync      │ nodeFD (FLEXTREE.PAGES) │ -           │ Sync      │ Growth fsync        │
-└──────┴───────────┴────────────────┴─────────────┴───────────┴─────────────────────┘
+┌──────┬───────────┬───────────────┬─────────────┬───────────┬─────────────────────┐
+│ Line │ Operation │       FD      │    Size     │   Type    │       Context       │
+├──────┼───────────┼───────────────┼─────────────┼───────────┼─────────────────────┤
+│ 373  │ WriteAt   │FLEXTREE.PAGES │ 1024B       │ Data      │ Leaf page write     │
+├──────┼───────────┼───────────────┼─────────────┼───────────┼─────────────────────┤
+│ 411  │ WriteAt   │FLEXTREE.PAGES │ 1024B       │ Data      │ Internal page write │
+├──────┼───────────┼───────────────┼─────────────┼───────────┼─────────────────────┤
+│ 332  │ WriteAt   │FLEXTREE.COMMIT│ 64B         │ Meta      │ Commit record       │
+├──────┼───────────┼───────────────┼─────────────┼───────────┼─────────────────────┤
+│ 306  │ fdatasync │FLEXTREE.PAGES │ -           │ Sync      │ Data flush          │
+├──────┼───────────┼───────────────┼─────────────┼───────────┼─────────────────────┤
+│ 335  │ fdatasync │FLEXTREE.COMMIT│ -           │ Sync      │ Data flush          │
+├──────┼───────────┼───────────────┼─────────────┼───────────┼─────────────────────┤
+│ 274  │ fallocate │FLEXTREE.PAGES │ 2x previous │ Pre-alloc │ Doubling growth     │
+├──────┼───────────┼───────────────┼─────────────┼───────────┼─────────────────────┤
+│ 278  │ Sync      │FLEXTREE.PAGES │ -           │ Sync      │ Growth fsync        │
+└──────┴───────────┴───────────────┴─────────────┴───────────┴─────────────────────┘
 
 Layer 2: FlexSpace Log-Structured (flexspace.go)
 
@@ -911,24 +819,11 @@ Layer 3: FlexDB Memtable (db.go)
 │ 1108 │ Truncate  │ logFD (MEMWAL1/2) │ 0        │ Reset │ WAL reset        │
 └──────┴───────────┴────────────────┴──────────┴───────┴──────────────────┘
 
-Layer 4: Checkpoint Persistence (saver.go)
-
-┌──────┬───────────┬──────────────┬──────┬──────┬─────────────────┐
-│ Line │ Operation │      FD      │ Size │ Type │     Context     │
-├──────┼───────────┼──────────────┼──────┼──────┼─────────────────┤
-│ 95   │ Sync      │ f (FLEXTREE) │ -    │ Sync │ Greenpack fsync │
-└──────┴───────────┴──────────────┴──────┴──────┴─────────────────┘
-
 Files Created on Disk
 
 CoW Mode:
 - FLEXTREE.PAGES - 1024-byte pages (one per tree node)
 - FLEXTREE.COMMIT - 64-byte commit records (append-only)
-- REDO.LOG - 8-byte header + 16-byte redo entries
-- KV128_BLOCKS - 4 MB blocks
-
-Greenpack Mode:
-- FLEXTREE.greenpack - msgpack serialized tree
 - REDO.LOG - 8-byte header + 16-byte redo entries
 - KV128_BLOCKS - 4 MB blocks
 
