@@ -1,7 +1,7 @@
 package yogadb
 
 import (
-	"fmt"
+	//"fmt"
 	"sort"
 	"sync/atomic"
 
@@ -124,14 +124,14 @@ type Iter struct {
 
 	// Diagnostic counters for profiling Next() path distribution.
 	// Check with it.PathCounts() after iteration.
-	cntInlineFast    int64 // served from inline fast path (common case)
-	cntServePrefetch int64 // served from servePrefetch (tombstone/span boundary)
-	cntInlineRefill1 int64 // inline refill within fast path (same interval)
-	cntInlineRefill2 int64 // inline refill at refill entry (same interval)
-	cntFullRefill    int64 // called prefetchFillFlexSpaceOnly
-	cntSlowPath      int64 // hit releaseIterState slow path
-	cntHLCStale      int64 // HLC mismatch invalidated prefetch
-	cntSnapshotZero  int64 // snapshotHLC was 0 at refill check
+	// cntInlineFast    int64 // served from inline fast path (common case)
+	// cntServePrefetch int64 // served from servePrefetch (tombstone/span boundary)
+	// cntInlineRefill1 int64 // inline refill within fast path (same interval)
+	// cntInlineRefill2 int64 // inline refill at refill entry (same interval)
+	// cntFullRefill    int64 // called prefetchFillFlexSpaceOnly
+	// cntSlowPath      int64 // hit releaseIterState slow path
+	// cntHLCStale      int64 // HLC mismatch invalidated prefetch
+	// cntSnapshotZero  int64 // snapshotHLC was 0 at refill check
 
 	// Prefetch spans: recorded during fill (under lock), served lazily.
 	// Each span references a contiguous range within a cache interval's kvs[].
@@ -143,12 +143,12 @@ type Iter struct {
 }
 
 // PathCounts returns diagnostic counters showing which Next() code paths were taken.
-func (it *Iter) PathCounts() string {
-	return fmt.Sprintf(
-		"InlineFast=%d ServePrefetch=%d InlineRefill1=%d InlineRefill2=%d FullRefill=%d SlowPath=%d HLCStale=%d SnapshotZero=%d",
-		it.cntInlineFast, it.cntServePrefetch, it.cntInlineRefill1, it.cntInlineRefill2,
-		it.cntFullRefill, it.cntSlowPath, it.cntHLCStale, it.cntSnapshotZero)
-}
+// func (it *Iter) PathCounts() string {
+// 	return fmt.Sprintf(
+// 		"InlineFast=%d ServePrefetch=%d InlineRefill1=%d InlineRefill2=%d FullRefill=%d SlowPath=%d HLCStale=%d SnapshotZero=%d",
+// 		it.cntInlineFast, it.cntServePrefetch, it.cntInlineRefill1, it.cntInlineRefill2,
+// 		it.cntFullRefill, it.cntSlowPath, it.cntHLCStale, it.cntSnapshotZero)
+// }
 
 // releaseIterState releases all stateful cursor resources.
 func (it *Iter) releaseIterState() {
@@ -1292,14 +1292,14 @@ func (it *Iter) Next() {
 					it.valueResolved = false
 					it.valid = true
 					it.dir = 1
-					it.cntInlineFast++
+					//it.cntInlineFast++
 					return
 				}
 				span.pos = pos + 1 // skip tombstone so servePrefetch doesn't re-check
 			}
 			// Tombstone or span boundary — fall through to full loop.
 			if it.servePrefetch() {
-				it.cntServePrefetch++
+				//it.cntServePrefetch++
 				return
 			}
 			// Spans exhausted (all remaining were tombstones).
@@ -1329,12 +1329,12 @@ func (it *Iter) Next() {
 					it.valueResolved = false
 					it.valid = true
 					it.dir = 1
-					it.cntInlineRefill1++
+					//it.cntInlineRefill1++
 					return
 				}
 				it.pfSpans[0].pos = idx + 1
 				if it.servePrefetch() {
-					it.cntInlineRefill1++
+					//it.cntInlineRefill1++
 					return
 				}
 			}
@@ -1343,7 +1343,7 @@ func (it *Iter) Next() {
 			// HLC changed: invalidate prefetch, fall through to slow path.
 			it.pfSpanCount = 0
 			it.pfSpanIdx = 0
-			it.cntHLCStale++
+			//it.cntHLCStale++
 		}
 	}
 
@@ -1379,17 +1379,17 @@ func (it *Iter) Next() {
 					it.valueResolved = false
 					it.valid = true
 					it.dir = 1
-					it.cntInlineRefill2++
+					//it.cntInlineRefill2++
 					return
 				}
 				it.pfSpans[0].pos = idx + 1
 				if it.servePrefetch() {
-					it.cntInlineRefill2++
+					//it.cntInlineRefill2++
 					return
 				}
 				// All remaining were tombstones; fall through to full refill.
 			}
-			it.cntFullRefill++
+			//it.cntFullRefill++
 			it.prefetchFillFlexSpaceOnly()
 			it.snapshotHLC = currentHLC
 			if it.pfSpanCount == 0 || !it.servePrefetch() {
@@ -1408,10 +1408,10 @@ func (it *Iter) Next() {
 	curKey := it.pKV.Key // save before re-seek overwrites pKV
 
 	// Re-seek FlexSpace cursor from scratch.
-	if it.snapshotHLC == 0 {
-		it.cntSnapshotZero++
-	}
-	it.cntSlowPath++
+	//if it.snapshotHLC == 0 {
+	//it.cntSnapshotZero++
+	//}
+	//it.cntSlowPath++
 	it.releaseIterState()
 	it.initFlexCursorSeekGE(curKey)
 
