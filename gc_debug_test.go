@@ -28,7 +28,7 @@ func TestGC_DebugDiskGrowth(t *testing.T) {
 	for r := 0; r <= 9; r++ {
 		for i, k := range keys {
 			val := fmt.Sprintf("val-round%d-%06d-padding-data-here", r, i)
-			if err := db.Put([]byte(k), []byte(val)); err != nil {
+			if err := db.Put(k, []byte(val)); err != nil {
 				t.Fatal(err)
 			}
 		}

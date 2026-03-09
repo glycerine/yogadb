@@ -48,11 +48,11 @@ func BenchmarkDeleteRange(b *testing.B) {
 				for i := 0; i < b.N; i++ {
 					batch := db.NewBatch()
 					for k := 0; k < totalKeys; k++ {
-						batch.Set(keys[k], vals[k])
+						batch.Set(string(keys[k]), vals[k])
 					}
 					batch.Commit(false)
 
-					n, _, err := db.DeleteRange(true, startKey, endKey, true, true)
+					n, _, err := db.DeleteRange(true, string(startKey), string(endKey), true, true)
 					if err != nil {
 						b.Fatal(err)
 					}
@@ -85,7 +85,7 @@ func BenchmarkBatchPutDeleteCycle(b *testing.B) {
 				for k := 0; k < batchSize; k++ {
 					key := fmt.Sprintf("c%08d_%08d", i, k)
 					val := fmt.Sprintf("v%08d", k)
-					batch.Set([]byte(key), []byte(val))
+					batch.Set(key, []byte(val))
 				}
 				if _, err := batch.Commit(false); err != nil {
 					b.Fatal(err)
@@ -94,7 +94,7 @@ func BenchmarkBatchPutDeleteCycle(b *testing.B) {
 				// Delete first half
 				startKey := fmt.Sprintf("c%08d_%08d", i, 0)
 				endKey := fmt.Sprintf("c%08d_%08d", i, batchSize/2-1)
-				n, _, err := db.DeleteRange(true, []byte(startKey), []byte(endKey), true, true)
+				n, _, err := db.DeleteRange(true, startKey, endKey, true, true)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -237,7 +237,7 @@ func BenchmarkYogaDB_BigRandomRWBatch(b *testing.B) {
 							batch.Commit(eagerFsync)
 							needCommit = false
 						}
-						batch.Set(keys[ki], keys[ki])
+						batch.Set(string(keys[ki]), keys[ki])
 						ki++
 						needCommit = true
 					}
@@ -250,7 +250,7 @@ func BenchmarkYogaDB_BigRandomRWBatch(b *testing.B) {
 						b.ResetTimer()
 						t0 = time.Now()
 						for cid := range dup {
-							val, found := db.Get([]byte(cid))
+							val, found := db.Get(cid)
 							if !found {
 								// we might not write all now that b.N controls how many we write.
 								//b.Fatalf("why not found '%v'", cid)
@@ -319,7 +319,7 @@ func BenchmarkYogaDB_Put(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		db.Put(keys[i], value)
+		db.Put(string(keys[i]), value)
 	}
 	b.StopTimer()
 
@@ -520,7 +520,7 @@ func BenchmarkYogaDB_Batch(b *testing.B) {
 				for i := 0; i < b.N; i++ {
 					batch := db.NewBatch()
 					for j := 0; j < batchSize; j++ {
-						batch.Set(keys[ki], value)
+						batch.Set(string(keys[ki]), value)
 						ki++
 					}
 					batch.Commit(true)

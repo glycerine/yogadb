@@ -431,7 +431,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	// Round 0: initial write — triggers block pre-allocation.
 	for i, k := range keys {
 		val := fmt.Sprintf("val-round0-%06d-padding-data-here", i)
-		if err := db.Put([]byte(k), []byte(val)); err != nil {
+		if err := db.Put(k, []byte(val)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -440,7 +440,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	// Round 1: first overwrite — after this, pre-allocation is stable.
 	for i, k := range keys {
 		val := fmt.Sprintf("val-round1-%06d-padding-data-here", i)
-		if err := db.Put([]byte(k), []byte(val)); err != nil {
+		if err := db.Put(k, []byte(val)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -453,7 +453,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	for r := 2; r <= rounds; r++ {
 		for i, k := range keys {
 			val := fmt.Sprintf("val-round%d-%06d-padding-data-here", r, i)
-			if err := db.Put([]byte(k), []byte(val)); err != nil {
+			if err := db.Put(k, []byte(val)); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -480,7 +480,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	// Verify correctness.
 	for i, k := range keys {
 		expected := fmt.Sprintf("val-round%d-%06d-padding-data-here", rounds, i)
-		got, ok := db.Get([]byte(k))
+		got, ok := db.Get(k)
 		if !ok {
 			t.Fatalf("key %q not found", k)
 		}
@@ -516,14 +516,14 @@ func TestGC_OverwriteSameKeys_RedoLogGrows(t *testing.T) {
 	// Round 0: initial write.
 	for i, k := range keys {
 		val := fmt.Sprintf("val-round0-%06d-some-padding", i)
-		db.Put([]byte(k), []byte(val))
+		db.Put(k, []byte(val))
 	}
 	db.Sync()
 
 	// Round 1: first overwrite — stabilizes block pre-allocation.
 	for i, k := range keys {
 		val := fmt.Sprintf("val-round1-%06d-some-padding", i)
-		db.Put([]byte(k), []byte(val))
+		db.Put(k, []byte(val))
 	}
 	db.Sync()
 
@@ -536,7 +536,7 @@ func TestGC_OverwriteSameKeys_RedoLogGrows(t *testing.T) {
 	for r := 2; r <= rounds; r++ {
 		for i, k := range keys {
 			val := fmt.Sprintf("val-round%d-%06d-some-padding", r, i)
-			db.Put([]byte(k), []byte(val))
+			db.Put(k, []byte(val))
 		}
 		db.Sync()
 	}
@@ -688,7 +688,7 @@ func TestGC_CrossSession_DiskGrowth(t *testing.T) {
 		// Write the same keys with session-specific values.
 		for i, k := range keys {
 			val := fmt.Sprintf("val-session%d-%06d-padding-data", s, i)
-			if err := db.Put([]byte(k), []byte(val)); err != nil {
+			if err := db.Put(k, []byte(val)); err != nil {
 				t.Fatalf("session %d: Put: %v", s, err)
 			}
 		}
@@ -719,7 +719,7 @@ func TestGC_CrossSession_DiskGrowth(t *testing.T) {
 		}
 		for i, k := range keys {
 			expected := fmt.Sprintf("val-session%d-%06d-padding-data", sessions-1, i)
-			got, ok := db.Get([]byte(k))
+			got, ok := db.Get(k)
 			if !ok {
 				t.Fatalf("key %q not found after %d sessions", k, sessions)
 			}
@@ -779,7 +779,7 @@ func TestGC_CrossSession_BlockReuse(t *testing.T) {
 		for i := 0; i < nKeys; i++ {
 			k := fmt.Sprintf("key%06d", i)
 			v := fmt.Sprintf("val-session0-%06d-data-padding", i)
-			db.Put([]byte(k), []byte(v))
+			db.Put(k, []byte(v))
 		}
 		db.Sync()
 		t.Logf("Session 0: usedBlocks=%d, totalUsage=%d, writeBlk=%d",
@@ -811,7 +811,7 @@ func TestGC_CrossSession_BlockReuse(t *testing.T) {
 		for i := 0; i < nKeys; i++ {
 			k := fmt.Sprintf("key%06d", i)
 			v := fmt.Sprintf("val-session%d-%06d-data-padding", s, i)
-			db.Put([]byte(k), []byte(v))
+			db.Put(k, []byte(v))
 		}
 		db.Sync()
 
@@ -827,7 +827,7 @@ func TestGC_CrossSession_BlockReuse(t *testing.T) {
 		for i := 0; i < nKeys; i++ {
 			k := fmt.Sprintf("key%06d", i)
 			expected := fmt.Sprintf("val-session%d-%06d-data-padding", s, i)
-			got, ok := db.Get([]byte(k))
+			got, ok := db.Get(k)
 			if !ok {
 				t.Fatalf("session %d: key %q not found", s, k)
 			}
@@ -879,7 +879,7 @@ func TestGC_CrossSession_ManyReopens_SameDataset(t *testing.T) {
 		}
 
 		for i := 0; i < nKeys; i++ {
-			if err := db.Put(keys[i], vals[i]); err != nil {
+			if err := db.Put(string(keys[i]), vals[i]); err != nil {
 				t.Fatalf("session %d: Put: %v", s, err)
 			}
 		}
@@ -899,7 +899,7 @@ func TestGC_CrossSession_ManyReopens_SameDataset(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i := 0; i < nKeys; i++ {
-			got, ok := db.Get(keys[i])
+			got, ok := db.Get(string(keys[i]))
 			if !ok {
 				t.Fatalf("key %q missing after %d sessions", keys[i], sessions)
 			}
@@ -1205,7 +1205,7 @@ func TestPiggybackGC_ReclaimsSpace(t *testing.T) {
 	// Delete half the keys to create garbage.
 	for i := 0; i < nKeys/2; i++ {
 		k := fmt.Sprintf("key%06d", i)
-		db.Delete([]byte(k))
+		db.Delete(k)
 	}
 	db.Sync() // should trigger piggyback GC
 
@@ -1225,7 +1225,7 @@ func TestPiggybackGC_ReclaimsSpace(t *testing.T) {
 	// Deleted keys should be gone.
 	for i := 0; i < nKeys/2; i++ {
 		k := fmt.Sprintf("key%06d", i)
-		_, ok := db.Get([]byte(k))
+		_, ok := db.Get(k)
 		if ok {
 			t.Errorf("key %q should have been deleted", k)
 		}

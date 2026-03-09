@@ -78,7 +78,7 @@ const (
 	// SLOTTED_PAGE_KB is the target page size for slotted page intervals.
 	// Tune this for different workloads. Larger pages amortize overhead
 	// better but increase rewrite cost.
-	SLOTTED_PAGE_KB = 2
+	SLOTTED_PAGE_KB = 10 // 10:5.214 8:5.84 12:7.874 // up from 2 to 10 seems to help. 10: (9.984, 10.01, 9.817 ns/key); 2: (23.72 ns/key); 20:14.84
 
 	slottedPageMaxSize = SLOTTED_PAGE_KB * 1024 // 65536 bytes
 
@@ -305,8 +305,7 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 	kvs := make([]KV, count)
 	for i := 0; i < count; i++ {
 		kl := int(entries[i].keyLen)
-		kvs[i].Key = make([]byte, kl)
-		copy(kvs[i].Key, src[entries[i].keyOff:entries[i].keyOff+kl])
+		kvs[i].Key = string(src[entries[i].keyOff : entries[i].keyOff+kl])
 		kvs[i].Hlc = entries[i].hlc
 	}
 
@@ -319,7 +318,6 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 			// tombstone: no value bytes, Value stays nil
 		} else if entries[i].valInfo == slottedValInfoVPtr {
 			kvs[i].Vptr = decodeVPtr(src[valStart:valEnd])
-			kvs[i].HasVPtr = true
 		} else {
 			kvs[i].Value = make([]byte, vl)
 			copy(kvs[i].Value, src[valStart:valEnd])
@@ -340,7 +338,7 @@ func slottedValInfo(kv KV) uint16 {
 	if kv.isTombstone() {
 		return slottedValInfoTombstone
 	}
-	if kv.HasVPtr {
+	if kv.HasVPtr() {
 		return slottedValInfoVPtr
 	}
 	return uint16(len(kv.Value) + 1)
@@ -351,7 +349,7 @@ func slottedValBytes(kv KV) int {
 	if kv.isTombstone() {
 		return 0
 	}
-	if kv.HasVPtr {
+	if kv.HasVPtr() {
 		return vptrSize
 	}
 	return len(kv.Value)
@@ -362,7 +360,7 @@ func slottedValBytesOf(kv KV) []byte {
 	if kv.isTombstone() {
 		return nil
 	}
-	if kv.HasVPtr {
+	if kv.HasVPtr() {
 		var buf [vptrSize]byte
 		kv.Vptr.encode(buf[:])
 		return buf[:]
@@ -372,17 +370,17 @@ func slottedValBytesOf(kv KV) []byte {
 
 // slottedPageFirstKey extracts the first key from a slotted page without
 // fully decoding it. Used by recovery to reconstruct anchor keys.
-func slottedPageFirstKey(src []byte) ([]byte, bool) {
+func slottedPageFirstKey(src []byte) (string, bool) {
 	// Need at least header + first entry's 4B slot header + 1B varint
 	if len(src) < slottedPageHeaderSize+5 {
-		return nil, false
+		return "", false
 	}
 	if src[0] != slottedPageMagic {
-		return nil, false
+		return "", false
 	}
 	count := int(binary.LittleEndian.Uint16(src[2:4]))
 	if count == 0 {
-		return nil, false
+		return "", false
 	}
 	// First entry record starts at offset 12 (header size).
 	off := slottedPageHeaderSize
@@ -391,15 +389,13 @@ func slottedPageFirstKey(src []byte) ([]byte, bool) {
 	// Skip HLC delta varint.
 	_, n := binary.Uvarint(src[off:])
 	if n <= 0 {
-		return nil, false
+		return "", false
 	}
 	off += n
 	if off+keyLen > len(src) {
-		return nil, false
+		return "", false
 	}
-	key := make([]byte, keyLen)
-	copy(key, src[off:off+keyLen])
-	return key, true
+	return string(src[off : off+keyLen]), true
 }
 
 // slottedValInfoToLen returns the number of value bytes for a valInfo.

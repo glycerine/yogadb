@@ -43,7 +43,7 @@ func Benchmark_Iter_YogaDB_Ascend(b *testing.B) {
 	t0 := time.Now()
 	batch := db.NewBatch()
 	for i, k := range keys {
-		batch.Set(k, k)
+		batch.Set(string(k), k)
 		if (i+1)%10000 == 0 {
 			batch.Commit(false)
 			batch = db.NewBatch()
@@ -58,6 +58,7 @@ func Benchmark_Iter_YogaDB_Ascend(b *testing.B) {
 	b.ReportMetric(float64(insertElapsed.Nanoseconds())/float64(len(keys)), "insert_ns/key")
 	vv("yogadb insert %v", insertElapsed)
 
+	//var lastCounts string
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		t0 := time.Now()
@@ -70,6 +71,7 @@ func Benchmark_Iter_YogaDB_Ascend(b *testing.B) {
 				it.Next()
 			}
 			it.Close()
+			//lastCounts = it.PathCounts()
 			elapsed := time.Since(t0)
 			if count > 0 {
 				b.ReportMetric(float64(elapsed.Nanoseconds())/float64(count), "iter_ns/key")
@@ -77,6 +79,7 @@ func Benchmark_Iter_YogaDB_Ascend(b *testing.B) {
 			return nil
 		})
 	}
+	//alwaysPrintf("path counts = '%v'", lastCounts)
 	b.StopTimer()
 }
 
@@ -94,7 +97,7 @@ func Benchmark_Iter_YogaDB_Descend(b *testing.B) {
 	t0 := time.Now()
 	batch := db.NewBatch()
 	for i, k := range keys {
-		batch.Set(k, k)
+		batch.Set(string(k), k)
 		if (i+1)%10000 == 0 {
 			batch.Commit(false)
 			batch = db.NewBatch()

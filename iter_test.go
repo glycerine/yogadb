@@ -1,7 +1,6 @@
 package yogadb
 
 import (
-	"bytes"
 	"fmt"
 	//"os"
 	"path/filepath"
@@ -29,7 +28,7 @@ func TestFlexDB_IteratorBasic(t *testing.T) {
 			if !it.Valid() {
 				t.Fatalf("iterator ended early; want key %q", wk)
 			}
-			if string(it.Key()) != wk {
+			if it.Key() != wk {
 				t.Fatalf("Key() = %q, want %q", it.Key(), wk)
 			}
 			if string(it.Vin()) != "v:"+wk {
@@ -56,17 +55,17 @@ func TestFlexDB_IteratorSeek(t *testing.T) {
 		it := roDB.NewIter()
 		defer it.Close()
 
-		it.Seek([]byte("ccc"))
-		if !it.Valid() || string(it.Key()) != "ccc" {
+		it.Seek("ccc")
+		if !it.Valid() || it.Key() != "ccc" {
 			t.Fatalf("Seek(ccc): got %v/%q", it.Valid(), it.Key())
 		}
 		it.Next()
-		if !it.Valid() || string(it.Key()) != "ddd" {
+		if !it.Valid() || it.Key() != "ddd" {
 			t.Fatalf("After Seek+Next: got %v/%q, want ddd", it.Valid(), it.Key())
 		}
 
-		it.Seek([]byte("d"))
-		if !it.Valid() || string(it.Key()) != "ddd" {
+		it.Seek("d")
+		if !it.Valid() || it.Key() != "ddd" {
 			t.Fatalf("Seek(d): got %v/%q, want ddd", it.Valid(), it.Key())
 		}
 		return nil
@@ -93,7 +92,7 @@ func TestFlexDB_IteratorAfterSync(t *testing.T) {
 			if !it.Valid() {
 				t.Fatalf("iterator ended early; want %q", wk)
 			}
-			if string(it.Key()) != wk {
+			if it.Key() != wk {
 				t.Fatalf("Key() = %q, want %q", it.Key(), wk)
 			}
 			it.Next()
@@ -127,7 +126,7 @@ func TestFlexDB_ManyKeysIterator(t *testing.T) {
 			if !it.Valid() {
 				t.Fatalf("iterator ended early; want %q", wk)
 			}
-			if string(it.Key()) != wk {
+			if it.Key() != wk {
 				t.Fatalf("Key() = %q, want %q", it.Key(), wk)
 			}
 			it.Next()
@@ -147,35 +146,35 @@ func TestFlexDB_AscendRange(t *testing.T) {
 	db.View(func(roDB ReadOnlyDB) error {
 		// [bbb, ddd) — should include bbb, ccc but NOT ddd
 		var keys []string
-		roDB.AscendRange([]byte("bbb"), []byte("ddd"), func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.AscendRange("bbb", "ddd", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
 		expectKeys(t, "AscendRange(bbb,ddd)", keys, []string{"bbb", "ccc"})
 
-		// Unbounded start: [nil, ccc)
+		// Unbounded start: ["", ccc)
 		keys = nil
-		roDB.AscendRange(nil, []byte("ccc"), func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.AscendRange("", "ccc", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
-		expectKeys(t, "AscendRange(nil,ccc)", keys, []string{"aaa", "bbb"})
+		expectKeys(t, "AscendRange(,ccc)", keys, []string{"aaa", "bbb"})
 
-		// Unbounded end: [ccc, nil)
+		// Unbounded end: [ccc, "")
 		keys = nil
-		roDB.AscendRange([]byte("ccc"), nil, func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.AscendRange("ccc", "", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
-		expectKeys(t, "AscendRange(ccc,nil)", keys, []string{"ccc", "ddd", "eee"})
+		expectKeys(t, "AscendRange(ccc,)", keys, []string{"ccc", "ddd", "eee"})
 
-		// Both nil: all keys
+		// Both empty: all keys
 		keys = nil
-		roDB.AscendRange(nil, nil, func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.AscendRange("", "", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
-		expectKeys(t, "AscendRange(nil,nil)", keys, []string{"aaa", "bbb", "ccc", "ddd", "eee"})
+		expectKeys(t, "AscendRange(,)", keys, []string{"aaa", "bbb", "ccc", "ddd", "eee"})
 		return nil
 	})
 }
@@ -188,35 +187,35 @@ func TestFlexDB_DescendRange(t *testing.T) {
 	db.View(func(roDB ReadOnlyDB) error {
 		// (bbb, ddd] — should include ddd, ccc but NOT bbb
 		var keys []string
-		roDB.DescendRange([]byte("ddd"), []byte("bbb"), func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.DescendRange("ddd", "bbb", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
 		expectKeys(t, "DescendRange(ddd,bbb)", keys, []string{"ddd", "ccc"})
 
-		// Unbounded start (descend from end): (bbb, nil]
+		// Unbounded start (descend from end): (bbb, ""]
 		keys = nil
-		roDB.DescendRange(nil, []byte("bbb"), func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.DescendRange("", "bbb", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
-		expectKeys(t, "DescendRange(nil,bbb)", keys, []string{"eee", "ddd", "ccc"})
+		expectKeys(t, "DescendRange(,bbb)", keys, []string{"eee", "ddd", "ccc"})
 
-		// Unbounded end (descend to beginning): (nil, ddd]
+		// Unbounded end (descend to beginning): ("", ddd]
 		keys = nil
-		roDB.DescendRange([]byte("ddd"), nil, func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.DescendRange("ddd", "", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
-		expectKeys(t, "DescendRange(ddd,nil)", keys, []string{"ddd", "ccc", "bbb", "aaa"})
+		expectKeys(t, "DescendRange(ddd,)", keys, []string{"ddd", "ccc", "bbb", "aaa"})
 
-		// Both nil: all keys descending
+		// Both empty: all keys descending
 		keys = nil
-		roDB.DescendRange(nil, nil, func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.DescendRange("", "", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
-		expectKeys(t, "DescendRange(nil,nil)", keys, []string{"eee", "ddd", "ccc", "bbb", "aaa"})
+		expectKeys(t, "DescendRange(,)", keys, []string{"eee", "ddd", "ccc", "bbb", "aaa"})
 		return nil
 	})
 }
@@ -228,8 +227,8 @@ func TestFlexDB_AscendRangeAfterSync(t *testing.T) {
 
 	db.View(func(roDB ReadOnlyDB) error {
 		var keys []string
-		roDB.AscendRange([]byte("bbb"), []byte("eee"), func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.AscendRange("bbb", "eee", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
 		expectKeys(t, "AscendRange after sync", keys, []string{"bbb", "ccc", "ddd"})
@@ -244,8 +243,8 @@ func TestFlexDB_DescendRangeAfterSync(t *testing.T) {
 
 	db.View(func(roDB ReadOnlyDB) error {
 		var keys []string
-		roDB.DescendRange([]byte("ddd"), []byte("aaa"), func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.DescendRange("ddd", "aaa", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
 		expectKeys(t, "DescendRange after sync", keys, []string{"ddd", "ccc", "bbb"})
@@ -260,8 +259,8 @@ func TestFlexDB_AscendValues(t *testing.T) {
 
 	db.View(func(roDB ReadOnlyDB) error {
 		var pairs []string
-		roDB.Ascend([]byte("bbb"), func(key, value []byte) bool {
-			pairs = append(pairs, string(key)+"="+string(value))
+		roDB.Ascend("bbb", func(key string, value []byte) bool {
+			pairs = append(pairs, key+"="+string(value))
 			return true
 		})
 		want := []string{"bbb=v:bbb", "ccc=v:ccc", "ddd=v:ddd", "eee=v:eee"}
@@ -277,8 +276,8 @@ func TestFlexDB_DescendValues(t *testing.T) {
 
 	db.View(func(roDB ReadOnlyDB) error {
 		var pairs []string
-		roDB.Descend([]byte("ddd"), func(key, value []byte) bool {
-			pairs = append(pairs, string(key)+"="+string(value))
+		roDB.Descend("ddd", func(key string, value []byte) bool {
+			pairs = append(pairs, key+"="+string(value))
 			return true
 		})
 		want := []string{"ddd=v:ddd", "ccc=v:ccc", "bbb=v:bbb", "aaa=v:aaa"}
@@ -299,7 +298,7 @@ func TestFlexDB_IteratorPrev(t *testing.T) {
 
 		var keys []string
 		for it.Valid() {
-			keys = append(keys, string(it.Key()))
+			keys = append(keys, it.Key())
 			it.Prev()
 		}
 		expectKeys(t, "Iterator Prev", keys, []string{"eee", "ddd", "ccc", "bbb", "aaa"})
@@ -317,16 +316,16 @@ func TestFlexDB_IteratorSeekThenPrev(t *testing.T) {
 		defer it.Close()
 
 		// Seek to ccc, then go backward
-		it.Seek([]byte("ccc"))
-		if !it.Valid() || string(it.Key()) != "ccc" {
+		it.Seek("ccc")
+		if !it.Valid() || it.Key() != "ccc" {
 			t.Fatalf("Seek(ccc): got %v/%q", it.Valid(), it.Key())
 		}
 		it.Prev()
-		if !it.Valid() || string(it.Key()) != "bbb" {
+		if !it.Valid() || it.Key() != "bbb" {
 			t.Fatalf("After Prev: got %v/%q, want bbb", it.Valid(), it.Key())
 		}
 		it.Prev()
-		if !it.Valid() || string(it.Key()) != "aaa" {
+		if !it.Valid() || it.Key() != "aaa" {
 			t.Fatalf("After 2nd Prev: got %v/%q, want aaa", it.Valid(), it.Key())
 		}
 		it.Prev()
@@ -354,8 +353,8 @@ func TestFlexDB_AscendManyKeys(t *testing.T) {
 	db.View(func(roDB ReadOnlyDB) error {
 		// Ascend from key000100
 		var keys []string
-		roDB.Ascend([]byte("key000100"), func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.Ascend("key000100", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
 		want := allKeys[100:] // key000100..key000199
@@ -363,7 +362,7 @@ func TestFlexDB_AscendManyKeys(t *testing.T) {
 
 		// Descend from key000050
 		var dkeys []string
-		roDB.Descend([]byte("key000050"), func(key, value []byte) bool {
+		roDB.Descend("key000050", func(key string, value []byte) bool {
 			dkeys = append(dkeys, string(key))
 			return true
 		})
@@ -375,7 +374,7 @@ func TestFlexDB_AscendManyKeys(t *testing.T) {
 
 		// AscendRange [key000010, key000015)
 		var rangeKeys []string
-		roDB.AscendRange([]byte("key000010"), []byte("key000015"), func(key, value []byte) bool {
+		roDB.AscendRange("key000010", "key000015", func(key string, value []byte) bool {
 			rangeKeys = append(rangeKeys, string(key))
 			return true
 		})
@@ -395,14 +394,14 @@ func TestFlexDB_HLC_PutMonotonic(t *testing.T) {
 	keys := []string{"aaa", "bbb", "ccc"}
 	hlcs := make([]HLC, len(keys))
 	for i, k := range keys {
-		err := db.Put([]byte(k), []byte("v"))
+		err := db.Put(k, []byte("v"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		// Read back from the active memtable to get the HLC.
 		db.topMutRW.RLock()
 		active := db.activeMT
-		kv, ok := db.memtables[active].get([]byte(k))
+		kv, ok := db.memtables[active].get(k)
 		db.topMutRW.RUnlock()
 		if !ok {
 			t.Fatalf("key %q not found in memtable", k)
@@ -423,9 +422,9 @@ func TestFlexDB_HLC_BatchInterval(t *testing.T) {
 
 	// Batch with unique keys — single-tick interval.
 	batch := db.NewBatch()
-	batch.Set([]byte("k1"), []byte("v1"))
-	batch.Set([]byte("k2"), []byte("v2"))
-	batch.Set([]byte("k3"), []byte("v3"))
+	batch.Set("k1", []byte("v1"))
+	batch.Set("k2", []byte("v2"))
+	batch.Set("k3", []byte("v3"))
 	iv, err := batch.Commit(false)
 	if err != nil {
 		t.Fatal(err)
@@ -439,9 +438,9 @@ func TestFlexDB_HLC_BatchInterval(t *testing.T) {
 
 	// Batch with a duplicate key — multi-tick interval.
 	batch2 := db.NewBatch()
-	batch2.Set([]byte("x1"), []byte("v1"))
-	batch2.Set([]byte("x1"), []byte("v2")) // duplicate triggers new tick
-	batch2.Set([]byte("x2"), []byte("v3"))
+	batch2.Set("x1", []byte("v1"))
+	batch2.Set("x1", []byte("v2")) // duplicate triggers new tick
+	batch2.Set("x2", []byte("v3"))
 	iv2, err := batch2.Commit(false)
 	if err != nil {
 		t.Fatal(err)
@@ -460,12 +459,12 @@ func TestFlexDB_HLC_BatchInterval(t *testing.T) {
 func TestFlexDB_HLC_DedupByHLC(t *testing.T) {
 	// Construct a sorted slice with duplicate keys and varying HLCs.
 	kvs := []KV{
-		{Key: []byte("aaa"), Value: []byte("old"), Hlc: 100},
-		{Key: []byte("aaa"), Value: []byte("new"), Hlc: 200},
-		{Key: []byte("bbb"), Value: []byte("only"), Hlc: 150},
-		{Key: []byte("ccc"), Value: []byte("first"), Hlc: 300},
-		{Key: []byte("ccc"), Value: []byte("second"), Hlc: 250},
-		{Key: []byte("ccc"), Value: []byte("third"), Hlc: 350},
+		{Key: "aaa", Value: []byte("old"), Hlc: 100},
+		{Key: "aaa", Value: []byte("new"), Hlc: 200},
+		{Key: "bbb", Value: []byte("only"), Hlc: 150},
+		{Key: "ccc", Value: []byte("first"), Hlc: 300},
+		{Key: "ccc", Value: []byte("second"), Hlc: 250},
+		{Key: "ccc", Value: []byte("third"), Hlc: 350},
 	}
 	out, fps, size := intervalCacheDedup(kvs)
 	if len(out) != 3 {
@@ -502,11 +501,11 @@ func TestFlexDB_HLC_Persistence(t *testing.T) {
 	}
 
 	// Put a few keys; they'll get HLCs.
-	err = db.Put([]byte("pk1"), []byte("pv1"))
+	err = db.Put("pk1", []byte("pv1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = db.Put([]byte("pk2"), []byte("pv2"))
+	err = db.Put("pk2", []byte("pv2"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,8 +513,8 @@ func TestFlexDB_HLC_Persistence(t *testing.T) {
 	// Capture HLCs from the memtable before flush.
 	db.topMutRW.RLock()
 	active := db.activeMT
-	kv1, _ := db.memtables[active].get([]byte("pk1"))
-	kv2, _ := db.memtables[active].get([]byte("pk2"))
+	kv1, _ := db.memtables[active].get("pk1")
+	kv2, _ := db.memtables[active].get("pk2")
 	db.topMutRW.RUnlock()
 	hlc1 := kv1.Hlc
 	hlc2 := kv2.Hlc
@@ -537,11 +536,11 @@ func TestFlexDB_HLC_Persistence(t *testing.T) {
 	}
 	defer db2.Close()
 
-	val, ok := db2.Get([]byte("pk1"))
+	val, ok := db2.Get("pk1")
 	if !ok || string(val) != "pv1" {
 		t.Fatalf("pk1: got %q, ok=%v", val, ok)
 	}
-	val, ok = db2.Get([]byte("pk2"))
+	val, ok = db2.Get("pk2")
 	if !ok || string(val) != "pv2" {
 		t.Fatalf("pk2: got %q, ok=%v", val, ok)
 	}
@@ -556,7 +555,7 @@ func TestFlexDB_HLC_VLOGRoundTrip(t *testing.T) {
 	}
 
 	bigVal := makeTestValue(500) // 500 bytes, well above vlogInlineThreshold
-	err = db.Put([]byte("bigkey"), []byte(bigVal))
+	err = db.Put("bigkey", []byte(bigVal))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -571,7 +570,7 @@ func TestFlexDB_HLC_VLOGRoundTrip(t *testing.T) {
 	}
 	defer db2.Close()
 
-	val, ok := db2.Get([]byte("bigkey"))
+	val, ok := db2.Get("bigkey")
 	if !ok {
 		t.Fatal("bigkey not found after reopen")
 	}
@@ -740,7 +739,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i := 0; i < nKeys; i++ {
-			key := []byte(fmt.Sprintf("k%06d", i))
+			key := fmt.Sprintf("k%06d", i)
 			val := []byte(fmt.Sprintf("v%06d", i))
 			if err := db.Put(key, val); err != nil {
 				t.Fatal(err)
@@ -765,7 +764,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 
 		// Verify data after vacuum.
 		for i := 0; i < nKeys; i++ {
-			key := []byte(fmt.Sprintf("k%06d", i))
+			key := fmt.Sprintf("k%06d", i)
 			expected := fmt.Sprintf("v%06d", i)
 			got, ok := db.Get(key)
 			if !ok {
@@ -795,7 +794,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 
 		// Verify data after second vacuum.
 		for i := 0; i < nKeys; i++ {
-			key := []byte(fmt.Sprintf("k%06d", i))
+			key := fmt.Sprintf("k%06d", i)
 			expected := fmt.Sprintf("v%06d", i)
 			got, ok := db.Get(key)
 			if !ok {
@@ -989,10 +988,10 @@ func TestFlexDB_IteratorDeleteDuringForward(t *testing.T) {
 
 		var got []string
 		for it.Valid() {
-			k := string(it.Key())
+			k := it.Key()
 			got = append(got, k)
 			if k == "c" {
-				if err := rwDB.Delete([]byte("c")); err != nil {
+				if err := rwDB.Delete("c"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1018,13 +1017,13 @@ func TestFlexDB_IteratorDeleteCurrentAndNext(t *testing.T) {
 
 		var got []string
 		for it.Valid() {
-			k := string(it.Key())
+			k := it.Key()
 			got = append(got, k)
 			if k == "b" {
-				if err := rwDB.Delete([]byte("b")); err != nil {
+				if err := rwDB.Delete("b"); err != nil {
 					t.Fatal(err)
 				}
-				if err := rwDB.Delete([]byte("c")); err != nil {
+				if err := rwDB.Delete("c"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1049,9 +1048,9 @@ func TestFlexDB_IteratorDeleteAllForward(t *testing.T) {
 
 		var deleted []string
 		for it.Valid() {
-			k := string(it.Key())
+			k := it.Key()
 			deleted = append(deleted, k)
-			if err := rwDB.Delete([]byte(k)); err != nil {
+			if err := rwDB.Delete(k); err != nil {
 				it.Close()
 				t.Fatal(err)
 			}
@@ -1063,7 +1062,7 @@ func TestFlexDB_IteratorDeleteAllForward(t *testing.T) {
 	})
 
 	// DB should be empty
-	val, ok := db.Get([]byte("a"))
+	val, ok := db.Get("a")
 	if ok {
 		t.Fatalf("expected empty DB, got key 'a' val=%q", val)
 	}
@@ -1083,10 +1082,10 @@ func TestFlexDB_IteratorPutDuringForward(t *testing.T) {
 
 		var got []string
 		for it.Valid() {
-			k := string(it.Key())
+			k := it.Key()
 			got = append(got, k)
 			if k == "c" {
-				if err := rwDB.Put([]byte("d"), []byte("v:d")); err != nil {
+				if err := rwDB.Put("d", []byte("v:d")); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1112,10 +1111,10 @@ func TestFlexDB_IteratorDeleteDuringBackward(t *testing.T) {
 
 		var got []string
 		for it.Valid() {
-			k := string(it.Key())
+			k := it.Key()
 			got = append(got, k)
 			if k == "c" {
-				if err := rwDB.Delete([]byte("c")); err != nil {
+				if err := rwDB.Delete("c"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1135,12 +1134,12 @@ func TestFlexDB_IteratorDeleteOldTimestamps(t *testing.T) {
 	mustPut(t, db, "2025-01-01:k3", "new1")
 	mustPut(t, db, "2025-06-01:k4", "new2")
 
-	cutoff := []byte("2025-")
+	cutoff := "2025-"
 	db.Update(func(rwDB WritableDB) error {
 		it := rwDB.NewIter()
 		it.SeekToFirst()
 		for it.Valid() {
-			if bytes.Compare(it.Key(), cutoff) < 0 {
+			if it.Key() < cutoff {
 				if err := rwDB.Delete(it.Key()); err != nil {
 					it.Close()
 					return err
@@ -1155,8 +1154,8 @@ func TestFlexDB_IteratorDeleteOldTimestamps(t *testing.T) {
 	// Only new keys should remain
 	db.View(func(roDB ReadOnlyDB) error {
 		var remaining []string
-		roDB.Ascend(nil, func(key, value []byte) bool {
-			remaining = append(remaining, string(key))
+		roDB.Ascend("", func(key string, value []byte) bool {
+			remaining = append(remaining, key)
 			return true
 		})
 		expectKeys(t, "after timestamp delete", remaining, []string{"2025-01-01:k3", "2025-06-01:k4"})
@@ -1180,10 +1179,10 @@ func TestFlexDB_IteratorMutateAfterSync(t *testing.T) {
 
 		var got []string
 		for it.Valid() {
-			k := string(it.Key())
+			k := it.Key()
 			got = append(got, k)
 			if k == "b" {
-				if err := rwDB.Delete([]byte("c")); err != nil {
+				if err := rwDB.Delete("c"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1213,7 +1212,7 @@ func TestFlexDB_IteratorEmptyDB(t *testing.T) {
 			t.Fatal("SeekToLast on empty DB should be invalid")
 		}
 
-		it.Seek([]byte("x"))
+		it.Seek("x")
 		if it.Valid() {
 			t.Fatal("Seek on empty DB should be invalid")
 		}
@@ -1230,12 +1229,12 @@ func TestFlexDB_IteratorSingleKey(t *testing.T) {
 		it := rwDB.NewIter()
 		defer it.Close()
 
-		it.Seek([]byte("only"))
-		if !it.Valid() || string(it.Key()) != "only" {
+		it.Seek("only")
+		if !it.Valid() || it.Key() != "only" {
 			t.Fatalf("Seek(only): valid=%v key=%q", it.Valid(), it.Key())
 		}
 
-		if err := rwDB.Delete([]byte("only")); err != nil {
+		if err := rwDB.Delete("only"); err != nil {
 			t.Fatal(err)
 		}
 		it.Next()
@@ -1259,9 +1258,9 @@ func TestFlexDB_IteratorDeleteAllBackward(t *testing.T) {
 
 		var got []string
 		for it.Valid() {
-			k := string(it.Key())
+			k := it.Key()
 			got = append(got, k)
-			if err := rwDB.Delete([]byte(k)); err != nil {
+			if err := rwDB.Delete(k); err != nil {
 				it.Close()
 				t.Fatal(err)
 			}
@@ -1273,7 +1272,7 @@ func TestFlexDB_IteratorDeleteAllBackward(t *testing.T) {
 	})
 
 	// DB should be empty
-	val, ok := db.Get([]byte("c"))
+	val, ok := db.Get("c")
 	if ok {
 		t.Fatalf("expected empty DB, got key 'c' val=%q", val)
 	}
@@ -1298,7 +1297,7 @@ func TestFlexDB_IteratorHasInlineValue(t *testing.T) {
 		it.SeekToFirst()
 
 		// First key: "large" (alphabetically first)
-		if !it.Valid() || string(it.Key()) != "large" {
+		if !it.Valid() || it.Key() != "large" {
 			t.Fatalf("expected key 'large', got valid=%v key=%q", it.Valid(), it.Key())
 		}
 		if !it.Large() {
@@ -1320,7 +1319,7 @@ func TestFlexDB_IteratorHasInlineValue(t *testing.T) {
 
 		it.Next()
 		// Second key: "small"
-		if !it.Valid() || string(it.Key()) != "small" {
+		if !it.Valid() || it.Key() != "small" {
 			t.Fatalf("expected key 'small', got valid=%v key=%q", it.Valid(), it.Key())
 		}
 		if it.Large() {
@@ -1342,7 +1341,7 @@ func TestFlexDB_IteratorHasInlineValue(t *testing.T) {
 
 		it.Next()
 		// Third key: "zeeKeyToEmpty", with empty len(0) value.
-		if !it.Valid() || string(it.Key()) != "zeeKeyToEmpty" {
+		if !it.Valid() || it.Key() != "zeeKeyToEmpty" {
 			t.Fatalf("expected key 'zeeKeyToEmpty', got valid=%v key=%q", it.Valid(), it.Key())
 		}
 		if it.Large() {
@@ -1419,7 +1418,7 @@ func TestIterKV_UpdateMutate(t *testing.T) {
 			got = append(got, string(kv.Key))
 			// Delete "c" when we see it
 			if string(kv.Key) == "c" {
-				if err := rwDB.Delete([]byte("c")); err != nil {
+				if err := rwDB.Delete("c"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1475,7 +1474,7 @@ func TestIterKV_LargeValue(t *testing.T) {
 		if string(kv.Key) != "bigkey" {
 			t.Fatalf("got key %q, want bigkey", kv.Key)
 		}
-		if !kv.HasVPtr {
+		if !kv.HasVPtr() {
 			t.Fatal("expected HasVPtr for large value")
 		}
 		// Value should be nil for VLOG entries
@@ -1497,7 +1496,7 @@ func TestIterKV_LargeValue(t *testing.T) {
 		if string(kv2.Key) != "small" {
 			t.Fatalf("got key %q, want small", kv2.Key)
 		}
-		if kv2.HasVPtr {
+		if kv2.HasVPtr() {
 			t.Fatal("small value should not have VPtr")
 		}
 		if string(kv2.Value) != "tiny" {

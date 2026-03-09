@@ -1,7 +1,6 @@
 package yogadb
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math/rand"
@@ -111,7 +110,7 @@ Instrument:
 |----|-------------|
 | INV-ST-1 | **Root exists:** `tree.root != nil` |
 | INV-ST-2 | **Root has no parent:** `tree.root.parent == nil` |
-| INV-ST-3 | **Sentinel present:** leafHead.anchors[0].key == nil |
+| INV-ST-3 | **Sentinel present:** leafHead.anchors[0].key == "" |
 | INV-ST-4 | **Leaf linked list integrity:** next/prev consistent, covers all leaves, no cycles |
 | INV-ST-5 | **Keys sorted within leaf:** anchors[i].key < anchors[i+1].key for all consecutive non-nil pairs |
 | INV-ST-6 | **Keys sorted across leaves:** last key of leaf N < first key of leaf N+1 |
@@ -204,11 +203,11 @@ func checkSparseIndexTreeInvariants(t testing.TB, tree *memSparseIndexTree, opDe
 func effectiveLoff(node *memSparseIndexTreeNode, anchorIdx int) uint64
 func allTreeAnchors(tree *memSparseIndexTree) []bfAnchor
 func checkOracleAgreement(t testing.TB, tree *memSparseIndexTree, bf *sparseIndexBruteForce, opDesc string)
-func sparseIndexTreeSubtreeMinKey(node *memSparseIndexTreeNode) []byte
+func sparseIndexTreeSubtreeMinKey(node *memSparseIndexTreeNode) string
 func sparseIndexTreeHeight(tree *memSparseIndexTree) int
 func countSparseIndexTreeLeaves(tree *memSparseIndexTree) int
 func buildTreeWithNAnchors(n int) (*memSparseIndexTree, *sparseIndexBruteForce)
-func testKeyFromInt(i int) []byte
+func testKeyFromInt(i int) string
 ```
 
 ## Files Modified
@@ -232,7 +231,7 @@ go test -count=1 .   # full suite, no regressions
 // ====================== Brute-force oracle ======================
 
 type bfAnchor struct {
-	key   []byte
+	key   string
 	loff  uint64 // absolute effective loff
 	psize uint32
 }
@@ -243,24 +242,21 @@ type sparseIndexBruteForce struct {
 
 func newSparseIndexBruteForce() *sparseIndexBruteForce {
 	return &sparseIndexBruteForce{
-		anchors: []bfAnchor{{key: nil, loff: 0, psize: 0}},
+		anchors: []bfAnchor{{key: "", loff: 0, psize: 0}},
 	}
 }
 
-func bfKeyCompare(a, b []byte) int {
-	if a == nil && b == nil {
-		return 0
-	}
-	if a == nil {
+func bfKeyCompare(a, b string) int {
+	if a < b {
 		return -1
 	}
-	if b == nil {
+	if a > b {
 		return 1
 	}
-	return bytes.Compare(a, b)
+	return 0
 }
 
-func (bf *sparseIndexBruteForce) findLE(key []byte) int {
+func (bf *sparseIndexBruteForce) findLE(key string) int {
 	best := 0
 	for i, a := range bf.anchors {
 		if bfKeyCompare(a.key, key) <= 0 {
@@ -270,8 +266,8 @@ func (bf *sparseIndexBruteForce) findLE(key []byte) int {
 	return best
 }
 
-func (bf *sparseIndexBruteForce) insert(key []byte, loff uint64, psize uint32) {
-	a := bfAnchor{key: dupBytes(key), loff: loff, psize: psize}
+func (bf *sparseIndexBruteForce) insert(key string, loff uint64, psize uint32) {
+	a := bfAnchor{key: key, loff: loff, psize: psize}
 	idx := sort.Search(len(bf.anchors), func(i int) bool {
 		return bfKeyCompare(bf.anchors[i].key, key) > 0
 	})
@@ -280,7 +276,7 @@ func (bf *sparseIndexBruteForce) insert(key []byte, loff uint64, psize uint32) {
 	bf.anchors[idx] = a
 }
 
-func (bf *sparseIndexBruteForce) remove(key []byte) bool {
+func (bf *sparseIndexBruteForce) remove(key string) bool {
 	for i, a := range bf.anchors {
 		if bfKeyCompare(a.key, key) == 0 {
 			bf.anchors = append(bf.anchors[:i], bf.anchors[i+1:]...)
@@ -308,10 +304,10 @@ func (bf *sparseIndexBruteForce) allAnchors() []bfAnchor {
 
 // ====================== Helper functions ======================
 
-func testKeyFromInt(i int) []byte {
+func testKeyFromInt(i int) string {
 	buf := make([]byte, 8)
 	binary.BigEndian.PutUint64(buf, uint64(i))
-	return buf
+	return string(buf)
 }
 
 // effectiveLoff computes the absolute loff for an anchor at anchorIdx in node.
@@ -345,7 +341,7 @@ func allTreeAnchors(tree *memSparseIndexTree) []bfAnchor {
 }
 
 // sparseIndexTreeSubtreeMinKey descends to leftmost leaf and returns first key.
-func sparseIndexTreeSubtreeMinKey(node *memSparseIndexTreeNode) []byte {
+func sparseIndexTreeSubtreeMinKey(node *memSparseIndexTreeNode) string {
 	return memSparseIndexTreeFindSmallestKey(node)
 }
 
@@ -382,14 +378,14 @@ func buildTreeWithNAnchors(n int) (*memSparseIndexTree, *sparseIndexBruteForce) 
 		psize := uint32(100)
 		tree.findAnchorPos(key, &nh)
 		nh.idx++
-		nh.handlerInsert(dupBytes(key), loff+uint64(bf.anchors[bf.findLE(key)].psize), psize)
+		nh.handlerInsert(key, loff+uint64(bf.anchors[bf.findLE(key)].psize), psize)
 		nh.idx--
 		nh.shiftUpPropagate(int64(psize))
 		bf.anchors[bf.findLE(key)].psize += psize
 
 		bfIdx := bf.findLE(key)
 		bfLoff := bf.anchors[bfIdx].loff + uint64(bf.anchors[bfIdx].psize)
-		bf.insert(dupBytes(key), bfLoff, 0)
+		bf.insert(key, bfLoff, 0)
 		bf.shiftAfter(bf.findLE(key), int64(psize))
 		bf.anchors[bf.findLE(key)].psize = 0
 
@@ -417,10 +413,10 @@ func buildTreeSimple(n int) (*memSparseIndexTree, *sparseIndexBruteForce) {
 
 		tree.findAnchorPos(key, &nh)
 		nh.idx++
-		nh.handlerInsert(dupBytes(key), loff, psize)
+		nh.handlerInsert(key, loff, psize)
 		nh.idx--
 
-		bf.insert(dupBytes(key), loff, psize)
+		bf.insert(key, loff, psize)
 		nh = memSparseIndexTreeHandler{}
 	}
 	return tree, bf
@@ -447,7 +443,7 @@ func checkSparseIndexTreeInvariants(t testing.TB, tree *memSparseIndexTree, opDe
 	if tree.leafHead.count < 1 || tree.leafHead.anchors[0] == nil {
 		t.Fatalf("%s: INV-ST-3 violated: no sentinel at leafHead.anchors[0]", opDesc)
 	}
-	if tree.leafHead.anchors[0].key != nil {
+	if tree.leafHead.anchors[0].key != "" {
 		t.Fatalf("%s: INV-ST-3 violated: sentinel key is not nil: %v", opDesc, tree.leafHead.anchors[0].key)
 	}
 
@@ -559,8 +555,8 @@ func checkSparseIndexTreeInvariants(t testing.TB, tree *memSparseIndexTree, opDe
 		if !node.isLeaf {
 			for i := 0; i < node.count; i++ {
 				minKey := sparseIndexTreeSubtreeMinKey(node.children[i+1].node)
-				if !bytes.Equal(node.pivots[i], minKey) {
-					t.Fatalf("%s: INV-ST-7 violated: pivot[%d]=%x != subtreeMin=%x", opDesc, i, node.pivots[i], minKey)
+				if node.pivots[i] != minKey {
+					t.Fatalf("%s: INV-ST-7 violated: pivot[%d]=%q != subtreeMin=%q", opDesc, i, node.pivots[i], minKey)
 				}
 			}
 		}
@@ -576,7 +572,7 @@ func checkSparseIndexTreeInvariants(t testing.TB, tree *memSparseIndexTree, opDe
 			}
 		} else {
 			for i := node.count; i < flexMemSparseIndexTreeInternalCap; i++ {
-				if node.pivots[i] != nil {
+				if node.pivots[i] != "" {
 					t.Fatalf("%s: INV-ST-13 violated: stale pivot at internal[%d]", opDesc, i)
 				}
 			}
@@ -620,16 +616,16 @@ func totalTreeAnchors(tree *memSparseIndexTree) int {
 }
 
 // treeInsertAnchor is a helper that inserts an anchor into the tree like db.go does.
-func treeInsertAnchor(tree *memSparseIndexTree, key []byte, loff uint64, psize uint32) {
+func treeInsertAnchor(tree *memSparseIndexTree, key string, loff uint64, psize uint32) {
 	var nh memSparseIndexTreeHandler
 	tree.findAnchorPos(key, &nh)
 	nh.idx++
-	nh.handlerInsert(dupBytes(key), loff, psize)
+	nh.handlerInsert(key, loff, psize)
 	nh.idx--
 }
 
 // treeDeleteAnchor deletes an anchor from the tree like db.go does.
-func treeDeleteAnchor(tree *memSparseIndexTree, key []byte) bool {
+func treeDeleteAnchor(tree *memSparseIndexTree, key string) bool {
 	var nh memSparseIndexTreeHandler
 	tree.findAnchorPos(key, &nh)
 	node := nh.node
@@ -668,7 +664,7 @@ func TestSparseIndexTree_Create(t *testing.T) {
 	if tree.root.count != 1 {
 		t.Fatalf("root count should be 1, got %d", tree.root.count)
 	}
-	if tree.root.anchors[0] == nil || tree.root.anchors[0].key != nil {
+	if tree.root.anchors[0] == nil || tree.root.anchors[0].key != "" {
 		t.Fatal("sentinel missing or has non-nil key")
 	}
 	if tree.root.parent != nil {
@@ -680,7 +676,7 @@ func TestSparseIndexTree_Create(t *testing.T) {
 func TestSparseIndexTree_FindAnchorPosEmpty(t *testing.T) {
 	tree := memSparseIndexTreeCreate()
 	var nh memSparseIndexTreeHandler
-	tree.findAnchorPos([]byte("anything"), &nh)
+	tree.findAnchorPos("anything", &nh)
 	if nh.idx != 0 {
 		t.Fatalf("expected idx=0 for single-node tree, got %d", nh.idx)
 	}
@@ -692,20 +688,20 @@ func TestSparseIndexTree_FindAnchorPosEmpty(t *testing.T) {
 func TestSparseIndexTree_FindAnchorPosNilKey(t *testing.T) {
 	tree := memSparseIndexTreeCreate()
 	var nh memSparseIndexTreeHandler
-	tree.findAnchorPos(nil, &nh)
+	tree.findAnchorPos("", &nh)
 	if nh.idx != 0 {
-		t.Fatalf("expected idx=0 for nil key, got %d", nh.idx)
+		t.Fatalf("expected idx=0 for empty key, got %d", nh.idx)
 	}
 }
 
 func TestSparseIndexTree_SingleInsert(t *testing.T) {
 	tree := memSparseIndexTreeCreate()
-	key := []byte("hello")
+	key := "hello"
 	treeInsertAnchor(tree, key, 100, 50)
 	if tree.root.count != 2 {
 		t.Fatalf("expected count=2, got %d", tree.root.count)
 	}
-	if !bytes.Equal(tree.root.anchors[1].key, key) {
+	if tree.root.anchors[1].key != key {
 		t.Fatalf("expected key %q at index 1, got %q", key, tree.root.anchors[1].key)
 	}
 	checkSparseIndexTreeInvariants(t, tree, "SingleInsert")
@@ -745,7 +741,7 @@ func TestSparseIndexTree_InsertMultipleRandom(t *testing.T) {
 		loff := uint64(i * 100)
 		psize := uint32(50)
 		treeInsertAnchor(tree, key, loff, psize)
-		bf.insert(dupBytes(key), loff, psize)
+		bf.insert(key, loff, psize)
 	}
 	checkSparseIndexTreeInvariants(t, tree, "InsertMultipleRandom")
 	checkSparseOracleAgreement(t, tree, bf, "InsertMultipleRandom")
@@ -794,8 +790,8 @@ func TestSparseIndexTree_LeafSplitBalance(t *testing.T) {
 	// Pivot should equal right child's first key
 	pivot := tree.root.pivots[0]
 	rightFirstKey := tree.root.children[1].node.anchors[0].key
-	if !bytes.Equal(pivot, rightFirstKey) {
-		t.Fatalf("pivot %x != right child first key %x", pivot, rightFirstKey)
+	if pivot != rightFirstKey {
+		t.Fatalf("pivot %q != right child first key %q", pivot, rightFirstKey)
 	}
 	checkSparseIndexTreeInvariants(t, tree, "LeafSplitBalance")
 }
@@ -820,22 +816,22 @@ func TestSparseIndexTree_FindPosInternal(t *testing.T) {
 	// Create a synthetic internal node
 	tree := memSparseIndexTreeCreate()
 	node := &memSparseIndexTreeNode{tree: tree}
-	node.pivots[0] = []byte("bbb")
-	node.pivots[1] = []byte("ddd")
-	node.pivots[2] = []byte("fff")
+	node.pivots[0] = "bbb"
+	node.pivots[1] = "ddd"
+	node.pivots[2] = "fff"
 	node.count = 3
 
 	tests := []struct {
-		key    []byte
+		key    string
 		expect int
 	}{
-		{[]byte("aaa"), 0},
-		{[]byte("bbb"), 1},
-		{[]byte("ccc"), 1},
-		{[]byte("ddd"), 2},
-		{[]byte("eee"), 2},
-		{[]byte("fff"), 3},
-		{[]byte("zzz"), 3},
+		{"aaa", 0},
+		{"bbb", 1},
+		{"ccc", 1},
+		{"ddd", 2},
+		{"eee", 2},
+		{"fff", 3},
+		{"zzz", 3},
 	}
 	for _, tc := range tests {
 		got := memSparseIndexTreeFindPosInternal(node, tc.key)
@@ -849,26 +845,26 @@ func TestSparseIndexTree_FindPosLeafLE(t *testing.T) {
 	tree := memSparseIndexTreeCreate()
 	node := tree.root
 	// Add some anchors
-	keys := [][]byte{nil, []byte("bbb"), []byte("ddd"), []byte("fff")}
-	for i, k := range keys {
-		node.anchors[i] = &dbAnchor{key: k, loff: int64(i * 100)}
+	skeys := []string{"", "bbb", "ddd", "fff"}
+	for i, k := range skeys {
+		node.anchors[i] = &dbAnchor{key: k, loff: int64(i * 100), partitionID: cachePartitionID(k)}
 	}
 	node.count = 4
 
 	tests := []struct {
-		key    []byte
+		key    string
 		expect int
 	}{
-		{nil, 0},            // exact match
-		{[]byte("aaa"), 0},  // between nil and bbb
-		{[]byte("bbb"), 1},  // exact match
-		{[]byte("ccc"), 1},  // between bbb and ddd
-		{[]byte("ddd"), 2},  // exact match
-		{[]byte("eee"), 2},  // between ddd and fff
-		{[]byte("fff"), 3},  // exact match
-		{[]byte("zzz"), 3},  // after all
-		{[]byte("aaaa"), 0}, // before bbb
-		{[]byte("\x00"), 0}, // before bbb (but after nil)
+		{"", 0},       // exact match
+		{"aaa", 0},    // between "" and bbb
+		{"bbb", 1},    // exact match
+		{"ccc", 1},    // between bbb and ddd
+		{"ddd", 2},    // exact match
+		{"eee", 2},    // between ddd and fff
+		{"fff", 3},    // exact match
+		{"zzz", 3},    // after all
+		{"aaaa", 0},   // before bbb
+		{"\x00", 0},   // before bbb (but after "")
 	}
 	for _, tc := range tests {
 		got := memSparseIndexTreeFindPosLeafLE(node, tc.key)
@@ -924,7 +920,7 @@ func TestSparseIndexTree_ShiftUpPropagateAcrossLevels(t *testing.T) {
 		loff := uint64(i * 100)
 		psize := uint32(100)
 		treeInsertAnchor(tree, key, loff, psize)
-		bf.insert(dupBytes(key), loff, psize)
+		bf.insert(key, loff, psize)
 	}
 	checkSparseIndexTreeInvariants(t, tree, "ShiftAcrossLevels-before")
 
@@ -948,7 +944,7 @@ func TestSparseIndexTree_ShiftConsistency(t *testing.T) {
 		loff := uint64(i * 100)
 		psize := uint32(100)
 		treeInsertAnchor(tree, key, loff, psize)
-		bf.insert(dupBytes(key), loff, psize)
+		bf.insert(key, loff, psize)
 
 		var nh memSparseIndexTreeHandler
 		tree.findAnchorPos(key, &nh)
@@ -1008,7 +1004,7 @@ func TestSparseIndexTree_DeleteLeftmostPivotUpdate(t *testing.T) {
 	}
 	// Delete the first key of the right child
 	rightChild := tree.root.children[1].node
-	firstKey := dupBytes(rightChild.anchors[0].key)
+	firstKey := rightChild.anchors[0].key
 	treeDeleteAnchor(tree, firstKey)
 	checkSparseIndexTreeInvariants(t, tree, "DeleteLeftmostPivotUpdate")
 }
@@ -1025,9 +1021,9 @@ func TestSparseIndexTree_RecycleNodeSiblingBecomesRoot(t *testing.T) {
 	}
 	// Delete all non-sentinel keys from the right child to trigger recycle
 	rightChild := tree.root.children[1].node
-	keysToDelete := make([][]byte, rightChild.count)
+	keysToDelete := make([]string, rightChild.count)
 	for i := 0; i < rightChild.count; i++ {
-		keysToDelete[i] = dupBytes(rightChild.anchors[i].key)
+		keysToDelete[i] = rightChild.anchors[i].key
 	}
 	for _, key := range keysToDelete {
 		treeDeleteAnchor(tree, key)
@@ -1163,7 +1159,7 @@ func TestSparseIndexTree_UpdateSmallestKey(t *testing.T) {
 	// Leftmost chain: updating smallest key of leftmost subtree should be a no-op
 	// (memSparseIndexTreeUpdateSmallestKey only updates if pIdx > 0)
 	leftLeaf := tree.leafHead
-	memSparseIndexTreeUpdateSmallestKey(leftLeaf, []byte("newkey"))
+	memSparseIndexTreeUpdateSmallestKey(leftLeaf, "newkey")
 	// This is a no-op because leftLeaf is always child 0 up the chain
 	checkSparseIndexTreeInvariants(t, tree, "UpdateSmallestKey-leftmost")
 
@@ -1180,8 +1176,8 @@ func TestSparseIndexTree_UpdateSmallestKey(t *testing.T) {
 			}
 			targetLeaf = n
 		}
-		newKey := []byte("updated")
-		targetLeaf.anchors[0].key = dupBytes(newKey)
+		newKey := "updated"
+		targetLeaf.anchors[0].key = newKey
 		memSparseIndexTreeUpdateSmallestKey(targetLeaf, newKey)
 		// The relevant pivot should now equal newKey
 		// (checking via invariant check would fail since we changed the actual key but not consistently)
@@ -1193,8 +1189,8 @@ func TestSparseIndexTree_UpdateSmallestKey(t *testing.T) {
 			p = p.parent
 		}
 		if p != nil {
-			if !bytes.Equal(p.pivots[pIdx-1], newKey) {
-				t.Fatalf("pivot not updated: got %x, want %x", p.pivots[pIdx-1], newKey)
+			if p.pivots[pIdx-1] != newKey {
+				t.Fatalf("pivot not updated: got %q, want %q", p.pivots[pIdx-1], newKey)
 			}
 		}
 	}
@@ -1223,7 +1219,7 @@ func TestSparseIndexTree_RebasePreservesEffectiveLoff(t *testing.T) {
 		key := testKeyFromInt(i)
 		loff := baseLoff + uint64(i*100)
 		treeInsertAnchor(tree, key, loff, 100)
-		bf.insert(dupBytes(key), loff, 100)
+		bf.insert(key, loff, 100)
 	}
 	// After rebase, effective loffs should still match oracle
 	checkSparseIndexTreeInvariants(t, tree, "RebasePreservesEffectiveLoff")
@@ -1296,17 +1292,17 @@ func TestSparseIndexTree_FindSmallestKey(t *testing.T) {
 	tree := memSparseIndexTreeCreate()
 	// Smallest key in tree with just sentinel should be nil
 	got := memSparseIndexTreeFindSmallestKey(tree.root)
-	if got != nil {
-		t.Fatalf("expected nil, got %x", got)
+	if got != "" {
+		t.Fatalf("expected empty, got %q", got)
 	}
 
-	// After inserts, smallest should still be nil (sentinel)
+	// After inserts, smallest should still be "" (sentinel)
 	for i := 1; i <= 200; i++ {
 		treeInsertAnchor(tree, testKeyFromInt(i), uint64(i*100), 100)
 	}
 	got = memSparseIndexTreeFindSmallestKey(tree.root)
-	if got != nil {
-		t.Fatalf("expected nil (sentinel), got %x", got)
+	if got != "" {
+		t.Fatalf("expected empty (sentinel), got %q", got)
 	}
 }
 
@@ -1335,7 +1331,7 @@ func TestSparseIndexTree_LargeRandom(t *testing.T) {
 		loff := uint64(i * 100)
 		psize := uint32(50 + rng.Intn(200))
 		treeInsertAnchor(tree, key, loff, psize)
-		bf.insert(dupBytes(key), loff, psize)
+		bf.insert(key, loff, psize)
 	}
 	checkSparseIndexTreeInvariants(t, tree, "LargeRandom")
 	checkSparseOracleAgreement(t, tree, bf, "LargeRandom")
@@ -1345,7 +1341,7 @@ func TestSparseIndexTree_InsertDeleteMixed(t *testing.T) {
 	tree := memSparseIndexTreeCreate()
 	bf := newSparseIndexBruteForce()
 	rng := rand.New(rand.NewSource(777))
-	var insertedKeys [][]byte
+	var insertedKeys []string
 	used := make(map[int]bool)
 
 	// 500 inserts with unique keys
@@ -1359,8 +1355,8 @@ func TestSparseIndexTree_InsertDeleteMixed(t *testing.T) {
 		loff := uint64(i * 100)
 		psize := uint32(100)
 		treeInsertAnchor(tree, key, loff, psize)
-		bf.insert(dupBytes(key), loff, psize)
-		insertedKeys = append(insertedKeys, dupBytes(key))
+		bf.insert(key, loff, psize)
+		insertedKeys = append(insertedKeys, key)
 	}
 	checkSparseIndexTreeInvariants(t, tree, "Mixed-after500insert")
 	checkSparseOracleAgreement(t, tree, bf, "Mixed-after500insert")
@@ -1390,8 +1386,8 @@ func TestSparseIndexTree_InsertDeleteMixed(t *testing.T) {
 		loff := uint64((500 + i) * 100)
 		psize := uint32(100)
 		treeInsertAnchor(tree, key, loff, psize)
-		bf.insert(dupBytes(key), loff, psize)
-		insertedKeys = append(insertedKeys, dupBytes(key))
+		bf.insert(key, loff, psize)
+		insertedKeys = append(insertedKeys, key)
 	}
 	checkSparseIndexTreeInvariants(t, tree, "Mixed-after300insert")
 	checkSparseOracleAgreement(t, tree, bf, "Mixed-after300insert")
@@ -1426,7 +1422,7 @@ func TestSparseIndexTree_CallerPatternInsert(t *testing.T) {
 		loff := uint64(anchor.loff) + uint64(nh.shift) + uint64(anchor.psize)
 
 		nh.idx++
-		nh.handlerInsert(dupBytes(key), loff, psize)
+		nh.handlerInsert(key, loff, psize)
 		nh.idx--
 		nh.shiftUpPropagate(int64(psize))
 		anchor.psize += psize // use held pointer, safe across splits
@@ -1448,7 +1444,7 @@ func TestSparseIndexTree_CallerPatternDelete(t *testing.T) {
 		loff := uint64(i * 100)
 		psize := uint32(100)
 		treeInsertAnchor(tree, key, loff, psize)
-		bf.insert(dupBytes(key), loff, psize)
+		bf.insert(key, loff, psize)
 	}
 
 	// Delete pattern: find anchor, remove from node, update tree, recycle if empty
@@ -1510,7 +1506,7 @@ func FuzzSparseIndexTree(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		tree := memSparseIndexTreeCreate()
 		bf := newSparseIndexBruteForce()
-		var insertedKeys [][]byte
+		var insertedKeys []string
 		usedKeys := make(map[int]bool)
 		nextUnique := 100000 // start high to avoid collisions with keyVal
 
@@ -1539,8 +1535,8 @@ func FuzzSparseIndexTree(f *testing.F) {
 				key := testKeyFromInt(keyVal)
 				loff := uint64(len(insertedKeys) * 100)
 				treeInsertAnchor(tree, key, loff, psize)
-				bf.insert(dupBytes(key), loff, psize)
-				insertedKeys = append(insertedKeys, dupBytes(key))
+				bf.insert(key, loff, psize)
+				insertedKeys = append(insertedKeys, key)
 
 			case 1: // delete
 				if len(insertedKeys) == 0 {
@@ -1601,7 +1597,7 @@ func TestSparseIndexTree_RandomizedStress(t *testing.T) {
 	tree := memSparseIndexTreeCreate()
 	bf := newSparseIndexBruteForce()
 	rng := rand.New(rand.NewSource(31415))
-	var insertedKeys [][]byte
+	var insertedKeys []string
 	usedKeys := make(map[int]bool)
 	nextKey := 0
 
@@ -1618,8 +1614,8 @@ func TestSparseIndexTree_RandomizedStress(t *testing.T) {
 			loff := uint64(iter * 100)
 			psize := uint32(10 + rng.Intn(200))
 			treeInsertAnchor(tree, key, loff, psize)
-			bf.insert(dupBytes(key), loff, psize)
-			insertedKeys = append(insertedKeys, dupBytes(key))
+			bf.insert(key, loff, psize)
+			insertedKeys = append(insertedKeys, key)
 
 		case 2: // delete
 			if len(insertedKeys) == 0 {
@@ -1676,7 +1672,7 @@ func BenchmarkSparseIndexTree_FindAnchorPos(b *testing.B) {
 	for i := 1; i <= 10000; i++ {
 		treeInsertAnchor(tree, testKeyFromInt(i), uint64(i*100), 100)
 	}
-	keys := make([][]byte, 1000)
+	keys := make([]string, 1000)
 	for i := range keys {
 		keys[i] = testKeyFromInt(i + 1)
 	}

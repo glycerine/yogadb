@@ -609,9 +609,9 @@ func BenchmarkReadWriteYogaDB(b *testing.B) {
 				rng := rand.New(rand.NewSource(testBenchSeed))
 				for pb.Next() {
 					if rng.Float32() < readFrac {
-						db.Get(randomKey2(rng))
+						db.Get(string(randomKey2(rng)))
 					} else {
-						db.Put(randomKey2(rng), value)
+						db.Put(string(randomKey2(rng)), value)
 					}
 				}
 			})

@@ -133,8 +133,8 @@ func TestFlexDB_VLOG_Delete(t *testing.T) {
 func TestFlexDB_VLOG_Batch(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	b := db.NewBatch()
-	b.Set([]byte("small"), []byte("tiny"))
-	b.Set([]byte("big"), []byte(makeTestValue(200)))
+	b.Set("small", []byte("tiny"))
+	b.Set("big", []byte(makeTestValue(200)))
 	if _, err := b.Commit(false); err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestFlexDB_VLOG_Ascend(t *testing.T) {
 	// Ascend and verify values
 	var gotKeys []string
 	db.View(func(roDB ReadOnlyDB) error {
-		roDB.Ascend(nil, func(key, value []byte) bool {
+		roDB.Ascend("", func(key string, value []byte) bool {
 			k := string(key)
 			gotKeys = append(gotKeys, k)
 			want := vals[k]
@@ -179,7 +179,7 @@ func TestFlexDB_VLOG_Ascend(t *testing.T) {
 	// Descend
 	var descKeys []string
 	db.View(func(roDB ReadOnlyDB) error {
-		roDB.Descend(nil, func(key, value []byte) bool {
+		roDB.Descend("", func(key string, value []byte) bool {
 			k := string(key)
 			descKeys = append(descKeys, k)
 			want := vals[k]
@@ -202,7 +202,7 @@ func TestFlexDB_VLOG_Merge(t *testing.T) {
 	mustPut(t, db, "mkey", val)
 	db.Sync()
 
-	err := db.Merge([]byte("mkey"), func(old []byte, exists bool) ([]byte, bool) {
+	err := db.Merge("mkey", func(old []byte, exists bool) ([]byte, bool) {
 		if !exists {
 			t.Fatal("Merge: key should exist")
 		}

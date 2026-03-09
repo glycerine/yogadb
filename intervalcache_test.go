@@ -1,7 +1,6 @@
 package yogadb
 
 import (
-	"bytes"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -157,20 +156,20 @@ go test -count=1 ./...
 // ====================== Test Helpers ======================
 
 func makeKV(key, value string, hlc int64) KV {
-	return KV{Key: []byte(key), Value: []byte(value), Hlc: HLC(hlc)}
+	return KV{Key: key, Value: []byte(value), Hlc: HLC(hlc)}
 }
 
 func makeSortedKVs(keys []string) []KV {
 	sort.Strings(keys)
 	kvs := make([]KV, len(keys))
 	for i, k := range keys {
-		kvs[i] = KV{Key: []byte(k), Value: []byte("v-" + k), Hlc: HLC(int64(i + 1))}
+		kvs[i] = KV{Key: k, Value: []byte("v-" + k), Hlc: HLC(int64(i + 1))}
 	}
 	return kvs
 }
 
 func makeAnchor(key string) *dbAnchor {
-	return &dbAnchor{key: []byte(key)}
+	return &dbAnchor{key: key, partitionID: cachePartitionID(key)}
 }
 
 func makeCacheEntry(kvs []KV) *intervalCacheEntry {
@@ -259,7 +258,7 @@ func checkCountAndSize(t testing.TB, fce *intervalCacheEntry) {
 func checkSorted(t testing.TB, fce *intervalCacheEntry) {
 	t.Helper()
 	for i := 1; i < fce.count; i++ {
-		if bytes.Compare(fce.kvs[i-1].Key, fce.kvs[i].Key) >= 0 {
+		if fce.kvs[i-1].Key >= fce.kvs[i].Key {
 			t.Fatalf("kvs not sorted at position %d: %q >= %q", i, fce.kvs[i-1].Key, fce.kvs[i].Key)
 		}
 	}
@@ -280,7 +279,7 @@ func TestIntervalCache_DedupBasic(t *testing.T) {
 	if len(out) != 1 || len(fps) != 1 {
 		t.Fatalf("dedup single: len=%d fps=%d", len(out), len(fps))
 	}
-	if !bytes.Equal(out[0].Key, []byte("a")) {
+	if out[0].Key != "a" {
 		t.Fatalf("dedup single: key = %q", out[0].Key)
 	}
 
@@ -364,7 +363,7 @@ func TestIntervalCache_DedupSortedOutput(t *testing.T) {
 	}
 	// Check strictly sorted
 	for i := 1; i < len(out); i++ {
-		if bytes.Compare(out[i-1].Key, out[i].Key) >= 0 {
+		if out[i-1].Key >= out[i].Key {
 			t.Fatalf("not strictly sorted at %d: %q >= %q", i, out[i-1].Key, out[i].Key)
 		}
 	}
@@ -385,33 +384,33 @@ func TestIntervalCache_FindKeyGE(t *testing.T) {
 
 	// Exact matches
 	for i, k := range keys {
-		idx, exact := intervalCacheEntryFindKeyGE(fce, []byte(k))
+		idx, exact := intervalCacheEntryFindKeyGE(fce, k)
 		if !exact || idx != i {
 			t.Fatalf("FindKeyGE(%q) = (%d,%v), want (%d,true)", k, idx, exact, i)
 		}
 	}
 
 	// Before all: should return (0, false)
-	idx, exact := intervalCacheEntryFindKeyGE(fce, []byte("aaa"))
+	idx, exact := intervalCacheEntryFindKeyGE(fce, "aaa")
 	if exact || idx != 0 {
 		t.Fatalf("FindKeyGE(aaa) = (%d,%v), want (0,false)", idx, exact)
 	}
 
 	// After all: should return (len, false)
-	idx, exact = intervalCacheEntryFindKeyGE(fce, []byte("zzz"))
+	idx, exact = intervalCacheEntryFindKeyGE(fce, "zzz")
 	if exact || idx != 5 {
 		t.Fatalf("FindKeyGE(zzz) = (%d,%v), want (5,false)", idx, exact)
 	}
 
 	// Between banana and cherry
-	idx, exact = intervalCacheEntryFindKeyGE(fce, []byte("candy"))
+	idx, exact = intervalCacheEntryFindKeyGE(fce, "candy")
 	if exact || idx != 2 {
 		t.Fatalf("FindKeyGE(candy) = (%d,%v), want (2,false)", idx, exact)
 	}
 
 	// Empty entry
 	empty := makeCacheEntry(nil)
-	idx, exact = intervalCacheEntryFindKeyGE(empty, []byte("anything"))
+	idx, exact = intervalCacheEntryFindKeyGE(empty, "anything")
 	if exact || idx != 0 {
 		t.Fatalf("FindKeyGE on empty = (%d,%v), want (0,false)", idx, exact)
 	}
@@ -423,7 +422,7 @@ func TestIntervalCache_FindKeyEQ(t *testing.T) {
 
 	// Exact matches
 	for i, k := range keys {
-		idx, found := intervalCacheEntryFindKeyEQ(fce, []byte(k))
+		idx, found := intervalCacheEntryFindKeyEQ(fce, k)
 		if !found || idx != i {
 			t.Fatalf("FindKeyEQ(%q) = (%d,%v), want (%d,true)", k, idx, found, i)
 		}
@@ -431,7 +430,7 @@ func TestIntervalCache_FindKeyEQ(t *testing.T) {
 
 	// Missing keys
 	for _, k := range []string{"aaa", "beta", "foxtrot", "zzz"} {
-		idx, found := intervalCacheEntryFindKeyEQ(fce, []byte(k))
+		idx, found := intervalCacheEntryFindKeyEQ(fce, k)
 		if found {
 			t.Fatalf("FindKeyEQ(%q) = (%d,true), want (_,false)", k, idx)
 		}
@@ -451,16 +450,15 @@ func TestIntervalCache_FindKeyAgreement(t *testing.T) {
 
 	// All existing keys: GE and EQ should both find them
 	for _, k := range keys {
-		kb := []byte(k)
-		idxGE, exactGE := intervalCacheEntryFindKeyGE(fce, kb)
-		idxEQ, foundEQ := intervalCacheEntryFindKeyEQ(fce, kb)
+		idxGE, exactGE := intervalCacheEntryFindKeyGE(fce, k)
+		idxEQ, foundEQ := intervalCacheEntryFindKeyEQ(fce, k)
 		if !exactGE {
 			t.Fatalf("FindKeyGE(%q) not exact", k)
 		}
 		if !foundEQ {
 			t.Fatalf("FindKeyEQ(%q) not found", k)
 		}
-		if !bytes.Equal(fce.kvs[idxGE].Key, kb) || !bytes.Equal(fce.kvs[idxEQ].Key, kb) {
+		if fce.kvs[idxGE].Key != k || fce.kvs[idxEQ].Key != k {
 			t.Fatalf("key mismatch for %q", k)
 		}
 	}
@@ -469,9 +467,8 @@ func TestIntervalCache_FindKeyAgreement(t *testing.T) {
 	rng := rand.New(rand.NewSource(42))
 	for i := 0; i < 50; i++ {
 		k := fmt.Sprintf("key-%04d", rng.Intn(200))
-		kb := []byte(k)
-		_, foundEQ := intervalCacheEntryFindKeyEQ(fce, kb)
-		_, exactGE := intervalCacheEntryFindKeyGE(fce, kb)
+		_, foundEQ := intervalCacheEntryFindKeyEQ(fce, k)
+		_, exactGE := intervalCacheEntryFindKeyGE(fce, k)
 		// If EQ finds it, GE must also find it
 		if foundEQ && !exactGE {
 			t.Fatalf("EQ found %q but GE didn't", k)
@@ -774,7 +771,7 @@ func TestIntervalCache_CalibrateAccessChance(t *testing.T) {
 func TestIntervalCache_PartitionID(t *testing.T) {
 	// Determinism: same key → same partition
 	for i := 0; i < 100; i++ {
-		key := []byte(fmt.Sprintf("test-key-%d", i))
+		key := fmt.Sprintf("test-key-%d", i)
 		id1 := cachePartitionID(key)
 		id2 := cachePartitionID(key)
 		if id1 != id2 {
@@ -785,30 +782,30 @@ func TestIntervalCache_PartitionID(t *testing.T) {
 	// Range: all results in [0, 1023]
 	rng := rand.New(rand.NewSource(42))
 	for i := 0; i < 10000; i++ {
-		key := make([]byte, rng.Intn(100)+1)
-		rng.Read(key)
-		id := cachePartitionID(key)
+		buf := make([]byte, rng.Intn(100)+1)
+		rng.Read(buf)
+		id := cachePartitionID(string(buf))
 		if id < 0 || id >= intervalCachePartitionCount {
-			t.Fatalf("cachePartitionID(%q) = %d, out of range [0,%d)", key, id, intervalCachePartitionCount)
+			t.Fatalf("cachePartitionID(%q) = %d, out of range [0,%d)", buf, id, intervalCachePartitionCount)
 		}
 	}
 
 	// Edge cases
-	id := cachePartitionID(nil)
-	if id < 0 || id >= intervalCachePartitionCount {
-		t.Fatalf("cachePartitionID(nil) = %d", id)
-	}
-
-	id = cachePartitionID([]byte{})
+	id := cachePartitionID("")
 	if id < 0 || id >= intervalCachePartitionCount {
 		t.Fatalf("cachePartitionID(empty) = %d", id)
 	}
 
-	longKey := make([]byte, 10000)
-	for i := range longKey {
-		longKey[i] = byte(i % 256)
+	id = cachePartitionID("")
+	if id < 0 || id >= intervalCachePartitionCount {
+		t.Fatalf("cachePartitionID(empty) = %d", id)
 	}
-	id = cachePartitionID(longKey)
+
+	longBuf := make([]byte, 10000)
+	for i := range longBuf {
+		longBuf[i] = byte(i % 256)
+	}
+	id = cachePartitionID(string(longBuf))
 	if id < 0 || id >= intervalCachePartitionCount {
 		t.Fatalf("cachePartitionID(long) = %d", id)
 	}
@@ -843,20 +840,19 @@ func FuzzIntervalCache_Dedup(f *testing.F) {
 	f.Fuzz(func(t *testing.T, k1, k2, k3 []byte, h1, h2, h3 int64) {
 		// Build a sorted KV slice with potential duplicates
 		kvs := []KV{
-			{Key: k1, Value: []byte("v1"), Hlc: HLC(h1)},
-			{Key: k2, Value: []byte("v2"), Hlc: HLC(h2)},
-			{Key: k3, Value: []byte("v3"), Hlc: HLC(h3)},
+			{Key: string(k1), Value: []byte("v1"), Hlc: HLC(h1)},
+			{Key: string(k2), Value: []byte("v2"), Hlc: HLC(h2)},
+			{Key: string(k3), Value: []byte("v3"), Hlc: HLC(h3)},
 		}
 		sort.SliceStable(kvs, func(i, j int) bool {
-			return bytes.Compare(kvs[i].Key, kvs[j].Key) < 0
+			return kvs[i].Key < kvs[j].Key
 		})
 
 		// Count distinct keys and max HLCs
 		maxHLC := make(map[string]HLC)
 		for _, kv := range kvs {
-			k := string(kv.Key)
-			if existing, ok := maxHLC[k]; !ok || kv.Hlc > existing {
-				maxHLC[k] = kv.Hlc
+			if existing, ok := maxHLC[kv.Key]; !ok || kv.Hlc > existing {
+				maxHLC[kv.Key] = kv.Hlc
 			}
 		}
 
@@ -869,14 +865,14 @@ func FuzzIntervalCache_Dedup(f *testing.F) {
 
 		// INV-IC-2: strictly sorted (or equal adjacent keys means bug)
 		for i := 1; i < len(out); i++ {
-			if bytes.Compare(out[i-1].Key, out[i].Key) >= 0 {
+			if out[i-1].Key >= out[i].Key {
 				t.Fatalf("not sorted at %d", i)
 			}
 		}
 
 		// INV-IC-1: highest HLC preserved
 		for _, kv := range out {
-			expected := maxHLC[string(kv.Key)]
+			expected := maxHLC[kv.Key]
 			if kv.Hlc != expected {
 				t.Fatalf("key %q: hlc=%d, want %d", kv.Key, kv.Hlc, expected)
 			}
@@ -908,25 +904,24 @@ func FuzzIntervalCache_FindKey(f *testing.F) {
 	f.Add([]byte("a"), []byte("m"), []byte("z"), []byte("m"))
 	f.Fuzz(func(t *testing.T, k1, k2, k3, search []byte) {
 		// Build a sorted, deduplicated entry
-		keys := [][]byte{k1, k2, k3}
-		sort.Slice(keys, func(i, j int) bool {
-			return bytes.Compare(keys[i], keys[j]) < 0
-		})
+		skeys := []string{string(k1), string(k2), string(k3)}
+		sort.Strings(skeys)
 		// Remove duplicates
 		var uniq []KV
-		for i, k := range keys {
-			if i == 0 || !bytes.Equal(k, keys[i-1]) {
+		for i, k := range skeys {
+			if i == 0 || k != skeys[i-1] {
 				uniq = append(uniq, KV{Key: k, Value: []byte("v"), Hlc: HLC(int64(i + 1))})
 			}
 		}
 		fce := makeCacheEntry(uniq)
 
-		idxGE, exactGE := intervalCacheEntryFindKeyGE(fce, search)
-		idxEQ, foundEQ := intervalCacheEntryFindKeyEQ(fce, search)
+		searchStr := string(search)
+		idxGE, exactGE := intervalCacheEntryFindKeyGE(fce, searchStr)
+		idxEQ, foundEQ := intervalCacheEntryFindKeyEQ(fce, searchStr)
 
 		// INV-IC-6: if EQ finds it, GE must also find it
 		if foundEQ && !exactGE {
-			t.Fatalf("EQ found %q but GE didn't", search)
+			t.Fatalf("EQ found %q but GE didn't", searchStr)
 		}
 
 		// INV-IC-4: verify GE position
@@ -934,7 +929,7 @@ func FuzzIntervalCache_FindKey(f *testing.F) {
 			if idxGE < 0 || idxGE >= fce.count {
 				t.Fatalf("GE exact idx=%d out of range [0,%d)", idxGE, fce.count)
 			}
-			if !bytes.Equal(fce.kvs[idxGE].Key, search) {
+			if fce.kvs[idxGE].Key != searchStr {
 				t.Fatalf("GE exact but key mismatch")
 			}
 		} else {
@@ -943,12 +938,12 @@ func FuzzIntervalCache_FindKey(f *testing.F) {
 				t.Fatalf("GE inexact idx=%d out of range [0,%d]", idxGE, fce.count)
 			}
 			if idxGE > 0 {
-				if bytes.Compare(fce.kvs[idxGE-1].Key, search) >= 0 {
+				if fce.kvs[idxGE-1].Key >= searchStr {
 					t.Fatalf("GE inexact: key before idx >= search")
 				}
 			}
 			if idxGE < fce.count {
-				if bytes.Compare(fce.kvs[idxGE].Key, search) < 0 {
+				if fce.kvs[idxGE].Key < searchStr {
 					t.Fatalf("GE inexact: key at idx < search")
 				}
 			}
@@ -959,7 +954,7 @@ func FuzzIntervalCache_FindKey(f *testing.F) {
 			if idxEQ < 0 || idxEQ >= fce.count {
 				t.Fatalf("EQ found idx=%d out of range", idxEQ)
 			}
-			if !bytes.Equal(fce.kvs[idxEQ].Key, search) {
+			if fce.kvs[idxEQ].Key != searchStr {
 				t.Fatalf("EQ found but key mismatch")
 			}
 		}
@@ -971,13 +966,14 @@ func FuzzIntervalCache_Mutations(f *testing.F) {
 	f.Fuzz(func(t *testing.T, op uint8, key, val []byte) {
 		p := makePartition(1 << 30) // large cap to avoid eviction
 		fce := makeCacheEntry(makeSortedKVs([]string{"b", "d", "f", "h"}))
-		kv := KV{Key: key, Value: val, Hlc: 1}
+		keyStr := string(key)
+		kv := KV{Key: keyStr, Value: val, Hlc: 1}
 
 		switch op % 3 {
 		case 0: // Insert
-			idx, _ := intervalCacheEntryFindKeyGE(fce, key)
+			idx, _ := intervalCacheEntryFindKeyGE(fce, keyStr)
 			// Only insert if key doesn't already exist at idx
-			if idx < fce.count && bytes.Equal(fce.kvs[idx].Key, key) {
+			if idx < fce.count && fce.kvs[idx].Key == keyStr {
 				return // skip: key already present
 			}
 			prevCount := fce.count
@@ -995,7 +991,7 @@ func FuzzIntervalCache_Mutations(f *testing.F) {
 			}
 			idx := int(op) % fce.count
 			prevCount := fce.count
-			kv.Key = append([]byte{}, fce.kvs[idx].Key...) // same key
+			kv.Key = fce.kvs[idx].Key // same key
 			p.cacheEntryReplace(fce, kv, idx)
 			// INV-IC-15: count unchanged
 			if fce.count != prevCount {
@@ -1029,13 +1025,9 @@ func BenchmarkIntervalCache_FindKeyEQ(b *testing.B) {
 		keys[i] = fmt.Sprintf("key-%06d", i)
 	}
 	fce := makeCacheEntry(makeSortedKVs(keys))
-	searchKeys := make([][]byte, 100)
-	for i := range searchKeys {
-		searchKeys[i] = []byte(keys[i])
-	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		intervalCacheEntryFindKeyEQ(fce, searchKeys[i%100])
+		intervalCacheEntryFindKeyEQ(fce, keys[i%100])
 	}
 }
 
@@ -1045,13 +1037,9 @@ func BenchmarkIntervalCache_FindKeyGE(b *testing.B) {
 		keys[i] = fmt.Sprintf("key-%06d", i)
 	}
 	fce := makeCacheEntry(makeSortedKVs(keys))
-	searchKeys := make([][]byte, 100)
-	for i := range searchKeys {
-		searchKeys[i] = []byte(keys[i])
-	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		intervalCacheEntryFindKeyGE(fce, searchKeys[i%100])
+		intervalCacheEntryFindKeyGE(fce, keys[i%100])
 	}
 }
 

@@ -135,10 +135,10 @@ func main() {
 		// Add the key to the batch.
 		if dupKeyToVal {
 			// add key as value too, so that we can see our VLOG get used.
-			err = batch.Set(key, key)
+			err = batch.Set(string(key), key)
 		} else {
-			//err = batch.Set(key, []byte{})
-			err = batch.Set(key, nil)
+			//err = batch.Set(string(key), []byte{})
+			err = batch.Set(string(key), nil)
 		}
 		panicOn(err)
 
@@ -173,8 +173,8 @@ func main() {
 		t1 := time.Now()
 		saw := 0
 		db.View(func(roDB yogadb.ReadOnlyDB) error {
-			roDB.Ascend(nil, func(key, value []byte) bool {
-				os.Stdout.Write(key)
+			roDB.Ascend("", func(key string, value []byte) bool {
+				os.Stdout.Write([]byte(key))
 				if len(value) > 0 {
 					os.Stdout.Write(colon)
 					os.Stdout.Write(value)
@@ -194,7 +194,7 @@ func justShowAll(db *yogadb.FlexDB, dbPath string) {
 	saw := 0
 	buf := make([]byte, 0, 4<<20)
 	db.View(func(roDB yogadb.ReadOnlyDB) error {
-		roDB.Ascend(nil, func(key, value []byte) bool {
+		roDB.Ascend("", func(key string, value []byte) bool {
 			need := 2 + len(key) + len(value)
 			if len(buf)+need <= cap(buf) {
 				// fine. write below.

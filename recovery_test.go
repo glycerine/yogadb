@@ -170,7 +170,7 @@ func crashAndRecover(t *testing.T, fs *vfs.MemFS, dir string, cfg *Config) (*Fle
 func verifyDurability(t *testing.T, db *FlexDB, syncedKVs map[string]string) {
 	t.Helper()
 	for k, want := range syncedKVs {
-		got, found := db.Get([]byte(k))
+		got, found := db.Get(k)
 		if want == "" {
 			// deleted key: should not be found (we use "" as tombstone sentinel)
 			if found {
@@ -195,7 +195,7 @@ func verifyNoPhantomKeys(t *testing.T, db *FlexDB, syncedKVs map[string]string) 
 	// a range of plausible keys.
 	for i := 0; i < 1000; i++ {
 		key := fmt.Sprintf("key%04d", i)
-		got, found := db.Get([]byte(key))
+		got, found := db.Get(key)
 		if !found {
 			continue
 		}
@@ -281,7 +281,7 @@ func TestRecovery_DurabilityAfterSync(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		k := fmt.Sprintf("key%04d", i)
 		v := fmt.Sprintf("value%04d", i)
-		panicOn(db.Put([]byte(k), []byte(v)))
+		panicOn(db.Put(k, []byte(v)))
 		synced[k] = v
 	}
 	panicOn(db.Sync())
@@ -311,7 +311,7 @@ func TestRecovery_NoPhantomData(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		k := fmt.Sprintf("key%04d", i)
 		v := fmt.Sprintf("val%04d", i)
-		panicOn(db.Put([]byte(k), []byte(v)))
+		panicOn(db.Put(k, []byte(v)))
 		synced[k] = v
 	}
 	panicOn(db.Sync())
@@ -337,13 +337,13 @@ func TestRecovery_DeleteDurability(t *testing.T) {
 	}
 
 	// Put, sync, then delete, sync.
-	panicOn(db.Put([]byte("delme"), []byte("hello")))
+	panicOn(db.Put("delme", []byte("hello")))
 	panicOn(db.Sync())
-	panicOn(db.Delete([]byte("delme")))
+	panicOn(db.Delete("delme"))
 	panicOn(db.Sync())
 
 	// Also put a key that stays.
-	panicOn(db.Put([]byte("keeper"), []byte("world")))
+	panicOn(db.Put("keeper", []byte("world")))
 	panicOn(db.Sync())
 	db.Close()
 
@@ -351,11 +351,11 @@ func TestRecovery_DeleteDurability(t *testing.T) {
 	defer db2.Close()
 
 	// "delme" should not be found.
-	if _, found := db2.Get([]byte("delme")); found {
+	if _, found := db2.Get("delme"); found {
 		t.Fatalf("key 'delme' should not be found after delete+sync+crash")
 	}
 	// "keeper" should be found.
-	v, found := db2.Get([]byte("keeper"))
+	v, found := db2.Get("keeper")
 	if !found || string(v) != "world" {
 		t.Fatalf("key 'keeper': expected 'world', got %q found=%v", string(v), found)
 	}
@@ -374,7 +374,7 @@ func TestRecovery_ProgressAfterRecovery(t *testing.T) {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
 
-	panicOn(db.Put([]byte("before"), []byte("crash")))
+	panicOn(db.Put("before", []byte("crash")))
 	panicOn(db.Sync())
 	db.Close()
 
@@ -382,18 +382,18 @@ func TestRecovery_ProgressAfterRecovery(t *testing.T) {
 	defer db2.Close()
 
 	// New operations after recovery should work.
-	panicOn(db2.Put([]byte("after"), []byte("recovery")))
-	v, found := db2.Get([]byte("after"))
+	panicOn(db2.Put("after", []byte("recovery")))
+	v, found := db2.Get("after")
 	if !found || string(v) != "recovery" {
 		t.Fatalf("post-recovery Put/Get failed: found=%v val=%q", found, string(v))
 	}
-	panicOn(db2.Delete([]byte("after")))
-	if _, found := db2.Get([]byte("after")); found {
+	panicOn(db2.Delete("after"))
+	if _, found := db2.Get("after"); found {
 		t.Fatalf("post-recovery Delete failed: key still found")
 	}
 
 	// Pre-crash data still accessible.
-	v, found = db2.Get([]byte("before"))
+	v, found = db2.Get("before")
 	if !found || string(v) != "crash" {
 		t.Fatalf("pre-crash key not found after recovery: found=%v val=%q", found, string(v))
 	}
@@ -416,7 +416,7 @@ func TestRecovery_RecoveryTerminates(t *testing.T) {
 	for i := 0; i < 500; i++ {
 		k := fmt.Sprintf("key%04d", i)
 		v := fmt.Sprintf("value%04d_padding_to_make_it_larger_%d", i, i*31)
-		panicOn(db.Put([]byte(k), []byte(v)))
+		panicOn(db.Put(k, []byte(v)))
 	}
 	panicOn(db.Sync())
 	db.Close()
@@ -461,13 +461,13 @@ func TestRecovery_KeyCountConsistency(t *testing.T) {
 	for i := 0; i < nKeys; i++ {
 		k := fmt.Sprintf("key%04d", i)
 		v := fmt.Sprintf("val%04d", i)
-		panicOn(db.Put([]byte(k), []byte(v)))
+		panicOn(db.Put(k, []byte(v)))
 	}
 	// Delete some.
 	nDel := 50
 	for i := 0; i < nDel; i++ {
 		k := fmt.Sprintf("key%04d", i)
-		panicOn(db.Delete([]byte(k)))
+		panicOn(db.Delete(k))
 	}
 	panicOn(db.Sync())
 	db.Close()
@@ -481,7 +481,7 @@ func TestRecovery_KeyCountConsistency(t *testing.T) {
 	var actualCount int64
 	for i := 0; i < nKeys; i++ {
 		k := fmt.Sprintf("key%04d", i)
-		_, found := db2.Get([]byte(k))
+		_, found := db2.Get(k)
 		if found {
 			actualCount++
 		}
@@ -509,13 +509,13 @@ func TestRecovery_UnsyncedDataLoss(t *testing.T) {
 	}
 
 	// Synced data.
-	panicOn(db.Put([]byte("synced_key"), []byte("synced_val")))
+	panicOn(db.Put("synced_key", []byte("synced_val")))
 	panicOn(db.Sync())
 
 	// Un-synced data (no Sync after these Puts).
 	for i := 0; i < 10; i++ {
 		k := fmt.Sprintf("unsynced%04d", i)
-		panicOn(db.Put([]byte(k), []byte("ephemeral")))
+		panicOn(db.Put(k, []byte("ephemeral")))
 	}
 	// Deliberately do NOT call db.Sync() here.
 	db.Close()
@@ -524,7 +524,7 @@ func TestRecovery_UnsyncedDataLoss(t *testing.T) {
 	defer db2.Close()
 
 	// Synced data must survive.
-	v, found := db2.Get([]byte("synced_key"))
+	v, found := db2.Get("synced_key")
 	if !found || string(v) != "synced_val" {
 		t.Fatalf("synced key lost after crash! found=%v val=%q", found, string(v))
 	}
@@ -534,7 +534,7 @@ func TestRecovery_UnsyncedDataLoss(t *testing.T) {
 	// We just verify the DB is operational.
 	for i := 0; i < 10; i++ {
 		k := fmt.Sprintf("unsynced%04d", i)
-		db2.Get([]byte(k)) // must not panic or hang
+		db2.Get(k) // must not panic or hang
 	}
 }
 
@@ -574,7 +574,7 @@ func TestRecovery_LinearizabilitySingleKey(t *testing.T) {
 
 		// PUT
 		callTime := time.Now().UnixNano()
-		panicOn(db.Put([]byte(theKey), []byte(val)))
+		panicOn(db.Put(theKey, []byte(val)))
 		returnTime := time.Now().UnixNano()
 
 		recordOp(&opsMu, &ops, porc.Operation{
@@ -592,7 +592,7 @@ func TestRecovery_LinearizabilitySingleKey(t *testing.T) {
 			go func(clientId int) {
 				defer wg.Done()
 				callT := time.Now().UnixNano()
-				got, found := db.Get([]byte(theKey))
+				got, found := db.Get(theKey)
 				returnT := time.Now().UnixNano()
 
 				out := kvOutput{value: string(got), found: found}
@@ -626,7 +626,7 @@ func TestRecovery_LinearizabilitySingleKey(t *testing.T) {
 	// Record this as a new operation in the continuing history.
 	{
 		callT := time.Now().UnixNano()
-		got, found := db2.Get([]byte(theKey))
+		got, found := db2.Get(theKey)
 		returnT := time.Now().UnixNano()
 		if !found || string(got) != lastVal {
 			t.Fatalf("after recovery: expected %q, got %q found=%v", lastVal, string(got), found)
@@ -645,7 +645,7 @@ func TestRecovery_LinearizabilitySingleKey(t *testing.T) {
 		val := fmt.Sprintf("v%d", step)
 
 		callTime := time.Now().UnixNano()
-		panicOn(db2.Put([]byte(theKey), []byte(val)))
+		panicOn(db2.Put(theKey, []byte(val)))
 		returnTime := time.Now().UnixNano()
 
 		recordOp(&opsMu, &ops, porc.Operation{
@@ -662,7 +662,7 @@ func TestRecovery_LinearizabilitySingleKey(t *testing.T) {
 			go func(clientId int) {
 				defer wg.Done()
 				callT := time.Now().UnixNano()
-				got, found := db2.Get([]byte(theKey))
+				got, found := db2.Get(theKey)
 				returnT := time.Now().UnixNano()
 
 				out := kvOutput{value: string(got), found: found}
@@ -748,7 +748,7 @@ func TestRecovery_LinearizabilityMultiKey(t *testing.T) {
 					// PUT
 					val := fmt.Sprintf("s%d_c%d", step, clientId)
 					callT := time.Now().UnixNano()
-					err := db.Put([]byte(key), []byte(val))
+					err := db.Put(key, []byte(val))
 					returnT := time.Now().UnixNano()
 					if err != nil {
 						t.Errorf("Put failed: %v", err)
@@ -764,7 +764,7 @@ func TestRecovery_LinearizabilityMultiKey(t *testing.T) {
 				} else {
 					// GET
 					callT := time.Now().UnixNano()
-					got, found := db.Get([]byte(key))
+					got, found := db.Get(key)
 					returnT := time.Now().UnixNano()
 					recordOp(&opsMu, &ops, porc.Operation{
 						ClientId: clientId,
@@ -791,7 +791,7 @@ func TestRecovery_LinearizabilityMultiKey(t *testing.T) {
 	// These reads extend the Porcupine history.
 	for _, key := range keys {
 		callT := time.Now().UnixNano()
-		got, found := db2.Get([]byte(key))
+		got, found := db2.Get(key)
 		returnT := time.Now().UnixNano()
 		recordOp(&opsMu, &ops, porc.Operation{
 			ClientId: 0,
@@ -815,7 +815,7 @@ func TestRecovery_LinearizabilityMultiKey(t *testing.T) {
 				if ch.doPut {
 					val := fmt.Sprintf("s%d_c%d", step, clientId)
 					callT := time.Now().UnixNano()
-					err := db2.Put([]byte(key), []byte(val))
+					err := db2.Put(key, []byte(val))
 					returnT := time.Now().UnixNano()
 					if err != nil {
 						t.Errorf("Put failed: %v", err)
@@ -830,7 +830,7 @@ func TestRecovery_LinearizabilityMultiKey(t *testing.T) {
 					})
 				} else {
 					callT := time.Now().UnixNano()
-					got, found := db2.Get([]byte(key))
+					got, found := db2.Get(key)
 					returnT := time.Now().UnixNano()
 					recordOp(&opsMu, &ops, porc.Operation{
 						ClientId: clientId,
@@ -867,7 +867,7 @@ func TestRecovery_CrashDuringRecovery(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		k := fmt.Sprintf("key%04d", i)
 		v := fmt.Sprintf("val%04d", i)
-		panicOn(db.Put([]byte(k), []byte(v)))
+		panicOn(db.Put(k, []byte(v)))
 		synced[k] = v
 	}
 	panicOn(db.Sync())
@@ -947,7 +947,7 @@ func TestRecovery_RepeatedCrashCycles(t *testing.T) {
 		// Read all keys after recovery (extends history).
 		for _, key := range keys {
 			callT := time.Now().UnixNano()
-			got, found := db.Get([]byte(key))
+			got, found := db.Get(key)
 			returnT := time.Now().UnixNano()
 			recordOp(&opsMu, &ops, porc.Operation{
 				ClientId: readerClient,
@@ -964,7 +964,7 @@ func TestRecovery_RepeatedCrashCycles(t *testing.T) {
 			val := fmt.Sprintf("c%d_s%d", cycle, step)
 
 			callT := time.Now().UnixNano()
-			panicOn(db.Put([]byte(key), []byte(val)))
+			panicOn(db.Put(key, []byte(val)))
 			returnT := time.Now().UnixNano()
 			recordOp(&opsMu, &ops, porc.Operation{
 				ClientId: writerClient,
@@ -976,7 +976,7 @@ func TestRecovery_RepeatedCrashCycles(t *testing.T) {
 
 			// Read it back.
 			callT = time.Now().UnixNano()
-			got, found := db.Get([]byte(key))
+			got, found := db.Get(key)
 			returnT = time.Now().UnixNano()
 			recordOp(&opsMu, &ops, porc.Operation{
 				ClientId: readerClient,
@@ -1032,7 +1032,7 @@ func TestRecovery_ConcurrentWritersCrash(t *testing.T) {
 			for i := 0; i < numOps; i++ {
 				k := fmt.Sprintf("w%d_k%04d", writerID, i)
 				v := fmt.Sprintf("w%d_v%04d", writerID, i)
-				if err := db.Put([]byte(k), []byte(v)); err != nil {
+				if err := db.Put(k, []byte(v)); err != nil {
 					t.Errorf("writer %d: Put failed: %v", writerID, err)
 					return
 				}
@@ -1130,7 +1130,7 @@ func (kt *keyTracker) validate(t *testing.T, db *FlexDB) {
 	defer kt.mu.Unlock()
 
 	for key, entry := range kt.entries {
-		got, found := db.Get([]byte(key))
+		got, found := db.Get(key)
 		switch entry.state {
 		case ksSet:
 			if !found {
@@ -1276,7 +1276,7 @@ func runStressWorkers(
 
 				opSyncMu.RLock()
 				tracker.markMaybeSet(key, val)
-				err := db.Put([]byte(key), []byte(val))
+				err := db.Put(key, []byte(val))
 				opSyncMu.RUnlock()
 				if err != nil {
 					return // DB may be closed/crashed
@@ -1315,7 +1315,7 @@ func runStressWorkers(
 				default:
 				}
 				key := fmt.Sprintf("w%d_k%04d", readerID%cfg.numWriters, readerID%cfg.numKeys)
-				db.Get([]byte(key)) // result doesn't matter; just exercising reads
+				db.Get(key) // result doesn't matter; just exercising reads
 			}
 		}(r)
 	}
@@ -1481,7 +1481,7 @@ func TestRecoveryStress_LargeDataset(t *testing.T) {
 			key := fmt.Sprintf("lk%05d", i)
 			val := makeValue(key, round*numKeys+i, valueSize)
 			tracker.markMaybeSet(key, val)
-			panicOn(db.Put([]byte(key), []byte(val)))
+			panicOn(db.Put(key, []byte(val)))
 		}
 		panicOn(db.Sync())
 		tracker.promoteAllToSet()
@@ -1576,7 +1576,7 @@ func TestRecoveryStress_UnsyncedDataPartial(t *testing.T) {
 		key := fmt.Sprintf("pk%04d", i)
 		val := fmt.Sprintf("synced_val_%04d", i)
 		tracker.markMaybeSet(key, val)
-		panicOn(db.Put([]byte(key), []byte(val)))
+		panicOn(db.Put(key, []byte(val)))
 	}
 	panicOn(db.Sync())
 	tracker.promoteAllToSet()
@@ -1586,7 +1586,7 @@ func TestRecoveryStress_UnsyncedDataPartial(t *testing.T) {
 		key := fmt.Sprintf("pk%04d", i)
 		val := fmt.Sprintf("unsynced_val_%04d", i)
 		tracker.markMaybeSet(key, val)
-		panicOn(db.Put([]byte(key), []byte(val)))
+		panicOn(db.Put(key, []byte(val)))
 	}
 	// Deliberately no Sync here.
 	db.Close()
@@ -1611,8 +1611,8 @@ func TestRecoveryStress_UnsyncedDataPartial(t *testing.T) {
 	tracker.validate(t, db2)
 
 	// Also verify the DB is operational post-recovery.
-	panicOn(db2.Put([]byte("post_recovery"), []byte("works")))
-	got, found := db2.Get([]byte("post_recovery"))
+	panicOn(db2.Put("post_recovery", []byte("works")))
+	got, found := db2.Get("post_recovery")
 	if !found || string(got) != "works" {
 		t.Fatalf("post-recovery Put/Get failed")
 	}
@@ -1643,7 +1643,7 @@ func TestRecoveryStress_CrashNearSync(t *testing.T) {
 				key := fmt.Sprintf("ns%04d", i)
 				val := fmt.Sprintf("base_%04d", i)
 				tracker.markMaybeSet(key, val)
-				panicOn(db.Put([]byte(key), []byte(val)))
+				panicOn(db.Put(key, []byte(val)))
 			}
 			panicOn(db.Sync())
 			tracker.promoteAllToSet()
@@ -1653,7 +1653,7 @@ func TestRecoveryStress_CrashNearSync(t *testing.T) {
 				key := fmt.Sprintf("ns%04d", i)
 				val := fmt.Sprintf("newsync_%04d", i)
 				tracker.markMaybeSet(key, val)
-				panicOn(db.Put([]byte(key), []byte(val)))
+				panicOn(db.Put(key, []byte(val)))
 			}
 
 			// Start Sync in a goroutine, immediately crash clone.

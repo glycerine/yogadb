@@ -1,10 +1,10 @@
 package yogadb
 
 import (
-	"bytes"
 	"sort"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 // ====================== Interval cache ======================
@@ -24,7 +24,7 @@ import (
 //
 
 type dbAnchor struct {
-	key []byte // smallest key in this interval (nil = sentinel null key)
+	key string // smallest key in this interval ("" = sentinel null key)
 
 	// loff is the relative loff; actual loff = loff + accumulated shift from parents
 	// loff was promoted to int64 since we saw silent
@@ -32,9 +32,20 @@ type dbAnchor struct {
 	// at the top of sparseindextree.go.
 	loff int64
 
-	psize    uint32 // packed size of this interval in FlexSpace
-	unsorted uint8  // count of unsorted appended KVs
-	fce      *intervalCacheEntry
+	psize       uint32 // packed size of this interval in FlexSpace
+	unsorted    uint8  // count of unsorted appended KVs
+	partitionID int    // cached cachePartitionID(key), set once at creation
+	fce         *intervalCacheEntry
+}
+
+// loadFce atomically loads anchor.fce. Safe for lock-free reads.
+func (a *dbAnchor) loadFce() *intervalCacheEntry {
+	return (*intervalCacheEntry)(atomic.LoadPointer((*unsafe.Pointer)(unsafe.Pointer(&a.fce))))
+}
+
+// storeFce atomically stores anchor.fce. Use under partition lock.
+func (a *dbAnchor) storeFce(fce *intervalCacheEntry) {
+	atomic.StorePointer((*unsafe.Pointer)(unsafe.Pointer(&a.fce)), unsafe.Pointer(fce))
 }
 
 type intervalCacheEntry struct {
@@ -77,7 +88,7 @@ func newCache(db *FlexDB, capMB uint64) *intervalCache {
 }
 
 func (c *intervalCache) getPartition(anchor *dbAnchor) *intervalCachePartition {
-	return &c.partitions[cachePartitionID(anchor.key)]
+	return &c.partitions[anchor.partitionID]
 }
 
 // flushDirtyPages writes all dirty cache entries to FlexSpace via Overwrite.
@@ -107,7 +118,7 @@ func (c *intervalCache) flushDirtyPages() {
 			if anchor == nil {
 				continue
 			}
-			fce := anchor.fce
+			fce := anchor.loadFce()
 			if fce == nil || !fce.dirty {
 				continue
 			}
@@ -133,7 +144,7 @@ func (p *intervalCachePartition) allocEntryForNewAnchor(anchor *dbAnchor) *inter
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	fce := &intervalCacheEntry{anchor: anchor}
-	anchor.fce = fce
+	anchor.storeFce(fce)
 	p.insertIntoClock(fce)
 	atomic.AddInt32(&fce.refcnt, 1)
 	atomic.StoreInt32(&fce.access, intervalCacheEntryChance)
@@ -177,7 +188,7 @@ func (p *intervalCachePartition) freeEntry(fce *intervalCacheEntry) int64 {
 	}
 	freed := int64(32 + fce.size)
 	if fce.anchor != nil {
-		fce.anchor.fce = nil
+		fce.anchor.storeFce(nil)
 	}
 	p.removeFromClock(fce)
 	return freed
@@ -241,7 +252,7 @@ func (p *intervalCachePartition) calibrate() {
 // getEntry returns the cache entry for anchor, loading it from FlexSpace if necessary.
 func (p *intervalCachePartition) getEntry(anchor *dbAnchor, anchorLoff uint64, db *FlexDB) *intervalCacheEntry {
 	p.mu.Lock()
-	fce := anchor.fce
+	fce := anchor.loadFce()
 	if fce != nil {
 		atomic.AddInt32(&fce.refcnt, 1)
 		isLoading := fce.loading
@@ -262,7 +273,7 @@ func (p *intervalCachePartition) getEntry(anchor *dbAnchor, anchorLoff uint64, d
 	}
 	// miss: allocate and load
 	fce = &intervalCacheEntry{anchor: anchor}
-	anchor.fce = fce
+	anchor.storeFce(fce)
 	p.insertIntoClock(fce)
 	atomic.AddInt32(&fce.refcnt, 1)
 	fce.loading = true
@@ -284,9 +295,8 @@ func (p *intervalCachePartition) getEntry(anchor *dbAnchor, anchorLoff uint64, d
 // getEntryUnsorted returns the cache entry only if already loaded,
 // OR forces a load if the unsorted quota is exceeded.
 func (p *intervalCachePartition) getEntryUnsorted(anchor *dbAnchor, anchorLoff uint64, db *FlexDB) *intervalCacheEntry {
-	p.mu.Lock()
-	fce := anchor.fce
-	p.mu.Unlock()
+	// Atomic load — no lock needed just to check if fce is populated.
+	fce := anchor.loadFce()
 	if fce != nil || anchor.unsorted >= flexdbUnsortedWriteQuota || anchor.psize >= flexdbSparseIntervalSize {
 		return p.getEntry(anchor, anchorLoff, db)
 	}
@@ -366,18 +376,18 @@ func intervalCacheDedup(kvs []KV) ([]KV, []uint16, int) {
 	}
 	out := kvs[:0]
 	i := 0
-	var prevKey []byte
+	var prevKey string
+	hasPrev := false
 	for i < len(kvs) {
-		if len(prevKey) > 0 {
-			cmp := bytes.Compare(prevKey, kvs[i].Key)
-			if cmp > 0 {
-				panicf("internal logic error: PRE-condition violated, kvs was not sorted by key! cmp=%v; kvs='%#v'", cmp, kvs)
+		if hasPrev {
+			if prevKey > kvs[i].Key {
+				panicf("internal logic error: PRE-condition violated, kvs was not sorted by key! prevKey=%q > key=%q; kvs='%#v'", prevKey, kvs[i].Key, kvs)
 			}
 		}
 
 		best := i
 		j := i + 1
-		for j < len(kvs) && bytes.Equal(kvs[i].Key, kvs[j].Key) {
+		for j < len(kvs) && kvs[i].Key == kvs[j].Key {
 			if kvs[j].Hlc > kvs[best].Hlc {
 				best = j
 			}
@@ -386,6 +396,7 @@ func intervalCacheDedup(kvs []KV) ([]KV, []uint16, int) {
 		out = append(out, kvs[best])
 		if j < len(kvs) {
 			prevKey = kvs[i].Key
+			hasPrev = true
 		}
 		i = j
 	}
@@ -399,14 +410,13 @@ func intervalCacheDedup(kvs []KV) ([]KV, []uint16, int) {
 }
 
 // intervalCacheEntryFindKeyGE: binary search for first position >= key. Returns (idx, exact).
-func intervalCacheEntryFindKeyGE(fce *intervalCacheEntry, key []byte) (int, bool) {
+func intervalCacheEntryFindKeyGE(fce *intervalCacheEntry, key string) (int, bool) {
 	lo, hi := 0, fce.count
 	for lo < hi {
 		mid := (lo + hi) >> 1
-		cmp := bytes.Compare(key, fce.kvs[mid].Key)
-		if cmp > 0 {
+		if key > fce.kvs[mid].Key {
 			lo = mid + 1
-		} else if cmp < 0 {
+		} else if key < fce.kvs[mid].Key {
 			hi = mid
 		} else {
 			return mid, true
@@ -416,10 +426,10 @@ func intervalCacheEntryFindKeyGE(fce *intervalCacheEntry, key []byte) (int, bool
 }
 
 // intervalCacheEntryFindKeyEQ: linear scan using fingerprints for exact match.
-func intervalCacheEntryFindKeyEQ(fce *intervalCacheEntry, key []byte) (int, bool) {
+func intervalCacheEntryFindKeyEQ(fce *intervalCacheEntry, key string) (int, bool) {
 	fp := fingerprint(kvCRC32(key))
 	for i := 0; i < fce.count; i++ {
-		if fce.fps[i] == fp && bytes.Equal(key, fce.kvs[i].Key) {
+		if fce.fps[i] == fp && key == fce.kvs[i].Key {
 			return i, true
 		}
 	}
