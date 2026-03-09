@@ -60,7 +60,7 @@ func (tx *txBase) closeAll() {
 type writeTx struct{ txBase }
 
 func (tx *writeTx) Get(key []byte) ([]byte, bool) {
-	return tx.db.writeLockHeldGet(key)
+	return tx.db.someLockHeldGet(key)
 }
 
 func (tx *writeTx) Put(key, value []byte) error {
@@ -189,7 +189,7 @@ func (tx *writeTx) DescendRange(lessOrEqual, greaterThan []byte, iter func(key, 
 type readTx struct{ txBase }
 
 func (tx *readTx) Get(key []byte) ([]byte, bool) {
-	return tx.db.writeLockHeldGet(key)
+	return tx.db.someLockHeldGet(key)
 }
 
 func (tx *readTx) Find(smod SearchModifier, key []byte) (kv *KV, found, exact bool) {

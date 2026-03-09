@@ -91,7 +91,9 @@ func (s *Batch) Set(key, value []byte) (err error) {
 //
 // Returns the half-open HLC interval [Begin, Endx) assigned to this batch.
 //
-// Again, we do not wait for the data to be fdatasynced to disk. Call db.Sync()
+// Again, with doFsync false, we do not wait for the data
+// to be fdatasynced to disk. Set doFsync true to fsync into
+// a MEMWAL log, or do multiple batches and then db.Sync()
 // if you need durability across power restarts. Usually if performance
 // is required this is done once after all your batches are loaded.
 //
@@ -191,7 +193,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 
 	// Bypass the transaction system entirely - no COW snapshots, no ffMu.RLock,
 	// no write buffer btree. Instead, insert directly into the memtable and
-	// batch WAL writes under a single logMu hold.
+	// batch WAL writes under a single mt.memWalMut hold.
 	// This amortizes both mutex acquisitions across the entire batch.
 
 	wasActive := db.activeMT
@@ -2258,9 +2260,9 @@ func (db *FlexDB) Get(key []byte) ([]byte, bool) {
 	return val, found
 }
 
-// writeLockHeldGet retrieves the value for key without acquiring topMutRW.
+// someLockHeldGet retrieves the value for key without acquiring topMutRW.
 // Caller must already hold topMutRW.Lock() or topMutRW.RLock().
-func (db *FlexDB) writeLockHeldGet(key []byte) ([]byte, bool) {
+func (db *FlexDB) someLockHeldGet(key []byte) ([]byte, bool) {
 	// Check active memtable
 	active := db.activeMT
 	if !db.memtables[active].empty {
