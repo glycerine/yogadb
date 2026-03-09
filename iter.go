@@ -2,6 +2,7 @@ package yogadb
 
 import (
 	"sort"
+	"unsafe"
 
 	"github.com/tidwall/btree"
 )
@@ -182,6 +183,11 @@ func (it *Iter) servePrefetch() bool {
 				continue
 			}
 			span.pos = pos
+			// Prefetch the next KV entry into L1 cache so it's
+			// warm when the caller invokes servePrefetch again.
+			if pos < len(kvs) {
+				prefetchLine(unsafe.Pointer(&kvs[pos]))
+			}
 			it.pKV = pkv
 			it.valueResolved = false
 			it.valid = true

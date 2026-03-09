@@ -183,7 +183,6 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 				// Key stays same.
 				e.Value = nil
 				e.Vptr = ptrs[j]
-				e.HasVPtr = true
 				// Hlc stays same.
 			}
 		}
@@ -277,22 +276,26 @@ func (s *Batch) Close() {
 // ====================== KV type ======================
 
 // KV is a key-value pair. Value==nil means tombstone (deletion marker).
-// When HasVPtr is true, the value is stored in the VLOG file and Vptr
+// When Vptr.Length > 0, the value is stored in the VLOG file and Vptr
 // contains the location; Value holds the resolved bytes (or nil if not yet loaded).
+// Use kv.HasVPtr() to test whether the value is in the VLOG.
 type KV struct {
-	Key     string
-	Value   []byte
-	Vptr    VPtr // valid when HasVPtr is true
-	HasVPtr bool // true = value lives in VLOG, Vptr is the location
-	Hlc     HLC  // hybrid logical clock timestamp. LSN like per mini batch, but has big gaps.
+	Key   string
+	Value []byte
+	Vptr  VPtr // valid when Vptr.Length > 0 (value lives in VLOG)
+	Hlc   HLC  // hybrid logical clock timestamp. LSN like per mini batch, but has big gaps.
 }
+
+// HasVPtr returns true if the value is stored in the VLOG file.
+// Equivalent to kv.Vptr.Length > 0.
+func (kv *KV) HasVPtr() bool { return kv.Vptr.Length > 0 }
 
 func (z *KV) String() (r string) {
 	r = "&KV{\n"
 	r += fmt.Sprintf("    Key: %v,\n", z.Key)
 	r += fmt.Sprintf("  Value: %v,\n", string(z.Value))
 	r += fmt.Sprintf("   Vptr: %v,\n", z.Vptr)
-	r += fmt.Sprintf("HasVPtr: %v,\n", z.HasVPtr)
+	r += fmt.Sprintf("HasVPtr: %v,\n", z.HasVPtr())
 	r += fmt.Sprintf("    Hlc: %v,\n", z.Hlc.String())
 	r += "}\n"
 	return
@@ -313,14 +316,14 @@ func kvSizeApprox(kv *KV) int { return 24 + len(kv.Key) + len(kv.Value) }
 // isTombstone returns true if this KV is a deletion marker.
 // A tombstone has nil Value and no VLOG pointer.
 func (kv *KV) isTombstone() bool {
-	return kv.Value == nil && !kv.HasVPtr
+	return kv.Value == nil && kv.Vptr.Length == 0
 }
 
 // Large returns true if this KV's value is stored in the VLOG
 // (too large for inline storage). Use db.FetchLarge(kv) to
 // retrieve the value bytes.
 func (kv *KV) Large() bool {
-	return kv.HasVPtr
+	return kv.Vptr.Length > 0
 }
 
 // ====================== KV128 encoding ======================
