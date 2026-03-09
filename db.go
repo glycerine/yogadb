@@ -316,6 +316,13 @@ func (kv KV) isTombstone() bool {
 	return kv.Value == nil && !kv.HasVPtr
 }
 
+// Large returns true if this KV's value is stored in the VLOG
+// (too large for inline storage). Use db.FetchLarge(kv) to
+// retrieve the value bytes.
+func (kv *KV) Large() bool {
+	return kv.HasVPtr
+}
+
 // ====================== KV128 encoding ======================
 // Format: varint(klen) || varint(rawVlen) || key_bytes || value_or_vptr_bytes
 // Standard LEB128 (same as Go's encoding/binary.PutUvarint).
@@ -1243,6 +1250,17 @@ func (db *FlexDB) resolveVPtr(kv KV) ([]byte, error) {
 	return db.vlog.read(kv.Vptr)
 }
 
+// FetchLarge retrieves the value bytes for a KV whose value
+// is stored in the VLOG (kv.Large() returns true). For inline
+// values, it simply returns kv.Value. The returned bytes are
+// a fresh copy safe to retain.
+func (db *FlexDB) FetchLarge(kv *KV) ([]byte, error) {
+	if kv == nil {
+		return nil, fmt.Errorf("flexdb: FetchLarge called with nil KV")
+	}
+	return db.resolveVPtr(*kv)
+}
+
 // VacuumVLOGStats reports the results of a VacuumVLOG operation.
 type VacuumVLOGStats struct {
 	OldVLOGSize        int64
@@ -2069,41 +2087,17 @@ const (
 	LT SearchModifier = 4
 )
 
-// FindIt allows GTE, GT, LTE, LT, and Exact searches.
-//
-// GTE: find a leaf greater-than-or-equal to key;
-// the smallest such key.
-//
-// GT: find a leaf strictly greater-than key;
-// the smallest such key.
-//
-// LTE: find a leaf less-than-or-equal to key;
-// the largest such key.
-//
-// LT: find a leaf less-than key; the
-// largest such key.
-//
-// Exact: find a matching
-// key exactly. A key can only be stored
-// once in the tree. (It is not a multi-map
-// in the C++ STL sense).
-//
-// If key is nil, then GTE and GT return
-// the first leaf in the tree, while LTE
-// and LT return the last leaf in the tree.
-//
-// Other returned flags:
-// found means some key was found.
-// exact means an exact matching key to the query was found.
-// large means the value is large and only returned in value if fetchLarge was true.
-//
-// The returned iterator, it, is positioned at the found key
-// and can be used to scan beyond it (Next/Prev). The caller
-// must call it.Close() when done. If found is false, the
-// iterator is not valid but must still be closed.
-func (db *FlexDB) FindIt(smod SearchModifier, key []byte, fetchLarge bool) (value []byte, found, exact, large bool, it *Iter) {
-	it = db.NewIter()
+// findOwnedKV controls whether Find/FindIt return an owned
+// copy of the KV (safe to retain indefinitely) or a zero-copy
+// pointer into cache memory (faster but only valid until the
+// next iterator operation or cache eviction). Set to false
+// to benchmark the zero-copy fast path.
+const findOwnedKV = true
 
+// findSeekIter positions it according to smod and key.
+// Returns (found, exact). On return, it is either Valid
+// (found=true) or invalid (found=false).
+func findSeekIter(it *Iter, smod SearchModifier, key []byte) (found, exact bool) {
 	switch smod {
 	case GTE:
 		it.Seek(key)
@@ -2127,51 +2121,96 @@ func (db *FlexDB) FindIt(smod SearchModifier, key []byte, fetchLarge bool) (valu
 	case Exact:
 		it.Seek(key)
 		if it.Valid() && !bytes.Equal(it.Key(), key) {
-			// Seek found a GE key but not an exact match.
 			it.releaseIterState()
 			it.valid = false
-			return
+			return false, false
 		}
 	}
-
 	if !it.Valid() {
+		return false, false
+	}
+	return true, key != nil && bytes.Equal(it.Key(), key)
+}
+
+// findBuildKV constructs a *KV from the iterator's current
+// position. When findOwnedKV is true, the returned KV owns
+// copies of Key and Value (safe to retain). When false, Key
+// and Value point into cache memory (zero-copy, valid only
+// until the next iterator operation).
+func findBuildKV(it *Iter) *KV {
+	if it.pKV == nil {
+		return nil
+	}
+	src := it.pKV
+	if !findOwnedKV {
+		// Zero-copy fast path: return a shallow copy of the
+		// internal KV. Key and Value alias cache memory.
+		out := *src
+		return &out
+	}
+	// Owned copy: duplicate Key and inline Value.
+	out := KV{
+		Vptr:    src.Vptr,
+		HasVPtr: src.HasVPtr,
+		Hlc:     src.Hlc,
+	}
+	if src.Key != nil {
+		out.Key = make([]byte, len(src.Key))
+		copy(out.Key, src.Key)
+	}
+	if !src.HasVPtr && src.Value != nil {
+		// Trigger lazy copy in Vin() first so we read the
+		// right bytes, then copy into our own buffer.
+		v := it.Vin()
+		out.Value = make([]byte, len(v))
+		copy(out.Value, v)
+	}
+	return &out
+}
+
+// FindIt allows GTE, GT, LTE, LT, and Exact searches.
+//
+// GTE: find the smallest key greater-than-or-equal to key.
+//
+// GT: find the smallest key strictly greater-than key.
+//
+// LTE: find the largest key less-than-or-equal to key.
+//
+// LT: find the largest key strictly less-than key.
+//
+// Exact: find a matching key exactly.
+//
+// If key is nil, then GTE and GT return the first key
+// in the tree, while LTE and LT return the last key.
+//
+// The returned *KV contains the found key and its inline
+// value (for non-large values). For large values stored
+// in the VLOG, kv.Large() returns true and db.FetchLarge(kv)
+// retrieves the value bytes.
+//
+// found indicates whether any key was found.
+// exact indicates an exact match to the query key.
+//
+// The returned iterator is positioned at the found key
+// and can be used to scan beyond it (Next/Prev). The caller
+// must call it.Close() when done. If found is false, the
+// iterator is not valid but must still be closed.
+func (db *FlexDB) FindIt(smod SearchModifier, key []byte) (kv *KV, found, exact bool, it *Iter) {
+	it = db.NewIter()
+	found, exact = findSeekIter(it, smod, key)
+	if !found {
 		return
 	}
-
-	found = true
-	exact = key != nil && bytes.Equal(it.Key(), key)
-	large = it.Large()
-
-	if large {
-		if fetchLarge {
-			var err error
-			value, err = it.FetchV()
-			if err != nil {
-				value = nil
-			}
-		}
-	} else {
-		value = it.Vin()
-		if value != nil {
-			out := make([]byte, len(value))
-			copy(out, value)
-			value = out
-		}
-	}
-
+	kv = findBuildKV(it)
 	return
 }
 
-// Find is a convenience wrapper around FindIt that
-// closes the iterator before returning so that callers don't
-// need to manage `it` if they don't need `it`.
-//
-// If you want to traverse the key space after Find-ing
-// your key (or the next nearest), use FindIt to get
-// an Iter back instead of Find.
-func (db *FlexDB) Find(smod SearchModifier, key []byte, fetchLarge bool) (value []byte, found, exact, large bool) {
+// Find is a convenience wrapper around FindIt that closes
+// the iterator before returning. Use FindIt instead if you
+// want to scan beyond the found key.
+func (db *FlexDB) Find(smod SearchModifier, key []byte) (kv *KV, found, exact bool) {
 	var it *Iter
-	value, found, exact, large, it = db.FindIt(smod, key, fetchLarge)
+	kv, found, exact, it = db.FindIt(smod, key)
 	it.Close()
 	return
 }
