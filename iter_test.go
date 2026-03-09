@@ -1029,7 +1029,9 @@ func TestFlexDB_IteratorPutDuringForward(t *testing.T) {
 		k := string(it.Key())
 		got = append(got, k)
 		if k == "c" {
-			mustPut(t, db, "d", "v:d") // insert between c and e
+			if err := it.Put([]byte("d"), []byte("v:d")); err != nil {
+				t.Fatal(err)
+			}
 		}
 		it.Next()
 	}
@@ -1053,7 +1055,9 @@ func TestFlexDB_IteratorDeleteDuringBackward(t *testing.T) {
 		k := string(it.Key())
 		got = append(got, k)
 		if k == "c" {
-			mustDelete(t, db, "c")
+			if err := it.Delete([]byte("c")); err != nil {
+				t.Fatal(err)
+			}
 		}
 		it.Prev()
 	}
@@ -1061,8 +1065,8 @@ func TestFlexDB_IteratorDeleteDuringBackward(t *testing.T) {
 	expectKeys(t, "delete during backward", got, []string{"e", "d", "c", "b", "a"})
 }
 
-// TestFlexDB_AscendDeleteOldTimestamps simulates deleting old timestamp-prefixed keys.
-func TestFlexDB_AscendDeleteOldTimestamps(t *testing.T) {
+// TestFlexDB_IteratorDeleteOldTimestamps simulates deleting old timestamp-prefixed keys.
+func TestFlexDB_IteratorDeleteOldTimestamps(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	mustPut(t, db, "2024-01-01:k1", "old1")
 	mustPut(t, db, "2024-06-01:k2", "old2")
@@ -1070,12 +1074,18 @@ func TestFlexDB_AscendDeleteOldTimestamps(t *testing.T) {
 	mustPut(t, db, "2025-06-01:k4", "new2")
 
 	cutoff := []byte("2025-")
-	db.Ascend(nil, func(key, value []byte) bool {
-		if bytes.Compare(key, cutoff) < 0 {
-			db.Delete(key)
+	it := db.NewIter()
+	it.SeekToFirst()
+	for it.Valid() {
+		if bytes.Compare(it.Key(), cutoff) < 0 {
+			if err := it.Delete(it.Key()); err != nil {
+				it.Close()
+				t.Fatal(err)
+			}
 		}
-		return true
-	})
+		it.Next()
+	}
+	it.Close()
 
 	// Only new keys should remain
 	var remaining []string
@@ -1104,7 +1114,9 @@ func TestFlexDB_IteratorMutateAfterSync(t *testing.T) {
 		k := string(it.Key())
 		got = append(got, k)
 		if k == "b" {
-			mustDelete(t, db, "c")
+			if err := it.Delete([]byte("c")); err != nil {
+				t.Fatal(err)
+			}
 		}
 		it.Next()
 	}
@@ -1148,28 +1160,37 @@ func TestFlexDB_IteratorSingleKey(t *testing.T) {
 		t.Fatalf("Seek(only): valid=%v key=%q", it.Valid(), it.Key())
 	}
 
-	mustDelete(t, db, "only")
+	if err := it.Delete([]byte("only")); err != nil {
+		t.Fatal(err)
+	}
 	it.Next()
 	if it.Valid() {
 		t.Fatalf("after delete+Next: should be invalid, got key=%q", it.Key())
 	}
 }
 
-// TestFlexDB_DescendDeleteDuringCallback tests Descend with deletion of current key.
-func TestFlexDB_DescendDeleteDuringCallback(t *testing.T) {
+// TestFlexDB_IteratorDeleteAllBackward tests deleting every key during backward iteration.
+func TestFlexDB_IteratorDeleteAllBackward(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	for _, k := range []string{"a", "b", "c", "d", "e"} {
 		mustPut(t, db, k, "v:"+k)
 	}
 
+	it := db.NewIter()
+	it.SeekToLast()
+
 	var got []string
-	db.Descend(nil, func(key, value []byte) bool {
-		k := string(key)
+	for it.Valid() {
+		k := string(it.Key())
 		got = append(got, k)
-		db.Delete(key) // delete current key
-		return true
-	})
-	expectKeys(t, "descend+delete", got, []string{"e", "d", "c", "b", "a"})
+		if err := it.Delete([]byte(k)); err != nil {
+			it.Close()
+			t.Fatal(err)
+		}
+		it.Prev()
+	}
+	it.Close()
+	expectKeys(t, "delete all backward", got, []string{"e", "d", "c", "b", "a"})
 
 	// DB should be empty
 	val, ok := db.Get([]byte("c"))
