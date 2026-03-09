@@ -12,10 +12,10 @@ func TestTx_UpdateBasic(t *testing.T) {
 	mustPut(t, db, "k1", "v1")
 
 	err := db.Update(func(rwDB WritableDB) error {
-		if err := rwDB.Put([]byte("k2"), []byte("v2")); err != nil {
+		if err := rwDB.Put("k2", []byte("v2")); err != nil {
 			return err
 		}
-		if err := rwDB.Put([]byte("k3"), []byte("v3")); err != nil {
+		if err := rwDB.Put("k3", []byte("v3")); err != nil {
 			return err
 		}
 		return nil
@@ -35,15 +35,15 @@ func TestTx_ViewBasic(t *testing.T) {
 	mustPut(t, db, "k2", "v2")
 
 	err := db.View(func(roDB ReadOnlyDB) error {
-		val, ok := roDB.Get([]byte("k1"))
+		val, ok := roDB.Get("k1")
 		if !ok || string(val) != "v1" {
 			t.Fatalf("View Get(k1) = %q, %v; want v1, true", val, ok)
 		}
-		val, ok = roDB.Get([]byte("k2"))
+		val, ok = roDB.Get("k2")
 		if !ok || string(val) != "v2" {
 			t.Fatalf("View Get(k2) = %q, %v; want v2, true", val, ok)
 		}
-		_, ok = roDB.Get([]byte("k3"))
+		_, ok = roDB.Get("k3")
 		if ok {
 			t.Fatal("View Get(k3): expected not found")
 		}
@@ -60,36 +60,36 @@ func TestTx_UpdateSeesOwnWrites(t *testing.T) {
 
 	err := db.Update(func(rwDB WritableDB) error {
 		// Should see pre-existing key.
-		val, ok := rwDB.Get([]byte("k1"))
+		val, ok := rwDB.Get("k1")
 		if !ok || string(val) != "v1" {
 			t.Fatalf("Get(k1) before write: %q, %v", val, ok)
 		}
 
 		// Write a new key.
-		if err := rwDB.Put([]byte("k2"), []byte("v2")); err != nil {
+		if err := rwDB.Put("k2", []byte("v2")); err != nil {
 			return err
 		}
 
 		// Should see the write immediately.
-		val, ok = rwDB.Get([]byte("k2"))
+		val, ok = rwDB.Get("k2")
 		if !ok || string(val) != "v2" {
 			t.Fatalf("Get(k2) after write: %q, %v", val, ok)
 		}
 
 		// Overwrite k1.
-		if err := rwDB.Put([]byte("k1"), []byte("v1-updated")); err != nil {
+		if err := rwDB.Put("k1", []byte("v1-updated")); err != nil {
 			return err
 		}
-		val, ok = rwDB.Get([]byte("k1"))
+		val, ok = rwDB.Get("k1")
 		if !ok || string(val) != "v1-updated" {
 			t.Fatalf("Get(k1) after overwrite: %q, %v", val, ok)
 		}
 
 		// Delete k1.
-		if err := rwDB.Delete([]byte("k1")); err != nil {
+		if err := rwDB.Delete("k1"); err != nil {
 			return err
 		}
-		_, ok = rwDB.Get([]byte("k1"))
+		_, ok = rwDB.Get("k1")
 		if ok {
 			t.Fatal("Get(k1) after delete: expected not found")
 		}
@@ -112,7 +112,7 @@ func TestTx_ViewCannotMutate(t *testing.T) {
 	// ReadOnlyDB has no Put or Delete methods -- this is a compile-time
 	// guarantee. We just verify that Get works inside View.
 	err := db.View(func(roDB ReadOnlyDB) error {
-		val, ok := roDB.Get([]byte("k1"))
+		val, ok := roDB.Get("k1")
 		if !ok || string(val) != "v1" {
 			t.Fatalf("View Get(k1) = %q, %v; want v1, true", val, ok)
 		}
@@ -141,7 +141,7 @@ func TestTx_SerializedUpdates(t *testing.T) {
 			defer wg.Done()
 			errs[i] = db.Update(func(rwDB WritableDB) error {
 				// Read current counter value.
-				val, ok := rwDB.Get([]byte("counter"))
+				val, ok := rwDB.Get("counter")
 				if !ok {
 					return fmt.Errorf("counter not found in goroutine %d", i)
 				}
@@ -152,7 +152,7 @@ func TestTx_SerializedUpdates(t *testing.T) {
 				}
 				c++
 				newVal := []byte(fmt.Sprintf("%d", c))
-				return rwDB.Put([]byte("counter"), newVal)
+				return rwDB.Put("counter", newVal)
 			})
 		}(i)
 	}

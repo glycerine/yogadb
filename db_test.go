@@ -2026,7 +2026,7 @@ func TestClear(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i := 0; i < 20; i++ {
-			if err := db.Put(fmt.Sprintf("k%02d", i)), []byte(fmt.Sprintf("v%02d", i))); err != nil {
+			if err := db.Put(fmt.Sprintf("k%02d", i), []byte(fmt.Sprintf("v%02d", i))); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -2185,7 +2185,7 @@ func TestLen(t *testing.T) {
 	t.Run("clear", func(t *testing.T) {
 		db, _ := openTestDB(t, nil)
 		for i := 0; i < 20; i++ {
-			db.Put(fmt.Sprintf("k%02d", i)), []byte("v"))
+			db.Put(fmt.Sprintf("k%02d", i), []byte("v"))
 		}
 		if n := db.Len(); n != 20 {
 			t.Fatalf("Len() = %d, want 20", n)
@@ -2211,9 +2211,9 @@ func TestLen(t *testing.T) {
 		largeVal := make([]byte, 128)
 		for i := 0; i < N; i++ {
 			if i%3 == 0 {
-				db.Put(fmt.Sprintf("key%04d", i)), largeVal)
+				db.Put(fmt.Sprintf("key%04d", i), largeVal)
 			} else {
-				db.Put(fmt.Sprintf("key%04d", i)), []byte("small"))
+				db.Put(fmt.Sprintf("key%04d", i), []byte("small"))
 			}
 		}
 		// Delete a few
@@ -2242,7 +2242,7 @@ func TestLen(t *testing.T) {
 		db, _ := openTestDB(t, nil)
 		N := 100
 		for i := 0; i < N; i++ {
-			db.Put(fmt.Sprintf("key%04d", i)), []byte("val"))
+			db.Put(fmt.Sprintf("key%04d", i), []byte("val"))
 		}
 		db.Sync()
 		if n := db.Len(); n != int64(N) {
@@ -2250,7 +2250,7 @@ func TestLen(t *testing.T) {
 		}
 		// Add more after flush
 		for i := N; i < N+20; i++ {
-			db.Put(fmt.Sprintf("key%04d", i)), []byte("val"))
+			db.Put(fmt.Sprintf("key%04d", i), []byte("val"))
 		}
 		if n := db.Len(); n != int64(N+20) {
 			t.Fatalf("after more puts: Len() = %d, want %d", n, N+20)
@@ -2261,20 +2261,20 @@ func TestLen(t *testing.T) {
 		db, _ := openTestDB(t, nil)
 		// Put keys, flush to FlexSpace
 		for i := 0; i < 50; i++ {
-			db.Put(fmt.Sprintf("key%04d", i)), []byte("val"))
+			db.Put(fmt.Sprintf("key%04d", i), []byte("val"))
 		}
 		db.Sync()
 		// Overwrite some from memtable (shadow FlexSpace)
 		for i := 0; i < 10; i++ {
-			db.Put(fmt.Sprintf("key%04d", i)), []byte("newval"))
+			db.Put(fmt.Sprintf("key%04d", i), []byte("newval"))
 		}
 		// Delete some
 		for i := 10; i < 15; i++ {
-			db.Put(fmt.Sprintf("key%04d", i)), nil)
+			db.Put(fmt.Sprintf("key%04d", i), nil)
 		}
 		// Add new keys in memtable
 		for i := 50; i < 60; i++ {
-			db.Put(fmt.Sprintf("key%04d", i)), []byte("val"))
+			db.Put(fmt.Sprintf("key%04d", i), []byte("val"))
 		}
 		// Expected: 50 original - 5 deleted + 10 new = 55
 		if n := db.Len(); n != 55 {
@@ -2286,7 +2286,7 @@ func TestLen(t *testing.T) {
 		db, _ := openTestDB(t, nil)
 		b := db.NewBatch()
 		for i := 0; i < 25; i++ {
-			b.Set(fmt.Sprintf("bk%04d", i)), []byte("bv"))
+			b.Set(fmt.Sprintf("bk%04d", i), []byte("bv"))
 		}
 		b.Commit(false)
 		if n := db.Len(); n != 25 {
@@ -2296,7 +2296,7 @@ func TestLen(t *testing.T) {
 		// Batch with overwrites
 		b2 := db.NewBatch()
 		for i := 0; i < 10; i++ {
-			b.Set(fmt.Sprintf("bk%04d", i)), []byte("updated"))
+			b.Set(fmt.Sprintf("bk%04d", i), []byte("updated"))
 		}
 		b2.Commit(false)
 		if n := db.Len(); n != 25 {
@@ -2307,7 +2307,7 @@ func TestLen(t *testing.T) {
 	t.Run("delete_range", func(t *testing.T) {
 		db, _ := openTestDB(t, nil)
 		for i := 0; i < 20; i++ {
-			db.Put(fmt.Sprintf("key%04d", i)), []byte("val"))
+			db.Put(fmt.Sprintf("key%04d", i), []byte("val"))
 		}
 		if n := db.Len(); n != 20 {
 			t.Fatalf("Len() = %d, want 20", n)
