@@ -731,7 +731,7 @@ func (db *FlexDB) recomputeKeyCountsLocked() {
 				if kv.isTombstone() {
 					continue
 				}
-				if kv.HasVPtr {
+				if kv.HasVPtr() {
 					big++
 				} else {
 					small++

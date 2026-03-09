@@ -318,7 +318,6 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 			// tombstone: no value bytes, Value stays nil
 		} else if entries[i].valInfo == slottedValInfoVPtr {
 			kvs[i].Vptr = decodeVPtr(src[valStart:valEnd])
-			kvs[i].HasVPtr = true
 		} else {
 			kvs[i].Value = make([]byte, vl)
 			copy(kvs[i].Value, src[valStart:valEnd])
@@ -339,7 +338,7 @@ func slottedValInfo(kv KV) uint16 {
 	if kv.isTombstone() {
 		return slottedValInfoTombstone
 	}
-	if kv.HasVPtr {
+	if kv.HasVPtr() {
 		return slottedValInfoVPtr
 	}
 	return uint16(len(kv.Value) + 1)
@@ -350,7 +349,7 @@ func slottedValBytes(kv KV) int {
 	if kv.isTombstone() {
 		return 0
 	}
-	if kv.HasVPtr {
+	if kv.HasVPtr() {
 		return vptrSize
 	}
 	return len(kv.Value)
@@ -361,7 +360,7 @@ func slottedValBytesOf(kv KV) []byte {
 	if kv.isTombstone() {
 		return nil
 	}
-	if kv.HasVPtr {
+	if kv.HasVPtr() {
 		var buf [vptrSize]byte
 		kv.Vptr.encode(buf[:])
 		return buf[:]

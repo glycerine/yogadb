@@ -1474,7 +1474,7 @@ func TestIterKV_LargeValue(t *testing.T) {
 		if string(kv.Key) != "bigkey" {
 			t.Fatalf("got key %q, want bigkey", kv.Key)
 		}
-		if !kv.HasVPtr {
+		if !kv.HasVPtr() {
 			t.Fatal("expected HasVPtr for large value")
 		}
 		// Value should be nil for VLOG entries
@@ -1496,7 +1496,7 @@ func TestIterKV_LargeValue(t *testing.T) {
 		if string(kv2.Key) != "small" {
 			t.Fatalf("got key %q, want small", kv2.Key)
 		}
-		if kv2.HasVPtr {
+		if kv2.HasVPtr() {
 			t.Fatal("small value should not have VPtr")
 		}
 		if string(kv2.Value) != "tiny" {

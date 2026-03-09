@@ -179,7 +179,7 @@ func (it *Iter) servePrefetch() bool {
 		for pos < len(kvs) {
 			pkv := &kvs[pos] // BCE: pos < len(kvs)
 			pos++
-			if pkv.Value == nil && !pkv.HasVPtr { // tombstone
+			if pkv.Value == nil && pkv.Vptr.Length == 0 { // tombstone
 				continue
 			}
 			span.pos = pos
@@ -311,7 +311,7 @@ func (db *FlexDB) flexSpaceSeekGE(target string, strict bool) (KV, bool) {
 		}
 		if idx < fce.count {
 			kv := fce.kvs[idx]
-			result := KV{Key: kv.Key, Value: dupBytes(kv.Value), Vptr: kv.Vptr, HasVPtr: kv.HasVPtr, Hlc: kv.Hlc}
+			result := KV{Key: kv.Key, Value: dupBytes(kv.Value), Vptr: kv.Vptr, Hlc: kv.Hlc}
 			partition.releaseEntry(fce)
 			return result, true
 		}
@@ -403,7 +403,7 @@ func (db *FlexDB) flexSpaceSeekLE(target string, strict bool) (KV, bool) {
 		}
 		if idx >= 0 {
 			kv := fce.kvs[idx]
-			result := KV{Key: kv.Key, Value: dupBytes(kv.Value), Vptr: kv.Vptr, HasVPtr: kv.HasVPtr, Hlc: kv.Hlc}
+			result := KV{Key: kv.Key, Value: dupBytes(kv.Value), Vptr: kv.Vptr, Hlc: kv.Hlc}
 			partition.releaseEntry(fce)
 			return result, true
 		}
@@ -802,7 +802,7 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 			continue // skip tombstone, seek past it
 		}
 
-		if bestKV.HasVPtr {
+		if bestKV.HasVPtr() {
 			return []byte(minKey), nil, bestKV.Hlc, true, bestKV.Vptr, true
 		}
 		val, err := db.resolveVPtr(bestKV)
@@ -889,7 +889,7 @@ func (it *Iter) servePrefetchReverse() bool {
 		for span.pos > span.end {
 			pkv := &span.kvs[span.pos]
 			span.pos--
-			if pkv.Value == nil && !pkv.HasVPtr { // tombstone
+			if pkv.Value == nil && pkv.Vptr.Length == 0 { // tombstone
 				continue
 			}
 			it.pKV = pkv
@@ -936,7 +936,7 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, f
 		it.positionFlexCursorForSeek(target, strict)
 		if it.fc.positioned && it.fc.fce != nil && it.fc.kvIdx < it.fc.fce.count {
 			fkv := it.fc.fce.kvs[it.fc.kvIdx]
-			candidates[2] = KV{Key: fkv.Key, Value: fkv.Value, Vptr: fkv.Vptr, HasVPtr: fkv.HasVPtr, Hlc: fkv.Hlc}
+			candidates[2] = KV{Key: fkv.Key, Value: fkv.Value, Vptr: fkv.Vptr, Hlc: fkv.Hlc}
 			have[2] = true
 		}
 
@@ -978,8 +978,8 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, f
 			continue
 		}
 
-		if bestKV.HasVPtr {
-			return &KV{Key: minKey, Hlc: bestKV.Hlc, HasVPtr: true, Vptr: bestKV.Vptr}, true
+		if bestKV.HasVPtr() {
+			return &KV{Key: minKey, Hlc: bestKV.Hlc, Vptr: bestKV.Vptr}, true
 		}
 		val, err := db.resolveVPtr(bestKV)
 		if err != nil {
@@ -1009,7 +1009,7 @@ func (it *Iter) flexSpaceOnlySeekGE(target string, strict bool) (kv *KV, found b
 			continue
 		}
 		found = true
-		if kv.HasVPtr {
+		if kv.HasVPtr() {
 			return
 		}
 		// Lazy value: store direct reference into cache memory (GC-safe).
@@ -1110,7 +1110,7 @@ func (db *FlexDB) mergedSeekLE(target string, strict bool) (kv *KV, found bool) 
 			continue
 		}
 		found = true
-		if bestKV.HasVPtr {
+		if bestKV.HasVPtr() {
 			kv = &KV{}
 			*kv = bestKV
 			kv.Key = maxKey
@@ -1429,7 +1429,7 @@ func (it *Iter) Vel() (val []byte, empty, large bool) {
 		empty = true
 		return
 	}
-	large = it.pKV.HasVPtr
+	large = it.pKV.HasVPtr()
 	if !it.valueResolved && it.pKV.Value != nil {
 		it.valBuf = reuseAppend(it.valBuf, it.pKV.Value)
 		it.pKV.Value = it.valBuf
@@ -1455,7 +1455,7 @@ func (it *Iter) Large() bool {
 	if it.pKV == nil {
 		return false
 	}
-	return it.pKV.HasVPtr
+	return it.pKV.HasVPtr()
 }
 
 // FetchV fetches the current iterator value
@@ -1468,10 +1468,10 @@ func (it *Iter) FetchV() ([]byte, error) {
 	if !it.valid || it.pKV == nil {
 		return nil, nil
 	}
-	if !it.pKV.HasVPtr {
+	if !it.pKV.HasVPtr() {
 		return it.pKV.Value, nil
 	}
-	return it.db.resolveVPtr(KV{HasVPtr: true, Vptr: it.pKV.Vptr})
+	return it.db.resolveVPtr(KV{Vptr: it.pKV.Vptr})
 }
 
 // ====================== Callback-based iteration ======================
@@ -1482,10 +1482,10 @@ func (it *Iter) iterResolvedValue() []byte {
 	if it.pKV == nil {
 		return nil
 	}
-	if !it.pKV.HasVPtr {
+	if !it.pKV.HasVPtr() {
 		return it.pKV.Value
 	}
-	val, err := it.db.resolveVPtr(KV{HasVPtr: true, Vptr: it.pKV.Vptr})
+	val, err := it.db.resolveVPtr(KV{Vptr: it.pKV.Vptr})
 	if err != nil {
 		return nil
 	}

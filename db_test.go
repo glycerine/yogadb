@@ -300,7 +300,7 @@ func TestFlexDB_kv128RoundTrip(t *testing.T) {
 		{Key: "a", Value: nil, Hlc: 999}, // tombstone
 		{Key: string(make([]byte, 100)), Value: make([]byte, 200), Hlc: 0x7FFFFFFFFFFFFFFF},
 		// VPtr case with HLC
-		{Key: "big", Vptr: VPtr{Offset: 1024, Length: 256}, HasVPtr: true, Hlc: 42},
+		{Key: "big", Vptr: VPtr{Offset: 1024, Length: 256}, Hlc: 42},
 	}
 	for _, kv := range cases {
 		buf := kv128Encode(nil, kv)
@@ -323,10 +323,10 @@ func TestFlexDB_kv128RoundTrip(t *testing.T) {
 		if got.Hlc != kv.Hlc {
 			t.Fatalf("HLC mismatch: got %v, want %v", got.Hlc, kv.Hlc)
 		}
-		if got.HasVPtr != kv.HasVPtr {
-			t.Fatalf("HasVPtr mismatch: got %v, want %v", got.HasVPtr, kv.HasVPtr)
+		if got.HasVPtr() != kv.HasVPtr() {
+			t.Fatalf("HasVPtr mismatch: got %v, want %v", got.HasVPtr(), kv.HasVPtr())
 		}
-		if got.HasVPtr && got.Vptr != kv.Vptr {
+		if got.HasVPtr() && got.Vptr != kv.Vptr {
 			t.Fatalf("Vptr mismatch: got %+v, want %+v", got.Vptr, kv.Vptr)
 		}
 		// Also verify kv128SizePrefix

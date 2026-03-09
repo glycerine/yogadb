@@ -77,7 +77,7 @@ func TestSlottedPage_RoundTrip_Tombstone(t *testing.T) {
 func TestSlottedPage_RoundTrip_VPtr(t *testing.T) {
 	kvs := []KV{
 		{Key: "small", Value: []byte("inline"), Hlc: 1},
-		{Key: "big", HasVPtr: true, Vptr: VPtr{Offset: 12345, Length: 67890}, Hlc: 2},
+		{Key: "big", Vptr: VPtr{Offset: 12345, Length: 67890}, Hlc: 2},
 	}
 
 	encoded := slottedPageEncode(kvs)
@@ -86,7 +86,7 @@ func TestSlottedPage_RoundTrip_VPtr(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !decoded[1].HasVPtr {
+	if !decoded[1].HasVPtr() {
 		t.Error("VPtr not set on decoded entry")
 	}
 	if decoded[1].Vptr.Offset != 12345 || decoded[1].Vptr.Length != 67890 {
@@ -365,7 +365,7 @@ func TestSlottedPage_Dump_CorruptedCRC(t *testing.T) {
 func TestSlottedPage_Dump_VPtrWithoutVLog(t *testing.T) {
 	kvs := []KV{
 		{Key: "small", Value: []byte("inline"), Hlc: 1},
-		{Key: "big", HasVPtr: true, Vptr: VPtr{Offset: 12345, Length: 67890}, Hlc: 2},
+		{Key: "big", Vptr: VPtr{Offset: 12345, Length: 67890}, Hlc: 2},
 	}
 
 	encoded := slottedPageEncode(kvs)
@@ -407,9 +407,9 @@ func TestSlottedPage_DumpWithVLog(t *testing.T) {
 	// Build a slotted page with inline + vptr + tombstone entries.
 	kvs := []KV{
 		{Key: "alpha", Value: []byte("inline-val"), Hlc: 100},
-		{Key: "bravo", HasVPtr: true, Vptr: vp1, Hlc: 150},
+		{Key: "bravo", Vptr: vp1, Hlc: 150},
 		{Key: "charlie", Value: nil, Hlc: 175}, // tombstone
-		{Key: "delta", HasVPtr: true, Vptr: vp2, Hlc: 200},
+		{Key: "delta", Vptr: vp2, Hlc: 200},
 	}
 
 	encoded := slottedPageEncode(kvs)
@@ -480,7 +480,7 @@ func TestSlottedPage_DumpWithVLog_LargeValueTruncated(t *testing.T) {
 	}
 
 	kvs := []KV{
-		{Key: "key", HasVPtr: true, Vptr: vp, Hlc: 1},
+		{Key: "key", Vptr: vp, Hlc: 1},
 	}
 	encoded := slottedPageEncode(kvs)
 	out := slottedPageDumpWithVLog(encoded, vlog)
@@ -507,7 +507,7 @@ func TestSlottedPage_DumpWithVLog_BadVPtr(t *testing.T) {
 	defer vlog.close()
 
 	kvs := []KV{
-		{Key: "bad", HasVPtr: true, Vptr: VPtr{Offset: 99999, Length: 100}, Hlc: 1},
+		{Key: "bad", Vptr: VPtr{Offset: 99999, Length: 100}, Hlc: 1},
 	}
 	encoded := slottedPageEncode(kvs)
 	out := slottedPageDumpWithVLog(encoded, vlog)
@@ -521,7 +521,7 @@ func TestSlottedPage_DumpWithVLog_BadVPtr(t *testing.T) {
 func TestSlottedPage_DumpWithVLog_NilVLog(t *testing.T) {
 	// slottedPageDumpWithVLog with nil vlog should behave like slottedPageDump.
 	kvs := []KV{
-		{Key: "key", HasVPtr: true, Vptr: VPtr{Offset: 100, Length: 50}, Hlc: 1},
+		{Key: "key", Vptr: VPtr{Offset: 100, Length: 50}, Hlc: 1},
 	}
 	encoded := slottedPageEncode(kvs)
 
@@ -536,7 +536,7 @@ func totalPayload(kvs []KV) int {
 	total := 0
 	for _, kv := range kvs {
 		total += len(kv.Key) + len(kv.Value)
-		if kv.HasVPtr {
+		if kv.HasVPtr() {
 			total += vptrSize
 		}
 	}
