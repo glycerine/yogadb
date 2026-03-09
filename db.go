@@ -22,6 +22,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/glycerine/idem"
 	"github.com/glycerine/vfs"
 )
 
@@ -609,9 +610,8 @@ type FlexDB struct {
 	activeMT  int // 0 or 1
 
 	// flush worker
-	flushStop    chan struct{}
 	flushTrigger chan struct{}
-	flushWG      sync.WaitGroup // signals when flush worker has exited
+	flushHalt    *idem.Halter
 
 	// scratch buffers (reused; protected by ffMu write lock)
 	kvbuf1 []byte
@@ -864,8 +864,8 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 		cache:        newCache(nil, cfg.CacheMB),
 		kvbuf1:       make([]byte, 0, MaxKeySize),
 		itvbuf:       make([]byte, 0, flexdbSparseIntervalSize+MaxKeySize),
-		flushStop:    make(chan struct{}),
 		flushTrigger: make(chan struct{}, 1),
+		flushHalt:    idem.NewHalterNamed("flushWorker-orig"),
 	}
 	db.cache.db = db
 	for i := range db.cache.partitions {
@@ -910,7 +910,6 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	db.liveSmallKeys = ff.tree.liveSmallKeys
 
 	// Start flush worker goroutine
-	db.flushWG.Add(1)
 	go db.flushWorker()
 
 	return db, nil
@@ -918,6 +917,14 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 
 // Close syncs and shuts down the FlexDB.
 func (db *FlexDB) Close() *Metrics {
+
+	// Signal flush worker to stop, then wait for it to finish.
+	// We do this first to avoid deadlock: if
+	// we grab the topMutRW and then flush worker waits
+	// on it rather than getting our halt request.
+	db.flushHalt.RequestStop()
+	<-db.flushHalt.Done.Chan
+
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 
@@ -925,10 +932,6 @@ func (db *FlexDB) Close() *Metrics {
 		return nil
 	}
 	db.closed = true
-
-	// Signal flush worker to stop, then wait for it to finish.
-	close(db.flushStop)
-	db.flushWG.Wait()
 
 	// Flush any data that is still in the active memtable.
 	active := db.activeMT
@@ -2577,11 +2580,13 @@ func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey string, begInclusive
 // Caller must hold topMutRW.Lock().
 func (db *FlexDB) writeLockHeldDeleteAll() error {
 	// 1. Stop flush worker.
-	close(db.flushStop)
+	db.flushHalt.RequestStop()
+
 	// Temporarily drop the lock so the flush worker (which also needs
 	// topMutRW) can exit if it's blocked waiting for it.
 	db.topMutRW.Unlock()
-	db.flushWG.Wait()
+	<-db.flushHalt.Done.Chan
+
 	db.topMutRW.Lock()
 
 	// 2. Clear both memtables.
@@ -2654,9 +2659,8 @@ func (db *FlexDB) writeLockHeldDeleteAll() error {
 	db.memtables[1].logTruncateWithVersion(ts2, db.ff.tree.PersistentVersion)
 
 	// 9. Restart flush worker.
-	db.flushStop = make(chan struct{})
+	db.flushHalt = idem.NewHalterNamed(fmt.Sprintf("flushWorker-after-writeLockHeldDeleteAll"))
 	db.flushTrigger = make(chan struct{}, 1)
-	db.flushWG.Add(1)
 	go db.flushWorker()
 
 	return nil
@@ -3696,13 +3700,17 @@ func (db *FlexDB) logRedo(fd vfs.File, fileSize int64) {
 // ====================== Flush worker ======================
 
 func (db *FlexDB) flushWorker() {
-	defer db.flushWG.Done()
+
 	ticker := time.NewTicker(memtableFlushTime)
-	defer ticker.Stop()
+	defer func() {
+		ticker.Stop()
+		db.flushHalt.ReqStop.Close()
+		db.flushHalt.Done.Close()
+	}()
 
 	for {
 		select {
-		case <-db.flushStop:
+		case <-db.flushHalt.ReqStop.Chan:
 			return
 		case <-db.flushTrigger:
 			db.doFlush()
