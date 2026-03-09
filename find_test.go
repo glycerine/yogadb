@@ -221,54 +221,60 @@ func TestFindIt_IteratorContinuation(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateFindTestDB(t, db)
 
-	// FindIt GTE key005, then iterate forward.
-	kv, found, _, it := db.FindIt(GTE, []byte("key005"))
-	if !found {
-		it.Close()
-		t.Fatal("GTE key005: not found")
-	}
-	if string(kv.Key) != "key005" {
-		it.Close()
-		t.Fatalf("got key %q, want key005", kv.Key)
-	}
-	var keys []string
-	for it.Valid() {
-		keys = append(keys, string(it.Key()))
-		it.Next()
-	}
-	it.Close() // must close before opening next locked iterator
-	expected := []string{"key005", "key006", "key007", "key008", "key009", "key010"}
-	if len(keys) != len(expected) {
-		t.Fatalf("got %d keys, want %d: %v", len(keys), len(expected), keys)
-	}
-	for i, k := range keys {
-		if k != expected[i] {
-			t.Fatalf("key[%d] = %q, want %q", i, k, expected[i])
+	err := db.View(func(roDB ReadOnlyDB) error {
+		// FindIt GTE key005, then iterate forward.
+		kv, found, _, it := roDB.FindIt(GTE, []byte("key005"))
+		if !found {
+			it.Close()
+			t.Fatal("GTE key005: not found")
 		}
-	}
+		if string(kv.Key) != "key005" {
+			it.Close()
+			t.Fatalf("got key %q, want key005", kv.Key)
+		}
+		var keys []string
+		for it.Valid() {
+			keys = append(keys, string(it.Key()))
+			it.Next()
+		}
+		it.Close() // must close before opening next iterator
+		expected := []string{"key005", "key006", "key007", "key008", "key009", "key010"}
+		if len(keys) != len(expected) {
+			t.Fatalf("got %d keys, want %d: %v", len(keys), len(expected), keys)
+		}
+		for i, k := range keys {
+			if k != expected[i] {
+				t.Fatalf("key[%d] = %q, want %q", i, k, expected[i])
+			}
+		}
 
-	// FindIt LTE key005, then iterate backward.
-	kv2, found2, _, it2 := db.FindIt(LTE, []byte("key005"))
-	defer it2.Close()
-	if !found2 {
-		t.Fatal("LTE key005: not found")
-	}
-	if string(kv2.Key) != "key005" {
-		t.Fatalf("got key %q, want key005", kv2.Key)
-	}
-	var keys2 []string
-	for it2.Valid() {
-		keys2 = append(keys2, string(it2.Key()))
-		it2.Prev()
-	}
-	expected2 := []string{"key005", "key004", "key003", "key002", "key001"}
-	if len(keys2) != len(expected2) {
-		t.Fatalf("got %d keys, want %d: %v", len(keys2), len(expected2), keys2)
-	}
-	for i, k := range keys2 {
-		if k != expected2[i] {
-			t.Fatalf("key[%d] = %q, want %q", i, k, expected2[i])
+		// FindIt LTE key005, then iterate backward.
+		kv2, found2, _, it2 := roDB.FindIt(LTE, []byte("key005"))
+		defer it2.Close()
+		if !found2 {
+			t.Fatal("LTE key005: not found")
 		}
+		if string(kv2.Key) != "key005" {
+			t.Fatalf("got key %q, want key005", kv2.Key)
+		}
+		var keys2 []string
+		for it2.Valid() {
+			keys2 = append(keys2, string(it2.Key()))
+			it2.Prev()
+		}
+		expected2 := []string{"key005", "key004", "key003", "key002", "key001"}
+		if len(keys2) != len(expected2) {
+			t.Fatalf("got %d keys, want %d: %v", len(keys2), len(expected2), keys2)
+		}
+		for i, k := range keys2 {
+			if k != expected2[i] {
+				t.Fatalf("key[%d] = %q, want %q", i, k, expected2[i])
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -375,92 +381,100 @@ func TestFetchLarge_InlineValue(t *testing.T) {
 	}
 }
 
-// TestLockedIter_PutGetDelete verifies that it.Put, it.Get, and it.Delete
-// work correctly through a locked iterator, with read-your-writes visibility.
+// TestLockedIter_PutGetDelete verifies that rwDB.Put, rwDB.Get, and rwDB.Delete
+// work correctly through an Update transaction, with read-your-writes visibility.
 func TestLockedIter_PutGetDelete(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateFindTestDB(t, db)
 
-	it := db.NewIter()
-	defer it.Close()
-
-	// Get existing key through iterator.
-	val, ok := it.Get([]byte("key005"))
-	if !ok {
-		t.Fatal("Get key005: not found")
-	}
-	if string(val) != "val005" {
-		t.Fatalf("Get key005: got %q, want val005", val)
-	}
-
-	// Put a new key through iterator.
-	if err := it.Put([]byte("key005a"), []byte("inserted")); err != nil {
-		t.Fatal(err)
-	}
-
-	// Read-your-writes: Get the just-inserted key.
-	val2, ok2 := it.Get([]byte("key005a"))
-	if !ok2 {
-		t.Fatal("Get key005a: not found after Put")
-	}
-	if string(val2) != "inserted" {
-		t.Fatalf("Get key005a: got %q, want inserted", val2)
-	}
-
-	// Delete a key through iterator.
-	if err := it.Delete([]byte("key003")); err != nil {
-		t.Fatal(err)
-	}
-
-	// Read-your-writes: deleted key should be gone.
-	_, ok3 := it.Get([]byte("key003"))
-	if ok3 {
-		t.Fatal("Get key003: should not be found after Delete")
-	}
-
-	// Scan forward from key004 — should see key005a but not key003.
-	it.Seek([]byte("key004"))
-	var keys []string
-	for it.Valid() {
-		keys = append(keys, string(it.Key()))
-		it.Next()
-	}
-	for _, k := range keys {
-		if k == "key003" {
-			t.Fatal("key003 should not appear in scan after Delete")
+	err := db.Update(func(rwDB WritableDB) error {
+		// Get existing key.
+		val, ok := rwDB.Get([]byte("key005"))
+		if !ok {
+			t.Fatal("Get key005: not found")
 		}
-	}
-	found005a := false
-	for _, k := range keys {
-		if k == "key005a" {
-			found005a = true
+		if string(val) != "val005" {
+			t.Fatalf("Get key005: got %q, want val005", val)
 		}
-	}
-	if !found005a {
-		t.Fatalf("key005a should appear in scan after Put; got keys: %v", keys)
+
+		// Put a new key.
+		if err := rwDB.Put([]byte("key005a"), []byte("inserted")); err != nil {
+			t.Fatal(err)
+		}
+
+		// Read-your-writes: Get the just-inserted key.
+		val2, ok2 := rwDB.Get([]byte("key005a"))
+		if !ok2 {
+			t.Fatal("Get key005a: not found after Put")
+		}
+		if string(val2) != "inserted" {
+			t.Fatalf("Get key005a: got %q, want inserted", val2)
+		}
+
+		// Delete a key.
+		if err := rwDB.Delete([]byte("key003")); err != nil {
+			t.Fatal(err)
+		}
+
+		// Read-your-writes: deleted key should be gone.
+		_, ok3 := rwDB.Get([]byte("key003"))
+		if ok3 {
+			t.Fatal("Get key003: should not be found after Delete")
+		}
+
+		// Scan forward from key004 — should see key005a but not key003.
+		it := rwDB.NewIter()
+		defer it.Close()
+		it.Seek([]byte("key004"))
+		var keys []string
+		for it.Valid() {
+			keys = append(keys, string(it.Key()))
+			it.Next()
+		}
+		for _, k := range keys {
+			if k == "key003" {
+				t.Fatal("key003 should not appear in scan after Delete")
+			}
+		}
+		found005a := false
+		for _, k := range keys {
+			if k == "key005a" {
+				found005a = true
+			}
+		}
+		if !found005a {
+			t.Fatalf("key005a should appear in scan after Put; got keys: %v", keys)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
-// TestLockedIter_Sync verifies that it.Sync flushes the memtable.
+// TestLockedIter_Sync verifies that rwDB.Sync flushes the memtable.
 func TestLockedIter_Sync(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateFindTestDB(t, db)
 
-	it := db.NewIter()
-	defer it.Close()
+	err := db.Update(func(rwDB WritableDB) error {
+		// Sync should not error.
+		if err := rwDB.Sync(); err != nil {
+			t.Fatal(err)
+		}
 
-	// Sync should not error.
-	if err := it.Sync(); err != nil {
+		// After sync, data should still be retrievable.
+		val, ok := rwDB.Get([]byte("key007"))
+		if !ok {
+			t.Fatal("Get key007 after Sync: not found")
+		}
+		if string(val) != "val007" {
+			t.Fatalf("Get key007 after Sync: got %q, want val007", val)
+		}
+		return nil
+	})
+	if err != nil {
 		t.Fatal(err)
-	}
-
-	// After sync, data should still be retrievable.
-	val, ok := it.Get([]byte("key007"))
-	if !ok {
-		t.Fatal("Get key007 after Sync: not found")
-	}
-	if string(val) != "val007" {
-		t.Fatalf("Get key007 after Sync: got %q, want val007", val)
 	}
 }
 

@@ -2162,40 +2162,27 @@ func findBuildKV(it *Iter) *KV {
 // exact indicates an exact match to the query key.
 //
 // The returned iterator is a locked iterator (holds the exclusive
-// write lock) positioned at the found key. It can be used to scan
-// beyond the found key (Next/Prev) and to mutate the database
-// (it.Put, it.Delete, it.Get, it.Sync) without deadlock.
-// Do NOT call db.Put/db.Get/db.Delete/db.Sync while the iterator
-// is open - use the iterator's methods instead.
-// The caller must call it.Close() when done to release the lock.
-// If found is false, the iterator is not valid but must still be closed.
-func (db *FlexDB) FindIt(smod SearchModifier, key []byte) (kv *KV, found, exact bool, it *Iter) {
-	it = db.NewIter()
-	found, exact = findSeekIter(it, smod, key)
-	if !found {
-		return
-	}
-	kv = findBuildKV(it)
-	return
-}
-
-// Find is a convenience wrapper around FindIt that closes
-// the iterator before returning. The returned KV owns copies
-// of Key and Value (safe to retain indefinitely). Use FindIt
-// instead if you want to scan beyond the found key.
+// Find looks up the first key matching the SearchModifier and returns
+// an owned copy of the KV (safe to retain indefinitely). For scanning
+// beyond the found key, use FindIt inside a View or Update transaction.
+//
+// Goroutine safe. Acquires the read lock internally.
 func (db *FlexDB) Find(smod SearchModifier, key []byte) (kv *KV, found, exact bool) {
-	var it *Iter
-	kv, found, exact, it = db.FindIt(smod, key)
-	if kv != nil {
+	db.topMutRW.RLock()
+	defer db.topMutRW.RUnlock()
+	it := &Iter{db: db}
+	found, exact = findSeekIter(it, smod, key)
+	if found {
+		zc := findBuildKV(it)
 		// Copy Key and Value since we're about to release the lock.
-		owned := KV{Vptr: kv.Vptr, HasVPtr: kv.HasVPtr, Hlc: kv.Hlc}
-		owned.Key = append([]byte{}, kv.Key...)
-		if !kv.HasVPtr && kv.Value != nil {
-			owned.Value = append([]byte{}, kv.Value...)
+		owned := KV{Vptr: zc.Vptr, HasVPtr: zc.HasVPtr, Hlc: zc.Hlc}
+		owned.Key = append([]byte{}, zc.Key...)
+		if !zc.HasVPtr && zc.Value != nil {
+			owned.Value = append([]byte{}, zc.Value...)
 		}
 		kv = &owned
 	}
-	it.Close()
+	it.releaseIterState()
 	return
 }
 
@@ -2346,6 +2333,14 @@ func (db *FlexDB) Delete(key []byte) error {
 // database write lock. However, when allGone is returned true, all
 // previously held iterators, cursors, and references are invalidated.
 func (db *FlexDB) DeleteRange(includeLarge bool, begKey, endKey []byte, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
+	db.topMutRW.Lock()
+	defer db.topMutRW.Unlock()
+	return db.writeLockHeldDeleteRange(includeLarge, begKey, endKey, begInclusive, endInclusive)
+}
+
+// writeLockHeldDeleteRange is the lock-held body of DeleteRange.
+// Caller must hold topMutRW.Lock().
+func (db *FlexDB) writeLockHeldDeleteRange(includeLarge bool, begKey, endKey []byte, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
 	cmp := bytes.Compare(begKey, endKey)
 	if cmp > 0 {
 		return 0, false, fmt.Errorf("yogadb: DeleteRange: begKey > endKey")
@@ -2354,9 +2349,6 @@ func (db *FlexDB) DeleteRange(includeLarge bool, begKey, endKey []byte, begInclu
 	if cmp == 0 && (!begInclusive || !endInclusive) {
 		return 0, false, nil
 	}
-
-	db.topMutRW.Lock()
-	defer db.topMutRW.Unlock()
 
 	// Fast path: if the range covers every key in the DB and we're
 	// including large values, reinitialize instead of iterating.
@@ -2421,16 +2413,18 @@ func (db *FlexDB) DeleteRange(includeLarge bool, begKey, endKey []byte, begInclu
 func (db *FlexDB) Clear(includeLarge bool) (allGone bool, err error) {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
+	return db.writeLockHeldClear(includeLarge)
+}
 
+// writeLockHeldClear is the lock-held body of Clear.
+// Caller must hold topMutRW.Lock().
+func (db *FlexDB) writeLockHeldClear(includeLarge bool) (allGone bool, err error) {
 	if includeLarge {
 		err := db.writeLockHeldDeleteAll()
 		return true, err
 	}
 
 	// !includeLarge: must iterate and tombstone only small-value keys.
-	// Use the same machinery as DeleteRange but with maximal bounds.
-	// Unlock first since deleteRangeSlow acquires its own lock
-	// - actually, we already hold the lock. Call the internal helpers directly.
 
 	// Phase 1: Tombstone small-value keys in both memtables.
 	for _, mtIdx := range []int{db.activeMT, 1 - db.activeMT} {
@@ -2452,7 +2446,6 @@ func (db *FlexDB) Clear(includeLarge bool) (allGone bool, err error) {
 	}
 
 	// Phase 2: Walk FlexSpace and tombstone small-value keys.
-	// Use nil begKey/endKey sentinels to cover entire range.
 	_, err = db.deleteRangeFlexSpaceClearSmall()
 	return false, err
 }
@@ -2971,7 +2964,12 @@ func deleteRangeDedup(kvs []KV) []KV {
 func (db *FlexDB) Merge(key []byte, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
+	return db.writeLockHeldMerge(key, fn)
+}
 
+// writeLockHeldMerge is the lock-held body of Merge.
+// Caller must hold topMutRW.Lock().
+func (db *FlexDB) writeLockHeldMerge(key []byte, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error {
 	if len(key)+16 >= MaxKeySize {
 		return fmt.Errorf("flexdb: key too large for merge (max %d bytes)", MaxKeySize)
 	}

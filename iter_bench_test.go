@@ -61,22 +61,21 @@ func Benchmark_Iter_YogaDB_Ascend(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		t0 := time.Now()
-		it := db.NewIter()
-		it.SeekToFirst()
-		count := 0
-		for it.Valid() {
-			//cmp := bytes.Compare(it.Key, keys[count])
-			//if cmp != 0 {
-			//	panicf("at count = %v, want '%v'; got '%v'", count, string(keys[count]), string(it.Key))
-			//}
-			count++
-			it.Next()
-		}
-		it.Close()
-		elapsed := time.Since(t0)
-		if count > 0 {
-			b.ReportMetric(float64(elapsed.Nanoseconds())/float64(count), "iter_ns/key")
-		}
+		db.View(func(roDB ReadOnlyDB) error {
+			it := roDB.NewIter()
+			it.SeekToFirst()
+			count := 0
+			for it.Valid() {
+				count++
+				it.Next()
+			}
+			it.Close()
+			elapsed := time.Since(t0)
+			if count > 0 {
+				b.ReportMetric(float64(elapsed.Nanoseconds())/float64(count), "iter_ns/key")
+			}
+			return nil
+		})
 	}
 	b.StopTimer()
 }
@@ -114,22 +113,21 @@ func Benchmark_Iter_YogaDB_Descend(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		t0 := time.Now()
-		it := db.NewIter()
-		it.SeekToLast()
-		count := 0
-		for it.Valid() {
-			// cmp := bytes.Compare(it.Key, keys[count])
-			// if cmp != 0 {
-			// 	panicf("at count = %v, want '%v'; got '%v'", count, string(keys[count]), string(it.Key))
-			// }
-			count++
-			it.Prev()
-		}
-		it.Close()
-		elapsed := time.Since(t0)
-		if count > 0 {
-			b.ReportMetric(float64(elapsed.Nanoseconds())/float64(count), "iter_ns/key")
-		}
+		db.View(func(roDB ReadOnlyDB) error {
+			it := roDB.NewIter()
+			it.SeekToLast()
+			count := 0
+			for it.Valid() {
+				count++
+				it.Prev()
+			}
+			it.Close()
+			elapsed := time.Since(t0)
+			if count > 0 {
+				b.ReportMetric(float64(elapsed.Nanoseconds())/float64(count), "iter_ns/key")
+			}
+			return nil
+		})
 	}
 	b.StopTimer()
 }

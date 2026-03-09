@@ -66,19 +66,14 @@ type prefetchSpan struct {
 //   - Inactive memtable
 //   - FlexSpace via sparse index (lowest priority)
 //
-// The iterator holds topMutRW.Lock() (the exclusive write lock) for
-// its entire lifetime, from NewIter() until Close(). This blocks
-// the flush worker and all other goroutines from reading or writing
-// the database while the iterator is open. In exchange:
-//   - Zero-copy access to cache memory is safe (no concurrent mutation).
-//   - Mutations via it.Put/it.Delete are immediately visible to
-//     subsequent Next/Prev calls (read-your-writes).
-//   - it.Get provides point queries without additional locking.
-//   - it.Sync flushes the memtable to FlexSpace.
+// Iterators are created within a transaction via rwDB.NewIter() or
+// roDB.NewIter(). The transaction holds the lock; the iterator does
+// not manage locks itself. Multiple iterators can coexist within
+// one transaction. All iterators are auto-closed when the transaction
+// callback returns, but may be closed earlier via it.Close().
 //
-// Do NOT call db.Put/db.Get/db.Delete/db.Sync while an iterator is
-// open — they will deadlock. Use the iterator's methods instead.
-// Close the iterator promptly to release the lock.
+// Zero-copy access to cache memory is safe because the transaction
+// holds a lock (write lock for Update, read lock for View).
 //
 // Large values (stored in VLOG) are not fetched by default. Use
 // Large() to check and FetchV() to fetch on demand.
@@ -119,21 +114,6 @@ type Iter struct {
 	pfSpanIdx   int // current span being served
 }
 
-// NewIter creates an iterator that holds topMutRW.Lock() (the exclusive
-// write lock) until Close() is called. While the iterator is open, no
-// other goroutine can read or write the database (including the
-// background flush worker).
-//
-// Use the iterator's Put, Get, Delete, and Sync methods to mutate the
-// database during iteration — do NOT call db.Put/db.Get/db.Delete/db.Sync
-// directly, as they will deadlock.
-//
-// Mutations are immediately visible to subsequent Next/Prev calls.
-// Close the iterator promptly to release the lock.
-func (db *FlexDB) NewIter() *Iter {
-	db.topMutRW.Lock()
-	return &Iter{db: db}
-}
 
 // releaseIterState releases all stateful cursor resources.
 func (it *Iter) releaseIterState() {
@@ -1392,8 +1372,8 @@ func (it *Iter) Prev() {
 	it.valueResolved = true
 }
 
-// Close marks the iterator as closed, releases cursor state, and
-// releases the exclusive write lock (topMutRW.Unlock()).
+// Close marks the iterator as closed and releases cursor state.
+// The transaction manages lock lifetime, not the iterator.
 func (it *Iter) Close() {
 	if it.closed {
 		return
@@ -1401,37 +1381,8 @@ func (it *Iter) Close() {
 	it.releaseIterState()
 	it.valid = false
 	it.closed = true
-	it.db.topMutRW.Unlock()
 }
 
-// ====================== Iterator Mutation Methods ======================
-//
-// The iterator holds the exclusive write lock, so these methods call
-// the write-lock-held internal methods directly without deadlock.
-// Mutations are immediately visible to subsequent Seek/Next/Prev calls.
-
-// Put inserts or updates a key-value pair through the iterator.
-// The write is immediately visible to subsequent Seek/Next/Prev calls.
-func (it *Iter) Put(key, value []byte) error {
-	return it.db.writeLockHeldPut(key, value)
-}
-
-// Delete removes a key through the iterator by writing a tombstone.
-// The deletion is immediately visible to subsequent Seek/Next/Prev calls.
-func (it *Iter) Delete(key []byte) error {
-	return it.db.writeLockHeldPut(key, nil)
-}
-
-// Get retrieves the value for key through the iterator.
-// Returns nil, false if not found.
-func (it *Iter) Get(key []byte) ([]byte, bool) {
-	return it.db.writeLockHeldGet(key)
-}
-
-// Sync flushes the active memtable to FlexSpace through the iterator.
-func (it *Iter) Sync() error {
-	return it.db.writeLockHeldSync()
-}
 
 // Valid returns true if the iterator is positioned at a valid key.
 func (it *Iter) Valid() bool { return it.valid }
@@ -1552,76 +1503,6 @@ func (it *Iter) iterResolvedValue() []byte {
 	return val
 }
 
-// Ascend iterates key-value pairs in ascending order from the first key >= pivot.
-// If pivot is nil, starts from the beginning. Stops when iter returns false.
-// The callback must NOT call db.Put/db.Get/db.Delete/db.Sync (deadlock).
-func (db *FlexDB) Ascend(pivot []byte, iter func(key, value []byte) bool) {
-	it := db.NewIter()
-	defer it.Close()
-	it.Seek(pivot)
-	for it.Valid() {
-		if !iter(it.Key(), it.iterResolvedValue()) {
-			return
-		}
-		it.Next()
-	}
-}
-
-// Descend iterates key-value pairs in descending order from the last key <= pivot.
-// If pivot is nil, starts from the end. Stops when iter returns false.
-// The callback must NOT call db.Put/db.Get/db.Delete/db.Sync (deadlock).
-func (db *FlexDB) Descend(pivot []byte, iter func(key, value []byte) bool) {
-	it := db.NewIter()
-	defer it.Close()
-	if pivot == nil {
-		it.SeekToLast()
-	} else {
-		it.seekLE(pivot, false)
-	}
-	for it.Valid() {
-		if !iter(it.Key(), it.iterResolvedValue()) {
-			return
-		}
-		it.Prev()
-	}
-}
-
-// AscendRange iterates key-value pairs where key is in [greaterOrEqual, lessThan)
-// ascending. Either bound may be nil. Stops when iter returns false.
-// The callback must NOT call db.Put/db.Get/db.Delete/db.Sync (deadlock).
-func (db *FlexDB) AscendRange(greaterOrEqual, lessThan []byte, iter func(key, value []byte) bool) {
-	it := db.NewIter()
-	defer it.Close()
-	it.Seek(greaterOrEqual)
-	for it.Valid() {
-		if lessThan != nil && bytes.Compare(it.Key(), lessThan) >= 0 {
-			return
-		}
-		if !iter(it.Key(), it.iterResolvedValue()) {
-			return
-		}
-		it.Next()
-	}
-}
-
-// DescendRange iterates key-value pairs where key is in (greaterThan, lessOrEqual]
-// descending. Either bound may be nil. Stops when iter returns false.
-// The callback must NOT call db.Put/db.Get/db.Delete/db.Sync (deadlock).
-func (db *FlexDB) DescendRange(lessOrEqual, greaterThan []byte, iter func(key, value []byte) bool) {
-	it := db.NewIter()
-	defer it.Close()
-	if lessOrEqual == nil {
-		it.SeekToLast()
-	} else {
-		it.seekLE(lessOrEqual, false)
-	}
-	for it.Valid() {
-		if greaterThan != nil && bytes.Compare(it.Key(), greaterThan) <= 0 {
-			return
-		}
-		if !iter(it.Key(), it.iterResolvedValue()) {
-			return
-		}
-		it.Prev()
-	}
-}
+// Ascend/Descend/AscendRange/DescendRange are available as methods
+// on ReadOnlyDB and WritableDB inside View/Update transactions.
+// See tx.go for the transaction-based iteration API.

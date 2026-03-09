@@ -48,23 +48,26 @@ func main() {
 func justShowAll(db *yogadb.FlexDB, dbPath string) {
 	saw := 0
 	buf := make([]byte, 0, 4<<20)
-	db.Ascend(nil, func(key, value []byte) bool {
-		need := 2 + len(key) + len(value)
-		if len(buf)+need <= cap(buf) {
-			// fine. write below.
-		} else {
-			os.Stdout.Write(buf)
-			buf = buf[:0]
-		}
-		buf = append(buf, key...)
-		if len(value) > 0 {
-			buf = append(buf, colonarrow...)
-			buf = append(buf, value...)
-		}
-		buf = append(buf, newline...)
+	db.View(func(roDB yogadb.ReadOnlyDB) error {
+		roDB.Ascend(nil, func(key, value []byte) bool {
+			need := 2 + len(key) + len(value)
+			if len(buf)+need <= cap(buf) {
+				// fine. write below.
+			} else {
+				os.Stdout.Write(buf)
+				buf = buf[:0]
+			}
+			buf = append(buf, key...)
+			if len(value) > 0 {
+				buf = append(buf, colonarrow...)
+				buf = append(buf, value...)
+			}
+			buf = append(buf, newline...)
 
-		saw++
-		return true
+			saw++
+			return true
+		})
+		return nil
 	})
 	if len(buf) > 0 {
 		os.Stdout.Write(buf)
