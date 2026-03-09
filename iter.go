@@ -2,7 +2,6 @@ package yogadb
 
 import (
 	"sort"
-	"unsafe"
 
 	"github.com/tidwall/btree"
 )
@@ -169,6 +168,10 @@ func (it *Iter) prefetchFillFlexSpaceOnly() {
 // servePrefetch walks forward through prefetch spans, skipping tombstones,
 // and sets pKV to the next valid entry. Returns true if an entry was served.
 // Runs outside the lock.
+//
+// The common case (next entry in current span, not a tombstone) is inlined
+// into Next() via servePrefetchInline to avoid function call overhead.
+// This full version handles span exhaustion and tombstone runs.
 func (it *Iter) servePrefetch() bool {
 	for it.pfSpanIdx < it.pfSpanCount {
 		span := &it.pfSpans[it.pfSpanIdx]
@@ -183,11 +186,6 @@ func (it *Iter) servePrefetch() bool {
 				continue
 			}
 			span.pos = pos
-			// Prefetch the next KV entry into L1 cache so it's
-			// warm when the caller invokes servePrefetch again.
-			if pos < len(kvs) {
-				prefetchLine(unsafe.Pointer(&kvs[pos]))
-			}
 			it.pKV = pkv
 			it.valueResolved = false
 			it.valid = true
@@ -1216,6 +1214,22 @@ func (it *Iter) Next() {
 	// HLC check detects mutations made via it.Put/it.Delete since last fill.
 	if it.pfSpanIdx < it.pfSpanCount {
 		if it.snapshotHLC == it.db.hlc.Aload() {
+			// Inline the common case: next entry in current span, not a tombstone.
+			// This avoids a function call to servePrefetch (which Go can't inline
+			// because it contains loops) on every Next().
+			span := &it.pfSpans[it.pfSpanIdx]
+			if pos := span.pos; pos < span.end {
+				pkv := &span.kvs[pos] // one cache-line access (64B KV)
+				if pkv.Value != nil || pkv.Vptr.Length > 0 { // not tombstone
+					span.pos = pos + 1
+					it.pKV = pkv
+					it.valueResolved = false
+					it.valid = true
+					it.dir = 1
+					return
+				}
+			}
+			// Tombstone or span boundary — fall through to full loop.
 			if it.servePrefetch() {
 				return
 			}
