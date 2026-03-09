@@ -70,7 +70,7 @@ func memSparseIndexTreeCreate() *memSparseIndexTree {
 	t := &memSparseIndexTree{}
 	root := &memSparseIndexTreeNode{isLeaf: true, tree: t}
 	// Insert sentinel anchor (null key at loff=0)
-	root.anchors[0] = &dbAnchor{key: "", loff: 0}
+	root.anchors[0] = &dbAnchor{key: "", loff: 0, partitionID: cachePartitionID("")}
 	root.count = 1
 	t.root = root
 	t.leafHead = root
@@ -127,9 +127,10 @@ func memSparseIndexTreeFindPosLeafLE(node *memSparseIndexTreeNode, key string) i
 func (nh *memSparseIndexTreeHandler) handlerInsert(key string, loff uint64, psize uint32) *dbAnchor {
 	node := nh.node
 	anchor := &dbAnchor{
-		key:   key,
-		loff:  int64(loff) - nh.shift,
-		psize: psize,
+		key:         key,
+		loff:        int64(loff) - nh.shift,
+		psize:       psize,
+		partitionID: cachePartitionID(key),
 	}
 	target := nh.idx
 	if target == node.count {

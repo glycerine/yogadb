@@ -31,9 +31,10 @@ type dbAnchor struct {
 	// at the top of sparseindextree.go.
 	loff int64
 
-	psize    uint32 // packed size of this interval in FlexSpace
-	unsorted uint8  // count of unsorted appended KVs
-	fce      *intervalCacheEntry
+	psize       uint32 // packed size of this interval in FlexSpace
+	unsorted    uint8  // count of unsorted appended KVs
+	partitionID int    // cached cachePartitionID(key), set once at creation
+	fce         *intervalCacheEntry
 }
 
 type intervalCacheEntry struct {
@@ -76,7 +77,7 @@ func newCache(db *FlexDB, capMB uint64) *intervalCache {
 }
 
 func (c *intervalCache) getPartition(anchor *dbAnchor) *intervalCachePartition {
-	return &c.partitions[cachePartitionID(anchor.key)]
+	return &c.partitions[anchor.partitionID]
 }
 
 // flushDirtyPages writes all dirty cache entries to FlexSpace via Overwrite.

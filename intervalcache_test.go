@@ -169,7 +169,7 @@ func makeSortedKVs(keys []string) []KV {
 }
 
 func makeAnchor(key string) *dbAnchor {
-	return &dbAnchor{key: key}
+	return &dbAnchor{key: key, partitionID: cachePartitionID(key)}
 }
 
 func makeCacheEntry(kvs []KV) *intervalCacheEntry {

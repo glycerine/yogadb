@@ -171,18 +171,24 @@ func (it *Iter) prefetchFillFlexSpaceOnly() {
 func (it *Iter) servePrefetch() bool {
 	for it.pfSpanIdx < it.pfSpanCount {
 		span := &it.pfSpans[it.pfSpanIdx]
-		for span.pos < span.end {
-			pkv := &span.kvs[span.pos]
-			span.pos++
+		pos := span.pos
+		// Reslice to span.end so the compiler can eliminate
+		// bounds checks: pos < len(kvs) is proven by the loop condition.
+		kvs := span.kvs[:span.end]
+		for pos < len(kvs) {
+			pkv := &kvs[pos] // BCE: pos < len(kvs)
+			pos++
 			if pkv.Value == nil && !pkv.HasVPtr { // tombstone
 				continue
 			}
+			span.pos = pos
 			it.pKV = pkv
 			it.valueResolved = false
 			it.valid = true
 			it.dir = 1
 			return true
 		}
+		span.pos = pos
 		it.pfSpanIdx++
 	}
 	// All spans exhausted (possibly all tombstones). Don't set valid=false;

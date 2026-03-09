@@ -847,7 +847,7 @@ func TestSparseIndexTree_FindPosLeafLE(t *testing.T) {
 	// Add some anchors
 	skeys := []string{"", "bbb", "ddd", "fff"}
 	for i, k := range skeys {
-		node.anchors[i] = &dbAnchor{key: k, loff: int64(i * 100)}
+		node.anchors[i] = &dbAnchor{key: k, loff: int64(i * 100), partitionID: cachePartitionID(k)}
 	}
 	node.count = 4
 
