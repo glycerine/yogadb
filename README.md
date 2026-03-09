@@ -230,16 +230,17 @@ The Extent Map (FlexSpace/FlexTree): The FlexTree maps those logical blocks to p
 
 # comment on the API / goroutine safety
 
-* API notes: all Go API calls are goroutine safe, except 
-for iterator use (deliberately). Ascend and Descend iterators 
-are designed to allow concurrent mutation while scanning through
-the database, and hence by design they hold no locks. This allows the user
-to delete keys on the fly, rather than collect a separate long list of things
-to delete (a hazardous approach since that list could overflow available memory).
-
-In short: users must bring their own synchronization during iteration. 
-In other words, do not allow other goroutines to operate on the database
-while you are iterating it.
+* API notes: all Go API calls are goroutine safe. Iterators hold
+the global write lock on the database. This means only one iteration
+at a time will happen. The upside is that during iteration you
+can Get/Put/Set/Delete on the iterator with freedom. This is a 
+requirement for me-- I want to delete keys on the fly as I scan.
+Other designs that force one to collect a separate long list 
+of things to delete later are hazardous. That list could 
+overflow grow so long to overflow available memory, plus the
+list could change after the current transaction. Iterators thus
+start an implicit transaction. Iter.Close() must be called
+to finish the transaction; typically with `defer it.Close()`.
 
 # getting started
 
