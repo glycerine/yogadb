@@ -49,9 +49,9 @@ func (m *memtable) reset() {
 func (m *memtable) put(kv KV) (KV, bool) {
 	old, replaced := m.bt.Set(kv)
 	if replaced {
-		m.size -= int64(kvSizeApprox(old))
+		m.size -= int64(kvSizeApprox(&old))
 	}
-	m.size += int64(kvSizeApprox(kv))
+	m.size += int64(kvSizeApprox(&kv))
 	if m.size <= 0 {
 		panicf("bad: memtable with some content should have size(%v) > 0: %#v", m.size, m)
 	}

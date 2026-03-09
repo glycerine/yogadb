@@ -308,11 +308,11 @@ type HLCInterval struct {
 func kvLess(a, b KV) bool { return bytes.Compare(a.Key, b.Key) < 0 }
 
 // kvSizeApprox returns the approximate in-memory size of a KV (matches C kv_size).
-func kvSizeApprox(kv KV) int { return 24 + len(kv.Key) + len(kv.Value) }
+func kvSizeApprox(kv *KV) int { return 24 + len(kv.Key) + len(kv.Value) }
 
 // isTombstone returns true if this KV is a deletion marker.
 // A tombstone has nil Value and no VLOG pointer.
-func (kv KV) isTombstone() bool {
+func (kv *KV) isTombstone() bool {
 	return kv.Value == nil && !kv.HasVPtr
 }
 
@@ -3180,7 +3180,7 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 	// Compute left/right sizes for cache.
 	leftSize := 0
 	for i := 0; i < leftCount; i++ {
-		leftSize += kvSizeApprox(fce.kvs[i])
+		leftSize += kvSizeApprox(&fce.kvs[i])
 	}
 
 	newAnchorKey := dupBytes(fce.kvs[leftCount].Key)

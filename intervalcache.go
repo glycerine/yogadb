@@ -39,15 +39,15 @@ type dbAnchor struct {
 
 type intervalCacheEntry struct {
 	anchor    *dbAnchor
-	kvs       []KV     // decoded KV slice (sorted when unsorted==0)
-	fps       []uint16 // fingerprints per KV
-	size      int      // sum of kvSizeApprox for all kvs
-	count     int      // same as len(kvs)
-	frag      bool     // needs defrag
-	dirty     bool     // modified in cache, not yet written to FlexSpace
+	kvs       []KV                    // decoded KV slice (sorted when unsorted==0)
+	fps       []uint16                // fingerprints per KV
+	size      int                     // sum of kvSizeApprox for all kvs
+	count     int                     // same as len(kvs)
+	frag      bool                    // needs defrag
+	dirty     bool                    // modified in cache, not yet written to FlexSpace
 	dirtyNode *memSparseIndexTreeNode // leaf node containing anchor (set when dirty=true)
-	access    int32                    // clock chance counter (atomic)
-	refcnt    int32                    // active users (atomic)
+	access    int32                   // clock chance counter (atomic)
+	refcnt    int32                   // active users (atomic)
 	loading   bool                    // being loaded
 	prev      *intervalCacheEntry
 	next      *intervalCacheEntry
@@ -318,7 +318,7 @@ func (p *intervalCachePartition) loadInterval(fce *intervalCacheEntry, anchor *d
 			for _, kv := range kvs {
 				fce.kvs = append(fce.kvs, kv)
 				fce.fps = append(fce.fps, fingerprint(kvCRC32(kv.Key)))
-				fce.size += kvSizeApprox(kv)
+				fce.size += kvSizeApprox(&kv)
 				fce.count++
 			}
 			src = src[consumed:]
@@ -334,7 +334,7 @@ func (p *intervalCachePartition) loadInterval(fce *intervalCacheEntry, anchor *d
 		}
 		fce.kvs = append(fce.kvs, kv)
 		fce.fps = append(fce.fps, fingerprint(kvCRC32(kv.Key)))
-		fce.size += kvSizeApprox(kv)
+		fce.size += kvSizeApprox(&kv)
 		fce.count++
 		src = src[size:]
 	}
@@ -393,7 +393,7 @@ func intervalCacheDedup(kvs []KV) ([]KV, []uint16, int) {
 	size := 0
 	for i, kv := range out {
 		fps[i] = fingerprint(kvCRC32(kv.Key))
-		size += kvSizeApprox(kv)
+		size += kvSizeApprox(&kv)
 	}
 	return out, fps, size
 }
@@ -433,7 +433,7 @@ func (p *intervalCachePartition) cacheEntryInsert(fce *intervalCacheEntry, kv KV
 	copy(fce.fps[idx+1:], fce.fps[idx:])
 	fce.kvs[idx] = kv
 	fce.fps[idx] = fingerprint(kvCRC32(kv.Key))
-	approx := kvSizeApprox(kv)
+	approx := kvSizeApprox(&kv)
 	fce.size += approx
 	fce.count++
 	p.mu.Lock()
@@ -443,8 +443,8 @@ func (p *intervalCachePartition) cacheEntryInsert(fce *intervalCacheEntry, kv KV
 
 func (p *intervalCachePartition) cacheEntryReplace(fce *intervalCacheEntry, kv KV, idx int) {
 	old := fce.kvs[idx]
-	oldSz := kvSizeApprox(old)
-	newSz := kvSizeApprox(kv)
+	oldSz := kvSizeApprox(&old)
+	newSz := kvSizeApprox(&kv)
 	fce.kvs[idx] = kv
 	fce.fps[idx] = fingerprint(kvCRC32(kv.Key))
 	diff := newSz - oldSz
@@ -456,7 +456,7 @@ func (p *intervalCachePartition) cacheEntryReplace(fce *intervalCacheEntry, kv K
 
 func (p *intervalCachePartition) cacheEntryDelete(fce *intervalCacheEntry, idx int) {
 	old := fce.kvs[idx]
-	sz := kvSizeApprox(old)
+	sz := kvSizeApprox(&old)
 	copy(fce.kvs[idx:], fce.kvs[idx+1:fce.count])
 	copy(fce.fps[idx:], fce.fps[idx+1:fce.count])
 	fce.kvs = fce.kvs[:fce.count-1]

@@ -178,7 +178,7 @@ func makeCacheEntry(kvs []KV) *intervalCacheEntry {
 	size := 0
 	for i, kv := range kvs {
 		fps[i] = fingerprint(kvCRC32(kv.Key))
-		size += kvSizeApprox(kv)
+		size += kvSizeApprox(&kv)
 	}
 	return &intervalCacheEntry{
 		kvs:   kvs,
@@ -249,7 +249,7 @@ func checkCountAndSize(t testing.TB, fce *intervalCacheEntry) {
 	}
 	expectedSize := 0
 	for _, kv := range fce.kvs {
-		expectedSize += kvSizeApprox(kv)
+		expectedSize += kvSizeApprox(&kv)
 	}
 	if fce.size != expectedSize {
 		t.Fatalf("size = %d, expected %d", fce.size, expectedSize)
@@ -896,7 +896,7 @@ func FuzzIntervalCache_Dedup(f *testing.F) {
 		// Size check
 		expectedSize := 0
 		for _, kv := range out {
-			expectedSize += kvSizeApprox(kv)
+			expectedSize += kvSizeApprox(&kv)
 		}
 		if size != expectedSize {
 			t.Fatalf("size=%d, want %d", size, expectedSize)
