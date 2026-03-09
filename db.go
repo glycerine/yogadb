@@ -2050,6 +2050,115 @@ func (db *FlexDB) writeLockHeldPut(key, value []byte) error {
 	return nil
 }
 
+// SearchModifier controls the matching behavior of Find.
+type SearchModifier int
+
+const (
+	// Exact matches only; like a hash table.
+	Exact SearchModifier = 0
+	// GTE finds the smallest key greater-than-or-equal to the query.
+	GTE SearchModifier = 1
+	// LTE finds the largest key less-than-or-equal to the query.
+	LTE SearchModifier = 2
+	// GT finds the smallest key strictly greater-than the query.
+	GT SearchModifier = 3
+	// LT finds the largest key strictly less-than the query.
+	LT SearchModifier = 4
+)
+
+// Find allows GTE, GT, LTE, LT, and Exact searches.
+//
+// GTE: find a leaf greater-than-or-equal to key;
+// the smallest such key.
+//
+// GT: find a leaf strictly greater-than key;
+// the smallest such key.
+//
+// LTE: find a leaf less-than-or-equal to key;
+// the largest such key.
+//
+// LT: find a leaf less-than key; the
+// largest such key.
+//
+// Exact: find a matching
+// key exactly. A key can only be stored
+// once in the tree. (It is not a multi-map
+// in the C++ STL sense).
+//
+// If key is nil, then GTE and GT return
+// the first leaf in the tree, while LTE
+// and LT return the last leaf in the tree.
+//
+// Other returned flags:
+// found means some key was found.
+// exact means an exact matching key to the query was found.
+// large means the value is large and only returned in value if fetchLarge was true.
+//
+// The returned iterator is positioned at the found key
+// and can be used to scan beyond it (Next/Prev). The caller
+// must call it.Close() when done. If found is false, the
+// iterator is not valid but must still be closed.
+func (db *FlexDB) Find(smod SearchModifier, key []byte, fetchLarge bool) (value []byte, found, exact, large bool, it *Iter) {
+	it = db.NewIter()
+
+	switch smod {
+	case GTE:
+		it.Seek(key)
+	case GT:
+		it.Seek(key)
+		if it.Valid() && key != nil && bytes.Equal(it.Key(), key) {
+			it.Next()
+		}
+	case LTE:
+		if key == nil {
+			it.SeekToLast()
+		} else {
+			it.seekLE(key, false)
+		}
+	case LT:
+		if key == nil {
+			it.SeekToLast()
+		} else {
+			it.seekLE(key, true)
+		}
+	case Exact:
+		it.Seek(key)
+		if it.Valid() && !bytes.Equal(it.Key(), key) {
+			// Seek found a GE key but not an exact match.
+			it.releaseIterState()
+			it.valid = false
+			return
+		}
+	}
+
+	if !it.Valid() {
+		return
+	}
+
+	found = true
+	exact = key != nil && bytes.Equal(it.Key(), key)
+	large = it.Large()
+
+	if large {
+		if fetchLarge {
+			var err error
+			value, err = it.FetchV()
+			if err != nil {
+				value = nil
+			}
+		}
+	} else {
+		value = it.Vin()
+		if value != nil {
+			out := make([]byte, len(value))
+			copy(out, value)
+			value = out
+		}
+	}
+
+	return
+}
+
 // Get retrieves the value for key. Returns nil, false if not found.
 func (db *FlexDB) Get(key []byte) ([]byte, bool) {
 	db.topMutRW.RLock()
