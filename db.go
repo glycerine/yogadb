@@ -1426,9 +1426,9 @@ func (db *FlexDB) VacuumVLOG() (*VacuumVLOGStats, error) {
 	for node := t.leafHead; node != nil; node = node.next {
 		for ai := 0; ai < node.count; ai++ {
 			anchor := node.anchors[ai]
-			if anchor.fce != nil {
-				anchor.fce.anchor = nil
-				anchor.fce = nil
+			if fce := anchor.loadFce(); fce != nil {
+				fce.anchor = nil
+				anchor.storeFce(nil)
 			}
 		}
 	}
@@ -1629,9 +1629,9 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 	for node := db.tree.leafHead; node != nil; node = node.next {
 		for ai := 0; ai < node.count; ai++ {
 			anchor := node.anchors[ai]
-			if anchor.fce != nil {
-				anchor.fce.anchor = nil
-				anchor.fce = nil
+			if fce := anchor.loadFce(); fce != nil {
+				fce.anchor = nil
+				anchor.storeFce(nil)
 			}
 		}
 	}

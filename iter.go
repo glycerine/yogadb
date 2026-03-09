@@ -2,6 +2,7 @@ package yogadb
 
 import (
 	"sort"
+	"sync/atomic"
 
 	"github.com/tidwall/btree"
 )
@@ -546,9 +547,38 @@ func (db *FlexDB) flexCursorNextInterval(fc *flexCursor) {
 			continue
 		}
 
+		partition := &db.cache.partitions[anchor.partitionID]
+
+		// Lock-free fast path: if anchor already has a cached entry,
+		// acquire a reference without taking the partition lock.
+		fce := anchor.loadFce()
+		if fce != nil {
+			atomic.AddInt32(&fce.refcnt, 1)
+			// Verify entry wasn't evicted between load and refcnt bump.
+			// If evicted, anchor.fce is nil (or a new entry). Our refcnt
+			// bump on the old entry is harmless — just undo and fall back.
+			if anchor.loadFce() == fce && !fce.loading {
+				if fce.count == 0 {
+					partition.releaseEntry(fce)
+					anchorIdx++
+					continue
+				}
+				atomic.StoreInt32(&fce.access, intervalCacheEntryChance)
+				fc.node = node
+				fc.anchorIdx = anchorIdx
+				fc.shift = shift
+				fc.fce = fce
+				fc.partition = partition
+				fc.kvIdx = 0
+				return
+			}
+			// Race lost or still loading — release and use locked path.
+			atomic.AddInt32(&fce.refcnt, -1)
+		}
+
+		// Slow path: cache miss or loading — go through getEntry.
 		anchorLoff := uint64(anchor.loff + shift)
-		partition := db.cache.getPartition(anchor)
-		fce := partition.getEntry(anchor, anchorLoff, db)
+		fce = partition.getEntry(anchor, anchorLoff, db)
 
 		if fce.count == 0 {
 			partition.releaseEntry(fce)

@@ -4,6 +4,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 // ====================== Interval cache ======================
@@ -35,6 +36,16 @@ type dbAnchor struct {
 	unsorted    uint8  // count of unsorted appended KVs
 	partitionID int    // cached cachePartitionID(key), set once at creation
 	fce         *intervalCacheEntry
+}
+
+// loadFce atomically loads anchor.fce. Safe for lock-free reads.
+func (a *dbAnchor) loadFce() *intervalCacheEntry {
+	return (*intervalCacheEntry)(atomic.LoadPointer((*unsafe.Pointer)(unsafe.Pointer(&a.fce))))
+}
+
+// storeFce atomically stores anchor.fce. Use under partition lock.
+func (a *dbAnchor) storeFce(fce *intervalCacheEntry) {
+	atomic.StorePointer((*unsafe.Pointer)(unsafe.Pointer(&a.fce)), unsafe.Pointer(fce))
 }
 
 type intervalCacheEntry struct {
@@ -107,7 +118,7 @@ func (c *intervalCache) flushDirtyPages() {
 			if anchor == nil {
 				continue
 			}
-			fce := anchor.fce
+			fce := anchor.loadFce()
 			if fce == nil || !fce.dirty {
 				continue
 			}
@@ -133,7 +144,7 @@ func (p *intervalCachePartition) allocEntryForNewAnchor(anchor *dbAnchor) *inter
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	fce := &intervalCacheEntry{anchor: anchor}
-	anchor.fce = fce
+	anchor.storeFce(fce)
 	p.insertIntoClock(fce)
 	atomic.AddInt32(&fce.refcnt, 1)
 	atomic.StoreInt32(&fce.access, intervalCacheEntryChance)
@@ -177,7 +188,7 @@ func (p *intervalCachePartition) freeEntry(fce *intervalCacheEntry) int64 {
 	}
 	freed := int64(32 + fce.size)
 	if fce.anchor != nil {
-		fce.anchor.fce = nil
+		fce.anchor.storeFce(nil)
 	}
 	p.removeFromClock(fce)
 	return freed
@@ -241,7 +252,7 @@ func (p *intervalCachePartition) calibrate() {
 // getEntry returns the cache entry for anchor, loading it from FlexSpace if necessary.
 func (p *intervalCachePartition) getEntry(anchor *dbAnchor, anchorLoff uint64, db *FlexDB) *intervalCacheEntry {
 	p.mu.Lock()
-	fce := anchor.fce
+	fce := anchor.loadFce()
 	if fce != nil {
 		atomic.AddInt32(&fce.refcnt, 1)
 		isLoading := fce.loading
@@ -262,7 +273,7 @@ func (p *intervalCachePartition) getEntry(anchor *dbAnchor, anchorLoff uint64, d
 	}
 	// miss: allocate and load
 	fce = &intervalCacheEntry{anchor: anchor}
-	anchor.fce = fce
+	anchor.storeFce(fce)
 	p.insertIntoClock(fce)
 	atomic.AddInt32(&fce.refcnt, 1)
 	fce.loading = true
@@ -284,9 +295,8 @@ func (p *intervalCachePartition) getEntry(anchor *dbAnchor, anchorLoff uint64, d
 // getEntryUnsorted returns the cache entry only if already loaded,
 // OR forces a load if the unsorted quota is exceeded.
 func (p *intervalCachePartition) getEntryUnsorted(anchor *dbAnchor, anchorLoff uint64, db *FlexDB) *intervalCacheEntry {
-	p.mu.Lock()
-	fce := anchor.fce
-	p.mu.Unlock()
+	// Atomic load — no lock needed just to check if fce is populated.
+	fce := anchor.loadFce()
 	if fce != nil || anchor.unsorted >= flexdbUnsortedWriteQuota || anchor.psize >= flexdbSparseIntervalSize {
 		return p.getEntry(anchor, anchorLoff, db)
 	}
