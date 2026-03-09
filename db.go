@@ -20,6 +20,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/glycerine/vfs"
 )
@@ -476,7 +477,11 @@ func flexdbTagUnsorted(tag uint16) uint8 { return uint8((tag >> 1) & 0x7f) }
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
 func kvCRC32(key string) uint32 {
-	return crc32.Checksum([]byte(key), crc32cTable)
+	if len(key) == 0 {
+		return crc32.Checksum(nil, crc32cTable)
+	}
+	b := unsafe.Slice(unsafe.StringData(key), len(key))
+	return crc32.Checksum(b, crc32cTable)
 }
 
 func fingerprint(h uint32) uint16 {
