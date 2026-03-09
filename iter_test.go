@@ -460,12 +460,12 @@ func TestFlexDB_HLC_BatchInterval(t *testing.T) {
 func TestFlexDB_HLC_DedupByHLC(t *testing.T) {
 	// Construct a sorted slice with duplicate keys and varying HLCs.
 	kvs := []KV{
-		{Key: []byte("aaa"), Value: []byte("old"), Hlc: 100},
-		{Key: []byte("aaa"), Value: []byte("new"), Hlc: 200},
-		{Key: []byte("bbb"), Value: []byte("only"), Hlc: 150},
-		{Key: []byte("ccc"), Value: []byte("first"), Hlc: 300},
-		{Key: []byte("ccc"), Value: []byte("second"), Hlc: 250},
-		{Key: []byte("ccc"), Value: []byte("third"), Hlc: 350},
+		{Key: "aaa", Value: []byte("old"), Hlc: 100},
+		{Key: "aaa", Value: []byte("new"), Hlc: 200},
+		{Key: "bbb", Value: []byte("only"), Hlc: 150},
+		{Key: "ccc", Value: []byte("first"), Hlc: 300},
+		{Key: "ccc", Value: []byte("second"), Hlc: 250},
+		{Key: "ccc", Value: []byte("third"), Hlc: 350},
 	}
 	out, fps, size := intervalCacheDedup(kvs)
 	if len(out) != 3 {

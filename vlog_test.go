@@ -202,7 +202,7 @@ func TestFlexDB_VLOG_Merge(t *testing.T) {
 	mustPut(t, db, "mkey", val)
 	db.Sync()
 
-	err := db.Merge([]byte("mkey"), func(old []byte, exists bool) ([]byte, bool) {
+	err := db.Merge("mkey", func(old []byte, exists bool) ([]byte, bool) {
 		if !exists {
 			t.Fatal("Merge: key should exist")
 		}
