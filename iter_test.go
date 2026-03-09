@@ -354,8 +354,8 @@ func TestFlexDB_AscendManyKeys(t *testing.T) {
 	db.View(func(roDB ReadOnlyDB) error {
 		// Ascend from key000100
 		var keys []string
-		roDB.Ascend([]byte("key000100"), func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.Ascend("key000100", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
 		want := allKeys[100:] // key000100..key000199
@@ -363,7 +363,7 @@ func TestFlexDB_AscendManyKeys(t *testing.T) {
 
 		// Descend from key000050
 		var dkeys []string
-		roDB.Descend([]byte("key000050"), func(key, value []byte) bool {
+		roDB.Descend("key000050", func(key string, value []byte) bool {
 			dkeys = append(dkeys, string(key))
 			return true
 		})
@@ -375,7 +375,7 @@ func TestFlexDB_AscendManyKeys(t *testing.T) {
 
 		// AscendRange [key000010, key000015)
 		var rangeKeys []string
-		roDB.AscendRange([]byte("key000010"), []byte("key000015"), func(key, value []byte) bool {
+		roDB.AscendRange("key000010", "key000015", func(key string, value []byte) bool {
 			rangeKeys = append(rangeKeys, string(key))
 			return true
 		})
@@ -395,14 +395,14 @@ func TestFlexDB_HLC_PutMonotonic(t *testing.T) {
 	keys := []string{"aaa", "bbb", "ccc"}
 	hlcs := make([]HLC, len(keys))
 	for i, k := range keys {
-		err := db.Put([]byte(k), []byte("v"))
+		err := db.Put(k, []byte("v"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		// Read back from the active memtable to get the HLC.
 		db.topMutRW.RLock()
 		active := db.activeMT
-		kv, ok := db.memtables[active].get([]byte(k))
+		kv, ok := db.memtables[active].get(k)
 		db.topMutRW.RUnlock()
 		if !ok {
 			t.Fatalf("key %q not found in memtable", k)
@@ -423,9 +423,9 @@ func TestFlexDB_HLC_BatchInterval(t *testing.T) {
 
 	// Batch with unique keys — single-tick interval.
 	batch := db.NewBatch()
-	batch.Set([]byte("k1"), []byte("v1"))
-	batch.Set([]byte("k2"), []byte("v2"))
-	batch.Set([]byte("k3"), []byte("v3"))
+	batch.Set("k1", []byte("v1"))
+	batch.Set("k2", []byte("v2"))
+	batch.Set("k3", []byte("v3"))
 	iv, err := batch.Commit(false)
 	if err != nil {
 		t.Fatal(err)
@@ -439,9 +439,9 @@ func TestFlexDB_HLC_BatchInterval(t *testing.T) {
 
 	// Batch with a duplicate key — multi-tick interval.
 	batch2 := db.NewBatch()
-	batch2.Set([]byte("x1"), []byte("v1"))
-	batch2.Set([]byte("x1"), []byte("v2")) // duplicate triggers new tick
-	batch2.Set([]byte("x2"), []byte("v3"))
+	batch2.Set("x1", []byte("v1"))
+	batch2.Set("x1", []byte("v2")) // duplicate triggers new tick
+	batch2.Set("x2", []byte("v3"))
 	iv2, err := batch2.Commit(false)
 	if err != nil {
 		t.Fatal(err)
@@ -502,11 +502,11 @@ func TestFlexDB_HLC_Persistence(t *testing.T) {
 	}
 
 	// Put a few keys; they'll get HLCs.
-	err = db.Put([]byte("pk1"), []byte("pv1"))
+	err = db.Put("pk1", []byte("pv1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = db.Put([]byte("pk2"), []byte("pv2"))
+	err = db.Put("pk2", []byte("pv2"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,8 +514,8 @@ func TestFlexDB_HLC_Persistence(t *testing.T) {
 	// Capture HLCs from the memtable before flush.
 	db.topMutRW.RLock()
 	active := db.activeMT
-	kv1, _ := db.memtables[active].get([]byte("pk1"))
-	kv2, _ := db.memtables[active].get([]byte("pk2"))
+	kv1, _ := db.memtables[active].get("pk1")
+	kv2, _ := db.memtables[active].get("pk2")
 	db.topMutRW.RUnlock()
 	hlc1 := kv1.Hlc
 	hlc2 := kv2.Hlc
@@ -537,11 +537,11 @@ func TestFlexDB_HLC_Persistence(t *testing.T) {
 	}
 	defer db2.Close()
 
-	val, ok := db2.Get([]byte("pk1"))
+	val, ok := db2.Get("pk1")
 	if !ok || string(val) != "pv1" {
 		t.Fatalf("pk1: got %q, ok=%v", val, ok)
 	}
-	val, ok = db2.Get([]byte("pk2"))
+	val, ok = db2.Get("pk2")
 	if !ok || string(val) != "pv2" {
 		t.Fatalf("pk2: got %q, ok=%v", val, ok)
 	}
@@ -556,7 +556,7 @@ func TestFlexDB_HLC_VLOGRoundTrip(t *testing.T) {
 	}
 
 	bigVal := makeTestValue(500) // 500 bytes, well above vlogInlineThreshold
-	err = db.Put([]byte("bigkey"), []byte(bigVal))
+	err = db.Put("bigkey", []byte(bigVal))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -571,7 +571,7 @@ func TestFlexDB_HLC_VLOGRoundTrip(t *testing.T) {
 	}
 	defer db2.Close()
 
-	val, ok := db2.Get([]byte("bigkey"))
+	val, ok := db2.Get("bigkey")
 	if !ok {
 		t.Fatal("bigkey not found after reopen")
 	}
@@ -992,7 +992,7 @@ func TestFlexDB_IteratorDeleteDuringForward(t *testing.T) {
 			k := it.Key()
 			got = append(got, k)
 			if k == "c" {
-				if err := rwDB.Delete([]byte("c")); err != nil {
+				if err := rwDB.Delete("c"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1021,10 +1021,10 @@ func TestFlexDB_IteratorDeleteCurrentAndNext(t *testing.T) {
 			k := it.Key()
 			got = append(got, k)
 			if k == "b" {
-				if err := rwDB.Delete([]byte("b")); err != nil {
+				if err := rwDB.Delete("b"); err != nil {
 					t.Fatal(err)
 				}
-				if err := rwDB.Delete([]byte("c")); err != nil {
+				if err := rwDB.Delete("c"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1051,7 +1051,7 @@ func TestFlexDB_IteratorDeleteAllForward(t *testing.T) {
 		for it.Valid() {
 			k := it.Key()
 			deleted = append(deleted, k)
-			if err := rwDB.Delete([]byte(k)); err != nil {
+			if err := rwDB.Delete(k); err != nil {
 				it.Close()
 				t.Fatal(err)
 			}
@@ -1063,7 +1063,7 @@ func TestFlexDB_IteratorDeleteAllForward(t *testing.T) {
 	})
 
 	// DB should be empty
-	val, ok := db.Get([]byte("a"))
+	val, ok := db.Get("a")
 	if ok {
 		t.Fatalf("expected empty DB, got key 'a' val=%q", val)
 	}
@@ -1086,7 +1086,7 @@ func TestFlexDB_IteratorPutDuringForward(t *testing.T) {
 			k := it.Key()
 			got = append(got, k)
 			if k == "c" {
-				if err := rwDB.Put([]byte("d"), []byte("v:d")); err != nil {
+				if err := rwDB.Put("d", []byte("v:d")); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1115,7 +1115,7 @@ func TestFlexDB_IteratorDeleteDuringBackward(t *testing.T) {
 			k := it.Key()
 			got = append(got, k)
 			if k == "c" {
-				if err := rwDB.Delete([]byte("c")); err != nil {
+				if err := rwDB.Delete("c"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1155,7 +1155,7 @@ func TestFlexDB_IteratorDeleteOldTimestamps(t *testing.T) {
 	// Only new keys should remain
 	db.View(func(roDB ReadOnlyDB) error {
 		var remaining []string
-		roDB.Ascend(nil, func(key, value []byte) bool {
+		roDB.Ascend("", func(key string, value []byte) bool {
 			remaining = append(remaining, string(key))
 			return true
 		})
@@ -1183,7 +1183,7 @@ func TestFlexDB_IteratorMutateAfterSync(t *testing.T) {
 			k := it.Key()
 			got = append(got, k)
 			if k == "b" {
-				if err := rwDB.Delete([]byte("c")); err != nil {
+				if err := rwDB.Delete("c"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1235,7 +1235,7 @@ func TestFlexDB_IteratorSingleKey(t *testing.T) {
 			t.Fatalf("Seek(only): valid=%v key=%q", it.Valid(), it.Key())
 		}
 
-		if err := rwDB.Delete([]byte("only")); err != nil {
+		if err := rwDB.Delete("only"); err != nil {
 			t.Fatal(err)
 		}
 		it.Next()
@@ -1261,7 +1261,7 @@ func TestFlexDB_IteratorDeleteAllBackward(t *testing.T) {
 		for it.Valid() {
 			k := it.Key()
 			got = append(got, k)
-			if err := rwDB.Delete([]byte(k)); err != nil {
+			if err := rwDB.Delete(k); err != nil {
 				it.Close()
 				t.Fatal(err)
 			}
@@ -1273,7 +1273,7 @@ func TestFlexDB_IteratorDeleteAllBackward(t *testing.T) {
 	})
 
 	// DB should be empty
-	val, ok := db.Get([]byte("c"))
+	val, ok := db.Get("c")
 	if ok {
 		t.Fatalf("expected empty DB, got key 'c' val=%q", val)
 	}
@@ -1419,7 +1419,7 @@ func TestIterKV_UpdateMutate(t *testing.T) {
 			got = append(got, string(kv.Key))
 			// Delete "c" when we see it
 			if string(kv.Key) == "c" {
-				if err := rwDB.Delete([]byte("c")); err != nil {
+				if err := rwDB.Delete("c"); err != nil {
 					t.Fatal(err)
 				}
 			}
