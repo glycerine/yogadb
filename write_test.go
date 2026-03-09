@@ -61,7 +61,7 @@ func Test202_write_performance_yoga_versus_pebble(t *testing.T) {
 				//vv("yoga commited batch at i = %v", i)
 			}
 			j := ki % len(keys)
-			batch.Set(keys[j], keys[j])
+			batch.Set(string(keys[j]), keys[j])
 			ki++
 		}
 		//batch.Commit()
