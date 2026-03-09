@@ -147,35 +147,35 @@ func TestFlexDB_AscendRange(t *testing.T) {
 	db.View(func(roDB ReadOnlyDB) error {
 		// [bbb, ddd) — should include bbb, ccc but NOT ddd
 		var keys []string
-		roDB.AscendRange([]byte("bbb"), []byte("ddd"), func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.AscendRange("bbb", "ddd", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
 		expectKeys(t, "AscendRange(bbb,ddd)", keys, []string{"bbb", "ccc"})
 
-		// Unbounded start: [nil, ccc)
+		// Unbounded start: ["", ccc)
 		keys = nil
-		roDB.AscendRange(nil, []byte("ccc"), func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.AscendRange("", "ccc", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
-		expectKeys(t, "AscendRange(nil,ccc)", keys, []string{"aaa", "bbb"})
+		expectKeys(t, "AscendRange(,ccc)", keys, []string{"aaa", "bbb"})
 
-		// Unbounded end: [ccc, nil)
+		// Unbounded end: [ccc, "")
 		keys = nil
-		roDB.AscendRange([]byte("ccc"), nil, func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.AscendRange("ccc", "", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
-		expectKeys(t, "AscendRange(ccc,nil)", keys, []string{"ccc", "ddd", "eee"})
+		expectKeys(t, "AscendRange(ccc,)", keys, []string{"ccc", "ddd", "eee"})
 
-		// Both nil: all keys
+		// Both empty: all keys
 		keys = nil
-		roDB.AscendRange(nil, nil, func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.AscendRange("", "", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
-		expectKeys(t, "AscendRange(nil,nil)", keys, []string{"aaa", "bbb", "ccc", "ddd", "eee"})
+		expectKeys(t, "AscendRange(,)", keys, []string{"aaa", "bbb", "ccc", "ddd", "eee"})
 		return nil
 	})
 }
@@ -188,35 +188,35 @@ func TestFlexDB_DescendRange(t *testing.T) {
 	db.View(func(roDB ReadOnlyDB) error {
 		// (bbb, ddd] — should include ddd, ccc but NOT bbb
 		var keys []string
-		roDB.DescendRange([]byte("ddd"), []byte("bbb"), func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.DescendRange("ddd", "bbb", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
 		expectKeys(t, "DescendRange(ddd,bbb)", keys, []string{"ddd", "ccc"})
 
-		// Unbounded start (descend from end): (bbb, nil]
+		// Unbounded start (descend from end): (bbb, ""]
 		keys = nil
-		roDB.DescendRange(nil, []byte("bbb"), func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.DescendRange("", "bbb", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
-		expectKeys(t, "DescendRange(nil,bbb)", keys, []string{"eee", "ddd", "ccc"})
+		expectKeys(t, "DescendRange(,bbb)", keys, []string{"eee", "ddd", "ccc"})
 
-		// Unbounded end (descend to beginning): (nil, ddd]
+		// Unbounded end (descend to beginning): ("", ddd]
 		keys = nil
-		roDB.DescendRange([]byte("ddd"), nil, func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.DescendRange("ddd", "", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
-		expectKeys(t, "DescendRange(ddd,nil)", keys, []string{"ddd", "ccc", "bbb", "aaa"})
+		expectKeys(t, "DescendRange(ddd,)", keys, []string{"ddd", "ccc", "bbb", "aaa"})
 
-		// Both nil: all keys descending
+		// Both empty: all keys descending
 		keys = nil
-		roDB.DescendRange(nil, nil, func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.DescendRange("", "", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
-		expectKeys(t, "DescendRange(nil,nil)", keys, []string{"eee", "ddd", "ccc", "bbb", "aaa"})
+		expectKeys(t, "DescendRange(,)", keys, []string{"eee", "ddd", "ccc", "bbb", "aaa"})
 		return nil
 	})
 }
@@ -228,8 +228,8 @@ func TestFlexDB_AscendRangeAfterSync(t *testing.T) {
 
 	db.View(func(roDB ReadOnlyDB) error {
 		var keys []string
-		roDB.AscendRange([]byte("bbb"), []byte("eee"), func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.AscendRange("bbb", "eee", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
 		expectKeys(t, "AscendRange after sync", keys, []string{"bbb", "ccc", "ddd"})
@@ -244,8 +244,8 @@ func TestFlexDB_DescendRangeAfterSync(t *testing.T) {
 
 	db.View(func(roDB ReadOnlyDB) error {
 		var keys []string
-		roDB.DescendRange([]byte("ddd"), []byte("aaa"), func(key, value []byte) bool {
-			keys = append(keys, string(key))
+		roDB.DescendRange("ddd", "aaa", func(key string, value []byte) bool {
+			keys = append(keys, key)
 			return true
 		})
 		expectKeys(t, "DescendRange after sync", keys, []string{"ddd", "ccc", "bbb"})
@@ -260,8 +260,8 @@ func TestFlexDB_AscendValues(t *testing.T) {
 
 	db.View(func(roDB ReadOnlyDB) error {
 		var pairs []string
-		roDB.Ascend([]byte("bbb"), func(key, value []byte) bool {
-			pairs = append(pairs, string(key)+"="+string(value))
+		roDB.Ascend("bbb", func(key string, value []byte) bool {
+			pairs = append(pairs, key+"="+string(value))
 			return true
 		})
 		want := []string{"bbb=v:bbb", "ccc=v:ccc", "ddd=v:ddd", "eee=v:eee"}
@@ -277,8 +277,8 @@ func TestFlexDB_DescendValues(t *testing.T) {
 
 	db.View(func(roDB ReadOnlyDB) error {
 		var pairs []string
-		roDB.Descend([]byte("ddd"), func(key, value []byte) bool {
-			pairs = append(pairs, string(key)+"="+string(value))
+		roDB.Descend("ddd", func(key string, value []byte) bool {
+			pairs = append(pairs, key+"="+string(value))
 			return true
 		})
 		want := []string{"ddd=v:ddd", "ccc=v:ccc", "bbb=v:bbb", "aaa=v:aaa"}

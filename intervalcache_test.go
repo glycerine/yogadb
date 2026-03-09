@@ -1,7 +1,6 @@
 package yogadb
 
 import (
-	"bytes"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -967,13 +966,14 @@ func FuzzIntervalCache_Mutations(f *testing.F) {
 	f.Fuzz(func(t *testing.T, op uint8, key, val []byte) {
 		p := makePartition(1 << 30) // large cap to avoid eviction
 		fce := makeCacheEntry(makeSortedKVs([]string{"b", "d", "f", "h"}))
-		kv := KV{Key: key, Value: val, Hlc: 1}
+		keyStr := string(key)
+		kv := KV{Key: keyStr, Value: val, Hlc: 1}
 
 		switch op % 3 {
 		case 0: // Insert
-			idx, _ := intervalCacheEntryFindKeyGE(fce, key)
+			idx, _ := intervalCacheEntryFindKeyGE(fce, keyStr)
 			// Only insert if key doesn't already exist at idx
-			if idx < fce.count && bytes.Equal(fce.kvs[idx].Key, key) {
+			if idx < fce.count && fce.kvs[idx].Key == keyStr {
 				return // skip: key already present
 			}
 			prevCount := fce.count
@@ -991,7 +991,7 @@ func FuzzIntervalCache_Mutations(f *testing.F) {
 			}
 			idx := int(op) % fce.count
 			prevCount := fce.count
-			kv.Key = append([]byte{}, fce.kvs[idx].Key...) // same key
+			kv.Key = fce.kvs[idx].Key // same key
 			p.cacheEntryReplace(fce, kv, idx)
 			// INV-IC-15: count unchanged
 			if fce.count != prevCount {
@@ -1025,13 +1025,9 @@ func BenchmarkIntervalCache_FindKeyEQ(b *testing.B) {
 		keys[i] = fmt.Sprintf("key-%06d", i)
 	}
 	fce := makeCacheEntry(makeSortedKVs(keys))
-	searchKeys := make([][]byte, 100)
-	for i := range searchKeys {
-		searchKeys[i] = []byte(keys[i])
-	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		intervalCacheEntryFindKeyEQ(fce, searchKeys[i%100])
+		intervalCacheEntryFindKeyEQ(fce, keys[i%100])
 	}
 }
 
@@ -1041,13 +1037,9 @@ func BenchmarkIntervalCache_FindKeyGE(b *testing.B) {
 		keys[i] = fmt.Sprintf("key-%06d", i)
 	}
 	fce := makeCacheEntry(makeSortedKVs(keys))
-	searchKeys := make([][]byte, 100)
-	for i := range searchKeys {
-		searchKeys[i] = []byte(keys[i])
-	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		intervalCacheEntryFindKeyGE(fce, searchKeys[i%100])
+		intervalCacheEntryFindKeyGE(fce, keys[i%100])
 	}
 }
 
