@@ -19,26 +19,29 @@ func TestFlexDB_IteratorBasic(t *testing.T) {
 		mustPut(t, db, k, "v:"+k)
 	}
 
-	it := db.NewIter()
-	it.SeekToFirst()
-	defer it.Close()
+	db.View(func(roDB ReadOnlyDB) error {
+		it := roDB.NewIter()
+		it.SeekToFirst()
+		defer it.Close()
 
-	want := []string{"apple", "banana", "cherry", "date"}
-	for _, wk := range want {
-		if !it.Valid() {
-			t.Fatalf("iterator ended early; want key %q", wk)
+		want := []string{"apple", "banana", "cherry", "date"}
+		for _, wk := range want {
+			if !it.Valid() {
+				t.Fatalf("iterator ended early; want key %q", wk)
+			}
+			if string(it.Key()) != wk {
+				t.Fatalf("Key() = %q, want %q", it.Key(), wk)
+			}
+			if string(it.Vin()) != "v:"+wk {
+				t.Fatalf("Value() = %q, want %q", it.Vin(), "v:"+wk)
+			}
+			it.Next()
 		}
-		if string(it.Key()) != wk {
-			t.Fatalf("Key() = %q, want %q", it.Key(), wk)
+		if it.Valid() {
+			t.Fatalf("iterator not exhausted; extra key %q", it.Key())
 		}
-		if string(it.Vin()) != "v:"+wk {
-			t.Fatalf("Value() = %q, want %q", it.Vin(), "v:"+wk)
-		}
-		it.Next()
-	}
-	if it.Valid() {
-		t.Fatalf("iterator not exhausted; extra key %q", it.Key())
-	}
+		return nil
+	})
 }
 
 // TestFlexDB_IteratorSeek tests Seek() to a specific key.
@@ -49,22 +52,25 @@ func TestFlexDB_IteratorSeek(t *testing.T) {
 		mustPut(t, db, k, k)
 	}
 
-	it := db.NewIter()
-	defer it.Close()
+	db.View(func(roDB ReadOnlyDB) error {
+		it := roDB.NewIter()
+		defer it.Close()
 
-	it.Seek([]byte("ccc"))
-	if !it.Valid() || string(it.Key()) != "ccc" {
-		t.Fatalf("Seek(ccc): got %v/%q", it.Valid(), it.Key())
-	}
-	it.Next()
-	if !it.Valid() || string(it.Key()) != "ddd" {
-		t.Fatalf("After Seek+Next: got %v/%q, want ddd", it.Valid(), it.Key())
-	}
+		it.Seek([]byte("ccc"))
+		if !it.Valid() || string(it.Key()) != "ccc" {
+			t.Fatalf("Seek(ccc): got %v/%q", it.Valid(), it.Key())
+		}
+		it.Next()
+		if !it.Valid() || string(it.Key()) != "ddd" {
+			t.Fatalf("After Seek+Next: got %v/%q, want ddd", it.Valid(), it.Key())
+		}
 
-	it.Seek([]byte("d"))
-	if !it.Valid() || string(it.Key()) != "ddd" {
-		t.Fatalf("Seek(d): got %v/%q, want ddd", it.Valid(), it.Key())
-	}
+		it.Seek([]byte("d"))
+		if !it.Valid() || string(it.Key()) != "ddd" {
+			t.Fatalf("Seek(d): got %v/%q, want ddd", it.Valid(), it.Key())
+		}
+		return nil
+	})
 }
 
 // TestFlexDB_IteratorAfterSync tests iteration after data is in FlexSpace.
@@ -77,23 +83,26 @@ func TestFlexDB_IteratorAfterSync(t *testing.T) {
 	}
 	db.Sync()
 
-	it := db.NewIter()
-	it.SeekToFirst()
-	defer it.Close()
+	db.View(func(roDB ReadOnlyDB) error {
+		it := roDB.NewIter()
+		it.SeekToFirst()
+		defer it.Close()
 
-	sort.Strings(keys)
-	for _, wk := range keys {
-		if !it.Valid() {
-			t.Fatalf("iterator ended early; want %q", wk)
+		sort.Strings(keys)
+		for _, wk := range keys {
+			if !it.Valid() {
+				t.Fatalf("iterator ended early; want %q", wk)
+			}
+			if string(it.Key()) != wk {
+				t.Fatalf("Key() = %q, want %q", it.Key(), wk)
+			}
+			it.Next()
 		}
-		if string(it.Key()) != wk {
-			t.Fatalf("Key() = %q, want %q", it.Key(), wk)
+		if it.Valid() {
+			t.Fatalf("iterator not exhausted; extra key %q", it.Key())
 		}
-		it.Next()
-	}
-	if it.Valid() {
-		t.Fatalf("iterator not exhausted; extra key %q", it.Key())
-	}
+		return nil
+	})
 }
 
 // TestFlexDB_ManyKeysIterator inserts many keys and verifies iterator order.
@@ -108,23 +117,26 @@ func TestFlexDB_ManyKeysIterator(t *testing.T) {
 	}
 	db.Sync()
 
-	it := db.NewIter()
-	it.SeekToFirst()
-	defer it.Close()
+	db.View(func(roDB ReadOnlyDB) error {
+		it := roDB.NewIter()
+		it.SeekToFirst()
+		defer it.Close()
 
-	sort.Strings(keys)
-	for _, wk := range keys {
-		if !it.Valid() {
-			t.Fatalf("iterator ended early; want %q", wk)
+		sort.Strings(keys)
+		for _, wk := range keys {
+			if !it.Valid() {
+				t.Fatalf("iterator ended early; want %q", wk)
+			}
+			if string(it.Key()) != wk {
+				t.Fatalf("Key() = %q, want %q", it.Key(), wk)
+			}
+			it.Next()
 		}
-		if string(it.Key()) != wk {
-			t.Fatalf("Key() = %q, want %q", it.Key(), wk)
+		if it.Valid() {
+			t.Fatalf("iterator not exhausted; extra key %q", it.Key())
 		}
-		it.Next()
-	}
-	if it.Valid() {
-		t.Fatalf("iterator not exhausted; extra key %q", it.Key())
-	}
+		return nil
+	})
 }
 
 // TestFlexDB_AscendRange tests bounded ascending iteration.
@@ -132,37 +144,40 @@ func TestFlexDB_AscendRange(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, false)
 
-	// [bbb, ddd) — should include bbb, ccc but NOT ddd
-	var keys []string
-	db.AscendRange([]byte("bbb"), []byte("ddd"), func(key, value []byte) bool {
-		keys = append(keys, string(key))
-		return true
-	})
-	expectKeys(t, "AscendRange(bbb,ddd)", keys, []string{"bbb", "ccc"})
+	db.View(func(roDB ReadOnlyDB) error {
+		// [bbb, ddd) — should include bbb, ccc but NOT ddd
+		var keys []string
+		roDB.AscendRange([]byte("bbb"), []byte("ddd"), func(key, value []byte) bool {
+			keys = append(keys, string(key))
+			return true
+		})
+		expectKeys(t, "AscendRange(bbb,ddd)", keys, []string{"bbb", "ccc"})
 
-	// Unbounded start: [nil, ccc)
-	keys = nil
-	db.AscendRange(nil, []byte("ccc"), func(key, value []byte) bool {
-		keys = append(keys, string(key))
-		return true
-	})
-	expectKeys(t, "AscendRange(nil,ccc)", keys, []string{"aaa", "bbb"})
+		// Unbounded start: [nil, ccc)
+		keys = nil
+		roDB.AscendRange(nil, []byte("ccc"), func(key, value []byte) bool {
+			keys = append(keys, string(key))
+			return true
+		})
+		expectKeys(t, "AscendRange(nil,ccc)", keys, []string{"aaa", "bbb"})
 
-	// Unbounded end: [ccc, nil)
-	keys = nil
-	db.AscendRange([]byte("ccc"), nil, func(key, value []byte) bool {
-		keys = append(keys, string(key))
-		return true
-	})
-	expectKeys(t, "AscendRange(ccc,nil)", keys, []string{"ccc", "ddd", "eee"})
+		// Unbounded end: [ccc, nil)
+		keys = nil
+		roDB.AscendRange([]byte("ccc"), nil, func(key, value []byte) bool {
+			keys = append(keys, string(key))
+			return true
+		})
+		expectKeys(t, "AscendRange(ccc,nil)", keys, []string{"ccc", "ddd", "eee"})
 
-	// Both nil: all keys
-	keys = nil
-	db.AscendRange(nil, nil, func(key, value []byte) bool {
-		keys = append(keys, string(key))
-		return true
+		// Both nil: all keys
+		keys = nil
+		roDB.AscendRange(nil, nil, func(key, value []byte) bool {
+			keys = append(keys, string(key))
+			return true
+		})
+		expectKeys(t, "AscendRange(nil,nil)", keys, []string{"aaa", "bbb", "ccc", "ddd", "eee"})
+		return nil
 	})
-	expectKeys(t, "AscendRange(nil,nil)", keys, []string{"aaa", "bbb", "ccc", "ddd", "eee"})
 }
 
 // TestFlexDB_DescendRange tests bounded descending iteration.
@@ -170,37 +185,40 @@ func TestFlexDB_DescendRange(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, false)
 
-	// (bbb, ddd] — should include ddd, ccc but NOT bbb
-	var keys []string
-	db.DescendRange([]byte("ddd"), []byte("bbb"), func(key, value []byte) bool {
-		keys = append(keys, string(key))
-		return true
-	})
-	expectKeys(t, "DescendRange(ddd,bbb)", keys, []string{"ddd", "ccc"})
+	db.View(func(roDB ReadOnlyDB) error {
+		// (bbb, ddd] — should include ddd, ccc but NOT bbb
+		var keys []string
+		roDB.DescendRange([]byte("ddd"), []byte("bbb"), func(key, value []byte) bool {
+			keys = append(keys, string(key))
+			return true
+		})
+		expectKeys(t, "DescendRange(ddd,bbb)", keys, []string{"ddd", "ccc"})
 
-	// Unbounded start (descend from end): (bbb, nil]
-	keys = nil
-	db.DescendRange(nil, []byte("bbb"), func(key, value []byte) bool {
-		keys = append(keys, string(key))
-		return true
-	})
-	expectKeys(t, "DescendRange(nil,bbb)", keys, []string{"eee", "ddd", "ccc"})
+		// Unbounded start (descend from end): (bbb, nil]
+		keys = nil
+		roDB.DescendRange(nil, []byte("bbb"), func(key, value []byte) bool {
+			keys = append(keys, string(key))
+			return true
+		})
+		expectKeys(t, "DescendRange(nil,bbb)", keys, []string{"eee", "ddd", "ccc"})
 
-	// Unbounded end (descend to beginning): (nil, ddd]
-	keys = nil
-	db.DescendRange([]byte("ddd"), nil, func(key, value []byte) bool {
-		keys = append(keys, string(key))
-		return true
-	})
-	expectKeys(t, "DescendRange(ddd,nil)", keys, []string{"ddd", "ccc", "bbb", "aaa"})
+		// Unbounded end (descend to beginning): (nil, ddd]
+		keys = nil
+		roDB.DescendRange([]byte("ddd"), nil, func(key, value []byte) bool {
+			keys = append(keys, string(key))
+			return true
+		})
+		expectKeys(t, "DescendRange(ddd,nil)", keys, []string{"ddd", "ccc", "bbb", "aaa"})
 
-	// Both nil: all keys descending
-	keys = nil
-	db.DescendRange(nil, nil, func(key, value []byte) bool {
-		keys = append(keys, string(key))
-		return true
+		// Both nil: all keys descending
+		keys = nil
+		roDB.DescendRange(nil, nil, func(key, value []byte) bool {
+			keys = append(keys, string(key))
+			return true
+		})
+		expectKeys(t, "DescendRange(nil,nil)", keys, []string{"eee", "ddd", "ccc", "bbb", "aaa"})
+		return nil
 	})
-	expectKeys(t, "DescendRange(nil,nil)", keys, []string{"eee", "ddd", "ccc", "bbb", "aaa"})
 }
 
 // TestFlexDB_AscendRangeAfterSync tests AscendRange with data in FlexSpace.
@@ -208,12 +226,15 @@ func TestFlexDB_AscendRangeAfterSync(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, true)
 
-	var keys []string
-	db.AscendRange([]byte("bbb"), []byte("eee"), func(key, value []byte) bool {
-		keys = append(keys, string(key))
-		return true
+	db.View(func(roDB ReadOnlyDB) error {
+		var keys []string
+		roDB.AscendRange([]byte("bbb"), []byte("eee"), func(key, value []byte) bool {
+			keys = append(keys, string(key))
+			return true
+		})
+		expectKeys(t, "AscendRange after sync", keys, []string{"bbb", "ccc", "ddd"})
+		return nil
 	})
-	expectKeys(t, "AscendRange after sync", keys, []string{"bbb", "ccc", "ddd"})
 }
 
 // TestFlexDB_DescendRangeAfterSync tests DescendRange with data in FlexSpace.
@@ -221,12 +242,15 @@ func TestFlexDB_DescendRangeAfterSync(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, true)
 
-	var keys []string
-	db.DescendRange([]byte("ddd"), []byte("aaa"), func(key, value []byte) bool {
-		keys = append(keys, string(key))
-		return true
+	db.View(func(roDB ReadOnlyDB) error {
+		var keys []string
+		roDB.DescendRange([]byte("ddd"), []byte("aaa"), func(key, value []byte) bool {
+			keys = append(keys, string(key))
+			return true
+		})
+		expectKeys(t, "DescendRange after sync", keys, []string{"ddd", "ccc", "bbb"})
+		return nil
 	})
-	expectKeys(t, "DescendRange after sync", keys, []string{"ddd", "ccc", "bbb"})
 }
 
 // TestFlexDB_AscendValues verifies that values are correct during Ascend.
@@ -234,13 +258,16 @@ func TestFlexDB_AscendValues(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, false)
 
-	var pairs []string
-	db.Ascend([]byte("bbb"), func(key, value []byte) bool {
-		pairs = append(pairs, string(key)+"="+string(value))
-		return true
+	db.View(func(roDB ReadOnlyDB) error {
+		var pairs []string
+		roDB.Ascend([]byte("bbb"), func(key, value []byte) bool {
+			pairs = append(pairs, string(key)+"="+string(value))
+			return true
+		})
+		want := []string{"bbb=v:bbb", "ccc=v:ccc", "ddd=v:ddd", "eee=v:eee"}
+		expectKeys(t, "Ascend values", pairs, want)
+		return nil
 	})
-	want := []string{"bbb=v:bbb", "ccc=v:ccc", "ddd=v:ddd", "eee=v:eee"}
-	expectKeys(t, "Ascend values", pairs, want)
 }
 
 // TestFlexDB_DescendValues verifies that values are correct during Descend.
@@ -248,13 +275,16 @@ func TestFlexDB_DescendValues(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, false)
 
-	var pairs []string
-	db.Descend([]byte("ddd"), func(key, value []byte) bool {
-		pairs = append(pairs, string(key)+"="+string(value))
-		return true
+	db.View(func(roDB ReadOnlyDB) error {
+		var pairs []string
+		roDB.Descend([]byte("ddd"), func(key, value []byte) bool {
+			pairs = append(pairs, string(key)+"="+string(value))
+			return true
+		})
+		want := []string{"ddd=v:ddd", "ccc=v:ccc", "bbb=v:bbb", "aaa=v:aaa"}
+		expectKeys(t, "Descend values", pairs, want)
+		return nil
 	})
-	want := []string{"ddd=v:ddd", "ccc=v:ccc", "bbb=v:bbb", "aaa=v:aaa"}
-	expectKeys(t, "Descend values", pairs, want)
 }
 
 // TestFlexDB_IteratorPrev tests Prev() on Iter.
@@ -262,16 +292,19 @@ func TestFlexDB_IteratorPrev(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, false)
 
-	it := db.NewIter()
-	it.SeekToLast()
-	defer it.Close()
+	db.View(func(roDB ReadOnlyDB) error {
+		it := roDB.NewIter()
+		it.SeekToLast()
+		defer it.Close()
 
-	var keys []string
-	for it.Valid() {
-		keys = append(keys, string(it.Key()))
-		it.Prev()
-	}
-	expectKeys(t, "Iterator Prev", keys, []string{"eee", "ddd", "ccc", "bbb", "aaa"})
+		var keys []string
+		for it.Valid() {
+			keys = append(keys, string(it.Key()))
+			it.Prev()
+		}
+		expectKeys(t, "Iterator Prev", keys, []string{"eee", "ddd", "ccc", "bbb", "aaa"})
+		return nil
+	})
 }
 
 // TestFlexDB_IteratorSeekThenPrev tests Seek followed by Prev.
@@ -279,26 +312,29 @@ func TestFlexDB_IteratorSeekThenPrev(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, false)
 
-	it := db.NewIter()
-	defer it.Close()
+	db.View(func(roDB ReadOnlyDB) error {
+		it := roDB.NewIter()
+		defer it.Close()
 
-	// Seek to ccc, then go backward
-	it.Seek([]byte("ccc"))
-	if !it.Valid() || string(it.Key()) != "ccc" {
-		t.Fatalf("Seek(ccc): got %v/%q", it.Valid(), it.Key())
-	}
-	it.Prev()
-	if !it.Valid() || string(it.Key()) != "bbb" {
-		t.Fatalf("After Prev: got %v/%q, want bbb", it.Valid(), it.Key())
-	}
-	it.Prev()
-	if !it.Valid() || string(it.Key()) != "aaa" {
-		t.Fatalf("After 2nd Prev: got %v/%q, want aaa", it.Valid(), it.Key())
-	}
-	it.Prev()
-	if it.Valid() {
-		t.Fatalf("Should be invalid after Prev past beginning, got key %q", it.Key())
-	}
+		// Seek to ccc, then go backward
+		it.Seek([]byte("ccc"))
+		if !it.Valid() || string(it.Key()) != "ccc" {
+			t.Fatalf("Seek(ccc): got %v/%q", it.Valid(), it.Key())
+		}
+		it.Prev()
+		if !it.Valid() || string(it.Key()) != "bbb" {
+			t.Fatalf("After Prev: got %v/%q, want bbb", it.Valid(), it.Key())
+		}
+		it.Prev()
+		if !it.Valid() || string(it.Key()) != "aaa" {
+			t.Fatalf("After 2nd Prev: got %v/%q, want aaa", it.Valid(), it.Key())
+		}
+		it.Prev()
+		if it.Valid() {
+			t.Fatalf("Should be invalid after Prev past beginning, got key %q", it.Key())
+		}
+		return nil
+	})
 }
 
 // TestFlexDB_AscendManyKeys tests Ascend/Descend with many keys across FlexSpace.
@@ -315,27 +351,38 @@ func TestFlexDB_AscendManyKeys(t *testing.T) {
 	db.Sync()
 	sort.Strings(allKeys)
 
-	// Ascend from key000100
-	keys := collectAscend(db, []byte("key000100"))
-	want := allKeys[100:] // key000100..key000199
-	expectKeys(t, "Ascend(key000100)", keys, want)
+	db.View(func(roDB ReadOnlyDB) error {
+		// Ascend from key000100
+		var keys []string
+		roDB.Ascend([]byte("key000100"), func(key, value []byte) bool {
+			keys = append(keys, string(key))
+			return true
+		})
+		want := allKeys[100:] // key000100..key000199
+		expectKeys(t, "Ascend(key000100)", keys, want)
 
-	// Descend from key000050
-	keys = collectDescend(db, []byte("key000050"))
-	want = make([]string, 51)
-	for i := 0; i <= 50; i++ {
-		want[50-i] = allKeys[i]
-	}
-	expectKeys(t, "Descend(key000050)", keys, want)
+		// Descend from key000050
+		var dkeys []string
+		roDB.Descend([]byte("key000050"), func(key, value []byte) bool {
+			dkeys = append(dkeys, string(key))
+			return true
+		})
+		want = make([]string, 51)
+		for i := 0; i <= 50; i++ {
+			want[50-i] = allKeys[i]
+		}
+		expectKeys(t, "Descend(key000050)", dkeys, want)
 
-	// AscendRange [key000010, key000015)
-	var rangeKeys []string
-	db.AscendRange([]byte("key000010"), []byte("key000015"), func(key, value []byte) bool {
-		rangeKeys = append(rangeKeys, string(key))
-		return true
+		// AscendRange [key000010, key000015)
+		var rangeKeys []string
+		roDB.AscendRange([]byte("key000010"), []byte("key000015"), func(key, value []byte) bool {
+			rangeKeys = append(rangeKeys, string(key))
+			return true
+		})
+		expectKeys(t, "AscendRange(10,15)", rangeKeys,
+			[]string{"key000010", "key000011", "key000012", "key000013", "key000014"})
+		return nil
 	})
-	expectKeys(t, "AscendRange(10,15)", rangeKeys,
-		[]string{"key000010", "key000011", "key000012", "key000013", "key000014"})
 }
 
 // ====================== HLC tests ======================
@@ -733,7 +780,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 
 	// Session 3: open and vacuum AGAIN. This is where the bug manifests:
 	// leaves whose dirty flag was not persisted via SyncCoW still have
-	// old (pre-vacuum) poff values → EOF reading the smaller file.
+	// old (pre-vacuum) poff values, which point beyond the vacuumed (smaller) file → EOF.
 	{
 		db, err := OpenFlexDB(dir, cfg)
 		if err != nil {
@@ -922,31 +969,39 @@ func TestFlexDB_VacuumKV_WriteAndVacuumAgain(t *testing.T) {
 	}
 }
 
-// ====================== Lock-free iterator mutation tests ======================
+// ====================== Iterator mutation tests ======================
+//
+// All iterators are created within Update transactions, which hold the
+// exclusive write lock. Mutations go through rwDB.Put/rwDB.Delete.
 
 // TestFlexDB_IteratorDeleteDuringForward tests deleting the current key during
-// forward iteration. With the lock-free re-seeking iterator, this must not deadlock.
+// forward iteration via rwDB.Delete.
 func TestFlexDB_IteratorDeleteDuringForward(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	for _, k := range []string{"a", "b", "c", "d", "e"} {
 		mustPut(t, db, k, "v:"+k)
 	}
 
-	it := db.NewIter()
-	defer it.Close()
-	it.SeekToFirst()
+	db.Update(func(rwDB WritableDB) error {
+		it := rwDB.NewIter()
+		defer it.Close()
+		it.SeekToFirst()
 
-	var got []string
-	for it.Valid() {
-		k := string(it.Key())
-		got = append(got, k)
-		if k == "c" {
-			mustDelete(t, db, "c")
+		var got []string
+		for it.Valid() {
+			k := string(it.Key())
+			got = append(got, k)
+			if k == "c" {
+				if err := rwDB.Delete([]byte("c")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			it.Next()
 		}
-		it.Next()
-	}
-	// Should see a,b,c,d,e — "c" was seen before deletion, next re-seeks past "c"
-	expectKeys(t, "delete during forward", got, []string{"a", "b", "c", "d", "e"})
+		// Should see a,b,c,d,e — "c" was seen before deletion, next re-seeks past "c"
+		expectKeys(t, "delete during forward", got, []string{"a", "b", "c", "d", "e"})
+		return nil
+	})
 }
 
 // TestFlexDB_IteratorDeleteCurrentAndNext tests deleting both current and next key.
@@ -956,39 +1011,56 @@ func TestFlexDB_IteratorDeleteCurrentAndNext(t *testing.T) {
 		mustPut(t, db, k, "v:"+k)
 	}
 
-	it := db.NewIter()
-	defer it.Close()
-	it.SeekToFirst()
+	db.Update(func(rwDB WritableDB) error {
+		it := rwDB.NewIter()
+		defer it.Close()
+		it.SeekToFirst()
 
-	var got []string
-	for it.Valid() {
-		k := string(it.Key())
-		got = append(got, k)
-		if k == "b" {
-			mustDelete(t, db, "b")
-			mustDelete(t, db, "c")
+		var got []string
+		for it.Valid() {
+			k := string(it.Key())
+			got = append(got, k)
+			if k == "b" {
+				if err := rwDB.Delete([]byte("b")); err != nil {
+					t.Fatal(err)
+				}
+				if err := rwDB.Delete([]byte("c")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			it.Next()
 		}
-		it.Next()
-	}
-	// b is seen, then b+c deleted, next from "b" strict finds "d"
-	expectKeys(t, "delete current+next", got, []string{"a", "b", "d"})
+		// b is seen, then b+c deleted, next from "b" strict finds "d"
+		expectKeys(t, "delete current+next", got, []string{"a", "b", "d"})
+		return nil
+	})
 }
 
-// TestFlexDB_IteratorDeleteAllAscend deletes every key during Ascend callback.
-func TestFlexDB_IteratorDeleteAllAscend(t *testing.T) {
+// TestFlexDB_IteratorDeleteAllForward deletes every key during forward iteration.
+func TestFlexDB_IteratorDeleteAllForward(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	for _, k := range []string{"a", "b", "c", "d", "e"} {
 		mustPut(t, db, k, "v:"+k)
 	}
 
-	var deleted []string
-	db.Ascend(nil, func(key, value []byte) bool {
-		k := string(key)
-		deleted = append(deleted, k)
-		mustDelete(t, db, k)
-		return true
+	db.Update(func(rwDB WritableDB) error {
+		it := rwDB.NewIter()
+		it.SeekToFirst()
+
+		var deleted []string
+		for it.Valid() {
+			k := string(it.Key())
+			deleted = append(deleted, k)
+			if err := rwDB.Delete([]byte(k)); err != nil {
+				it.Close()
+				t.Fatal(err)
+			}
+			it.Next()
+		}
+		it.Close()
+		expectKeys(t, "delete all forward", deleted, []string{"a", "b", "c", "d", "e"})
+		return nil
 	})
-	expectKeys(t, "ascend+delete all", deleted, []string{"a", "b", "c", "d", "e"})
 
 	// DB should be empty
 	val, ok := db.Get([]byte("a"))
@@ -1004,21 +1076,26 @@ func TestFlexDB_IteratorPutDuringForward(t *testing.T) {
 		mustPut(t, db, k, "v:"+k)
 	}
 
-	it := db.NewIter()
-	defer it.Close()
-	it.SeekToFirst()
+	db.Update(func(rwDB WritableDB) error {
+		it := rwDB.NewIter()
+		defer it.Close()
+		it.SeekToFirst()
 
-	var got []string
-	for it.Valid() {
-		k := string(it.Key())
-		got = append(got, k)
-		if k == "c" {
-			mustPut(t, db, "d", "v:d") // insert between c and e
+		var got []string
+		for it.Valid() {
+			k := string(it.Key())
+			got = append(got, k)
+			if k == "c" {
+				if err := rwDB.Put([]byte("d"), []byte("v:d")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			it.Next()
 		}
-		it.Next()
-	}
-	// After "c", next re-seeks past "c" and finds "d" (newly inserted)
-	expectKeys(t, "put during forward", got, []string{"a", "c", "d", "e"})
+		// After "c", next re-seeks past "c" and finds "d" (newly inserted)
+		expectKeys(t, "put during forward", got, []string{"a", "c", "d", "e"})
+		return nil
+	})
 }
 
 // TestFlexDB_IteratorDeleteDuringBackward tests deleting during backward iteration.
@@ -1028,25 +1105,30 @@ func TestFlexDB_IteratorDeleteDuringBackward(t *testing.T) {
 		mustPut(t, db, k, "v:"+k)
 	}
 
-	it := db.NewIter()
-	defer it.Close()
-	it.SeekToLast()
+	db.Update(func(rwDB WritableDB) error {
+		it := rwDB.NewIter()
+		defer it.Close()
+		it.SeekToLast()
 
-	var got []string
-	for it.Valid() {
-		k := string(it.Key())
-		got = append(got, k)
-		if k == "c" {
-			mustDelete(t, db, "c")
+		var got []string
+		for it.Valid() {
+			k := string(it.Key())
+			got = append(got, k)
+			if k == "c" {
+				if err := rwDB.Delete([]byte("c")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			it.Prev()
 		}
-		it.Prev()
-	}
-	// Should see e,d,c,b,a — "c" was seen before deletion
-	expectKeys(t, "delete during backward", got, []string{"e", "d", "c", "b", "a"})
+		// Should see e,d,c,b,a — "c" was seen before deletion
+		expectKeys(t, "delete during backward", got, []string{"e", "d", "c", "b", "a"})
+		return nil
+	})
 }
 
-// TestFlexDB_AscendDeleteOldTimestamps simulates deleting old timestamp-prefixed keys.
-func TestFlexDB_AscendDeleteOldTimestamps(t *testing.T) {
+// TestFlexDB_IteratorDeleteOldTimestamps simulates deleting old timestamp-prefixed keys.
+func TestFlexDB_IteratorDeleteOldTimestamps(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	mustPut(t, db, "2024-01-01:k1", "old1")
 	mustPut(t, db, "2024-06-01:k2", "old2")
@@ -1054,20 +1136,32 @@ func TestFlexDB_AscendDeleteOldTimestamps(t *testing.T) {
 	mustPut(t, db, "2025-06-01:k4", "new2")
 
 	cutoff := []byte("2025-")
-	db.Ascend(nil, func(key, value []byte) bool {
-		if bytes.Compare(key, cutoff) < 0 {
-			db.Delete(key)
+	db.Update(func(rwDB WritableDB) error {
+		it := rwDB.NewIter()
+		it.SeekToFirst()
+		for it.Valid() {
+			if bytes.Compare(it.Key(), cutoff) < 0 {
+				if err := rwDB.Delete(it.Key()); err != nil {
+					it.Close()
+					return err
+				}
+			}
+			it.Next()
 		}
-		return true
+		it.Close()
+		return nil
 	})
 
 	// Only new keys should remain
-	var remaining []string
-	db.Ascend(nil, func(key, value []byte) bool {
-		remaining = append(remaining, string(key))
-		return true
+	db.View(func(roDB ReadOnlyDB) error {
+		var remaining []string
+		roDB.Ascend(nil, func(key, value []byte) bool {
+			remaining = append(remaining, string(key))
+			return true
+		})
+		expectKeys(t, "after timestamp delete", remaining, []string{"2025-01-01:k3", "2025-06-01:k4"})
+		return nil
 	})
-	expectKeys(t, "after timestamp delete", remaining, []string{"2025-01-01:k3", "2025-06-01:k4"})
 }
 
 // TestFlexDB_IteratorMutateAfterSync tests iterator mutations with data in FlexSpace.
@@ -1079,44 +1173,52 @@ func TestFlexDB_IteratorMutateAfterSync(t *testing.T) {
 	db.Sync()
 
 	// Delete "c" during forward iteration over FlexSpace data
-	it := db.NewIter()
-	defer it.Close()
-	it.SeekToFirst()
+	db.Update(func(rwDB WritableDB) error {
+		it := rwDB.NewIter()
+		defer it.Close()
+		it.SeekToFirst()
 
-	var got []string
-	for it.Valid() {
-		k := string(it.Key())
-		got = append(got, k)
-		if k == "b" {
-			mustDelete(t, db, "c")
+		var got []string
+		for it.Valid() {
+			k := string(it.Key())
+			got = append(got, k)
+			if k == "b" {
+				if err := rwDB.Delete([]byte("c")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			it.Next()
 		}
-		it.Next()
-	}
-	// "c" was deleted before we reached it, so re-seek from "b" skips it
-	expectKeys(t, "mutate after sync", got, []string{"a", "b", "d", "e"})
+		// "c" was deleted before we reached it, so re-seek from "b" skips it
+		expectKeys(t, "mutate after sync", got, []string{"a", "b", "d", "e"})
+		return nil
+	})
 }
 
 // TestFlexDB_IteratorEmptyDB tests iterator on an empty database.
 func TestFlexDB_IteratorEmptyDB(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 
-	it := db.NewIter()
-	defer it.Close()
+	db.View(func(roDB ReadOnlyDB) error {
+		it := roDB.NewIter()
+		defer it.Close()
 
-	it.SeekToFirst()
-	if it.Valid() {
-		t.Fatal("SeekToFirst on empty DB should be invalid")
-	}
+		it.SeekToFirst()
+		if it.Valid() {
+			t.Fatal("SeekToFirst on empty DB should be invalid")
+		}
 
-	it.SeekToLast()
-	if it.Valid() {
-		t.Fatal("SeekToLast on empty DB should be invalid")
-	}
+		it.SeekToLast()
+		if it.Valid() {
+			t.Fatal("SeekToLast on empty DB should be invalid")
+		}
 
-	it.Seek([]byte("x"))
-	if it.Valid() {
-		t.Fatal("Seek on empty DB should be invalid")
-	}
+		it.Seek([]byte("x"))
+		if it.Valid() {
+			t.Fatal("Seek on empty DB should be invalid")
+		}
+		return nil
+	})
 }
 
 // TestFlexDB_IteratorSingleKey tests iterator with one key, then deletes it.
@@ -1124,36 +1226,51 @@ func TestFlexDB_IteratorSingleKey(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	mustPut(t, db, "only", "val")
 
-	it := db.NewIter()
-	defer it.Close()
+	db.Update(func(rwDB WritableDB) error {
+		it := rwDB.NewIter()
+		defer it.Close()
 
-	it.Seek([]byte("only"))
-	if !it.Valid() || string(it.Key()) != "only" {
-		t.Fatalf("Seek(only): valid=%v key=%q", it.Valid(), it.Key())
-	}
+		it.Seek([]byte("only"))
+		if !it.Valid() || string(it.Key()) != "only" {
+			t.Fatalf("Seek(only): valid=%v key=%q", it.Valid(), it.Key())
+		}
 
-	mustDelete(t, db, "only")
-	it.Next()
-	if it.Valid() {
-		t.Fatalf("after delete+Next: should be invalid, got key=%q", it.Key())
-	}
+		if err := rwDB.Delete([]byte("only")); err != nil {
+			t.Fatal(err)
+		}
+		it.Next()
+		if it.Valid() {
+			t.Fatalf("after delete+Next: should be invalid, got key=%q", it.Key())
+		}
+		return nil
+	})
 }
 
-// TestFlexDB_DescendDeleteDuringCallback tests Descend with deletion of current key.
-func TestFlexDB_DescendDeleteDuringCallback(t *testing.T) {
+// TestFlexDB_IteratorDeleteAllBackward tests deleting every key during backward iteration.
+func TestFlexDB_IteratorDeleteAllBackward(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	for _, k := range []string{"a", "b", "c", "d", "e"} {
 		mustPut(t, db, k, "v:"+k)
 	}
 
-	var got []string
-	db.Descend(nil, func(key, value []byte) bool {
-		k := string(key)
-		got = append(got, k)
-		db.Delete(key) // delete current key
-		return true
+	db.Update(func(rwDB WritableDB) error {
+		it := rwDB.NewIter()
+		it.SeekToLast()
+
+		var got []string
+		for it.Valid() {
+			k := string(it.Key())
+			got = append(got, k)
+			if err := rwDB.Delete([]byte(k)); err != nil {
+				it.Close()
+				t.Fatal(err)
+			}
+			it.Prev()
+		}
+		it.Close()
+		expectKeys(t, "delete all backward", got, []string{"e", "d", "c", "b", "a"})
+		return nil
 	})
-	expectKeys(t, "descend+delete", got, []string{"e", "d", "c", "b", "a"})
 
 	// DB should be empty
 	val, ok := db.Get([]byte("c"))
@@ -1175,72 +1292,75 @@ func TestFlexDB_IteratorHasInlineValue(t *testing.T) {
 	// Small (inline) empty value
 	mustPut(t, db, "zeeKeyToEmpty", "")
 
-	it := db.NewIter()
-	defer it.Close()
-	it.SeekToFirst()
+	db.View(func(roDB ReadOnlyDB) error {
+		it := roDB.NewIter()
+		defer it.Close()
+		it.SeekToFirst()
 
-	// First key: "large" (alphabetically first)
-	if !it.Valid() || string(it.Key()) != "large" {
-		t.Fatalf("expected key 'large', got valid=%v key=%q", it.Valid(), it.Key())
-	}
-	if !it.Large() {
-		t.Fatal("large value should not be inline")
-	}
-	if it.Vin() != nil {
-		t.Fatal("Value() should be nil for large values")
-	}
-	if v, empty, large := it.Vel(); v != nil || empty || !large {
-		t.Fatal("Vel() should return (nil, false, true) for large values")
-	}
-	val, err := it.FetchV()
-	if err != nil {
-		t.Fatalf("FetchV: %v", err)
-	}
-	if string(val) != bigVal {
-		t.Fatalf("FetchV: got len=%d, want len=%d", len(val), len(bigVal))
-	}
+		// First key: "large" (alphabetically first)
+		if !it.Valid() || string(it.Key()) != "large" {
+			t.Fatalf("expected key 'large', got valid=%v key=%q", it.Valid(), it.Key())
+		}
+		if !it.Large() {
+			t.Fatal("large value should not be inline")
+		}
+		if it.Vin() != nil {
+			t.Fatal("Value() should be nil for large values")
+		}
+		if v, empty, large := it.Vel(); v != nil || empty || !large {
+			t.Fatal("Vel() should return (nil, false, true) for large values")
+		}
+		val, err := it.FetchV()
+		if err != nil {
+			t.Fatalf("FetchV: %v", err)
+		}
+		if string(val) != bigVal {
+			t.Fatalf("FetchV: got len=%d, want len=%d", len(val), len(bigVal))
+		}
 
-	it.Next()
-	// Second key: "small"
-	if !it.Valid() || string(it.Key()) != "small" {
-		t.Fatalf("expected key 'small', got valid=%v key=%q", it.Valid(), it.Key())
-	}
-	if it.Large() {
-		t.Fatal("small value should be inline")
-	}
-	if string(it.Vin()) != "tiny" {
-		t.Fatalf("Value() = %q, want 'tiny'", it.Vin())
-	}
-	val, err = it.FetchV()
-	if err != nil {
-		t.Fatalf("FetchV for inline: %v", err)
-	}
-	if string(val) != "tiny" {
-		t.Fatalf("FetchV for inline: got %q, want 'tiny'", val)
-	}
-	if v, empty, large := it.Vel(); v == nil || empty || large {
-		t.Fatal("Vel() should return (something, false, false) for small non-emtpy values")
-	}
+		it.Next()
+		// Second key: "small"
+		if !it.Valid() || string(it.Key()) != "small" {
+			t.Fatalf("expected key 'small', got valid=%v key=%q", it.Valid(), it.Key())
+		}
+		if it.Large() {
+			t.Fatal("small value should be inline")
+		}
+		if string(it.Vin()) != "tiny" {
+			t.Fatalf("Value() = %q, want 'tiny'", it.Vin())
+		}
+		val, err = it.FetchV()
+		if err != nil {
+			t.Fatalf("FetchV for inline: %v", err)
+		}
+		if string(val) != "tiny" {
+			t.Fatalf("FetchV for inline: got %q, want 'tiny'", val)
+		}
+		if v, empty, large := it.Vel(); v == nil || empty || large {
+			t.Fatal("Vel() should return (something, false, false) for small non-emtpy values")
+		}
 
-	it.Next()
-	// Third key: "zeeKeyToEmpty", with empty len(0) value.
-	if !it.Valid() || string(it.Key()) != "zeeKeyToEmpty" {
-		t.Fatalf("expected key 'zeeKeyToEmpty', got valid=%v key=%q", it.Valid(), it.Key())
-	}
-	if it.Large() {
-		t.Fatal("zeeKeyToEmpty value should be inline")
-	}
-	if string(it.Vin()) != "" {
-		t.Fatalf("Value() = %q, want empty string", it.Vin())
-	}
-	val, err = it.FetchV()
-	if err != nil {
-		t.Fatalf("FetchV for inline: %v", err)
-	}
-	if string(val) != "" {
-		t.Fatalf("FetchV for inline: got %q, want empty string", val)
-	}
-	if v, empty, large := it.Vel(); v == nil || empty || large {
-		t.Fatal("Vel() should return (nil, true, false) for small emtpy values")
-	}
+		it.Next()
+		// Third key: "zeeKeyToEmpty", with empty len(0) value.
+		if !it.Valid() || string(it.Key()) != "zeeKeyToEmpty" {
+			t.Fatalf("expected key 'zeeKeyToEmpty', got valid=%v key=%q", it.Valid(), it.Key())
+		}
+		if it.Large() {
+			t.Fatal("zeeKeyToEmpty value should be inline")
+		}
+		if string(it.Vin()) != "" {
+			t.Fatalf("Value() = %q, want empty string", it.Vin())
+		}
+		val, err = it.FetchV()
+		if err != nil {
+			t.Fatalf("FetchV for inline: %v", err)
+		}
+		if string(val) != "" {
+			t.Fatalf("FetchV for inline: got %q, want empty string", val)
+		}
+		if v, empty, large := it.Vel(); v == nil || empty || large {
+			t.Fatal("Vel() should return (nil, true, false) for small emtpy values")
+		}
+		return nil
+	})
 }

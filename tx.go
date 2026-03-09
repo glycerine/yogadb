@@ -1,226 +1,332 @@
 package yogadb
 
-import (
-	"errors"
-	"fmt"
-	"sync/atomic"
+import "bytes"
 
-	"github.com/tidwall/btree"
-)
-
-// ====================== Transactions ======================
-//
-// FlexDB supports serializable transactions via a single-writer mutex.
-// Update transactions are serialized; View transactions happen when no
-// writer is active, and many readers can read concurrently without blocking
-// each other.
-//
-// Tx provides Commit and Cancel with first-wins semantics: whichever is
-// called first takes effect, subsequent calls are no-ops (or return ErrTxDone).
-
-const (
-	txActive    int32 = 0
-	txCommitted int32 = 1
-	txCancelled int32 = 2
-)
-
-var (
-	// ErrTxDone is returned when Commit is called on an already-cancelled transaction.
-	ErrTxDone = errors.New("flexdb: transaction already finished")
-	// ErrTxNotWritable is returned when Put or Delete is called on a read-only transaction.
-	ErrTxNotWritable = errors.New("flexdb: cannot write in a read-only transaction")
-)
-
-// Tx represents a database transaction.
-type Tx struct {
-	db       *FlexDB
-	writable bool
-	state    int32 // atomic: txActive -> txCommitted or txCancelled
-
-	// Read snapshot (COW btree copies + ffMu.RLock)
-	mtSnaps [2]*btree.BTreeG[KV]
-
-	// Write buffer (writable only) — local btree, applied at Commit
-	wb *btree.BTreeG[KV]
+// ReadOnlyDB provides read-only access to the database within a View
+// transaction. Methods must not be used after the callback returns.
+type ReadOnlyDB interface {
+	Get(key []byte) ([]byte, bool)
+	Find(smod SearchModifier, key []byte) (kv *KV, found, exact bool)
+	FindIt(smod SearchModifier, key []byte) (kv *KV, found, exact bool, it *Iter)
+	FetchLarge(kv *KV) ([]byte, error)
+	NewIter() *Iter
+	Ascend(pivot []byte, iter func(key, value []byte) bool)
+	Descend(pivot []byte, iter func(key, value []byte) bool)
+	AscendRange(greaterOrEqual, lessThan []byte, iter func(key, value []byte) bool)
+	DescendRange(lessOrEqual, greaterThan []byte, iter func(key, value []byte) bool)
+	Len() int64
+	LenBigSmall() (big, small int64)
 }
 
-func (db *FlexDB) begin(writable bool) *Tx {
-	tx := &Tx{
-		db:       db,
-		writable: writable,
-	}
+// WritableDB extends ReadOnlyDB with mutation methods. Passed to
+// Update transaction callbacks. Writes are applied immediately
+// to the database (no buffering).
+type WritableDB interface {
+	ReadOnlyDB
+	Put(key, value []byte) error
+	Delete(key []byte) error
+	DeleteRange(includeLarge bool, begKey, endKey []byte, begInclusive, endInclusive bool) (n int64, allGone bool, err error)
+	Clear(includeLarge bool) (allGone bool, err error)
+	Merge(key []byte, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error
+	Sync() error
+}
 
-	if writable {
-		db.topMutRW.Lock()
+// txBase tracks iterators created within a transaction and auto-closes
+// them when the transaction ends.
+type txBase struct {
+	db    *FlexDB
+	iters []*Iter
+}
+
+func (tx *txBase) newIter() *Iter {
+	it := &Iter{db: tx.db}
+	tx.iters = append(tx.iters, it)
+	return it
+}
+
+func (tx *txBase) closeAll() {
+	for _, it := range tx.iters {
+		if !it.closed {
+			it.releaseIterState()
+			it.valid = false
+			it.closed = true
+		}
+	}
+	tx.iters = tx.iters[:0]
+}
+
+// ====================== writeTx (implements WritableDB) ======================
+
+type writeTx struct{ txBase }
+
+func (tx *writeTx) Get(key []byte) ([]byte, bool) {
+	return tx.db.someLockHeldGet(key)
+}
+
+func (tx *writeTx) Put(key, value []byte) error {
+	return tx.db.writeLockHeldPut(key, value)
+}
+
+func (tx *writeTx) Delete(key []byte) error {
+	return tx.db.writeLockHeldPut(key, nil)
+}
+
+func (tx *writeTx) Sync() error {
+	return tx.db.writeLockHeldSync()
+}
+
+func (tx *writeTx) Find(smod SearchModifier, key []byte) (kv *KV, found, exact bool) {
+	it := tx.newIter()
+	found, exact = findSeekIter(it, smod, key)
+	if found {
+		kv = findBuildKV(it)
+	}
+	it.Close()
+	return
+}
+
+func (tx *writeTx) FindIt(smod SearchModifier, key []byte) (kv *KV, found, exact bool, it *Iter) {
+	it = tx.newIter()
+	found, exact = findSeekIter(it, smod, key)
+	if found {
+		kv = findBuildKV(it)
+	}
+	return
+}
+
+func (tx *writeTx) FetchLarge(kv *KV) ([]byte, error) {
+	return tx.db.lockHeldFetchLarge(kv)
+}
+
+func (tx *writeTx) NewIter() *Iter {
+	return tx.newIter()
+}
+
+func (tx *writeTx) Len() int64 {
+	return tx.db.liveKeys
+}
+
+func (tx *writeTx) LenBigSmall() (big, small int64) {
+	return tx.db.liveBigKeys, tx.db.liveSmallKeys
+}
+
+func (tx *writeTx) DeleteRange(includeLarge bool, begKey, endKey []byte, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
+	return tx.db.writeLockHeldDeleteRange(includeLarge, begKey, endKey, begInclusive, endInclusive)
+}
+
+func (tx *writeTx) Clear(includeLarge bool) (allGone bool, err error) {
+	return tx.db.writeLockHeldClear(includeLarge)
+}
+
+func (tx *writeTx) Merge(key []byte, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error {
+	return tx.db.writeLockHeldMerge(key, fn)
+}
+
+func (tx *writeTx) Ascend(pivot []byte, iter func(key, value []byte) bool) {
+	it := tx.newIter()
+	defer it.Close()
+	it.Seek(pivot)
+	for it.Valid() {
+		if !iter(it.Key(), it.iterResolvedValue()) {
+			return
+		}
+		it.Next()
+	}
+}
+
+func (tx *writeTx) Descend(pivot []byte, iter func(key, value []byte) bool) {
+	it := tx.newIter()
+	defer it.Close()
+	if pivot == nil {
+		it.SeekToLast()
 	} else {
-		db.topMutRW.RLock()
+		it.seekLE(pivot, false)
 	}
-
-	// Snapshot memtables via COW copies
-	active := db.activeMT
-	inactive := 1 - active
-	tx.mtSnaps[0] = db.memtables[active].bt.Copy()
-	tx.mtSnaps[1] = db.memtables[inactive].bt.Copy()
-
-	if writable {
-		tx.wb = btree.NewBTreeG[KV](kvLess)
-	}
-
-	return tx
-}
-
-// Update executes fn within a serializable read-write transaction.
-// Only one Update transaction runs at a time (serialized by db.topMutRW).
-// If fn returns without calling Commit or Cancel, the transaction is auto-cancelled.
-func (db *FlexDB) Update(fn func(tx *Tx) error) error {
-
-	tx := db.begin(true)
-	err := fn(tx)
-
-	// Auto-cancel if still active
-	if atomic.LoadInt32(&tx.state) == txActive {
-		tx.Cancel()
-	}
-	return err
-}
-
-// View executes fn within a read-only transaction.
-// Multiple View transactions can run concurrently.
-// The transaction is auto-released when fn returns.
-func (db *FlexDB) View(fn func(tx *Tx) error) error {
-	tx := db.begin(false)
-	err := fn(tx)
-
-	// Auto-release if still active
-	if atomic.LoadInt32(&tx.state) == txActive {
-		tx.release()
-		atomic.StoreInt32(&tx.state, txCancelled)
-	}
-	return err
-}
-
-// Get retrieves the value for key within the transaction's snapshot.
-// Returns nil, false if not found or if the key is a tombstone.
-func (tx *Tx) Get(key []byte) ([]byte, bool) {
-	// Check write buffer first (highest priority for writable Tx)
-	if tx.writable && tx.wb != nil {
-		kv, ok := tx.wb.Get(KV{Key: key})
-		if ok {
-			if kv.isTombstone() {
-				return nil, false // tombstone in write buffer
-			}
-			val := make([]byte, len(kv.Value))
-			copy(val, kv.Value)
-			return val, true
+	for it.Valid() {
+		if !iter(it.Key(), it.iterResolvedValue()) {
+			return
 		}
+		it.Prev()
 	}
+}
 
-	// Check memtable snapshots
-	for i := 0; i < 2; i++ {
-		if tx.mtSnaps[i] != nil {
-			kv, ok := tx.mtSnaps[i].Get(KV{Key: key})
-			if ok {
-				if kv.isTombstone() {
-					return nil, false // tombstone
-				}
-				val, err := tx.db.resolveVPtr(kv)
-				if err != nil {
-					return nil, false
-				}
-				out := make([]byte, len(val))
-				copy(out, val)
-				return out, true
-			}
+func (tx *writeTx) AscendRange(greaterOrEqual, lessThan []byte, iter func(key, value []byte) bool) {
+	it := tx.newIter()
+	defer it.Close()
+	it.Seek(greaterOrEqual)
+	for it.Valid() {
+		if lessThan != nil && bytes.Compare(it.Key(), lessThan) >= 0 {
+			return
 		}
-	}
-
-	// Check FlexSpace
-	return tx.db.getPassthrough(key)
-}
-
-// Put writes a key-value pair into the transaction's write buffer.
-// The write is only applied to the database when Commit is called.
-// Returns ErrTxNotWritable for read-only transactions.
-func (tx *Tx) Put(key, value []byte) error {
-	if !tx.writable {
-		return ErrTxNotWritable
-	}
-	if atomic.LoadInt32(&tx.state) != txActive {
-		return ErrTxDone
-	}
-	//if len(key)+len(value)+16 >= MaxKeySize {
-	if len(key) > MaxKeySize {
-		return fmt.Errorf("flexdb: Key too large (max %d bytes)", MaxKeySize)
-	}
-	tx.wb.Set(KV{Key: dupBytes(key), Value: dupBytes(value)})
-	return nil
-}
-
-// Delete marks a key for deletion in the transaction's write buffer.
-// The deletion is only applied to the database when Commit is called.
-// Returns ErrTxNotWritable for read-only transactions.
-func (tx *Tx) Delete(key []byte) error {
-	if !tx.writable {
-		return ErrTxNotWritable
-	}
-	if atomic.LoadInt32(&tx.state) != txActive {
-		return ErrTxDone
-	}
-	tx.wb.Set(KV{Key: dupBytes(key), Value: nil}) // tombstone, because Value==nil && HasVPtr == 0
-	return nil
-}
-
-// Commit applies all buffered writes to the database.
-// Uses first-wins semantics: if Cancel was called first, returns ErrTxDone.
-// Double Commit returns nil (idempotent).
-func (tx *Tx) Commit() error {
-	if !atomic.CompareAndSwapInt32(&tx.state, txActive, txCommitted) {
-		if atomic.LoadInt32(&tx.state) == txCancelled {
-			return ErrTxDone
+		if !iter(it.Key(), it.iterResolvedValue()) {
+			return
 		}
-		return nil // already committed — idempotent
+		it.Next()
 	}
-
-	if !tx.writable {
-		tx.release()
-		return nil
-	}
-	defer tx.release()
-
-	// now we still hold db.topMutRW.Lock() writer's lock.
-
-	// Save write buffer before release (release nils it).
-	wb := tx.wb
-
-	// Apply write buffer to database
-	if wb != nil {
-		wb.Ascend(KV{}, func(item KV) bool {
-			tx.db.writeLockHeldPut(item.Key, item.Value)
-			return true
-		})
-	}
-
-	return nil
 }
 
-// Cancel discards all buffered writes.
-// Uses first-wins semantics: if Commit was called first, returns nil.
-// Double Cancel returns nil (idempotent).
-func (tx *Tx) Cancel() error {
-	if !atomic.CompareAndSwapInt32(&tx.state, txActive, txCancelled) {
-		return nil // already committed or cancelled — idempotent
-	}
-	tx.release()
-	return nil
-}
-
-func (tx *Tx) release() {
-	if tx.writable {
-		tx.db.topMutRW.Unlock()
+func (tx *writeTx) DescendRange(lessOrEqual, greaterThan []byte, iter func(key, value []byte) bool) {
+	it := tx.newIter()
+	defer it.Close()
+	if lessOrEqual == nil {
+		it.SeekToLast()
 	} else {
-		tx.db.topMutRW.RUnlock()
+		it.seekLE(lessOrEqual, false)
 	}
-	tx.mtSnaps[0] = nil
-	tx.mtSnaps[1] = nil
-	tx.wb = nil
+	for it.Valid() {
+		if greaterThan != nil && bytes.Compare(it.Key(), greaterThan) <= 0 {
+			return
+		}
+		if !iter(it.Key(), it.iterResolvedValue()) {
+			return
+		}
+		it.Prev()
+	}
+}
+
+// ====================== readTx (implements ReadOnlyDB) ======================
+
+type readTx struct{ txBase }
+
+func (tx *readTx) Get(key []byte) ([]byte, bool) {
+	return tx.db.someLockHeldGet(key)
+}
+
+func (tx *readTx) Find(smod SearchModifier, key []byte) (kv *KV, found, exact bool) {
+	it := tx.newIter()
+	found, exact = findSeekIter(it, smod, key)
+	if found {
+		kv = findBuildKV(it)
+	}
+	it.Close()
+	return
+}
+
+func (tx *readTx) FindIt(smod SearchModifier, key []byte) (kv *KV, found, exact bool, it *Iter) {
+	it = tx.newIter()
+	found, exact = findSeekIter(it, smod, key)
+	if found {
+		kv = findBuildKV(it)
+	}
+	return
+}
+
+func (tx *readTx) FetchLarge(kv *KV) ([]byte, error) {
+	return tx.db.lockHeldFetchLarge(kv)
+}
+
+func (tx *readTx) NewIter() *Iter {
+	return tx.newIter()
+}
+
+func (tx *readTx) Len() int64 {
+	return tx.db.liveKeys
+}
+
+func (tx *readTx) LenBigSmall() (big, small int64) {
+	return tx.db.liveBigKeys, tx.db.liveSmallKeys
+}
+
+func (tx *readTx) Ascend(pivot []byte, iter func(key, value []byte) bool) {
+	it := tx.newIter()
+	defer it.Close()
+	it.Seek(pivot)
+	for it.Valid() {
+		if !iter(it.Key(), it.iterResolvedValue()) {
+			return
+		}
+		it.Next()
+	}
+}
+
+func (tx *readTx) Descend(pivot []byte, iter func(key, value []byte) bool) {
+	it := tx.newIter()
+	defer it.Close()
+	if pivot == nil {
+		it.SeekToLast()
+	} else {
+		it.seekLE(pivot, false)
+	}
+	for it.Valid() {
+		if !iter(it.Key(), it.iterResolvedValue()) {
+			return
+		}
+		it.Prev()
+	}
+}
+
+func (tx *readTx) AscendRange(greaterOrEqual, lessThan []byte, iter func(key, value []byte) bool) {
+	it := tx.newIter()
+	defer it.Close()
+	it.Seek(greaterOrEqual)
+	for it.Valid() {
+		if lessThan != nil && bytes.Compare(it.Key(), lessThan) >= 0 {
+			return
+		}
+		if !iter(it.Key(), it.iterResolvedValue()) {
+			return
+		}
+		it.Next()
+	}
+}
+
+func (tx *readTx) DescendRange(lessOrEqual, greaterThan []byte, iter func(key, value []byte) bool) {
+	it := tx.newIter()
+	defer it.Close()
+	if lessOrEqual == nil {
+		it.SeekToLast()
+	} else {
+		it.seekLE(lessOrEqual, false)
+	}
+	for it.Valid() {
+		if greaterThan != nil && bytes.Compare(it.Key(), greaterThan) <= 0 {
+			return
+		}
+		if !iter(it.Key(), it.iterResolvedValue()) {
+			return
+		}
+		it.Prev()
+	}
+}
+
+// ====================== FlexDB.Update / FlexDB.View ======================
+
+// Update runs fn inside an exclusive write transaction. The write lock
+// (topMutRW.Lock()) is held for the duration of fn, blocking all other
+// readers and writers including the flush worker.
+//
+// All iterators created within fn via rwDB.NewIter() or rwDB.FindIt()
+// are automatically closed when fn returns.
+//
+// Writes via rwDB.Put/rwDB.Delete are applied immediately to the
+// database (no buffering, no Commit needed).
+//
+// Do NOT call db.Put/db.Get/db.Delete/db.Sync inside fn — use rwDB
+// methods instead (deadlock).
+func (db *FlexDB) Update(fn func(rwDB WritableDB) error) error {
+	db.topMutRW.Lock()
+	tx := writeTx{txBase{db: db}}
+	defer func() {
+		tx.closeAll()
+		db.topMutRW.Unlock()
+	}()
+	return fn(&tx)
+}
+
+// View runs fn inside a read-only transaction. The read lock
+// (topMutRW.RLock()) is held for the duration of fn, blocking
+// writers (including the flush worker) but allowing concurrent readers.
+//
+// All iterators created within fn via roDB.NewIter() or roDB.FindIt()
+// are automatically closed when fn returns.
+//
+// Do NOT call db.Get inside fn — use roDB methods instead (deadlock).
+func (db *FlexDB) View(fn func(roDB ReadOnlyDB) error) error {
+	db.topMutRW.RLock()
+	tx := readTx{txBase{db: db}}
+	defer func() {
+		tx.closeAll()
+		db.topMutRW.RUnlock()
+	}()
+	return fn(&tx)
 }

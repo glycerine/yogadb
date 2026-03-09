@@ -161,15 +161,18 @@ func main() {
 		// write back out, to check completeness (no data is lost) and sorted-ness (proper order).
 		t1 := time.Now()
 		saw := 0
-		db.Ascend(nil, func(key, value []byte) bool {
-			os.Stdout.Write(key)
-			if len(value) > 0 {
-				os.Stdout.Write(colon)
-				os.Stdout.Write(value)
-			}
-			os.Stdout.Write(newline)
-			saw++
-			return true
+		db.View(func(roDB yogadb.ReadOnlyDB) error {
+			roDB.Ascend(nil, func(key, value []byte) bool {
+				os.Stdout.Write(key)
+				if len(value) > 0 {
+					os.Stdout.Write(colon)
+					os.Stdout.Write(value)
+				}
+				os.Stdout.Write(newline)
+				saw++
+				return true
+			})
+			return nil
 		})
 		os.Stdout.Sync()
 		fmt.Fprintf(os.Stderr, "YogaDB saw %v, output in sorted order took: %v\n", saw, time.Since(t1))
@@ -179,23 +182,26 @@ func main() {
 func justShowAll(db *yogadb.FlexDB, dbPath string) {
 	saw := 0
 	buf := make([]byte, 0, 4<<20)
-	db.Ascend(nil, func(key, value []byte) bool {
-		need := 2 + len(key) + len(value)
-		if len(buf)+need <= cap(buf) {
-			// fine. write below.
-		} else {
-			os.Stdout.Write(buf)
-			buf = buf[:0]
-		}
-		buf = append(buf, key...)
-		if len(value) > 0 {
-			buf = append(buf, colon...)
-			buf = append(buf, value...)
-		}
-		buf = append(buf, newline...)
+	db.View(func(roDB yogadb.ReadOnlyDB) error {
+		roDB.Ascend(nil, func(key, value []byte) bool {
+			need := 2 + len(key) + len(value)
+			if len(buf)+need <= cap(buf) {
+				// fine. write below.
+			} else {
+				os.Stdout.Write(buf)
+				buf = buf[:0]
+			}
+			buf = append(buf, key...)
+			if len(value) > 0 {
+				buf = append(buf, colon...)
+				buf = append(buf, value...)
+			}
+			buf = append(buf, newline...)
 
-		saw++
-		return true
+			saw++
+			return true
+		})
+		return nil
 	})
 	if len(buf) > 0 {
 		os.Stdout.Write(buf)

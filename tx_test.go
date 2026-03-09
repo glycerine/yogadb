@@ -1,121 +1,24 @@
 package yogadb
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
 )
 
-func TestTx_DoubleCommit(t *testing.T) {
-	db, _ := openTestDB(t, nil)
-	mustPut(t, db, "k1", "v1")
-
-	err := db.Update(func(tx *Tx) error {
-		if err := tx.Put([]byte("k2"), []byte("v2")); err != nil {
-			t.Fatal(err)
-		}
-		err1 := tx.Commit()
-		err2 := tx.Commit()
-		if err1 != nil {
-			t.Fatalf("first Commit: %v", err1)
-		}
-		if err2 != nil {
-			t.Fatalf("second Commit: %v", err2)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	mustGet(t, db, "k2", "v2")
-}
-
-func TestTx_DoubleCancel(t *testing.T) {
-	db, _ := openTestDB(t, nil)
-	mustPut(t, db, "k1", "v1")
-
-	err := db.Update(func(tx *Tx) error {
-		if err := tx.Put([]byte("k2"), []byte("v2")); err != nil {
-			t.Fatal(err)
-		}
-		err1 := tx.Cancel()
-		err2 := tx.Cancel()
-		if err1 != nil {
-			t.Fatalf("first Cancel: %v", err1)
-		}
-		if err2 != nil {
-			t.Fatalf("second Cancel: %v", err2)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	mustMiss(t, db, "k2")
-}
-
-func TestTx_CancelThenCommit(t *testing.T) {
-	db, _ := openTestDB(t, nil)
-	mustPut(t, db, "k1", "v1")
-
-	err := db.Update(func(tx *Tx) error {
-		if err := tx.Put([]byte("k2"), []byte("v2")); err != nil {
-			t.Fatal(err)
-		}
-		err1 := tx.Cancel()
-		err2 := tx.Commit()
-		if err1 != nil {
-			t.Fatalf("Cancel: %v", err1)
-		}
-		if err2 != ErrTxDone {
-			t.Fatalf("Commit after Cancel: got %v, want ErrTxDone", err2)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Writes should NOT have been applied.
-	mustMiss(t, db, "k2")
-}
-
-func TestTx_CommitThenCancel(t *testing.T) {
-	db, _ := openTestDB(t, nil)
-	mustPut(t, db, "k1", "v1")
-
-	err := db.Update(func(tx *Tx) error {
-		if err := tx.Put([]byte("k2"), []byte("v2")); err != nil {
-			t.Fatal(err)
-		}
-		err1 := tx.Commit()
-		err2 := tx.Cancel()
-		if err1 != nil {
-			t.Fatalf("Commit: %v", err1)
-		}
-		if err2 != nil {
-			t.Fatalf("Cancel after Commit: got %v, want nil", err2)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Writes SHOULD have been applied.
-	mustGet(t, db, "k2", "v2")
-}
-
 func TestTx_UpdateBasic(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	mustPut(t, db, "k1", "v1")
 
-	err := db.Update(func(tx *Tx) error {
-		if err := tx.Put([]byte("k2"), []byte("v2")); err != nil {
+	err := db.Update(func(rwDB WritableDB) error {
+		if err := rwDB.Put([]byte("k2"), []byte("v2")); err != nil {
 			return err
 		}
-		if err := tx.Put([]byte("k3"), []byte("v3")); err != nil {
+		if err := rwDB.Put([]byte("k3"), []byte("v3")); err != nil {
 			return err
 		}
-		return tx.Commit()
+		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -131,16 +34,16 @@ func TestTx_ViewBasic(t *testing.T) {
 	mustPut(t, db, "k1", "v1")
 	mustPut(t, db, "k2", "v2")
 
-	err := db.View(func(tx *Tx) error {
-		val, ok := tx.Get([]byte("k1"))
+	err := db.View(func(roDB ReadOnlyDB) error {
+		val, ok := roDB.Get([]byte("k1"))
 		if !ok || string(val) != "v1" {
 			t.Fatalf("View Get(k1) = %q, %v; want v1, true", val, ok)
 		}
-		val, ok = tx.Get([]byte("k2"))
+		val, ok = roDB.Get([]byte("k2"))
 		if !ok || string(val) != "v2" {
 			t.Fatalf("View Get(k2) = %q, %v; want v2, true", val, ok)
 		}
-		_, ok = tx.Get([]byte("k3"))
+		_, ok = roDB.Get([]byte("k3"))
 		if ok {
 			t.Fatal("View Get(k3): expected not found")
 		}
@@ -155,43 +58,43 @@ func TestTx_UpdateSeesOwnWrites(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	mustPut(t, db, "k1", "v1")
 
-	err := db.Update(func(tx *Tx) error {
+	err := db.Update(func(rwDB WritableDB) error {
 		// Should see pre-existing key.
-		val, ok := tx.Get([]byte("k1"))
+		val, ok := rwDB.Get([]byte("k1"))
 		if !ok || string(val) != "v1" {
 			t.Fatalf("Get(k1) before write: %q, %v", val, ok)
 		}
 
 		// Write a new key.
-		if err := tx.Put([]byte("k2"), []byte("v2")); err != nil {
+		if err := rwDB.Put([]byte("k2"), []byte("v2")); err != nil {
 			return err
 		}
 
-		// Should see the buffered write.
-		val, ok = tx.Get([]byte("k2"))
+		// Should see the write immediately.
+		val, ok = rwDB.Get([]byte("k2"))
 		if !ok || string(val) != "v2" {
-			t.Fatalf("Get(k2) after buffered write: %q, %v", val, ok)
+			t.Fatalf("Get(k2) after write: %q, %v", val, ok)
 		}
 
-		// Overwrite k1 in the buffer.
-		if err := tx.Put([]byte("k1"), []byte("v1-updated")); err != nil {
+		// Overwrite k1.
+		if err := rwDB.Put([]byte("k1"), []byte("v1-updated")); err != nil {
 			return err
 		}
-		val, ok = tx.Get([]byte("k1"))
+		val, ok = rwDB.Get([]byte("k1"))
 		if !ok || string(val) != "v1-updated" {
 			t.Fatalf("Get(k1) after overwrite: %q, %v", val, ok)
 		}
 
-		// Delete k1 via buffer.
-		if err := tx.Delete([]byte("k1")); err != nil {
+		// Delete k1.
+		if err := rwDB.Delete([]byte("k1")); err != nil {
 			return err
 		}
-		_, ok = tx.Get([]byte("k1"))
+		_, ok = rwDB.Get([]byte("k1"))
 		if ok {
 			t.Fatal("Get(k1) after delete: expected not found")
 		}
 
-		return tx.Commit()
+		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -202,66 +105,27 @@ func TestTx_UpdateSeesOwnWrites(t *testing.T) {
 	mustGet(t, db, "k2", "v2")
 }
 
-func TestTx_CancelDiscardsWrites(t *testing.T) {
+func TestTx_ViewCannotMutate(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	mustPut(t, db, "k1", "v1")
 
-	err := db.Update(func(tx *Tx) error {
-		if err := tx.Put([]byte("k2"), []byte("v2")); err != nil {
-			return err
+	// ReadOnlyDB has no Put or Delete methods -- this is a compile-time
+	// guarantee. We just verify that Get works inside View.
+	err := db.View(func(roDB ReadOnlyDB) error {
+		val, ok := roDB.Get([]byte("k1"))
+		if !ok || string(val) != "v1" {
+			t.Fatalf("View Get(k1) = %q, %v; want v1, true", val, ok)
 		}
-		if err := tx.Put([]byte("k1"), []byte("OVERWRITTEN")); err != nil {
-			return err
-		}
-		return tx.Cancel()
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Original value preserved, new key not written.
-	mustGet(t, db, "k1", "v1")
-	mustMiss(t, db, "k2")
-}
-
-func TestTx_UpdateAutoCancel(t *testing.T) {
-	db, _ := openTestDB(t, nil)
-	mustPut(t, db, "k1", "v1")
-
-	err := db.Update(func(tx *Tx) error {
-		if err := tx.Put([]byte("k2"), []byte("v2")); err != nil {
-			return err
-		}
-		// Return without calling Commit or Cancel.
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Writes should be discarded (auto-cancel).
-	mustMiss(t, db, "k2")
-	mustGet(t, db, "k1", "v1")
-}
-
-func TestTx_ViewPutReturnsError(t *testing.T) {
-	db, _ := openTestDB(t, nil)
-	mustPut(t, db, "k1", "v1")
-
-	err := db.View(func(tx *Tx) error {
-		err := tx.Put([]byte("k2"), []byte("v2"))
-		if err != ErrTxNotWritable {
-			t.Fatalf("Put in View: got %v, want ErrTxNotWritable", err)
-		}
-		err = tx.Delete([]byte("k1"))
-		if err != ErrTxNotWritable {
-			t.Fatalf("Delete in View: got %v, want ErrTxNotWritable", err)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Compile-time check: ReadOnlyDB does not satisfy WritableDB.
+	var _ ReadOnlyDB = (*readTx)(nil)
+	// The following would fail to compile:
+	// var _ WritableDB = (*readTx)(nil)
 }
 
 func TestTx_SerializedUpdates(t *testing.T) {
@@ -275,12 +139,11 @@ func TestTx_SerializedUpdates(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = db.Update(func(tx *Tx) error {
+			errs[i] = db.Update(func(rwDB WritableDB) error {
 				// Read current counter value.
-				val, ok := tx.Get([]byte("counter"))
+				val, ok := rwDB.Get([]byte("counter"))
 				if !ok {
-					t.Error("counter not found")
-					return tx.Cancel()
+					return fmt.Errorf("counter not found in goroutine %d", i)
 				}
 				// Increment.
 				c := 0
@@ -289,10 +152,7 @@ func TestTx_SerializedUpdates(t *testing.T) {
 				}
 				c++
 				newVal := []byte(fmt.Sprintf("%d", c))
-				if err := tx.Put([]byte("counter"), newVal); err != nil {
-					return err
-				}
-				return tx.Commit()
+				return rwDB.Put([]byte("counter"), newVal)
 			})
 		}(i)
 	}
@@ -312,5 +172,240 @@ func TestTx_SerializedUpdates(t *testing.T) {
 	want := fmt.Sprintf("%d", n)
 	if string(val) != want {
 		t.Fatalf("counter = %q, want %q", val, want)
+	}
+}
+
+func TestTx_UpdateIterator(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+	mustPut(t, db, "a", "1")
+	mustPut(t, db, "b", "2")
+	mustPut(t, db, "c", "3")
+
+	err := db.Update(func(rwDB WritableDB) error {
+		it := rwDB.NewIter()
+		defer it.Close()
+
+		var got []string
+		it.SeekToFirst()
+		for it.Valid() {
+			got = append(got, string(it.Key()))
+			it.Next()
+		}
+		want := []string{"a", "b", "c"}
+		expectKeys(t, "UpdateIterator", got, want)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTx_ViewIterator(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+	mustPut(t, db, "x", "10")
+	mustPut(t, db, "y", "20")
+	mustPut(t, db, "z", "30")
+
+	err := db.View(func(roDB ReadOnlyDB) error {
+		it := roDB.NewIter()
+		defer it.Close()
+
+		var got []string
+		it.SeekToFirst()
+		for it.Valid() {
+			got = append(got, string(it.Key()))
+			it.Next()
+		}
+		want := []string{"x", "y", "z"}
+		expectKeys(t, "ViewIterator", got, want)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTx_MultipleIteratorsUpdate(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+	mustPut(t, db, "a", "1")
+	mustPut(t, db, "b", "2")
+	mustPut(t, db, "c", "3")
+	mustPut(t, db, "d", "4")
+
+	err := db.Update(func(rwDB WritableDB) error {
+		it1 := rwDB.NewIter()
+		it2 := rwDB.NewIter()
+		defer it1.Close()
+		defer it2.Close()
+
+		// Forward scan with it1.
+		var fwd []string
+		it1.SeekToFirst()
+
+		// Backward scan with it2.
+		var bwd []string
+		it2.SeekToLast()
+
+		for it1.Valid() || it2.Valid() {
+			if it1.Valid() {
+				fwd = append(fwd, string(it1.Key()))
+				it1.Next()
+			}
+
+			if it2.Valid() {
+				bwd = append(bwd, string(it2.Key()))
+				it2.Prev()
+			}
+		}
+
+		expectKeys(t, "MultiIter-fwd", fwd, []string{"a", "b", "c", "d"})
+		expectKeys(t, "MultiIter-bwd", bwd, []string{"d", "c", "b", "a"})
+
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTx_MultipleIteratorsView(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+	mustPut(t, db, "a", "1")
+	mustPut(t, db, "b", "2")
+	mustPut(t, db, "c", "3")
+	mustPut(t, db, "d", "4")
+
+	err := db.View(func(roDB ReadOnlyDB) error {
+		it1 := roDB.NewIter()
+		it2 := roDB.NewIter()
+		defer it1.Close()
+		defer it2.Close()
+
+		// Forward scan with it1.
+		var fwd []string
+		it1.SeekToFirst()
+
+		// Backward scan with it2.
+		var bwd []string
+		it2.SeekToLast()
+
+		for it1.Valid() || it2.Valid() {
+			if it1.Valid() {
+				fwd = append(fwd, string(it1.Key()))
+				it1.Next()
+			}
+
+			if it2.Valid() {
+				bwd = append(bwd, string(it2.Key()))
+				it2.Prev()
+			}
+		}
+
+		expectKeys(t, "MultiIter-fwd", fwd, []string{"a", "b", "c", "d"})
+		expectKeys(t, "MultiIter-bwd", bwd, []string{"d", "c", "b", "a"})
+
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTx_UpdateAscendDescend(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+	mustPut(t, db, "a", "1")
+	mustPut(t, db, "b", "2")
+	mustPut(t, db, "c", "3")
+	mustPut(t, db, "d", "4")
+
+	err := db.Update(func(rwDB WritableDB) error {
+		// Ascend from "b".
+		var asc []string
+		rwDB.Ascend([]byte("b"), func(key, value []byte) bool {
+			asc = append(asc, string(key))
+			return true
+		})
+		expectKeys(t, "Ascend-from-b", asc, []string{"b", "c", "d"})
+
+		// Descend from "c".
+		var desc []string
+		rwDB.Descend([]byte("c"), func(key, value []byte) bool {
+			desc = append(desc, string(key))
+			return true
+		})
+		expectKeys(t, "Descend-from-c", desc, []string{"c", "b", "a"})
+
+		// AscendRange [b, d).
+		var rng []string
+		rwDB.AscendRange([]byte("b"), []byte("d"), func(key, value []byte) bool {
+			rng = append(rng, string(key))
+			return true
+		})
+		expectKeys(t, "AscendRange-b-d", rng, []string{"b", "c"})
+
+		// DescendRange [c, a).
+		var drng []string
+		rwDB.DescendRange([]byte("c"), []byte("a"), func(key, value []byte) bool {
+			drng = append(drng, string(key))
+			return true
+		})
+		expectKeys(t, "DescendRange-c-a", drng, []string{"c", "b"})
+
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTx_UpdateDeleteRange(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+	mustPut(t, db, "a", "1")
+	mustPut(t, db, "b", "2")
+	mustPut(t, db, "c", "3")
+	mustPut(t, db, "d", "4")
+	mustPut(t, db, "e", "5")
+
+	err := db.Update(func(rwDB WritableDB) error {
+		// Delete range [b, d] inclusive.
+		n, _, err := rwDB.DeleteRange(false, []byte("b"), []byte("d"), true, true)
+		if err != nil {
+			return err
+		}
+		if n != 3 {
+			t.Fatalf("DeleteRange returned n=%d, want 3", n)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mustGet(t, db, "a", "1")
+	mustMiss(t, db, "b")
+	mustMiss(t, db, "c")
+	mustMiss(t, db, "d")
+	mustGet(t, db, "e", "5")
+}
+
+func TestTx_ErrorPropagation(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+
+	sentinel := errors.New("test sentinel error")
+
+	// Update should propagate callback error.
+	err := db.Update(func(rwDB WritableDB) error {
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Update error = %v, want %v", err, sentinel)
+	}
+
+	// View should propagate callback error.
+	err = db.View(func(roDB ReadOnlyDB) error {
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("View error = %v, want %v", err, sentinel)
 	}
 }

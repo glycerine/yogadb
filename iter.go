@@ -59,39 +59,29 @@ type prefetchSpan struct {
 	end int  // forward: pos < end; reverse: pos >= end (end is lower bound)
 }
 
-// ====================== Lock-Free Re-Seeking Iterator ======================
+// ====================== Iterator ======================
 //
 // Iter is a stateful, prefetching iterator over the merged view of:
 //   - Active memtable (highest priority)
 //   - Inactive memtable
 //   - FlexSpace via sparse index (lowest priority)
 //
-// The iterator holds NO locks between calls. It maintains a stateful
-// flexCursor into FlexSpace's sparse index tree, an HLC snapshot for
-// version detection, and a span-based prefetch buffer. On the fast path
-// (both memtables empty, no concurrent mutations), Next() serves from
-// prefetched spans with only an atomic HLC check — no lock, no seek.
-// When the HLC has changed (mutation occurred) or memtables are non-empty,
-// the iterator falls back to a merged re-seek under topMutRW.RLock().
+// Iterators are created within a transaction via rwDB.NewIter() or
+// roDB.NewIter(). The transaction holds the lock; the iterator does
+// not manage locks itself. Multiple iterators can coexist within
+// one transaction. All iterators are auto-closed when the transaction
+// callback returns, but may be closed earlier via it.Close().
 //
-// Mutations (Put/Delete) are safe during iteration — the HLC check
-// detects them and triggers a re-seek. No snapshot consistency guarantee;
-// this is a design tradeoff we made for this embedded single-user store
-// because we want deletion and udpate _during_ iteration.
+// Zero-copy access to cache memory is safe because the transaction
+// holds a lock (write lock for Update, read lock for View).
 //
-// Large values (stored in VLOG) are not fetched by default. The Value()
-// method returns the inline value or nil if the value is large. Use
-// Large() to check, and FetchV() to fetch on demand.
-//
-// In short:
-//
-// Iter is a lock-free re-seeking merge iterator over memtables and FlexSpace.
+// Large values (stored in VLOG) are not fetched by default. Use
+// Large() to check and FetchV() to fetch on demand.
 type Iter struct {
 	db *FlexDB
 
-	// pKV points to the current key-value pair. On the prefetch fast path
-	// it points directly into the cache (zero-copy). On the slow path it
-	// points to slowKV which holds an owned copy.
+	// pKV points to the current key-value pair. Points directly into
+	// cache memory (zero-copy), safe because the write lock is held.
 	pKV *KV
 
 	valid  bool
@@ -115,7 +105,7 @@ type Iter struct {
 	// only copied into valBuf when Vin() is actually called by the user.
 	valueResolved bool
 
-	// Prefetch spans: recorded during fill (under lock), served lazily (no lock).
+	// Prefetch spans: recorded during fill (under lock), served lazily.
 	// Each span references a contiguous range within a cache interval's kvs[].
 	// Fill is O(intervals), not O(keys) — just records slice boundaries.
 	// Per-KV access (tombstone check, pointer deref) deferred to servePrefetch.
@@ -124,11 +114,6 @@ type Iter struct {
 	pfSpanIdx   int // current span being served
 }
 
-// NewIter creates an iterator. Call Seek, SeekToFirst, or SeekToLast to position it.
-// The iterator holds no locks; it is safe to call db.Put/db.Delete between iterator calls.
-func (db *FlexDB) NewIter() *Iter {
-	return &Iter{db: db}
-}
 
 // releaseIterState releases all stateful cursor resources.
 func (it *Iter) releaseIterState() {
@@ -1184,13 +1169,11 @@ func (it *Iter) Seek(target []byte) {
 	}
 	it.releaseIterState()
 	db := it.db
-	db.topMutRW.RLock()
 	it.initFlexCursorSeekGE(target)
 
 	// Prefetch fast path: both memtables empty → fill buffer from FlexSpace.
 	if db.memtables[0].empty && db.memtables[1].empty {
 		it.prefetchFillFlexSpaceOnly()
-		db.topMutRW.RUnlock()
 		if it.pfSpanCount == 0 || !it.servePrefetch() {
 			it.valid = false
 		}
@@ -1198,7 +1181,6 @@ func (it *Iter) Seek(target []byte) {
 	}
 
 	it.pKV, it.valid = it.mergedSeekGEFastFlexSpace(target, false)
-	db.topMutRW.RUnlock()
 	it.dir = 1
 }
 
@@ -1209,7 +1191,6 @@ func (it *Iter) seekLE(target []byte, strict bool) {
 	}
 	it.releaseIterState()
 	db := it.db
-	db.topMutRW.RLock()
 	it.initFlexCursorSeekLE(target)
 
 	// Prefetch fast path: both memtables empty → fill buffer backward from FlexSpace.
@@ -1218,7 +1199,6 @@ func (it *Iter) seekLE(target []byte, strict bool) {
 			it.retreatFlexCursorBefore(target, true)
 		}
 		it.prefetchFillFlexSpaceReverse()
-		db.topMutRW.RUnlock()
 		if it.pfSpanCount == 0 || !it.servePrefetchReverse() {
 			it.valid = false
 		}
@@ -1226,7 +1206,6 @@ func (it *Iter) seekLE(target []byte, strict bool) {
 	}
 
 	it.pKV, it.valid = db.mergedSeekLE(target, strict)
-	db.topMutRW.RUnlock()
 	it.dir = -1
 	it.valueResolved = true
 }
@@ -1243,13 +1222,11 @@ func (it *Iter) SeekToLast() {
 	}
 	it.releaseIterState()
 	db := it.db
-	db.topMutRW.RLock()
 	it.initFlexCursorSeekLE(nil)
 
 	// Prefetch fast path: both memtables empty → fill buffer backward from FlexSpace.
 	if db.memtables[0].empty && db.memtables[1].empty {
 		it.prefetchFillFlexSpaceReverse()
-		db.topMutRW.RUnlock()
 		if it.pfSpanCount == 0 || !it.servePrefetchReverse() {
 			it.valid = false
 		}
@@ -1257,7 +1234,6 @@ func (it *Iter) SeekToLast() {
 	}
 
 	it.pKV, it.valid = db.mergedSeekLE(nil, false)
-	db.topMutRW.RUnlock()
 	it.dir = -1
 	it.valueResolved = true
 }
@@ -1268,8 +1244,8 @@ func (it *Iter) Next() {
 		return
 	}
 
-	// Ultra-fast path: serve from prefetch spans (NO lock acquisition).
-	// Only an atomic HLC check to verify no mutations invalidated the batch.
+	// Fast path: serve from prefetch spans.
+	// HLC check detects mutations made via it.Put/it.Delete since last fill.
 	if it.pfSpanIdx < it.pfSpanCount {
 		if it.snapshotHLC == it.db.hlc.Aload() {
 			if it.servePrefetch() {
@@ -1284,7 +1260,6 @@ func (it *Iter) Next() {
 	}
 
 	db := it.db
-	db.topMutRW.RLock()
 
 	curKey := it.pKV.Key // save before any re-seek overwrites pKV
 
@@ -1293,8 +1268,7 @@ func (it *Iter) Next() {
 		// Cursor still valid. Try prefetch refill on the FlexSpace-only fast path.
 		if db.memtables[0].empty && db.memtables[1].empty {
 			it.prefetchFillFlexSpaceOnly()
-			it.snapshotHLC = currentHLC // no atomic needed, we hold the lock
-			db.topMutRW.RUnlock()
+			it.snapshotHLC = currentHLC
 			if it.pfSpanCount == 0 || !it.servePrefetch() {
 				it.valid = false
 			}
@@ -1303,7 +1277,6 @@ func (it *Iter) Next() {
 
 		// Non-empty memtables: single merged seek with cursor reuse.
 		it.pKV, it.valid = it.mergedSeekGEFastFlexSpace(curKey, true)
-		db.topMutRW.RUnlock()
 		return
 	}
 
@@ -1317,7 +1290,6 @@ func (it *Iter) Next() {
 		// Position cursor past curKey (strict > curKey).
 		it.positionFlexCursorForSeek(curKey, true)
 		it.prefetchFillFlexSpaceOnly()
-		db.topMutRW.RUnlock()
 		if it.pfSpanCount == 0 || !it.servePrefetch() {
 			it.valid = false
 		}
@@ -1326,7 +1298,6 @@ func (it *Iter) Next() {
 	}
 
 	it.pKV, it.valid = it.mergedSeekGEFastFlexSpace(curKey, true)
-	db.topMutRW.RUnlock()
 	it.dir = 1
 }
 
@@ -1336,7 +1307,8 @@ func (it *Iter) Prev() {
 		return
 	}
 
-	// Ultra-fast path: serve from reverse prefetch spans (NO lock acquisition).
+	// Fast path: serve from reverse prefetch spans.
+	// HLC check detects mutations made via it.Put/it.Delete since last fill.
 	if it.pfSpanIdx < it.pfSpanCount && it.dir == -1 {
 		if it.snapshotHLC == it.db.hlc.Aload() {
 			if it.servePrefetchReverse() {
@@ -1353,15 +1325,12 @@ func (it *Iter) Prev() {
 	db := it.db
 	curKey := it.pKV.Key // save before any re-seek overwrites pKV
 
-	db.topMutRW.RLock()
-
 	currentHLC := db.hlc.Aload()
 	if it.dir == -1 && it.snapshotHLC == currentHLC && it.snapshotHLC != 0 {
 		// Cursor still valid. Try prefetch refill on the FlexSpace-only fast path.
 		if db.memtables[0].empty && db.memtables[1].empty {
 			it.prefetchFillFlexSpaceReverse()
-			it.snapshotHLC = currentHLC // no atomic needed, we hold the lock
-			db.topMutRW.RUnlock()
+			it.snapshotHLC = currentHLC
 			if it.pfSpanCount == 0 || !it.servePrefetchReverse() {
 				it.valid = false
 			}
@@ -1370,7 +1339,6 @@ func (it *Iter) Prev() {
 
 		// Non-empty memtables: single merged seek.
 		it.pKV, it.valid = db.mergedSeekLE(curKey, true)
-		db.topMutRW.RUnlock()
 		it.valueResolved = true
 		return
 	}
@@ -1392,7 +1360,6 @@ func (it *Iter) Prev() {
 	// Try prefetch on fresh cursor if memtables are empty.
 	if db.memtables[0].empty && db.memtables[1].empty {
 		it.prefetchFillFlexSpaceReverse()
-		db.topMutRW.RUnlock()
 		if it.pfSpanCount == 0 || !it.servePrefetchReverse() {
 			it.valid = false
 		}
@@ -1401,17 +1368,21 @@ func (it *Iter) Prev() {
 	}
 
 	it.pKV, it.valid = db.mergedSeekLE(curKey, true)
-	db.topMutRW.RUnlock()
 	it.dir = -1
 	it.valueResolved = true
 }
 
 // Close marks the iterator as closed and releases cursor state.
+// The transaction manages lock lifetime, not the iterator.
 func (it *Iter) Close() {
+	if it.closed {
+		return
+	}
 	it.releaseIterState()
 	it.valid = false
 	it.closed = true
 }
+
 
 // Valid returns true if the iterator is positioned at a valid key.
 func (it *Iter) Valid() bool { return it.valid }
@@ -1532,76 +1503,6 @@ func (it *Iter) iterResolvedValue() []byte {
 	return val
 }
 
-// Ascend iterates key-value pairs in ascending order from the first key >= pivot.
-// If pivot is nil, starts from the beginning. Stops when iter returns false.
-// The callback may safely call db.Put/db.Delete.
-func (db *FlexDB) Ascend(pivot []byte, iter func(key, value []byte) bool) {
-	it := db.NewIter()
-	defer it.Close()
-	it.Seek(pivot)
-	for it.Valid() {
-		if !iter(it.Key(), it.iterResolvedValue()) {
-			return
-		}
-		it.Next()
-	}
-}
-
-// Descend iterates key-value pairs in descending order from the last key <= pivot.
-// If pivot is nil, starts from the end. Stops when iter returns false.
-// The callback may safely call db.Put/db.Delete.
-func (db *FlexDB) Descend(pivot []byte, iter func(key, value []byte) bool) {
-	it := db.NewIter()
-	defer it.Close()
-	if pivot == nil {
-		it.SeekToLast()
-	} else {
-		it.seekLE(pivot, false)
-	}
-	for it.Valid() {
-		if !iter(it.Key(), it.iterResolvedValue()) {
-			return
-		}
-		it.Prev()
-	}
-}
-
-// AscendRange iterates key-value pairs where key is in [greaterOrEqual, lessThan)
-// ascending. Either bound may be nil. Stops when iter returns false.
-// The callback may safely call db.Put/db.Delete.
-func (db *FlexDB) AscendRange(greaterOrEqual, lessThan []byte, iter func(key, value []byte) bool) {
-	it := db.NewIter()
-	defer it.Close()
-	it.Seek(greaterOrEqual)
-	for it.Valid() {
-		if lessThan != nil && bytes.Compare(it.Key(), lessThan) >= 0 {
-			return
-		}
-		if !iter(it.Key(), it.iterResolvedValue()) {
-			return
-		}
-		it.Next()
-	}
-}
-
-// DescendRange iterates key-value pairs where key is in (greaterThan, lessOrEqual]
-// descending. Either bound may be nil. Stops when iter returns false.
-// The callback may safely call db.Put/db.Delete.
-func (db *FlexDB) DescendRange(lessOrEqual, greaterThan []byte, iter func(key, value []byte) bool) {
-	it := db.NewIter()
-	defer it.Close()
-	if lessOrEqual == nil {
-		it.SeekToLast()
-	} else {
-		it.seekLE(lessOrEqual, false)
-	}
-	for it.Valid() {
-		if greaterThan != nil && bytes.Compare(it.Key(), greaterThan) <= 0 {
-			return
-		}
-		if !iter(it.Key(), it.iterResolvedValue()) {
-			return
-		}
-		it.Prev()
-	}
-}
+// Ascend/Descend/AscendRange/DescendRange are available as methods
+// on ReadOnlyDB and WritableDB inside View/Update transactions.
+// See tx.go for the transaction-based iteration API.

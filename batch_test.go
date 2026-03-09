@@ -272,17 +272,18 @@ func batchLoadAndReadOut(fs vfs.FS, t *testing.T, db *FlexDB, dataPath string) e
 
 	// write back out, to check completeness (no data is lost) and sorted-ness (proper order).
 	saw := 0
-	db.Ascend(nil, func(key, value []byte) bool {
-		//os.Stdout.Write(key)
-		//os.Stdout.Write(newline)
-		saw++
-		skey := string(key)
-		_, ok := verify[skey]
-		if !ok {
-			panicf("extra key seen, was not in original input: '%v'", skey)
-		}
-		delete(verify, skey)
-		return true
+	db.View(func(roDB ReadOnlyDB) error {
+		roDB.Ascend(nil, func(key, value []byte) bool {
+			saw++
+			skey := string(key)
+			_, ok := verify[skey]
+			if !ok {
+				panicf("extra key seen, was not in original input: '%v'", skey)
+			}
+			delete(verify, skey)
+			return true
+		})
+		return nil
 	})
 	os.Stdout.Sync()
 	//fmt.Fprintf(os.Stderr, "YogaDB saw %v, output in sorted order took: %v\n", saw, time.Since(t1))

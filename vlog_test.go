@@ -160,14 +160,17 @@ func TestFlexDB_VLOG_Ascend(t *testing.T) {
 
 	// Ascend and verify values
 	var gotKeys []string
-	db.Ascend(nil, func(key, value []byte) bool {
-		k := string(key)
-		gotKeys = append(gotKeys, k)
-		want := vals[k]
-		if string(value) != want {
-			t.Errorf("Ascend: key=%q got len=%d, want len=%d", k, len(value), len(want))
-		}
-		return true
+	db.View(func(roDB ReadOnlyDB) error {
+		roDB.Ascend(nil, func(key, value []byte) bool {
+			k := string(key)
+			gotKeys = append(gotKeys, k)
+			want := vals[k]
+			if string(value) != want {
+				t.Errorf("Ascend: key=%q got len=%d, want len=%d", k, len(value), len(want))
+			}
+			return true
+		})
+		return nil
 	})
 	if len(gotKeys) != 3 {
 		t.Fatalf("Ascend got %d keys, want 3", len(gotKeys))
@@ -175,14 +178,17 @@ func TestFlexDB_VLOG_Ascend(t *testing.T) {
 
 	// Descend
 	var descKeys []string
-	db.Descend(nil, func(key, value []byte) bool {
-		k := string(key)
-		descKeys = append(descKeys, k)
-		want := vals[k]
-		if string(value) != want {
-			t.Errorf("Descend: key=%q got len=%d, want len=%d", k, len(value), len(want))
-		}
-		return true
+	db.View(func(roDB ReadOnlyDB) error {
+		roDB.Descend(nil, func(key, value []byte) bool {
+			k := string(key)
+			descKeys = append(descKeys, k)
+			want := vals[k]
+			if string(value) != want {
+				t.Errorf("Descend: key=%q got len=%d, want len=%d", k, len(value), len(want))
+			}
+			return true
+		})
+		return nil
 	})
 	if len(descKeys) != 3 {
 		t.Fatalf("Descend got %d keys, want 3", len(descKeys))
