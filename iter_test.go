@@ -1,7 +1,6 @@
 package yogadb
 
 import (
-	"bytes"
 	"fmt"
 	//"os"
 	"path/filepath"
@@ -740,7 +739,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i := 0; i < nKeys; i++ {
-			key := []byte(fmt.Sprintf("k%06d", i))
+			key := fmt.Sprintf("k%06d", i)
 			val := []byte(fmt.Sprintf("v%06d", i))
 			if err := db.Put(key, val); err != nil {
 				t.Fatal(err)
@@ -765,7 +764,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 
 		// Verify data after vacuum.
 		for i := 0; i < nKeys; i++ {
-			key := []byte(fmt.Sprintf("k%06d", i))
+			key := fmt.Sprintf("k%06d", i)
 			expected := fmt.Sprintf("v%06d", i)
 			got, ok := db.Get(key)
 			if !ok {
@@ -795,7 +794,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 
 		// Verify data after second vacuum.
 		for i := 0; i < nKeys; i++ {
-			key := []byte(fmt.Sprintf("k%06d", i))
+			key := fmt.Sprintf("k%06d", i)
 			expected := fmt.Sprintf("v%06d", i)
 			got, ok := db.Get(key)
 			if !ok {
@@ -1135,12 +1134,12 @@ func TestFlexDB_IteratorDeleteOldTimestamps(t *testing.T) {
 	mustPut(t, db, "2025-01-01:k3", "new1")
 	mustPut(t, db, "2025-06-01:k4", "new2")
 
-	cutoff := []byte("2025-")
+	cutoff := "2025-"
 	db.Update(func(rwDB WritableDB) error {
 		it := rwDB.NewIter()
 		it.SeekToFirst()
 		for it.Valid() {
-			if bytes.Compare(it.Key(), cutoff) < 0 {
+			if it.Key() < cutoff {
 				if err := rwDB.Delete(it.Key()); err != nil {
 					it.Close()
 					return err
@@ -1156,7 +1155,7 @@ func TestFlexDB_IteratorDeleteOldTimestamps(t *testing.T) {
 	db.View(func(roDB ReadOnlyDB) error {
 		var remaining []string
 		roDB.Ascend("", func(key string, value []byte) bool {
-			remaining = append(remaining, string(key))
+			remaining = append(remaining, key)
 			return true
 		})
 		expectKeys(t, "after timestamp delete", remaining, []string{"2025-01-01:k3", "2025-06-01:k4"})

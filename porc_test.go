@@ -68,11 +68,10 @@ func Test016_linz(t *testing.T) {
 		//skey := fmt.Sprintf("%v", ikey)
 
 		skey := "a" // start simple
-		key := []byte(skey)
 		//vv("i=%v, jnode=%v, about to Read", i, jnode)
 
 		begtmRead := time.Now()
-		val, found := readers[jnode].db.Get(key)
+		val, found := readers[jnode].db.Get(skey)
 		endtmRead := time.Now()
 
 		finmut.Lock()
@@ -145,12 +144,12 @@ func Test016_linz(t *testing.T) {
 
 		// pick a writer, key, and value.
 		w := 0
-		key := []byte("a")
+		key := "a"
 		err := readers[w].db.Put(key, v)
 		panicOn(err)
 		err = readers[w].db.Sync()
 		panicOn(err)
-		vv("back from db.Sync after Put of key '%v' -> '%v' value", string(key), string(v))
+		vv("back from db.Sync after Put of key '%v' -> '%v' value", key, string(v))
 
 		endtmWrite := time.Now()
 

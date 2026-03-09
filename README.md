@@ -230,17 +230,8 @@ The Extent Map (FlexSpace/FlexTree): The FlexTree maps those logical blocks to p
 
 # comment on the API / goroutine safety
 
-* API notes: all Go API calls are goroutine safe. Iterators hold
-the global write lock on the database. This means only one iteration
-at a time will happen. The upside is that during iteration you
-can Get/Put/Set/Delete on the iterator with freedom. This is a 
-requirement for me-- I want to delete keys on the fly as I scan.
-Other designs that force one to collect a separate long list 
-of things to delete later are hazardous. That list could 
-overflow grow so long to overflow available memory, plus the
-list could change after the current transaction. Iterators thus
-start an implicit transaction. Iter.Close() must be called
-to finish the transaction; typically with `defer it.Close()`.
+* API notes: all Go API calls are goroutine safe. At most one writer at
+a time is enforced with a top-level sync.RWMutex.
 
 # getting started
 
@@ -258,7 +249,6 @@ some benchmarks; it is another example.
 
 https://pkg.go.dev/github.com/glycerine/yogadb
 
-~~~
 
 # grab bag of implementation notes 
 

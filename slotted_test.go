@@ -213,7 +213,7 @@ func TestSlottedPage_IsSlotted(t *testing.T) {
 	// Verify the invariant: any kv128-encoded entry with keyLen >= 1
 	// has first byte >= 0x01.
 	for keyLen := 1; keyLen <= 300; keyLen++ {
-		kv := KV{Key: make([]byte, keyLen), Value: []byte("v"), Hlc: 1}
+		kv := KV{Key: string(make([]byte, keyLen)), Value: []byte("v"), Hlc: 1}
 		enc := kv128Encode(nil, kv)
 		if enc[0] == 0x00 {
 			t.Fatalf("kv128 with keyLen=%d starts with 0x00 — ambiguous!", keyLen)
@@ -248,7 +248,7 @@ func TestSlottedPage_OverheadComparison(t *testing.T) {
 		kvs := make([]KV, s.count)
 		for i := range kvs {
 			kvs[i] = KV{
-				Key:   bytes.Repeat([]byte("k"), s.keySize),
+				Key:   string(bytes.Repeat([]byte("k"), s.keySize)),
 				Value: bytes.Repeat([]byte("v"), s.valSize),
 				Hlc:   HLC(1000 + i),
 			}

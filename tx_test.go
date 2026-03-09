@@ -165,7 +165,7 @@ func TestTx_SerializedUpdates(t *testing.T) {
 	}
 
 	// Because updates are serialized, counter should be exactly n.
-	val, ok := db.Get([]byte("counter"))
+	val, ok := db.Get("counter")
 	if !ok {
 		t.Fatal("counter not found after all updates")
 	}
