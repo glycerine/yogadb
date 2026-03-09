@@ -157,7 +157,7 @@ go test -count=1 ./...
 // ====================== Test Helpers ======================
 
 func makeKV(key, value string, hlc int64) KV {
-	return KV{Key: []byte(key), Value: []byte(value), Hlc: HLC(hlc)}
+	return KV{Key: key, Value: []byte(value), Hlc: HLC(hlc)}
 }
 
 func makeSortedKVs(keys []string) []KV {
