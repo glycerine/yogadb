@@ -78,7 +78,7 @@ const (
 	// SLOTTED_PAGE_KB is the target page size for slotted page intervals.
 	// Tune this for different workloads. Larger pages amortize overhead
 	// better but increase rewrite cost.
-	SLOTTED_PAGE_KB = 2
+	SLOTTED_PAGE_KB = 10 // up from 2 to 10 seems to help. 10: (9.984, 10.01, 9.817 ns/key); 2: (23.72 ns/key); 20:14.84
 
 	slottedPageMaxSize = SLOTTED_PAGE_KB * 1024 // 65536 bytes
 

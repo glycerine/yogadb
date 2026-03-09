@@ -29,14 +29,14 @@ import (
 
 const (
 	MaxKeySize                        = 4096
-	flexMemSparseIndexTreeLeafCap     = 122
-	flexMemSparseIndexTreeInternalCap = 40
-	flexdbSparseIntervalCount         = 2000
+	flexMemSparseIndexTreeLeafCap     = 122                   // 122 ; 64=19.92; 122=>14.73
+	flexMemSparseIndexTreeInternalCap = 40                    // was 40;
+	flexdbSparseIntervalCount         = 2000                  // 500=>15.77 ; 2000=>14.64 ; 1000=>16.4; 3000=>14.53; 2000=>14.24; 200=>16.68; 4000(2000 flexdbUnsortedWriteQuota)=>
 	flexdbSparseIntervalSize          = SLOTTED_PAGE_KB << 10 // 64 KB
 	memtableCap                       = 1 << 30               // 1 GB
 	memtableWalBufCap                 = 4 << 20               // 4 MB log buffer (must be at least 2x than MaxKeySize + space for a KV struct) so we don't deadlock trying to flush the memtable and write a new large key.
 	memtableFlushBatch                = 1024
-	flexdbUnsortedWriteQuota          = 200
+	flexdbUnsortedWriteQuota          = 200 // was 200 ; limited to 127 anyway in flexdbTagUnsorted(tag uint16) uint8 { return uint8((tag >> 1) & 0x7f) }
 	// sparseInterval = sortedCount + unsortedQuota + 1 = 32
 	flexdbSparseInterval        = flexdbSparseIntervalCount + flexdbUnsortedWriteQuota + 1
 	intervalCachePartitionCount = 1024

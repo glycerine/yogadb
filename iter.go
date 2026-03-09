@@ -13,7 +13,7 @@ import (
 // serve from spans with only an atomic HLC check (no lock).
 // With spans, larger values reduce refill frequency with minimal overhead
 // since fill is O(intervals) not O(keys).
-const iterPreFetchKeyCount = 2 // 512 // ; 2048=>11.25; 1024=>10.24; 512=>9.961 nsec; 400=>9.742 nsec; 350=>11.90; 450=>12.69; 600=>10.58; 550=>10.38; 500=>10.08; 400=>12.82; 512=>9.816; 1=>17.5;
+const iterPreFetchKeyCount = 512 // 512 // ; 2048=>11.25; 1024=>10.24; 512=>9.961 nsec; 400=>9.742 nsec; 350=>11.90; 450=>12.69; 600=>10.58; 550=>10.38; 500=>10.08; 400=>12.82; 512=>9.816; 1=>17.5;
 // 1=>21.49 'InlineFast=0 ServePrefetch=0 InlineRefill1=93789 InlineRefill2=0 FullRefill=6211 SlowPath=0 HLCStale=0 SnapshotZero=0'
 // 2=>13.89, 21.24 'InlineFast=49693 ServePrefetch=0 InlineRefill1=44096 InlineRefill2=0 FullRefill=6211 SlowPath=0 HLCStale=0 SnapshotZero=0'
 // 4=>13.28 'InlineFast=74540 ServePrefetch=0 InlineRefill1=19249 InlineRefill2=0 FullRefill=6211 SlowPath=0 HLCStale=0 SnapshotZero=0'
