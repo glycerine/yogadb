@@ -114,7 +114,6 @@ type Iter struct {
 	pfSpanIdx   int // current span being served
 }
 
-
 // releaseIterState releases all stateful cursor resources.
 func (it *Iter) releaseIterState() {
 	it.fc.reset()
@@ -1383,9 +1382,27 @@ func (it *Iter) Close() {
 	it.closed = true
 }
 
-
 // Valid returns true if the iterator is positioned at a valid key.
 func (it *Iter) Valid() bool { return it.valid }
+
+// KV returns the current *KV
+func (it *Iter) KV() *KV {
+	if it.pKV == nil {
+		return nil
+	}
+
+	// valueResolved does lazy value copying. We don't want
+	// to return cache memory to the user, but if they
+	// don't need a copy (just iterating keys), we avoid
+	// the expense of copying until Vin (or Vel) is called.
+	if !it.valueResolved && it.pKV.Value != nil {
+		it.valBuf = reuseAppend(it.valBuf, it.pKV.Value)
+		it.pKV.Value = it.valBuf
+		it.valueResolved = true
+	}
+
+	return it.pKV
+}
 
 // Key returns the current key. On the fast path this is a direct pointer
 // into cache memory (zero-copy). Call dupBytes(it.Key) if you need to
