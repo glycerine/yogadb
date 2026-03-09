@@ -11,7 +11,7 @@ import (
 // ========================================================================
 // FlexTree Fuzz Test
 //
-// Uses BruteForce as the ground-truth oracle and verifies both shared
+// Uses bruteForce as the ground-truth oracle and verifies both shared
 // invariants (INV-1 through INV-14) and FlexTree-specific invariants
 // (INV-FT-1 through INV-FT-6) covering: leaf linked list integrity,
 // shift consistency, tree height bounds, node count consistency,
@@ -23,7 +23,7 @@ import (
 
 ## Context
 
-BruteForce has been fuzz-tested with 14 structural invariants (brute_test.go). Now we apply
+bruteForce has been fuzz-tested with 14 structural invariants (brute_test.go). Now we apply
 the same invariants to the real FlexTree implementation as a "belt and suspenders" check.
 Additionally, we add FlexTree-specific invariants that test the B+-tree structure, the shift
 propagation mechanism, the leaf linked list, and the O(log N) operation cost guarantee.
@@ -56,14 +56,14 @@ func (tree *FlexTree) opCounters() (visited, splits, shiftNodes int64)
 ### Part 2: Extract effective extents from FlexTree for invariant checking
 
 We need a function that walks the FlexTree and reconstructs the same flat extent array
-that BruteForce maintains, with effective (global) Loff values. This uses the Pos cursor:
+that bruteForce maintains, with effective (global) Loff values. This uses the Pos cursor:
 
 ```go
-func (tree *FlexTree) allExtents() []BruteForceExtent
+func (tree *FlexTree) allExtents() []bruteForceExtent
 ```
 
-Walk via `PosGet(0)` + `Forward()`, collecting extents as `BruteForceExtent` structs.
-This allows direct comparison with BruteForce and reuse of `checkInvariants()`.
+Walk via `PosGet(0)` + `Forward()`, collecting extents as `bruteForceExtent` structs.
+This allows direct comparison with bruteForce and reuse of `checkInvariants()`.
 
 ### Part 3: FlexTree-specific invariants
 
@@ -109,10 +109,10 @@ The key assertion: `nodesVisited` is bounded by a constant independent of N.
 
 **INV-FT-6: Oracle agreement**
 ```
-After each operation performed on BOTH FlexTree and BruteForce:
-  FlexTree.PQuery(loff) == BruteForce.PQuery(loff)  for all sampled loff
-  FlexTree.GetMaxLoff() == BruteForce.GetMaxLoff()
-  FlexTree.Query(loff, len) == BruteForce.Query(loff, len)  for sampled ranges
+After each operation performed on BOTH FlexTree and bruteForce:
+  FlexTree.PQuery(loff) == bruteForce.PQuery(loff)  for all sampled loff
+  FlexTree.GetMaxLoff() == bruteForce.GetMaxLoff()
+  FlexTree.Query(loff, len) == bruteForce.Query(loff, len)  for sampled ranges
 ```
 This is the ultimate correctness check — the FlexTree matches its oracle.
 
@@ -122,8 +122,8 @@ This is the ultimate correctness check — the FlexTree matches its oracle.
 func FuzzFlexTree(f *testing.F) {
     f.Fuzz(func(t *testing.T, data []byte) {
         ft := OpenFlexTree("")
-        bf := OpenBruteForce(256)
-        // decode operations from data (same opcodes as FuzzBruteForce)
+        bf := OpenbruteForce(256)
+        // decode operations from data (same opcodes as FuzzbruteForce)
         // apply each op to BOTH ft and bf
         // after each op:
         //   - check INV-FT-5 (O(log N) cost)
@@ -140,7 +140,7 @@ func FuzzFlexTree(f *testing.F) {
 
 ```go
 func TestFlexTree_RandomizedInvariants(t *testing.T) {
-    // Fixed seed, 10,000 ops on both FlexTree and BruteForce
+    // Fixed seed, 10,000 ops on both FlexTree and bruteForce
     // Full invariant suite after every op
     // Log final stats: tree height, node count, max nodesVisited
 }
@@ -181,8 +181,8 @@ go test -count=1 ./...
   2. Added methods: resetOpCounters() and opCounters() to reset/read counters
 
   3. Added allExtents() — walks the leaf linked list via PosGet(0) +
-     ForwardExtent(), returning []BruteForceExtent with effective (global) Loff
-     values for comparison with BruteForce
+     ForwardExtent(), returning []bruteForceExtent with effective (global) Loff
+     values for comparison with bruteForce
 
   4. Instrumented public methods (Insert, InsertWTag, Delete, PDelete, SetTag)
      to call resetOpCounters() before operation
@@ -193,7 +193,7 @@ go test -count=1 ./...
   │                Test                 │                What It Checks                 │
   ├─────────────────────────────────────┼───────────────────────────────────────────────┤
   │                                     │ Fuzz: applies random ops to both FlexTree and │
-  │ FuzzFlexTree                        │  BruteForce, checks INV-FT-1 through INV-FT-6 │
+  │ FuzzFlexTree                        │  bruteForce, checks INV-FT-1 through INV-FT-6 │
   │                                     │  + shared INV-1 through INV-14                │
   ├─────────────────────────────────────┼───────────────────────────────────────────────┤
   │ TestFlexTree_RandomizedInvariants   │ 10,000 deterministic random ops, full         │
@@ -218,7 +218,7 @@ go test -count=1 ./...
   │ INV-FT-1  │ Leaf linked list: Prev/Next consistency, all leaves reachable, extent   │
   │           │ count matches                                                           │
   ├───────────┼─────────────────────────────────────────────────────────────────────────┤
-  │ INV-FT-2  │ Shift consistency: extracted extents match BruteForce extent-by-extent  │
+  │ INV-FT-2  │ Shift consistency: extracted extents match bruteForce extent-by-extent  │
   ├───────────┼─────────────────────────────────────────────────────────────────────────┤
   │ INV-FT-3  │ Tree height ≤ FLEXTREE_PATH_DEPTH (7)                                   │
   ├───────────┼─────────────────────────────────────────────────────────────────────────┤
@@ -226,7 +226,7 @@ go test -count=1 ./...
   ├───────────┼─────────────────────────────────────────────────────────────────────────┤
   │ INV-FT-5  │ O(log N) cost: nodesVisited bounded for single Insert operations        │
   ├───────────┼─────────────────────────────────────────────────────────────────────────┤
-  │ INV-FT-6  │ Oracle agreement: PQuery, Query, MaxLoff all match BruteForce           │
+  │ INV-FT-6  │ Oracle agreement: PQuery, Query, MaxLoff all match bruteForce           │
   └───────────┴─────────────────────────────────────────────────────────────────────────┘
 
 */
@@ -426,13 +426,13 @@ func checkInsertOpCost(t testing.TB, ft *FlexTree, opDesc string) {
 	}
 }
 
-// checkOracleAgreement verifies INV-FT-6: FlexTree matches BruteForce.
-func checkOracleAgreement(t testing.TB, ft *FlexTree, bf *BruteForce, rng *rand.Rand, opDesc string) {
+// checkOracleAgreement verifies INV-FT-6: FlexTree matches bruteForce.
+func checkOracleAgreement(t testing.TB, ft *FlexTree, bf *bruteForce, rng *rand.Rand, opDesc string) {
 	t.Helper()
 
 	// MaxLoff must match
 	if ft.GetMaxLoff() != bf.MaxLoff {
-		t.Fatalf("[INV-FT-6] after %s: FlexTree.MaxLoff=%d != BruteForce.MaxLoff=%d",
+		t.Fatalf("[INV-FT-6] after %s: FlexTree.MaxLoff=%d != bruteForce.MaxLoff=%d",
 			opDesc, ft.GetMaxLoff(), bf.MaxLoff)
 	}
 
@@ -450,7 +450,7 @@ func checkOracleAgreement(t testing.TB, ft *FlexTree, bf *BruteForce, rng *rand.
 		ftResult := ft.PQuery(loff)
 		bfResult := bf.PQuery(loff)
 		if ftResult != bfResult {
-			t.Fatalf("[INV-FT-6] after %s: PQuery(%d): FlexTree=%d, BruteForce=%d",
+			t.Fatalf("[INV-FT-6] after %s: PQuery(%d): FlexTree=%d, bruteForce=%d",
 				opDesc, loff, ftResult, bfResult)
 		}
 	}
@@ -459,7 +459,7 @@ func checkOracleAgreement(t testing.TB, ft *FlexTree, bf *BruteForce, rng *rand.
 	ftOOB := ft.PQuery(bf.MaxLoff)
 	bfOOB := bf.PQuery(bf.MaxLoff)
 	if ftOOB != bfOOB {
-		t.Fatalf("[INV-FT-6] after %s: PQuery(MaxLoff=%d): FlexTree=%d, BruteForce=%d",
+		t.Fatalf("[INV-FT-6] after %s: PQuery(MaxLoff=%d): FlexTree=%d, bruteForce=%d",
 			opDesc, bf.MaxLoff, ftOOB, bfOOB)
 	}
 
@@ -474,7 +474,7 @@ func checkOracleAgreement(t testing.TB, ft *FlexTree, bf *BruteForce, rng *rand.
 		ftQ := ft.Query(start, length)
 		bfQ := bf.Query(start, length)
 		if (ftQ == nil) != (bfQ == nil) {
-			t.Fatalf("[INV-FT-6] after %s: Query(%d, %d): FlexTree nil=%v, BruteForce nil=%v",
+			t.Fatalf("[INV-FT-6] after %s: Query(%d, %d): FlexTree nil=%v, bruteForce nil=%v",
 				opDesc, start, length, ftQ == nil, bfQ == nil)
 		}
 		if ftQ != nil && bfQ != nil {
@@ -486,7 +486,7 @@ func checkOracleAgreement(t testing.TB, ft *FlexTree, bf *BruteForce, rng *rand.
 				bfTotal += bfQ.V[j].Len
 			}
 			if ftTotal != bfTotal {
-				t.Fatalf("[INV-FT-6] after %s: Query(%d, %d) total len: FlexTree=%d, BruteForce=%d",
+				t.Fatalf("[INV-FT-6] after %s: Query(%d, %d) total len: FlexTree=%d, bruteForce=%d",
 					opDesc, start, length, ftTotal, bfTotal)
 			}
 		}
@@ -494,45 +494,45 @@ func checkOracleAgreement(t testing.TB, ft *FlexTree, bf *BruteForce, rng *rand.
 }
 
 // checkExtentsMatchOracle verifies INV-FT-2 and INV-FT-6 together:
-// the flat extent array extracted from FlexTree matches BruteForce
+// the flat extent array extracted from FlexTree matches bruteForce
 // when checked via checkInvariants.
-func checkExtentsMatchOracle(t testing.TB, ft *FlexTree, bf *BruteForce, opDesc string) {
+func checkExtentsMatchOracle(t testing.TB, ft *FlexTree, bf *bruteForce, opDesc string) {
 	t.Helper()
 
 	ftExts := ft.allExtents()
 	bfExts := bf.Extents
 
 	if len(ftExts) != len(bfExts) {
-		t.Fatalf("[INV-FT-2] after %s: FlexTree has %d extents, BruteForce has %d",
+		t.Fatalf("[INV-FT-2] after %s: FlexTree has %d extents, bruteForce has %d",
 			opDesc, len(ftExts), len(bfExts))
 	}
 
 	for i := range ftExts {
 		if ftExts[i].Loff != bfExts[i].Loff {
-			t.Fatalf("[INV-FT-2] after %s: extent[%d] Loff: FlexTree=%d, BruteForce=%d",
+			t.Fatalf("[INV-FT-2] after %s: extent[%d] Loff: FlexTree=%d, bruteForce=%d",
 				opDesc, i, ftExts[i].Loff, bfExts[i].Loff)
 		}
 		if ftExts[i].Len != bfExts[i].Len {
-			t.Fatalf("[INV-FT-2] after %s: extent[%d] Len: FlexTree=%d, BruteForce=%d",
+			t.Fatalf("[INV-FT-2] after %s: extent[%d] Len: FlexTree=%d, bruteForce=%d",
 				opDesc, i, ftExts[i].Len, bfExts[i].Len)
 		}
 		if ftExts[i].Poff != bfExts[i].Poff {
-			t.Fatalf("[INV-FT-2] after %s: extent[%d] Poff: FlexTree=0x%x, BruteForce=0x%x",
+			t.Fatalf("[INV-FT-2] after %s: extent[%d] Poff: FlexTree=0x%x, bruteForce=0x%x",
 				opDesc, i, ftExts[i].Poff, bfExts[i].Poff)
 		}
 		if ftExts[i].Tag != bfExts[i].Tag {
-			t.Fatalf("[INV-FT-2] after %s: extent[%d] Tag: FlexTree=%d, BruteForce=%d",
+			t.Fatalf("[INV-FT-2] after %s: extent[%d] Tag: FlexTree=%d, bruteForce=%d",
 				opDesc, i, ftExts[i].Tag, bfExts[i].Tag)
 		}
 	}
 }
 
-// checkFlexTreeInvariants runs the BruteForce structural invariants on the
-// extracted FlexTree extent array by constructing a temporary BruteForce.
+// checkFlexTreeInvariants runs the bruteForce structural invariants on the
+// extracted FlexTree extent array by constructing a temporary bruteForce.
 func checkFlexTreeInvariants(t testing.TB, ft *FlexTree, opDesc string) {
 	t.Helper()
 
-	tmpBF := &BruteForce{
+	tmpBF := &bruteForce{
 		MaxLoff:       ft.GetMaxLoff(),
 		MaxExtentSize: ft.MaxExtentSize,
 		Extents:       ft.allExtents(),
@@ -584,7 +584,7 @@ func FuzzFlexTree(f *testing.F) {
 
 		ft, err := OpenFlexTreeCoW(dir, fs)
 		panicOn(err)
-		bf := OpenBruteForce(fuzzMaxExtentSize)
+		bf := openBruteForce(fuzzMaxExtentSize)
 		ft.MaxExtentSize = fuzzMaxExtentSize
 		rng := rand.New(rand.NewSource(12345))
 
@@ -739,7 +739,7 @@ func TestFlexTree_RandomizedInvariants(t *testing.T) {
 	ft, err := OpenFlexTreeCoW(dir, fs)
 	panicOn(err)
 	ft.MaxExtentSize = maxExtentSize
-	bf := OpenBruteForce(maxExtentSize)
+	bf := openBruteForce(maxExtentSize)
 	rng := rand.New(rand.NewSource(seed))
 
 	// Start with a base extent
@@ -812,7 +812,7 @@ func TestFlexTree_RandomizedInvariants(t *testing.T) {
 				bfTag, bfRc := bf.GetTag(loff)
 				ftTag, ftRc := ft.GetTag(loff)
 				if bfRc != ftRc || bfTag != ftTag {
-					t.Fatalf("[INV-14] after %s: BruteForce=(%d,%d), FlexTree=(%d,%d)",
+					t.Fatalf("[INV-14] after %s: bruteForce=(%d,%d), FlexTree=(%d,%d)",
 						opDesc, bfTag, bfRc, ftTag, ftRc)
 				}
 			}
@@ -936,7 +936,7 @@ func TestFlexTree_OracleAgreementFocused(t *testing.T) {
 	panicOn(err)
 
 	ft.MaxExtentSize = maxExtentSize
-	bf := OpenBruteForce(maxExtentSize)
+	bf := openBruteForce(maxExtentSize)
 	rng := rand.New(rand.NewSource(42))
 
 	// Insert at various positions

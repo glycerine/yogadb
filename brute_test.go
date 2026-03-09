@@ -8,7 +8,7 @@ import (
 )
 
 // ========================================================================
-// Invariant Checkers for BruteForce Extent Oracle
+// Invariant Checkers for bruteForce Extent Oracle
 //
 // These verify the theoretical properties that the extent array must
 // maintain at all times. See the plan file for formal definitions.
@@ -16,17 +16,17 @@ import (
 
 /*
 
-# Plan: Fuzz Test for BruteForce Extent Oracle (`brute_test.go`)
+# Plan: Fuzz Test for bruteForce Extent Oracle (`brute_test.go`)
 
 ## Context
 
-BruteForce is the ground-truth oracle for FlexTree correctness. Everything in the system
-(FlexSpace, FlexDB/YogaDB) builds on FlexTree, and FlexTree is validated against BruteForce.
-If BruteForce itself has a bug, every higher-level test is silently wrong. We need a
-standalone fuzz test that exercises BruteForce operations with randomized inputs and checks
+bruteForce is the ground-truth oracle for FlexTree correctness. Everything in the system
+(FlexSpace, FlexDB/YogaDB) builds on FlexTree, and FlexTree is validated against bruteForce.
+If bruteForce itself has a bug, every higher-level test is silently wrong. We need a
+standalone fuzz test that exercises bruteForce operations with randomized inputs and checks
 that its internal invariants hold after every operation.
 
-## The FlexTree/BruteForce Extent Model (from the EuroSys 2022 paper + code)
+## The FlexTree/bruteForce Extent Model (from the EuroSys 2022 paper + code)
 
 ### What is the domain?
 
@@ -81,7 +81,7 @@ but doesn't change the logical-to-physical mapping.
 
 ## Invariants to Check
 
-These are the properties that must hold after **every** operation on BruteForce.
+These are the properties that must hold after **every** operation on bruteForce.
 They constitute the fuzz test's assertion suite.
 
 ### INV-1: Strict Loff Ordering (Sorted)
@@ -257,7 +257,7 @@ extent splitting and merging with smaller inputs.
 ### Structural invariant checker function
 
 ```go
-func checkInvariants(t testing.TB, bf *BruteForce) {
+func checkInvariants(t testing.TB, bf *bruteForce) {
     // INV-1: Sorted
     // INV-2: Contiguous
     // INV-3: MaxLoff consistency
@@ -272,7 +272,7 @@ func checkInvariants(t testing.TB, bf *BruteForce) {
 ### Spot-check function (run periodically)
 
 ```go
-func spotCheckQueries(t testing.TB, bf *BruteForce, rng *rand.Rand) {
+func spotCheckQueries(t testing.TB, bf *bruteForce, rng *rand.Rand) {
     // INV-9: PQuery consistency (sample N random positions + boundary)
     // INV-10: PQuery-extent agreement (one random byte per extent)
     // INV-11: Query covers full range (a few random ranges)
@@ -282,17 +282,17 @@ func spotCheckQueries(t testing.TB, bf *BruteForce, rng *rand.Rand) {
 ### Shift verification (run on each Insert/Delete)
 
 ```go
-func verifyInsertShift(t testing.TB, bf *BruteForce, ...) { // INV-12 }
-func verifyDeleteShift(t testing.TB, bf *BruteForce, ...) { // INV-13 }
+func verifyInsertShift(t testing.TB, bf *bruteForce, ...) { // INV-12 }
+func verifyDeleteShift(t testing.TB, bf *bruteForce, ...) { // INV-13 }
 ```
 
 ### Fuzz function signature
 
 ```go
-func FuzzBruteForce(f *testing.F) {
+func FuzzbruteForce(f *testing.F) {
     // Seed corpus: empty, single insert, insert+delete, insert with holes
     f.Fuzz(func(t *testing.T, data []byte) {
-        bf := OpenBruteForce(256) // small MaxExtentSize for more splits
+        bf := openBruteForce(256) // small MaxExtentSize for more splits
         // decode + execute operations from data
         // checkInvariants after each op
         // spotCheckQueries every 8 ops
@@ -303,7 +303,7 @@ func FuzzBruteForce(f *testing.F) {
 ### Additionally: a deterministic randomized stress test
 
 ```go
-func TestBruteForce_RandomizedInvariants(t *testing.T) {
+func TestbruteForce_RandomizedInvariants(t *testing.T) {
     // Fixed seed, 10,000 random ops, checks all invariants.
     // Quick regression test that always runs.
 }
@@ -313,19 +313,19 @@ func TestBruteForce_RandomizedInvariants(t *testing.T) {
 
 | File | Changes |
 |------|---------|
-| `brute_test.go` (NEW) | FuzzBruteForce, TestBruteForce_RandomizedInvariants, checkInvariants, spotCheckQueries, shift verifiers |
+| `brute_test.go` (NEW) | FuzzbruteForce, TestbruteForce_RandomizedInvariants, checkInvariants, spotCheckQueries, shift verifiers |
 
 ## Verification
 
 ```bash
 # Run the deterministic test
-go test -v -run TestBruteForce_RandomizedInvariants -count=1 ./...
+go test -v -run TestbruteForce_RandomizedInvariants -count=1 ./...
 
 # Run the fuzz test for 30 seconds
-go test -fuzz FuzzBruteForce -fuzztime 30s -run=xxx -v
+go test -fuzz FuzzbruteForce -fuzztime 30s -run=xxx -v
 
 # Run the fuzz test for longer (find deeper bugs)
-go test -fuzz FuzzBruteForce -fuzztime 5m -run=xxx -v
+go test -fuzz FuzzbruteForce -fuzztime 5m -run=xxx -v
 ```
 
 */
@@ -337,26 +337,26 @@ go test -fuzz FuzzBruteForce -fuzztime 5m -run=xxx -v
   │                  Test                   │                            What it checks                             │
   ├─────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────┤
   │                                         │ Go native fuzz test: decodes random byte streams as operation         │
-  │ FuzzBruteForce                          │ sequences (Insert/Delete/PDelete/SetTag/InsertWTag/InsertBeyond),     │
+  │ FuzzbruteForce                          │ sequences (Insert/Delete/PDelete/SetTag/InsertWTag/InsertBeyond),     │
   │                                         │ checks all invariants after every op                                  │
   ├─────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────┤
-  │ TestBruteForce_RandomizedInvariants     │ 10,000 random ops with fixed seed, checks all invariants including    │
+  │ TestbruteForce_RandomizedInvariants     │ 10,000 random ops with fixed seed, checks all invariants including    │
   │                                         │ shift verification                                                    │
   ├─────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────┤
-  │ TestBruteForce_InsertOnlyMergeInvariant │ 5,000 insert-only ops, checks INV-7 (no mergeable neighbors)          │
+  │ TestbruteForce_InsertOnlyMergeInvariant │ 5,000 insert-only ops, checks INV-7 (no mergeable neighbors)          │
   ├─────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────┤
-  │ TestBruteForce_HoleInvariants           │ Insert beyond MaxLoff, verifies hole extents are created correctly    │
+  │ TestbruteForce_HoleInvariants           │ Insert beyond MaxLoff, verifies hole extents are created correctly    │
   ├─────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────┤
-  │ TestBruteForce_DeleteAllAndRebuild      │ Delete everything, verify clean empty state, rebuild                  │
+  │ TestbruteForce_DeleteAllAndRebuild      │ Delete everything, verify clean empty state, rebuild                  │
   ├─────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────┤
-  │ TestBruteForce_TagSplitInvariants       │ SetTag splits extents correctly, GetTag only works at boundaries      │
+  │ TestbruteForce_TagSplitInvariants       │ SetTag splits extents correctly, GetTag only works at boundaries      │
   │                                         │ (INV-14)                                                              │
   └─────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────┘
 */
 
 // checkInvariants verifies structural invariants INV-1 through INV-8
-// after every BruteForce operation. Failures are fatal.
-func checkInvariants(t testing.TB, bf *BruteForce, opDesc string) {
+// after every bruteForce operation. Failures are fatal.
+func checkInvariants(t testing.TB, bf *bruteForce, opDesc string) {
 	t.Helper()
 	n := len(bf.Extents)
 
@@ -423,7 +423,7 @@ func checkInvariants(t testing.TB, bf *BruteForce, opDesc string) {
 // checkNoMergeableNeighbors checks INV-7: no two adjacent extents could be
 // merged. This is only guaranteed after Insert sequences (Delete/SetTag
 // may leave mergeable neighbors). Pass skipCheck=true to skip.
-func checkNoMergeableNeighbors(t testing.TB, bf *BruteForce, opDesc string) {
+func checkNoMergeableNeighbors(t testing.TB, bf *bruteForce, opDesc string) {
 	t.Helper()
 	for i := 0; i+1 < len(bf.Extents); i++ {
 		a := &bf.Extents[i]
@@ -441,7 +441,7 @@ func checkNoMergeableNeighbors(t testing.TB, bf *BruteForce, opDesc string) {
 }
 
 // spotCheckQueries verifies INV-9, INV-10, INV-11 by sampling.
-func spotCheckQueries(t testing.TB, bf *BruteForce, rng *rand.Rand) {
+func spotCheckQueries(t testing.TB, bf *bruteForce, rng *rand.Rand) {
 	t.Helper()
 	if bf.MaxLoff == 0 {
 		// INV-9 boundary: out-of-range query should fail
@@ -509,7 +509,7 @@ func spotCheckQueries(t testing.TB, bf *BruteForce, rng *rand.Rand) {
 
 // verifyInsertShift checks INV-12: insert shifts all subsequent bytes forward.
 // Samples a few positions beyond the insertion point before and after.
-func verifyInsertShift(t testing.TB, bf *BruteForce, insLoff uint64, insLen uint32, preSnapshot map[uint64]uint64) {
+func verifyInsertShift(t testing.TB, bf *bruteForce, insLoff uint64, insLen uint32, preSnapshot map[uint64]uint64) {
 	t.Helper()
 	for loff, oldPoff := range preSnapshot {
 		if loff < insLoff {
@@ -532,7 +532,7 @@ func verifyInsertShift(t testing.TB, bf *BruteForce, insLoff uint64, insLen uint
 }
 
 // verifyDeleteShift checks INV-13: delete shifts all subsequent bytes backward.
-func verifyDeleteShift(t testing.TB, bf *BruteForce, delLoff, delLen uint64, preSnapshot map[uint64]uint64) {
+func verifyDeleteShift(t testing.TB, bf *bruteForce, delLoff, delLen uint64, preSnapshot map[uint64]uint64) {
 	t.Helper()
 	for loff, oldPoff := range preSnapshot {
 		if loff < delLoff {
@@ -556,7 +556,7 @@ func verifyDeleteShift(t testing.TB, bf *BruteForce, delLoff, delLen uint64, pre
 }
 
 // snapshotPositions samples N random valid positions and records their PQuery results.
-func snapshotPositions(bf *BruteForce, rng *rand.Rand, n int) map[uint64]uint64 {
+func snapshotPositions(bf *bruteForce, rng *rand.Rand, n int) map[uint64]uint64 {
 	snap := make(map[uint64]uint64, n)
 	if bf.MaxLoff == 0 {
 		return snap
@@ -596,7 +596,7 @@ func consumeU32(data []byte, pos *int) uint32 {
 }
 
 // ========================================================================
-// FuzzBruteForce — Go native fuzz test
+// FuzzbruteForce — Go native fuzz test
 // ========================================================================
 
 func FuzzBruteForce(f *testing.F) {
@@ -631,7 +631,7 @@ func FuzzBruteForce(f *testing.F) {
 	const fuzzMaxExtentSize = 256
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		bf := OpenBruteForce(fuzzMaxExtentSize)
+		bf := openBruteForce(fuzzMaxExtentSize)
 		rng := rand.New(rand.NewSource(12345))
 
 		pos := 0
@@ -768,7 +768,7 @@ func FuzzBruteForce(f *testing.F) {
 }
 
 // ========================================================================
-// TestBruteForce_RandomizedInvariants — deterministic stress test
+// TestbruteForce_RandomizedInvariants — deterministic stress test
 // ========================================================================
 
 func TestBruteForce_RandomizedInvariants(t *testing.T) {
@@ -778,7 +778,7 @@ func TestBruteForce_RandomizedInvariants(t *testing.T) {
 		seed          = 98765
 	)
 
-	bf := OpenBruteForce(maxExtentSize)
+	bf := openBruteForce(maxExtentSize)
 	rng := rand.New(rand.NewSource(seed))
 
 	// Start with a base extent so we have something to work with
@@ -902,7 +902,7 @@ func TestBruteForce_RandomizedInvariants(t *testing.T) {
 // when no Delete/SetTag operations intervene.
 func TestBruteForce_InsertOnlyMergeInvariant(t *testing.T) {
 	const maxExtentSize = 128
-	bf := OpenBruteForce(maxExtentSize)
+	bf := openBruteForce(maxExtentSize)
 	rng := rand.New(rand.NewSource(54321))
 
 	for i := 0; i < 5000; i++ {
@@ -928,7 +928,7 @@ func TestBruteForce_InsertOnlyMergeInvariant(t *testing.T) {
 // creates proper hole extents that satisfy all invariants.
 func TestBruteForce_HoleInvariants(t *testing.T) {
 	const maxExtentSize = 256
-	bf := OpenBruteForce(maxExtentSize)
+	bf := openBruteForce(maxExtentSize)
 
 	// Insert at offset 0 first
 	bf.Insert(0, 1000, 10)
@@ -973,7 +973,7 @@ func TestBruteForce_HoleInvariants(t *testing.T) {
 // and rebuilding from scratch maintains invariants.
 func TestBruteForce_DeleteAllAndRebuild(t *testing.T) {
 	const maxExtentSize = 256
-	bf := OpenBruteForce(maxExtentSize)
+	bf := openBruteForce(maxExtentSize)
 
 	// Build up some state
 	bf.Insert(0, 100, 50)
@@ -1000,7 +1000,7 @@ func TestBruteForce_DeleteAllAndRebuild(t *testing.T) {
 // splits extents and that GetTag only works at extent boundaries.
 func TestBruteForce_TagSplitInvariants(t *testing.T) {
 	const maxExtentSize = 256
-	bf := OpenBruteForce(maxExtentSize)
+	bf := openBruteForce(maxExtentSize)
 
 	bf.Insert(0, 1000, 100)
 	checkInvariants(t, bf, "initial")

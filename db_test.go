@@ -44,7 +44,7 @@ func openTestDBreportSize(t *testing.T, cfg *Config) *FlexDB {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
 	t.Cleanup(func() {
-		alwaysPrintf("%v end of test, YogaDB DirSize='%v'", t.Name(), MustDirSize(fs, dir))
+		alwaysPrintf("%v end of test, YogaDB DirSize='%v'", t.Name(), mustDirSize(fs, dir))
 		db.Close()
 	})
 	return db

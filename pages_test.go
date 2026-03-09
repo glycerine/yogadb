@@ -313,7 +313,7 @@ func TestCoW_ManyInsertsVsBruteForce(t *testing.T) {
 		t.Fatalf("OpenFlexTreeCoW: %v", err)
 	}
 
-	bf := OpenBruteForce(tree.MaxExtentSize)
+	bf := openBruteForce(tree.MaxExtentSize)
 
 	resetRand()
 	n := 5000
@@ -353,7 +353,7 @@ func TestCoW_ManyInsertsVsBruteForce(t *testing.T) {
 func TestCoW_MultipleReopenCycles(t *testing.T) {
 	fs, dir := newTestFS(t)
 
-	bf := OpenBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
+	bf := openBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
 
 	for cycle := 0; cycle < 5; cycle++ {
 		tree, err := OpenFlexTreeCoW(dir, fs)
@@ -429,7 +429,7 @@ func TestCoW_LargeTreeSplit(t *testing.T) {
 		t.Fatalf("OpenFlexTreeCoW: %v", err)
 	}
 
-	bf := OpenBruteForce(tree.MaxExtentSize)
+	bf := openBruteForce(tree.MaxExtentSize)
 
 	// Insert enough to cause multiple splits (>60 unique extents)
 	for i := uint64(0); i < 300; i++ {

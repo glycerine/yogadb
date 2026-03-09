@@ -87,22 +87,22 @@ func alwaysPrintf(format string, a ...interface{}) {
 	tsPrintf(format, a...)
 }
 
-var TsPrintfMut sync.Mutex
+var tsPrintfMut sync.Mutex
 
 // time-stamped printf
 func tsPrintf(format string, a ...interface{}) {
-	TsPrintfMut.Lock()
+	tsPrintfMut.Lock()
 	if showPid {
 		printf("\n%s [pid %v] %s ", fileLine(3), myPid, ts())
 	} else {
 		if showGoID {
-			printf("\n%s [goID %v] %s ", fileLine(3), GoroNumber(), ts())
+			printf("\n%s [goID %v] %s ", fileLine(3), goroNumber(), ts())
 		} else {
 			printf("\n%s %s ", fileLine(3), ts())
 		}
 	}
 	printf(format+"\n", a...)
-	TsPrintfMut.Unlock()
+	tsPrintfMut.Unlock()
 }
 
 // get timestamp for logging purposes
@@ -205,8 +205,8 @@ func thisStack() []byte {
 	return buf
 }
 
-// GoroNumber returns the calling goroutine's number.
-func GoroNumber() int {
+// goroNumber returns the calling goroutine's number.
+func goroNumber() int {
 
 	//g1 := int(runtime.GoID())
 

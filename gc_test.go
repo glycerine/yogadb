@@ -445,7 +445,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 		}
 	}
 	db.Sync()
-	sizeAfterRound1 := MustDirSize(fs, dir)
+	sizeAfterRound1 := mustDirSize(fs, dir)
 	t.Logf("Round 1 disk size: %d bytes (baseline after pre-alloc)", sizeAfterRound1)
 
 	// Rounds 2-9: overwrite every key 8 more times.
@@ -460,7 +460,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 		db.Sync()
 	}
 
-	sizeAfterAllRounds := MustDirSize(fs, dir)
+	sizeAfterAllRounds := mustDirSize(fs, dir)
 	t.Logf("After %d rounds disk size: %d bytes (%.2fx vs round 1)",
 		rounds, sizeAfterAllRounds, float64(sizeAfterAllRounds)/float64(sizeAfterRound1))
 
@@ -702,7 +702,7 @@ func TestGC_CrossSession_DiskGrowth(t *testing.T) {
 
 		db.Close()
 
-		sizes[s] = MustDirSize(fs, dir)
+		sizes[s] = mustDirSize(fs, dir)
 		kv128Sizes[s] = mustFileSize(fs, filepath.Join(dir, "FLEXSPACE.KV128_BLOCKS"))
 		pagesSizes[s] = mustFileSize(fs, filepath.Join(dir, "FLEXTREE.PAGES"))
 
@@ -886,7 +886,7 @@ func TestGC_CrossSession_ManyReopens_SameDataset(t *testing.T) {
 		db.Sync()
 		db.Close()
 
-		dirSizes[s] = MustDirSize(fs, dir)
+		dirSizes[s] = mustDirSize(fs, dir)
 		kv128Sizes[s] = mustFileSize(fs, filepath.Join(dir, "FLEXSPACE.KV128_BLOCKS"))
 
 		t.Logf("Session %2d: dir=%8d  KV128=%8d", s, dirSizes[s], kv128Sizes[s])

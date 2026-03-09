@@ -122,11 +122,6 @@ func (id NodeID) Index() int32 {
 // in memory—just like a block of memory
 // malloc'd in C.
 
-const MaxKeys = 7 // Example degree
-
-type Key int
-type Value int
-
 // CommonNode is embedded in both LeafNode and InternalNode.
 // 20 bytes at the moment.
 type CommonNode struct {
@@ -244,17 +239,17 @@ func (tree *FlexTree) opCounters() (visited, splits, shiftNodes int64) {
 }
 
 // allExtents walks the leaf linked list and returns all extents
-// as BruteForceExtent values with effective (global) Loff values,
-// suitable for comparison with BruteForce and checkInvariants.
-func (tree *FlexTree) allExtents() []BruteForceExtent {
+// as bruteForceExtent values with effective (global) Loff values,
+// suitable for comparison with bruteForce and checkInvariants.
+func (tree *FlexTree) allExtents() []bruteForceExtent {
 	if tree.MaxLoff == 0 {
 		return nil
 	}
-	var result []BruteForceExtent
+	var result []bruteForceExtent
 	pos := tree.PosGet(0)
 	for pos.Valid() {
 		ext := &pos.node.Extents[pos.Idx]
-		result = append(result, BruteForceExtent{
+		result = append(result, bruteForceExtent{
 			Loff: pos.Loff - uint64(pos.Diff),
 			Len:  ext.Len,
 			Poff: ext.Poff(),

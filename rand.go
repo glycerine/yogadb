@@ -208,7 +208,3 @@ func cryRand15B() string {
 	panicOn(err)
 	return cristalbase64.URLEncoding.EncodeToString(by[:])
 }
-
-func CryRand15B() string {
-	return cryRand15B()
-}

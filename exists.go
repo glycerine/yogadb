@@ -125,7 +125,7 @@ func removeAllFilesWithPrefix(prefixPath string) {
 // DirSize calculates the total size of a directory in bytes.
 // For symlinks, this will count the size of the target path
 // string itself but not the size of the pointed-to-file.
-func DirSize(fs vfs.FS, path string) (totalSize int64, err0 error) {
+func dirSize(fs vfs.FS, path string) (totalSize int64, err0 error) {
 
 	err0 = fs.WalkDir(path, func(filePath string, d iofs.DirEntry, err error) error {
 		// Handle permission errors or missing files gracefully
@@ -150,8 +150,8 @@ func DirSize(fs vfs.FS, path string) (totalSize int64, err0 error) {
 // MustDirSize panics on any error encountered
 // when trying to return the number of bytes
 // used by the path directory/file.
-func MustDirSize(fs vfs.FS, path string) int64 {
-	totalSize, err := DirSize(fs, path)
+func mustDirSize(fs vfs.FS, path string) int64 {
+	totalSize, err := dirSize(fs, path)
 	panicOn(err)
 	return totalSize
 }

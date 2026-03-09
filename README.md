@@ -253,12 +253,129 @@ pairs. See cmd/yview to dump them back out. See cmd/yvac to vacuum your
 database. load_yogadb does all of the above and was used for running
 some benchmarks; it is another example.
 
-# api summary
+# api documentation
 
-the go doc:
+https://pkg.go.dev/github.com/glycerine/yogadb
+
+will be the most up to date; but it case you are offline, run
+
+go doc -all 
+
+in the directory to see the latest.
 
 ~~~
-package yogadb // import "."
+package yogadb // import "github.com/glycerine/yogadb"
+
+YogaDB is an embedded persistent ordered key-value store built on the FlexSpace
+log-structured storage engine architecture. A three-layer architecture is
+deployed: at the lowest level is the FlexTree (a B-tree extent index with
+shift-propagation); at the middle level is the FlexSpace (log-structured file
+layer with GC); and at the top sits the FlexDB (the KV store with memtables,
+WAL, sparse index, and interval cache).
+
+CONSTANTS
+
+const (
+	MaxKeySize = 4096
+)
+const (
+	// the address space that flexspace.go manages
+	FLEXSPACE_MAX_OFFSET = 800 << 30 // 800 GB logical address space
+
+	// block config
+	FLEXSPACE_BLOCK_BITS  = 22                                           // 4 MB blocks
+	FLEXSPACE_BLOCK_SIZE  = 1 << FLEXSPACE_BLOCK_BITS                    // 4_194_304 bytes
+	FLEXSPACE_BLOCK_COUNT = FLEXSPACE_MAX_OFFSET >> FLEXSPACE_BLOCK_BITS // 204800 blocks
+
+	FLEXSPACE_MAX_EXTENT_BIT  = 5
+	FLEXSPACE_MAX_EXTENT_SIZE = FLEXSPACE_BLOCK_SIZE >> FLEXSPACE_MAX_EXTENT_BIT // 131_072 bytes == 128 KB (1/32)
+
+	// logical logging
+	FLEXSPACE_LOG_MEM_CAP  = 8 << 20 // 8 MB in-memory log buffer
+	FLEXSPACE_LOG_MAX_SIZE = 2 << 30 // 2 GB max on-disk log
+
+	// garbage collector
+	FLEXSPACE_GC_QUEUE_DEPTH = 8192
+	FLEXSPACE_GC_THRESHOLD   = 64 // free blocks below this triggers GC
+
+	// block manager
+	FLEXSPACE_BM_BLKDIST_BITS = 16
+	FLEXSPACE_BM_BLKDIST_SIZE = (FLEXSPACE_BLOCK_SIZE >> FLEXSPACE_BM_BLKDIST_BITS) + 1 // 65 buckets
+
+)
+const (
+	// SLOTTED_PAGE_KB is the target page size for slotted page intervals.
+	// Tune this for different workloads. Larger pages amortize overhead
+	// better but increase rewrite cost.
+	SLOTTED_PAGE_KB = 2
+
+	// MAX_KEY_BYTES is the maximum key size in bytes that a slotted page
+	// can hold. Derived from SLOTTED_PAGE_KB to ensure at least one key
+	// always fits in a page.
+	MAX_KEY_BYTES = SLOTTED_PAGE_KB * 512 // 32768 bytes
+
+)
+const DefaultFlexTreeMaxExtentSizeLimit = (64 << 20) // 64 MB
+const FLEXTREE_HOLE = (1 << 47) // highest bit set to indicate a hole
+const FLEXTREE_INTERNAL_CAP = 30
+const FLEXTREE_INTERNAL_CAP_PLUS_ONE = FLEXTREE_INTERNAL_CAP + 1
+const FLEXTREE_LEAF_CAP = 60
+    Tunable parameters
+
+const FLEXTREE_MAX_EXTENT_SIZE_LIMIT = 64 << 20
+const FLEXTREE_PATH_DEPTH = 7 // at most 7 levels
+const FLEXTREE_POFF_MASK = 0xffffffffffff // 48 bits
+const MaxKeys = 7 // Example degree
+
+VARIABLES
+
+var (
+	// ErrTxDone is returned when Commit is called on an already-cancelled transaction.
+	ErrTxDone = errors.New("flexdb: transaction already finished")
+	// ErrTxNotWritable is returned when Put or Delete is called on a read-only transaction.
+	ErrTxNotWritable = errors.New("flexdb: cannot write in a read-only transaction")
+)
+
+TYPES
+
+type Batch struct {
+	// Has unexported fields.
+}
+    Batch submits a set of writes all together at once
+    or load efficiency and/or atomic change to the database.
+
+func (s *Batch) Close()
+    Close forgets any existing queued up puts, and frees any other resources
+    associated with the Batch.
+
+func (s *Batch) Commit(doFsync bool) (interv HLCInterval, err error)
+    Commit flushes the batch atomically all the way to disk but does not fsync
+    unless set doFsync true.
+
+    After Commit the batch is empty and can be re-used immediately.
+
+    Returns the half-open HLC interval [Begin, Endx) assigned to this batch.
+
+    Again, we do not wait for the data to be fdatasynced to disk. Call db.Sync()
+    if you need durability across power restarts. Usually if performance is
+    required this is done once after all your batches are loaded.
+
+    Metrics are useful, but relatively expensive as we must scan all of the
+    FlexSpace blocks linearly; use CommitGetMetrics() to view them. Commit()
+    itself now skips them for speed.
+
+func (s *Batch) CommitGetMetrics(doFsync bool) (HLCInterval, *Metrics, error)
+    CommitGetMetrics does Commit, and then returns metrics on the flex space
+    for garbage collection and write-amplification study purposes; hence it is
+    slower. It does a linear scan through all the FLEXSPACE.KV128_BLOCKS to see
+    how much free space could be reclaimed.
+
+func (s *Batch) Reset()
+    Reset forgets any existing queued up puts.
+
+func (s *Batch) Set(key, value []byte) (err error)
+    Set copies key and value internally, so the original memory is safe to be
+    re-used by the caller immediately after Set returns.
 
 type Config struct {
 	CacheMB uint64 // default 32 (for 32 MB)
@@ -280,7 +397,7 @@ type Config struct {
 	// calls SyncCoW() on every Sync(). This eliminates ~0.86x write
 	// amplification from the redo log at the cost of slightly more CoW
 	// tree page writes. The net effect is lower total write amp (~3.2x
-	// vs ~4.1x). 
+	// vs ~4.1x). Requires useCoW=true (which is always the case now).
 	// Safe either way.
 	OmitFlexSpaceOpsRedoLog bool
 
@@ -296,7 +413,7 @@ type Config struct {
 	// if your process crashes you have no intermediate state and have to
 	// start again at the beginning; which may be fine.
 	OmitMemWalFsync bool
-    
+
 	// PiggybackGC_on_SyncOrFlush enables automatic GC at the end of
 	// every Sync() and flush operation. GC runs only if the garbage
 	// fraction (wasted bytes / total bytes in used blocks) exceeds
@@ -325,29 +442,427 @@ type FlexDB struct {
     and updates on the fly.
 
 func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error)
+    OpenFlexDB opens or creates a FlexDB at the given directory path. cacheMB is
+    the cache capacity in megabytes.
+
 func (db *FlexDB) Ascend(pivot []byte, iter func(key, value []byte) bool)
+    Ascend iterates key-value pairs in ascending order from the first key >=
+    pivot. If pivot is nil, starts from the beginning. Stops when iter returns
+    false. The callback may safely call db.Put/db.Delete.
+
 func (db *FlexDB) AscendRange(greaterOrEqual, lessThan []byte, iter func(key, value []byte) bool)
+    AscendRange iterates key-value pairs where key is in [greaterOrEqual,
+    lessThan) ascending. Either bound may be nil. Stops when iter returns false.
+    The callback may safely call db.Put/db.Delete.
+
 func (db *FlexDB) CheckIntegrity() []IntegrityError
+    CheckIntegrity performs a read-only consistency check of the FlexDB.
+    It flushes memtables first, then acquires a read lock on FlexSpace.
+
+    Checks performed:
+     1. FlexTree leaf linked list: no cycles, prev/next consistency
+     2. Extent validity: every non-hole extent has poff + len within file bounds
+     3. Extent readability: data at every extent can be read from disk
+     4. Block usage: recomputed from FlexTree matches the block manager's state
+     5. Sparse index: every anchor interval is readable and kv128-decodable
+     6. Sorted keys: keys within each decoded interval are in sorted order
+     7. Anchor coverage: anchor loff+psize spans tile the FlexSpace without
+        gaps/overlaps
+
+    Returns nil if no errors found.
+
 func (db *FlexDB) Clear(includeLarge bool) (allGone bool, err error)
+    Clear deletes all keys in the database.
+
+    When includeLarge is true, the entire database is wiped and re-initialized
+    (fast path). When false, only keys with inline (small) values are deleted;
+    keys with large values stored in the VLOG survive.
+
+    Returns allGone=true when the database was re-initialized. In that case,
+    ALL previously held iterators, cursors, and pointers into the database are
+    invalid and must be re-acquired.
+
+    Goroutine safe. Acquires the database write lock for the duration of the
+    call, serializing against all other operations.
+
 func (db *FlexDB) Close() *Metrics
+    Close syncs and shuts down the FlexDB.
+
 func (db *FlexDB) CumulativeMetrics() *Metrics
+    CumulativeMetrics reports file sizes on disk, reflecting the cumulative
+    history of all sessions. Each physical metric is the current file size
+    (via Stat), so it captures bytes written by previous sessions as well.
+    LogicalBytesWritten uses FlexSpace's MaxLoff as an approximation of total
+    user payload stored (it includes kv128 encoding overhead of ~10-20 bytes per
+    entry; values separated to VLOG are represented by 16-byte VPtrs).
+
 func (db *FlexDB) Delete(key []byte) error
+    Delete removes key from the store.
+
 func (db *FlexDB) DeleteRange(includeLarge bool, begKey, endKey []byte, begInclusive, endInclusive bool) (n int64, allGone bool, err error)
+    DeleteRange deletes all keys in the range [begKey, endKey] with configurable
+    inclusivity on each bound.
+
+    Returns:
+      - n: number of tombstones written (0 when allGone is true)
+      - allGone: true if the entire database was wiped and re-initialized.
+        When true, ALL previously held iterators, cursors, and pointers into the
+        database are invalid and must be re-acquired.
+      - err: non-nil on failure
+
+    When includeLarge is false, keys whose values are stored in the VLOG (large
+    values, > 64 bytes) are skipped and survive the deletion.
+
+    The begInclusive and endInclusive parameters control whether the bounds are
+    inclusive or exclusive:
+
+        DeleteRange(true,  a, z, true,  true)   // [a, z]  — both inclusive, include large values
+        DeleteRange(true,  a, z, true,  false)  // [a, z)  — half-open, include large values
+        DeleteRange(false, a, z, true,  true)   // [a, z]  — both inclusive, skip large values
+
+    Goroutine safe. Concurrent reads and writes are serialized via the database
+    write lock. However, when allGone is returned true, all previously held
+    iterators, cursors, and references are invalidated.
+
 func (db *FlexDB) Descend(pivot []byte, iter func(key, value []byte) bool)
+    Descend iterates key-value pairs in descending order from the last key <=
+    pivot. If pivot is nil, starts from the end. Stops when iter returns false.
+    The callback may safely call db.Put/db.Delete.
+
 func (db *FlexDB) DescendRange(lessOrEqual, greaterThan []byte, iter func(key, value []byte) bool)
+    DescendRange iterates key-value pairs where key is in (greaterThan,
+    lessOrEqual] descending. Either bound may be nil. Stops when iter returns
+    false. The callback may safely call db.Put/db.Delete.
+
+func (db *FlexDB) Find(smod SearchModifier, key []byte, fetchLarge bool) (value []byte, found, exact, large bool)
+    Find is a convenience wrapper around FindIt that closes the iterator before
+    returning so that callers don't need to manage `it` if they don't need `it`.
+
+    If you want to traverse the key space after Find-ing your key (or the next
+    nearest), use FindIt to get an Iter back instead of Find.
+
+func (db *FlexDB) FindIt(smod SearchModifier, key []byte, fetchLarge bool) (value []byte, found, exact, large bool, it *Iter)
+    FindIt allows GTE, GT, LTE, LT, and Exact searches.
+
+    GTE: find a leaf greater-than-or-equal to key; the smallest such key.
+
+    GT: find a leaf strictly greater-than key; the smallest such key.
+
+    LTE: find a leaf less-than-or-equal to key; the largest such key.
+
+    LT: find a leaf less-than key; the largest such key.
+
+    Exact: find a matching key exactly. A key can only be stored once in the
+    tree. (It is not a multi-map in the C++ STL sense).
+
+    If key is nil, then GTE and GT return the first leaf in the tree, while LTE
+    and LT return the last leaf in the tree.
+
+    Other returned flags: found means some key was found. exact means an exact
+    matching key to the query was found. large means the value is large and only
+    returned in value if fetchLarge was true.
+
+    The returned iterator, it, is positioned at the found key and can be used
+    to scan beyond it (Next/Prev). The caller must call it.Close() when done.
+    If found is false, the iterator is not valid but must still be closed.
+
 func (db *FlexDB) Get(key []byte) ([]byte, bool)
+    Get retrieves the value for key. Returns nil, false if not found.
+
 func (db *FlexDB) Len() int64
+    Len returns the total number of live (non-tombstone) keys in the database.
+    O(1) — reads a pre-maintained counter. Goroutine safe.
+
 func (db *FlexDB) LenBigSmall() (big int64, small int64)
+    LenBigSmall returns the live key count partitioned by storage location.
+    big: keys whose values are stored in the VLOG (> 64 bytes). small:
+    keys whose values are stored inline. O(1) — reads pre-maintained counters.
+    Goroutine safe.
+
 func (db *FlexDB) Merge(key []byte, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error
+    Merge performs an atomic read-modify-write on key. The merge function fn
+    receives the old value (nil if not found) and whether the key existed.
+    It returns the new value to write and whether to perform the write.
+    If write is false, the merge is a no-op. If newVal is nil and write is true,
+    a tombstone (delete) is written.
+
+    This mirrors C's flexdb_merge: it looks up the old value across all layers
+    (active memtable, inactive memtable, FlexSpace), applies the user function,
+    and writes the result atomically.
+
 func (db *FlexDB) NewBatch() (b *Batch)
+
 func (db *FlexDB) NewIter() *Iter
+    NewIter creates an iterator. Call Seek, SeekToFirst, or SeekToLast
+    to position it. The iterator holds no locks; it is safe to call
+    db.Put/db.Delete between iterator calls.
+
 func (db *FlexDB) Put(key, value []byte) error
+    Put writes key -> value. value==nil deletes the key. Values of any size
+    are accepted. Values > vlogInlineThreshold (64 bytes) are stored in the
+    VLOG file; smaller values are stored inline in the FLEXSPACE.KV128_BLOCKS
+    file with the keys. Large values are written exactly once: to the VLOG.
+    The WAL stores only the VPtr (16 bytes), not the full value.
+
+    Puts are not durably on disk until after the user has also completed a
+    db.Sync() call. This allows the user to control the rate of fsyncs and trade
+    that against their durability requirements.
+
 func (db *FlexDB) SessionMetrics() *Metrics
+    Metrics returns a snapshot of write-byte counters aggregated from all
+    layers.
+
 func (db *FlexDB) Sync() error
+    Sync flushes all in-memory data in the active memtable to disk in
+    FLEXSPACE.KV128.BLOCKS and fsyncs it. Users must call Sync after Puts for
+    them to be durable.
+
 func (db *FlexDB) Update(fn func(tx *Tx) error) error
+    Update executes fn within a serializable read-write transaction. Only one
+    Update transaction runs at a time (serialized by db.topMutRW). If fn returns
+    without calling Commit or Cancel, the transaction is auto-cancelled.
+
 func (db *FlexDB) VacuumKV() (*VacuumKVStats, error)
+    VacuumKV reclaims dead FLEXSPACE.KV128_BLOCKS space by rewriting all live
+    extents sequentially to a new file and replacing the old file. This is an
+    exclusive operation that acquires topMutRW.
+
+    Crash safety: if the process crashes before the rename completes, the old
+    FLEXSPACE.KV128_BLOCKS and old FlexTree remain intact. The stale .vacuum
+    file (if present) is harmless and will be overwritten on the next vacuum.
+
+    VacuumKV does a one-time compaction of already-bloated databases. Algorithm:
+    1. Flush memtables, acquire exclusive locks 2. Walk FlexTree leaf linked
+    list, read/rewrite all live extents sequentially to a .vacuum file 3. Close
+    old fd, rename .vacuum -> FLEXSPACE.KV128_BLOCKS, reopen 4. Rebuild block
+    manager, checkpoint FlexTree, invalidate caches 5. Clean up stale .vacuum
+    files on OpenFlexSpaceCoW
+
+    See the tests: TestFlexDB_VacuumKV_Basic — overwrites 200 keys, vacuums,
+    verifies data integrity across reopen TestFlexDB_VacuumKV_WithDeletes —
+    deletes half of 100 keys, vacuums, verifies correct keys survive .
+
 func (db *FlexDB) VacuumVLOG() (*VacuumStats, error)
+    VacuumVLOG reclaims dead LARGE.VLOG space by copying live values to a new
+    VLOG file and rewriting their VPtrs in FlexSpace. This is an exclusive
+    operation that acquires topMutRW.
+
+    Crash safety: if the process crashes before the rename completes, the old
+    VLOG and old intervals remain intact. The stale VLOG.new file (if present)
+    is harmless and will be overwritten on the next vacuum.
+
 func (db *FlexDB) View(fn func(tx *Tx) error) error
+    View executes fn within a read-only transaction. Multiple View transactions
+    can run concurrently. The transaction is auto-released when fn returns.
+
+type Iter struct {
+	// Has unexported fields.
+}
+    ====================== Lock-Free Re-Seeking Iterator ======================
+
+    Iter is a stateful, prefetching iterator over the merged view of:
+      - Active memtable (highest priority)
+      - Inactive memtable
+      - FlexSpace via sparse index (lowest priority)
+
+    The iterator holds NO locks between calls. It maintains a stateful
+    flexCursor into FlexSpace's sparse index tree, an HLC snapshot for version
+    detection, and a span-based prefetch buffer. On the fast path (both
+    memtables empty, no concurrent mutations), Next() serves from prefetched
+    spans with only an atomic HLC check — no lock, no seek. When the HLC has
+    changed (mutation occurred) or memtables are non-empty, the iterator falls
+    back to a merged re-seek under topMutRW.RLock().
+
+    Mutations (Put/Delete) are safe during iteration — the HLC check detects
+    them and triggers a re-seek. No snapshot consistency guarantee; this is a
+    design tradeoff we made for this embedded single-user store because we want
+    deletion and udpate _during_ iteration.
+
+    Large values (stored in VLOG) are not fetched by default. The Value() method
+    returns the inline value or nil if the value is large. Use Large() to check,
+    and FetchV() to fetch on demand.
+
+    In short:
+
+    Iter is a lock-free re-seeking merge iterator over memtables and FlexSpace.
+
+func (it *Iter) Close()
+    Close marks the iterator as closed and releases cursor state.
+
+func (it *Iter) FetchV() ([]byte, error)
+    FetchV fetches the current iterator value from the VLOG if the iterator
+    points to a large value. For inline values, this is equivalent to Vin().
+    Returns the value bytes and any error from the VLOG read. If the value is
+    inline and not large, it will stiill be returned (and the error will be
+    nil).
+
+func (it *Iter) Hlc() HLC
+    Hlc returns the HLC timestamp of the current key-value pair.
+
+func (it *Iter) Key() []byte
+    Key returns the current key. On the fast path this is a direct pointer into
+    cache memory (zero-copy). Call dupBytes(it.Key) if you need to keep a copy
+    beyond the next Next()/Prev() call.
+
+func (it *Iter) Large() bool
+    Large returns false if the current value is stored inline (small value).
+    When true, the value is stored in the VLOG and must be fetched via FetchV().
+    Iteration remains cheap until you really need to see the large value.
+
+func (it *Iter) Next()
+    Next advances to the next key in ascending order.
+
+func (it *Iter) Prev()
+    Prev moves to the previous key in descending order.
+
+func (it *Iter) Seek(target []byte)
+    Seek positions the iterator at the first key >= target.
+
+func (it *Iter) SeekToFirst()
+    SeekToFirst positions the iterator at the first key.
+
+func (it *Iter) SeekToLast()
+    SeekToLast positions the iterator at the last key.
+
+func (it *Iter) Valid() bool
+    Valid returns true if the iterator is positioned at a valid key.
+
+func (it *Iter) Vel() (val []byte, empty, large bool)
+    Vel can be more ergonomic than Vin. Vel returns the current inline Value
+    as well as the two important flags to tell you how to interpret the zero
+    len(val) situation: whether the value is truly empty, or just large and
+    sitting in the VLOG waiting for a separate FetchV call.
+
+    Vel is a mnemonic for the returns: value, empty, large.
+
+    Plus it's fun to say with your best Young Frankenstein style faux German
+    accept (Gene Wilder, Mel Brooks 1974)
+
+    "Vel, vel, vel... vhat have ve here? A large value??"
+
+func (it *Iter) Vin() (val []byte)
+    Vin returns the current value for _inline_ values. For large values stored
+    in VLOG, Vin returns nil. If you get back nil, you must use Large() to check
+    if the value is actually large, and then FetchV() to fetch it on demand if
+    so. Or just use Vel() below to find out what you've got in one call.
+
+    On the fast path (empty memtables), the first call copies from the cache
+    reference into valBuf. Subsequent calls return valBuf directly.
+
+
+type Metrics struct {
+	Session                   bool
+	KV128BytesWritten         int64 // FlexSpace FLEXSPACE.KV128_BLOCKS file
+	MemWALBytesWritten        int64 // FlexDB WAL (FLEXDB.MEMWAL1 + FLEXDB.MEMWAL2)
+	REDOLogBytesWritten       int64 // FLEXSPACE.REDO.LOG
+	FlexTreePagesBytesWritten int64 // CoW FLEXTREE.PAGES + FLEXTREE.COMMIT
+	VLOGBytesWritten          int64 // VLOG value log
+	LogicalBytesWritten       int64 // user payload (key + value)
+	TotalBytesWritten         int64 // sum of all physical writes
+
+	// WriteAmp returns the write amplification factor (total physical / logical).
+	// Returns 0 if no logical bytes have been written.
+	WriteAmp float64 //  TotalBytesWritten / LogicalBytesWritten
+
+	CumulativeWriteAmp float64 // totalPhysicalBytesWrit / totalLogicalBytesWrit
+
+	// Garbage metrics computed from FlexSpace block usage tracking.
+	// TotalFreeBytesInBlocks is the sum of dead (unused) bytes across all
+	// non-empty blocks. A block with 1000 live bytes out of 4 MB has
+	// 4_193_304 garbage bytes. Completely empty blocks are not counted
+	// (they are already free for reuse).
+	TotalFreeBytesInBlocks int64
+
+	// BlocksInUse shows how many 4MB blocks FLEXSPACE.KV128_BLOCKS is using.
+	BlocksInUse int64
+
+	// BlocksWithLowUtilization is the count of non-empty blocks whose
+	// utilization (live bytes / block size) is below the configured
+	// LowBlockUtilizationPct threshold (default 25%).
+	BlocksWithLowUtilization int64
+
+	// TotalLiveBytes is the sum of live (used) bytes across all blocks,
+	// as tracked by the block manager.
+	TotalLiveBytes int64
+
+	// LowBlockUtilizationPct we used; copied from Config
+	// or what default we used if not set.
+	LowBlockUtilizationPct float64
+
+	// PiggybackGCRuns is the number of piggyback GC runs during this session.
+	PiggybackGCRuns int64
+
+	// PiggybackGCLastDurMs is the duration of the last piggyback GC run in milliseconds.
+	PiggybackGCLastDurMs int64
+	// Has unexported fields.
+}
+    Metrics holds byte-level write counters for computing write amplification.
+
+type SearchModifier int
+    SearchModifier controls the matching behavior of Find.
+
+const (
+	// Exact matches only; like a hash table.
+	Exact SearchModifier = 0
+    
+	// GTE finds the smallest key greater-than-or-equal to the query.
+	GTE SearchModifier = 1
+    
+	// LTE finds the largest key less-than-or-equal to the query.
+	LTE SearchModifier = 2
+    
+	// GT finds the smallest key strictly greater-than the query.
+	GT SearchModifier = 3
+    
+	// LT finds the largest key strictly less-than the query.
+	LT SearchModifier = 4
+)
+
+type Tx struct {
+	// Has unexported fields.
+}
+    Tx represents a database transaction.
+
+func (tx *Tx) Cancel() error
+    Cancel discards all buffered writes. Uses first-wins semantics: if Commit
+    was called first, returns nil. Double Cancel returns nil (idempotent).
+
+func (tx *Tx) Commit() error
+    Commit applies all buffered writes to the database. Uses first-wins
+    semantics: if Cancel was called first, returns ErrTxDone. Double Commit
+    returns nil (idempotent).
+
+func (tx *Tx) Delete(key []byte) error
+    Delete marks a key for deletion in the transaction's write buffer.
+    The deletion is only applied to the database when Commit is called. Returns
+    ErrTxNotWritable for read-only transactions.
+
+func (tx *Tx) Get(key []byte) ([]byte, bool)
+    Get retrieves the value for key within the transaction's snapshot. Returns
+    nil, false if not found or if the key is a tombstone.
+
+func (tx *Tx) Put(key, value []byte) error
+    Put writes a key-value pair into the transaction's write buffer.
+    The write is only applied to the database when Commit is called. Returns
+    ErrTxNotWritable for read-only transactions.
+
+type VacuumKVStats struct {
+	OldFileSize      int64
+	NewFileSize      int64
+	BytesReclaimed   int64
+	ExtentsRewritten int64
+}
+    VacuumKVStats reports the results of a VacuumKV operation.
+
+type VacuumVLOGStats struct {
+	OldVLOGSize        int64
+	NewVLOGSize        int64
+	BytesReclaimed     int64
+	EntriesCopied      int64
+	IntervalsRewritten int64
+}
+    VacuumVLOGStats reports the results of a VacuumVLOG operation.
+
 ~~~
 
 # grab bag of implementation notes 

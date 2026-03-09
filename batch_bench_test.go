@@ -102,7 +102,7 @@ func BenchmarkBatchPutDeleteCycle(b *testing.B) {
 			}
 			b.StopTimer()
 
-			diskBytes, _ := DirSize(vfs.Default, dir)
+			diskBytes, _ := dirSize(vfs.Default, dir)
 			b.ReportMetric(float64(diskBytes), "disk_bytes")
 			b.ReportMetric(float64(totalTombstones)/float64(b.N), "tombstones/op")
 		})
@@ -274,7 +274,7 @@ func BenchmarkYogaDB_BigRandomRWBatch(b *testing.B) {
 
 					//m := db.Close()
 
-					diskBytes := MustDirSize(vfs.Default, dir)
+					diskBytes := mustDirSize(vfs.Default, dir)
 					wa := float64(diskBytes) / float64(logicalBytes)
 
 					rateName := "our_GET_ns/op"
@@ -326,7 +326,7 @@ func BenchmarkYogaDB_Put(b *testing.B) {
 	db.Sync()
 
 	m := db.SessionMetrics()
-	diskBytes := MustDirSize(vfs.Default, dir)
+	diskBytes := mustDirSize(vfs.Default, dir)
 	wa := float64(diskBytes) / float64(logicalBytes)
 
 	b.ReportMetric(float64(logicalBytes), "logical_bytes")
@@ -394,7 +394,7 @@ func BenchmarkBatchPebble(b *testing.B) {
 			metrics := db.Metrics()
 			levelMetrics := metrics.Total()
 
-			diskBytes := MustDirSize(vfs.Default, dir)
+			diskBytes := mustDirSize(vfs.Default, dir)
 			wa := float64(diskBytes) / float64(logicalBytes)
 
 			b.ReportMetric(float64(logicalBytes), "logical_bytes")
@@ -437,7 +437,7 @@ func BenchmarkPutPebble(b *testing.B) {
 
 	db.Flush()
 
-	diskBytes := MustDirSize(vfs.Default, dir)
+	diskBytes := mustDirSize(vfs.Default, dir)
 	wa := float64(diskBytes) / float64(logicalBytes)
 
 	b.ReportMetric(float64(logicalBytes), "logical_bytes")
@@ -530,7 +530,7 @@ func BenchmarkYogaDB_Batch(b *testing.B) {
 				db.Sync() // flush memtable to disk for accurate size measurement
 
 				m := db.SessionMetrics()
-				diskBytes := MustDirSize(vfs.Default, dir)
+				diskBytes := mustDirSize(vfs.Default, dir)
 				wa := float64(diskBytes) / float64(logicalBytes)
 
 				b.ReportMetric(float64(logicalBytes), "logical_bytes")
@@ -683,7 +683,7 @@ func BenchmarkPebble_BigRandomRWBatch(b *testing.B) {
 				levelMetrics := metrics.Total()
 
 				//vv("dir is now '%v'", dir)
-				diskBytes, err := DirSize(vfs.Default, dir)
+				diskBytes, err := dirSize(vfs.Default, dir)
 				var wa float64
 				if err != nil {
 					// already gone, maybe the benching stopped us early?? after b.StopTimer() above!?!

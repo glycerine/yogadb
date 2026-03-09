@@ -1,32 +1,34 @@
 package yogadb
 
-// brute force flextree extent management equivalent for testing.
+// bruteForce and bruteForceExtent are test oracles that
+// are easier to see correctness in, and the flexTree is
+// compared to them during correctness testing.
 
-// BruteForceExtent is for comparison to FlexTree in testing
-type BruteForceExtent struct {
+// bruteForceExtent is for comparison to FlexTree in testing
+type bruteForceExtent struct {
 	Loff uint64 `zid:"0"`
 	Len  uint32 `zid:"1"`
 	Poff uint64 `zid:"2"`
 	Tag  uint16 `zid:"3"`
 }
 
-// BruteForce is for comparison to FlexTree in testing.
-type BruteForce struct {
+// bruteForce is for comparison to FlexTree in testing.
+type bruteForce struct {
 	MaxLoff       uint64             `zid:"0"`
 	MaxExtentSize uint32             `zid:"1"`
-	Extents       []BruteForceExtent `zid:"2"`
+	Extents       []bruteForceExtent `zid:"2"`
 }
 
-func OpenBruteForce(maxExtentSize uint32) *BruteForce {
-	return &BruteForce{
+func openBruteForce(maxExtentSize uint32) *bruteForce {
+	return &bruteForce{
 		MaxExtentSize: maxExtentSize,
-		Extents:       make([]BruteForceExtent, 0, 1024),
+		Extents:       make([]bruteForceExtent, 0, 1024),
 	}
 }
 
-func (bf *BruteForce) Close() {}
+func (bf *bruteForce) Close() {}
 
-func (bf *BruteForce) findPos(loff uint64) int {
+func (bf *bruteForce) findPos(loff uint64) int {
 	hi := len(bf.Extents)
 	lo := 0
 	for lo+1 < hi {
@@ -51,13 +53,13 @@ func (bf *BruteForce) findPos(loff uint64) int {
 	return target
 }
 
-func (bf *BruteForce) isExtentSequential(ext *BruteForceExtent, loff, poff uint64, length uint32) bool {
+func (bf *bruteForce) isExtentSequential(ext *bruteForceExtent, loff, poff uint64, length uint32) bool {
 	return ext.Poff+uint64(ext.Len) == poff &&
 		ext.Loff+uint64(ext.Len) == loff &&
 		ext.Len+length <= bf.MaxExtentSize
 }
 
-func (bf *BruteForce) insertR(loff, poff uint64, length uint32, tag uint16) int {
+func (bf *bruteForce) insertR(loff, poff uint64, length uint32, tag uint16) int {
 	if length == 0 {
 		return 0
 	}
@@ -84,7 +86,7 @@ func (bf *BruteForce) insertR(loff, poff uint64, length uint32, tag uint16) int 
 	}
 
 	const FLEXTREE_POFF_MASK = 0xffffffffffff
-	t := BruteForceExtent{Loff: loff, Len: length, Poff: poff & FLEXTREE_POFF_MASK, Tag: tag}
+	t := bruteForceExtent{Loff: loff, Len: length, Poff: poff & FLEXTREE_POFF_MASK, Tag: tag}
 	target := bf.findPos(loff)
 
 	shift := 1
@@ -101,17 +103,17 @@ func (bf *BruteForce) insertR(loff, poff uint64, length uint32, tag uint16) int 
 				bf.Extents[target-1].Len += length
 				shift = 0
 			} else {
-				bf.Extents = append(bf.Extents, BruteForceExtent{})
+				bf.Extents = append(bf.Extents, bruteForceExtent{})
 				copy(bf.Extents[target+1:], bf.Extents[target:])
 				bf.Extents[target] = t
 			}
 		} else {
 			shift = 2
 			so := uint32(loff - curr.Loff)
-			left := BruteForceExtent{Loff: curr.Loff, Poff: curr.Poff, Len: so, Tag: curr.Tag}
-			right := BruteForceExtent{Loff: curr.Loff + uint64(so), Poff: curr.Poff + uint64(so), Len: curr.Len - so, Tag: 0}
+			left := bruteForceExtent{Loff: curr.Loff, Poff: curr.Poff, Len: so, Tag: curr.Tag}
+			right := bruteForceExtent{Loff: curr.Loff + uint64(so), Poff: curr.Poff + uint64(so), Len: curr.Len - so, Tag: 0}
 
-			bf.Extents = append(bf.Extents, BruteForceExtent{}, BruteForceExtent{})
+			bf.Extents = append(bf.Extents, bruteForceExtent{}, bruteForceExtent{})
 			copy(bf.Extents[target+3:], bf.Extents[target+1:])
 
 			bf.Extents[target] = left
@@ -127,15 +129,15 @@ func (bf *BruteForce) insertR(loff, poff uint64, length uint32, tag uint16) int 
 	return 0
 }
 
-func (bf *BruteForce) Insert(loff, poff uint64, length uint32) int {
+func (bf *bruteForce) Insert(loff, poff uint64, length uint32) int {
 	return bf.insertR(loff, poff, length, 0)
 }
 
-func (bf *BruteForce) InsertWTag(loff, poff uint64, length uint32, tag uint16) int {
+func (bf *bruteForce) InsertWTag(loff, poff uint64, length uint32, tag uint16) int {
 	return bf.insertR(loff, poff, length, tag)
 }
 
-func (bf *BruteForce) rangeCount(loff, length uint64) uint64 {
+func (bf *bruteForce) rangeCount(loff, length uint64) uint64 {
 	ret := uint64(0)
 	oloff := loff
 	olen := length
@@ -157,7 +159,7 @@ func (bf *BruteForce) rangeCount(loff, length uint64) uint64 {
 	return ret
 }
 
-func (bf *BruteForce) Query(loff, length uint64) *FlextreeQueryResult {
+func (bf *bruteForce) Query(loff, length uint64) *FlextreeQueryResult {
 	if loff+length > bf.MaxLoff {
 		return nil
 	}
@@ -199,11 +201,11 @@ func (bf *BruteForce) Query(loff, length uint64) *FlextreeQueryResult {
 	return rr
 }
 
-func (bf *BruteForce) GetMaxLoff() uint64 {
+func (bf *bruteForce) GetMaxLoff() uint64 {
 	return bf.MaxLoff
 }
 
-func (bf *BruteForce) PQuery(loff uint64) uint64 {
+func (bf *bruteForce) PQuery(loff uint64) uint64 {
 	if loff >= bf.MaxLoff {
 		return ^uint64(0)
 	}
@@ -218,7 +220,7 @@ func (bf *BruteForce) PQuery(loff uint64) uint64 {
 	return ^uint64(0)
 }
 
-func (bf *BruteForce) Delete(loff, length uint64) int {
+func (bf *bruteForce) Delete(loff, length uint64) int {
 	if loff+length > bf.MaxLoff {
 		return -1
 	}
@@ -248,8 +250,8 @@ func (bf *BruteForce) Delete(loff, length uint64) int {
 			if ext.Len-tmp == tlen {
 				ext.Len -= tlen
 			} else {
-				right := BruteForceExtent{Loff: loff + uint64(tlen), Poff: ext.Poff + uint64(tmp) + uint64(tlen), Len: ext.Len - tmp - tlen, Tag: 0}
-				bf.Extents = append(bf.Extents, BruteForceExtent{})
+				right := bruteForceExtent{Loff: loff + uint64(tlen), Poff: ext.Poff + uint64(tmp) + uint64(tlen), Len: ext.Len - tmp - tlen, Tag: 0}
+				bf.Extents = append(bf.Extents, bruteForceExtent{})
 				copy(bf.Extents[target+2:], bf.Extents[target+1:])
 				bf.Extents[target].Len = tmp // use index; ext pointer is stale after append realloc
 				bf.Extents[target+1] = right
@@ -264,11 +266,11 @@ func (bf *BruteForce) Delete(loff, length uint64) int {
 	return 0
 }
 
-func (bf *BruteForce) PDelete(loff uint64) int {
+func (bf *bruteForce) PDelete(loff uint64) int {
 	return bf.Delete(loff, 1)
 }
 
-func (bf *BruteForce) SetTag(loff uint64, tag uint16) int {
+func (bf *bruteForce) SetTag(loff uint64, tag uint16) int {
 	if loff >= bf.MaxLoff {
 		return -1
 	}
@@ -282,10 +284,10 @@ func (bf *BruteForce) SetTag(loff uint64, tag uint16) int {
 		ext.Tag = tag
 	} else {
 		so := uint32(loff - ext.Loff)
-		left := BruteForceExtent{Loff: ext.Loff, Poff: ext.Poff, Len: so, Tag: ext.Tag}
-		right := BruteForceExtent{Loff: ext.Loff + uint64(so), Poff: ext.Poff + uint64(so), Len: ext.Len - so, Tag: tag}
+		left := bruteForceExtent{Loff: ext.Loff, Poff: ext.Poff, Len: so, Tag: ext.Tag}
+		right := bruteForceExtent{Loff: ext.Loff + uint64(so), Poff: ext.Poff + uint64(so), Len: ext.Len - so, Tag: tag}
 
-		bf.Extents = append(bf.Extents, BruteForceExtent{})
+		bf.Extents = append(bf.Extents, bruteForceExtent{})
 		copy(bf.Extents[target+2:], bf.Extents[target+1:])
 
 		bf.Extents[target] = left
@@ -294,7 +296,7 @@ func (bf *BruteForce) SetTag(loff uint64, tag uint16) int {
 	return 0
 }
 
-func (bf *BruteForce) GetTag(loff uint64) (uint16, int) {
+func (bf *bruteForce) GetTag(loff uint64) (uint16, int) {
 	if loff >= bf.MaxLoff {
 		return 0, -1
 	}

@@ -51,7 +51,7 @@ func queryResultEqual(rr1, rr2 *FlextreeQueryResult) bool {
 	return true
 }
 
-func randomInsert(t *testing.T, ft *FlexTree, bf *BruteForce, count uint64) {
+func randomInsert(t *testing.T, ft *FlexTree, bf *bruteForce, count uint64) {
 	if ft != nil {
 		resetRand()
 		//t0 := time.Now()
@@ -77,7 +77,7 @@ func randomInsert(t *testing.T, ft *FlexTree, bf *BruteForce, count uint64) {
 	}
 }
 
-func sequentialQuery(t *testing.T, ft *FlexTree, bf *BruteForce, totalSize uint64) {
+func sequentialQuery(t *testing.T, ft *FlexTree, bf *bruteForce, totalSize uint64) {
 	if ft == nil || bf == nil {
 		return
 	}
@@ -100,7 +100,7 @@ func sequentialQuery(t *testing.T, ft *FlexTree, bf *BruteForce, totalSize uint6
 	}
 }
 
-func randomDelete(t *testing.T, ft *FlexTree, bf *BruteForce, totalSize uint64, count uint64) {
+func randomDelete(t *testing.T, ft *FlexTree, bf *bruteForce, totalSize uint64, count uint64) {
 	if ft == nil || bf == nil {
 		return
 	}
@@ -246,7 +246,7 @@ func TestFlextree_Test1(t *testing.T) {
 	ft, err := OpenFlexTreeCoW(dir, fs)
 	panicOn(err)
 
-	bf := OpenBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
+	bf := openBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
 
 	randomInsert(t, ft, bf, count)
 
@@ -263,7 +263,7 @@ func TestFlextree_Test1(t *testing.T) {
 	ft.Close()
 }
 
-func randomPDelete(t *testing.T, ft *FlexTree, bf *BruteForce, totalSize uint64, count uint64) {
+func randomPDelete(t *testing.T, ft *FlexTree, bf *bruteForce, totalSize uint64, count uint64) {
 	if ft != nil {
 		resetRand()
 		for i := uint64(0); i < count; i++ {
@@ -287,7 +287,7 @@ func TestFlextree_Test2(t *testing.T) {
 	ft, err := OpenFlexTreeCoW(dir, fs)
 	panicOn(err)
 
-	bf := OpenBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
+	bf := openBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
 
 	randomInsert(t, ft, bf, count)
 	checkFlexTreeContiguity(t, ft, "Test2-afterInsert")
@@ -309,7 +309,7 @@ func TestFlextree_Test3(t *testing.T) {
 	ft, err := OpenFlexTreeCoW(dir, fs)
 	panicOn(err)
 
-	bf := OpenBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
+	bf := openBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
 
 	randomInsert(t, ft, bf, count)
 	checkFlexTreeContiguity(t, ft, "Test3-afterInsert")
@@ -324,7 +324,7 @@ func TestFlextree_Test3(t *testing.T) {
 	ft.Close()
 }
 
-func randomRangeQuery(t *testing.T, ft *FlexTree, bf *BruteForce, totalSize uint64, count uint64) {
+func randomRangeQuery(t *testing.T, ft *FlexTree, bf *bruteForce, totalSize uint64, count uint64) {
 	if ft == nil || bf == nil {
 		return
 	}
@@ -358,7 +358,7 @@ func TestFlextree_Test4(t *testing.T) {
 	ft, err := OpenFlexTreeCoW(dir, fs)
 	panicOn(err)
 
-	bf := OpenBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
+	bf := openBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
 
 	randomInsert(t, ft, bf, count)
 	randomDelete(t, ft, bf, ft.GetMaxLoff(), count)
@@ -378,7 +378,7 @@ func TestFlextree_Test6(t *testing.T) {
 	ft, err := OpenFlexTreeCoW(dir, fs)
 	panicOn(err)
 
-	bf := OpenBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
+	bf := openBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
 
 	randomInsert(t, ft, bf, count)
 
@@ -403,7 +403,7 @@ func TestFlextree_Test7(t *testing.T) {
 	ft, err := OpenFlexTreeCoW(dir, fs)
 	panicOn(err)
 
-	bf := OpenBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
+	bf := openBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
 
 	randomInsert(t, ft, bf, count)
 
@@ -418,7 +418,7 @@ func TestFlextree_Test7(t *testing.T) {
 	ft.Close()
 }
 
-func sequentialTagQuery(t *testing.T, ft *FlexTree, bf *BruteForce, totalSize uint64) {
+func sequentialTagQuery(t *testing.T, ft *FlexTree, bf *bruteForce, totalSize uint64) {
 	if ft == nil || bf == nil {
 		return
 	}
@@ -440,7 +440,7 @@ func TestFlextree_Test8(t *testing.T) {
 
 	ft, err := OpenFlexTreeCoW(dir, fs)
 	panicOn(err)
-	bf := OpenBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
+	bf := openBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
 
 	randomInsert(t, ft, bf, count)
 	randomDelete(t, ft, bf, ft.GetMaxLoff(), count)
@@ -455,7 +455,7 @@ func TestFlextree_Test8(t *testing.T) {
 
 // randomAppend inserts sequential extents at the end of the tree
 // (append pattern, not random-offset insert). Mirrors C's random_append().
-func randomAppend(t *testing.T, ft *FlexTree, bf *BruteForce, count uint64) {
+func randomAppend(t *testing.T, ft *FlexTree, bf *bruteForce, count uint64) {
 	if ft != nil {
 		resetRand()
 		ft.Insert(0, 0, 4)
@@ -529,7 +529,7 @@ func TestFlextree_Test5_CoW(t *testing.T) {
 
 	ft, err := OpenFlexTreeCoW(dir, fs)
 	panicOn(err)
-	bf := OpenBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
+	bf := openBruteForce(DefaultFlexTreeMaxExtentSizeLimit)
 
 	randomInsert(t, ft, bf, count)
 

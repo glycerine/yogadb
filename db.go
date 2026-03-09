@@ -53,11 +53,14 @@ const (
 
 var sep = string(os.PathSeparator)
 
+// Batch submits a set of writes all together at once
+// for load efficiency and/or atomic change to the database.
 type Batch struct {
 	db   *FlexDB
 	puts []*KV
 }
 
+// NewBatch returns an empty new Batch.
 func (db *FlexDB) NewBatch() (b *Batch) {
 	b = &Batch{
 		db: db,
@@ -1240,8 +1243,8 @@ func (db *FlexDB) resolveVPtr(kv KV) ([]byte, error) {
 	return db.vlog.read(kv.Vptr)
 }
 
-// VacuumStats reports the results of a VacuumVLOG operation.
-type VacuumStats struct {
+// VacuumVLOGStats reports the results of a VacuumVLOG operation.
+type VacuumVLOGStats struct {
 	OldVLOGSize        int64
 	NewVLOGSize        int64
 	BytesReclaimed     int64
@@ -1249,8 +1252,8 @@ type VacuumStats struct {
 	IntervalsRewritten int64
 }
 
-func (z *VacuumStats) String() (r string) {
-	r = "VacuumStats{\n"
+func (z *VacuumVLOGStats) String() (r string) {
+	r = "VacuumVLOGStats{\n"
 	r += fmt.Sprintf("       OldVLOGSize: %v,\n", z.OldVLOGSize)
 	r += fmt.Sprintf("       NewVLOGSize: %v,\n", z.NewVLOGSize)
 	r += fmt.Sprintf("    BytesReclaimed: %v,\n", z.BytesReclaimed)
@@ -1267,14 +1270,14 @@ func (z *VacuumStats) String() (r string) {
 // Crash safety: if the process crashes before the rename completes, the old
 // VLOG and old intervals remain intact. The stale VLOG.new file (if present)
 // is harmless and will be overwritten on the next vacuum.
-func (db *FlexDB) VacuumVLOG() (*VacuumStats, error) {
+func (db *FlexDB) VacuumVLOG() (*VacuumVLOGStats, error) {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 
 	if db.vlog == nil {
 		return nil, fmt.Errorf("flexdb: VLOG is disabled")
 	}
-	stats := &VacuumStats{}
+	stats := &VacuumVLOGStats{}
 
 	// Flush memtables so all live VPtrs are in FlexSpace.
 	db.writeLockHeldSync()
