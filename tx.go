@@ -95,7 +95,7 @@ func (tx *writeTx) FindIt(smod SearchModifier, key []byte) (kv *KV, found, exact
 }
 
 func (tx *writeTx) FetchLarge(kv *KV) ([]byte, error) {
-	return tx.db.FetchLarge(kv)
+	return tx.db.lockHeldFetchLarge(kv)
 }
 
 func (tx *writeTx) NewIter() *Iter {
@@ -212,7 +212,7 @@ func (tx *readTx) FindIt(smod SearchModifier, key []byte) (kv *KV, found, exact 
 }
 
 func (tx *readTx) FetchLarge(kv *KV) ([]byte, error) {
-	return tx.db.FetchLarge(kv)
+	return tx.db.lockHeldFetchLarge(kv)
 }
 
 func (tx *readTx) NewIter() *Iter {

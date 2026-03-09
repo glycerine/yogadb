@@ -1256,7 +1256,20 @@ func (db *FlexDB) resolveVPtr(kv KV) ([]byte, error) {
 // is stored in the VLOG (kv.Large() returns true). For inline
 // values, it simply returns kv.Value. The returned bytes are
 // a fresh copy safe to retain.
+//
+// Goroutine safe. Acquires the read lock internally.
 func (db *FlexDB) FetchLarge(kv *KV) ([]byte, error) {
+	if kv == nil {
+		return nil, fmt.Errorf("flexdb: FetchLarge called with nil KV")
+	}
+	db.topMutRW.RLock()
+	defer db.topMutRW.RUnlock()
+	return db.resolveVPtr(*kv)
+}
+
+// lockHeldFetchLarge is the lock-held body of FetchLarge.
+// Caller must hold topMutRW.RLock() or topMutRW.Lock().
+func (db *FlexDB) lockHeldFetchLarge(kv *KV) ([]byte, error) {
 	if kv == nil {
 		return nil, fmt.Errorf("flexdb: FetchLarge called with nil KV")
 	}
