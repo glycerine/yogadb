@@ -346,14 +346,14 @@ func kv128Encode(buf []byte, kv KV) []byte {
 	n := binary.PutUvarint(hdr[:], uint64(len(kv.Key)))
 	if kv.isTombstone() {
 		n += binary.PutUvarint(hdr[n:], 0) // tombstone
-	} else if kv.HasVPtr {
+	} else if kv.HasVPtr() {
 		n += binary.PutUvarint(hdr[n:], rawVlenVPtr) // VLOG pointer sentinel
 	} else {
 		n += binary.PutUvarint(hdr[n:], uint64(len(kv.Value)+1)) // inline: len+1
 	}
 	buf = append(buf, hdr[:n]...)
 	buf = append(buf, kv.Key...)
-	if kv.HasVPtr {
+	if kv.HasVPtr() {
 		var vptrBuf [vptrSize]byte
 		kv.Vptr.encode(vptrBuf[:])
 		buf = append(buf, vptrBuf[:]...)
@@ -375,7 +375,7 @@ func kv128EncodedSize(kv KV) int {
 	if kv.isTombstone() {
 		return varintSize(uint64(len(kv.Key))) + 1 + len(kv.Key) + 8 + 4
 	}
-	if kv.HasVPtr {
+	if kv.HasVPtr() {
 		return varintSize(uint64(len(kv.Key))) + varintSize(rawVlenVPtr) + len(kv.Key) + vptrSize + 8 + 4
 	}
 	return varintSize(uint64(len(kv.Key))) + varintSize(uint64(len(kv.Value)+1)) + len(kv.Key) + len(kv.Value) + 8 + 4
@@ -415,7 +415,6 @@ func kv128Decode(src []byte) (kv KV, n int, ok bool) {
 		}
 		kv.Key = string(src[hdr : hdr+int(klen)])
 		kv.Vptr = decodeVPtr(src[hdr+int(klen) : hdr+int(klen)+vptrSize])
-		kv.HasVPtr = true
 		kv.Hlc = HLC(binary.BigEndian.Uint64(src[total-8 : total]))
 		return kv, total + 4, true
 	}
@@ -633,7 +632,7 @@ func kvToState(kv KV) keyState {
 	if kv.isTombstone() {
 		return ksTombstone
 	}
-	if kv.HasVPtr {
+	if kv.HasVPtr() {
 		return ksLiveBig
 	}
 	return ksLiveSmall
@@ -1245,7 +1244,7 @@ func (db *FlexDB) CumulativeMetrics() *Metrics {
 // resolveVPtr reads the value from the VLOG file for a KV that has HasVPtr set.
 // Returns the resolved value bytes, or an error.
 func (db *FlexDB) resolveVPtr(kv KV) ([]byte, error) {
-	if !kv.HasVPtr {
+	if !kv.HasVPtr() {
 		return kv.Value, nil
 	}
 	if db.vlog == nil {
@@ -1347,7 +1346,7 @@ func (db *FlexDB) VacuumVLOG() (*VacuumVLOGStats, error) {
 			// Check if any KV in this interval has a VPtr.
 			hasVPtr := false
 			for i := 0; i < fce.count; i++ {
-				if fce.kvs[i].HasVPtr {
+				if fce.kvs[i].HasVPtr() {
 					hasVPtr = true
 					break
 				}
@@ -1359,7 +1358,7 @@ func (db *FlexDB) VacuumVLOG() (*VacuumVLOGStats, error) {
 
 			// Copy live VPtr values to new VLOG and update VPtrs.
 			for i := 0; i < fce.count; i++ {
-				if !fce.kvs[i].HasVPtr {
+				if !fce.kvs[i].HasVPtr() {
 					continue
 				}
 				// Read value from old VLOG.
@@ -2048,7 +2047,7 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte) error {
 		if err != nil {
 			return fmt.Errorf("flexdb: vlog append: %w", err)
 		}
-		kv = KV{Key: key, Vptr: vp, HasVPtr: true, Hlc: hlcVal}
+		kv = KV{Key: key, Vptr: vp, Hlc: hlcVal}
 	}
 
 	if db.memtables[db.activeMT].size >= memtableCap {
@@ -2184,9 +2183,9 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kv *KV, found, exact bo
 	if found {
 		zc := findBuildKV(it)
 		// String Key is immutable — no copy needed. Copy Value.
-		owned := KV{Vptr: zc.Vptr, HasVPtr: zc.HasVPtr, Hlc: zc.Hlc}
+		owned := KV{Vptr: zc.Vptr, Hlc: zc.Hlc}
 		owned.Key = zc.Key
-		if !zc.HasVPtr && zc.Value != nil {
+		if !zc.HasVPtr() && zc.Value != nil {
 			owned.Value = append([]byte{}, zc.Value...)
 		}
 		kv = &owned
@@ -2383,7 +2382,7 @@ func (db *FlexDB) writeLockHeldDeleteRange(includeLarge bool, begKey, endKey str
 				return true
 			}
 			if !item.isTombstone() {
-				if !includeLarge && item.HasVPtr {
+				if !includeLarge && item.HasVPtr() {
 					return true // skip large-value keys
 				}
 				keys = append(keys, item.Key)
@@ -2441,7 +2440,7 @@ func (db *FlexDB) writeLockHeldClear(includeLarge bool) (allGone bool, err error
 		}
 		var keys []string
 		db.memtables[mtIdx].bt.Scan(func(item KV) bool {
-			if !item.isTombstone() && !item.HasVPtr {
+			if !item.isTombstone() && !item.HasVPtr() {
 				keys = append(keys, item.Key)
 			}
 			return true
@@ -2762,7 +2761,7 @@ func (db *FlexDB) deleteRangeFlexSpace(begKey, endKey string, begInclusive, endI
 				if kv.isTombstone() {
 					continue
 				}
-				if !includeLarge && kv.HasVPtr {
+				if !includeLarge && kv.HasVPtr() {
 					continue // skip large-value keys
 				}
 
@@ -2871,7 +2870,7 @@ func (db *FlexDB) deleteRangeFlexSpaceClearSmall() (int64, error) {
 						continue
 					}
 				}
-				if kv.isTombstone() || kv.HasVPtr {
+				if kv.isTombstone() || kv.HasVPtr() {
 					continue // skip tombstones and large-value keys
 				}
 
