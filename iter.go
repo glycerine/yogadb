@@ -59,33 +59,39 @@ type prefetchSpan struct {
 	end int  // forward: pos < end; reverse: pos >= end (end is lower bound)
 }
 
-// ====================== Lock-Free Re-Seeking Iterator ======================
+// ====================== Iterator ======================
 //
 // Iter is a stateful, prefetching iterator over the merged view of:
 //   - Active memtable (highest priority)
 //   - Inactive memtable
 //   - FlexSpace via sparse index (lowest priority)
 //
-// The iterator holds NO locks between calls. It maintains a stateful
-// flexCursor into FlexSpace's sparse index tree, an HLC snapshot for
-// version detection, and a span-based prefetch buffer. On the fast path
-// (both memtables empty, no concurrent mutations), Next() serves from
-// prefetched spans with only an atomic HLC check — no lock, no seek.
-// When the HLC has changed (mutation occurred) or memtables are non-empty,
-// the iterator falls back to a merged re-seek under topMutRW.RLock().
+// There are two modes of operation:
 //
-// Mutations (Put/Delete) are safe during iteration — the HLC check
-// detects them and triggers a re-seek. No snapshot consistency guarantee;
-// this is a design tradeoff we made for this embedded single-user store
-// because we want deletion and udpate _during_ iteration.
+// Unlocked mode (NewIter): The iterator holds NO locks between calls.
+// It uses an HLC snapshot for version detection and a span-based
+// prefetch buffer. On the fast path (both memtables empty, no
+// concurrent mutations), Next() serves from prefetched spans with
+// only an atomic HLC check — no lock, no seek. When the HLC has
+// changed (mutation occurred) or memtables are non-empty, the
+// iterator falls back to a merged re-seek under topMutRW.RLock().
 //
-// Large values (stored in VLOG) are not fetched by default. The Value()
-// method returns the inline value or nil if the value is large. Use
-// Large() to check, and FetchV() to fetch on demand.
+// Locked mode (NewLockedIter): The iterator holds topMutRW.Lock()
+// (the exclusive write lock) for its entire lifetime, from creation
+// until Close(). This blocks the flush worker and all other
+// goroutines from reading or writing the database. In exchange:
+//   - Zero-copy access to cache memory is safe (no concurrent mutation).
+//   - Mutations via it.Put/it.Delete are immediately visible to
+//     subsequent Next/Prev calls (read-your-writes).
+//   - it.Get provides point queries without additional locking.
+//   - it.Sync flushes the memtable to FlexSpace.
 //
-// In short:
+// In locked mode, do NOT call db.Put/db.Get/db.Delete/db.Sync
+// directly — they will deadlock. Use the iterator's methods instead.
+// Close the iterator promptly to release the lock.
 //
-// Iter is a lock-free re-seeking merge iterator over memtables and FlexSpace.
+// Large values (stored in VLOG) are not fetched by default. Use
+// Large() to check and FetchV() to fetch on demand.
 type Iter struct {
 	db *FlexDB
 
@@ -97,6 +103,12 @@ type Iter struct {
 	valid  bool
 	dir    int // 1=forward, -1=backward (informational)
 	closed bool
+
+	// locked is true when the iterator holds topMutRW.Lock() for
+	// its entire lifetime (created via NewLockedIter). When locked,
+	// Seek/Next/Prev skip lock acquisition (already held), and
+	// Close() releases the write lock.
+	locked bool
 
 	// Stateful FlexSpace cursor for O(1) amortized forward iteration.
 	fc flexCursor
@@ -124,10 +136,43 @@ type Iter struct {
 	pfSpanIdx   int // current span being served
 }
 
-// NewIter creates an iterator. Call Seek, SeekToFirst, or SeekToLast to position it.
-// The iterator holds no locks; it is safe to call db.Put/db.Delete between iterator calls.
+// NewIter creates an unlocked iterator. Call Seek, SeekToFirst, or
+// SeekToLast to position it. The iterator holds no locks between calls;
+// it is safe to call db.Put/db.Delete between iterator calls.
 func (db *FlexDB) NewIter() *Iter {
 	return &Iter{db: db}
+}
+
+// NewLockedIter creates a locked iterator that holds topMutRW.Lock()
+// (the exclusive write lock) until Close() is called. While the
+// iterator is open, no other goroutine can read or write the database
+// (including the background flush worker).
+//
+// Use the iterator's Put, Get, Delete, and Sync methods to mutate the
+// database during iteration — do NOT call db.Put/db.Get/db.Delete/db.Sync
+// directly, as they will deadlock.
+//
+// Mutations are immediately visible to subsequent Next/Prev calls.
+// Close the iterator promptly to release the lock.
+func (db *FlexDB) NewLockedIter() *Iter {
+	db.topMutRW.Lock()
+	return &Iter{db: db, locked: true}
+}
+
+// rlock acquires topMutRW.RLock() unless the iterator already holds
+// the write lock (locked mode).
+func (it *Iter) rlock() {
+	if !it.locked {
+		it.db.topMutRW.RLock()
+	}
+}
+
+// runlock releases topMutRW.RUnlock() unless the iterator already holds
+// the write lock (locked mode).
+func (it *Iter) runlock() {
+	if !it.locked {
+		it.db.topMutRW.RUnlock()
+	}
 }
 
 // releaseIterState releases all stateful cursor resources.
@@ -1184,13 +1229,13 @@ func (it *Iter) Seek(target []byte) {
 	}
 	it.releaseIterState()
 	db := it.db
-	db.topMutRW.RLock()
+	it.rlock()
 	it.initFlexCursorSeekGE(target)
 
 	// Prefetch fast path: both memtables empty → fill buffer from FlexSpace.
 	if db.memtables[0].empty && db.memtables[1].empty {
 		it.prefetchFillFlexSpaceOnly()
-		db.topMutRW.RUnlock()
+		it.runlock()
 		if it.pfSpanCount == 0 || !it.servePrefetch() {
 			it.valid = false
 		}
@@ -1198,7 +1243,7 @@ func (it *Iter) Seek(target []byte) {
 	}
 
 	it.pKV, it.valid = it.mergedSeekGEFastFlexSpace(target, false)
-	db.topMutRW.RUnlock()
+	it.runlock()
 	it.dir = 1
 }
 
@@ -1209,7 +1254,7 @@ func (it *Iter) seekLE(target []byte, strict bool) {
 	}
 	it.releaseIterState()
 	db := it.db
-	db.topMutRW.RLock()
+	it.rlock()
 	it.initFlexCursorSeekLE(target)
 
 	// Prefetch fast path: both memtables empty → fill buffer backward from FlexSpace.
@@ -1218,7 +1263,7 @@ func (it *Iter) seekLE(target []byte, strict bool) {
 			it.retreatFlexCursorBefore(target, true)
 		}
 		it.prefetchFillFlexSpaceReverse()
-		db.topMutRW.RUnlock()
+		it.runlock()
 		if it.pfSpanCount == 0 || !it.servePrefetchReverse() {
 			it.valid = false
 		}
@@ -1226,7 +1271,7 @@ func (it *Iter) seekLE(target []byte, strict bool) {
 	}
 
 	it.pKV, it.valid = db.mergedSeekLE(target, strict)
-	db.topMutRW.RUnlock()
+	it.runlock()
 	it.dir = -1
 	it.valueResolved = true
 }
@@ -1243,13 +1288,13 @@ func (it *Iter) SeekToLast() {
 	}
 	it.releaseIterState()
 	db := it.db
-	db.topMutRW.RLock()
+	it.rlock()
 	it.initFlexCursorSeekLE(nil)
 
 	// Prefetch fast path: both memtables empty → fill buffer backward from FlexSpace.
 	if db.memtables[0].empty && db.memtables[1].empty {
 		it.prefetchFillFlexSpaceReverse()
-		db.topMutRW.RUnlock()
+		it.runlock()
 		if it.pfSpanCount == 0 || !it.servePrefetchReverse() {
 			it.valid = false
 		}
@@ -1257,7 +1302,7 @@ func (it *Iter) SeekToLast() {
 	}
 
 	it.pKV, it.valid = db.mergedSeekLE(nil, false)
-	db.topMutRW.RUnlock()
+	it.runlock()
 	it.dir = -1
 	it.valueResolved = true
 }
@@ -1284,7 +1329,7 @@ func (it *Iter) Next() {
 	}
 
 	db := it.db
-	db.topMutRW.RLock()
+	it.rlock()
 
 	curKey := it.pKV.Key // save before any re-seek overwrites pKV
 
@@ -1294,7 +1339,7 @@ func (it *Iter) Next() {
 		if db.memtables[0].empty && db.memtables[1].empty {
 			it.prefetchFillFlexSpaceOnly()
 			it.snapshotHLC = currentHLC // no atomic needed, we hold the lock
-			db.topMutRW.RUnlock()
+			it.runlock()
 			if it.pfSpanCount == 0 || !it.servePrefetch() {
 				it.valid = false
 			}
@@ -1303,7 +1348,7 @@ func (it *Iter) Next() {
 
 		// Non-empty memtables: single merged seek with cursor reuse.
 		it.pKV, it.valid = it.mergedSeekGEFastFlexSpace(curKey, true)
-		db.topMutRW.RUnlock()
+		it.runlock()
 		return
 	}
 
@@ -1317,7 +1362,7 @@ func (it *Iter) Next() {
 		// Position cursor past curKey (strict > curKey).
 		it.positionFlexCursorForSeek(curKey, true)
 		it.prefetchFillFlexSpaceOnly()
-		db.topMutRW.RUnlock()
+		it.runlock()
 		if it.pfSpanCount == 0 || !it.servePrefetch() {
 			it.valid = false
 		}
@@ -1326,7 +1371,7 @@ func (it *Iter) Next() {
 	}
 
 	it.pKV, it.valid = it.mergedSeekGEFastFlexSpace(curKey, true)
-	db.topMutRW.RUnlock()
+	it.runlock()
 	it.dir = 1
 }
 
@@ -1353,7 +1398,7 @@ func (it *Iter) Prev() {
 	db := it.db
 	curKey := it.pKV.Key // save before any re-seek overwrites pKV
 
-	db.topMutRW.RLock()
+	it.rlock()
 
 	currentHLC := db.hlc.Aload()
 	if it.dir == -1 && it.snapshotHLC == currentHLC && it.snapshotHLC != 0 {
@@ -1361,7 +1406,7 @@ func (it *Iter) Prev() {
 		if db.memtables[0].empty && db.memtables[1].empty {
 			it.prefetchFillFlexSpaceReverse()
 			it.snapshotHLC = currentHLC // no atomic needed, we hold the lock
-			db.topMutRW.RUnlock()
+			it.runlock()
 			if it.pfSpanCount == 0 || !it.servePrefetchReverse() {
 				it.valid = false
 			}
@@ -1370,7 +1415,7 @@ func (it *Iter) Prev() {
 
 		// Non-empty memtables: single merged seek.
 		it.pKV, it.valid = db.mergedSeekLE(curKey, true)
-		db.topMutRW.RUnlock()
+		it.runlock()
 		it.valueResolved = true
 		return
 	}
@@ -1392,7 +1437,7 @@ func (it *Iter) Prev() {
 	// Try prefetch on fresh cursor if memtables are empty.
 	if db.memtables[0].empty && db.memtables[1].empty {
 		it.prefetchFillFlexSpaceReverse()
-		db.topMutRW.RUnlock()
+		it.runlock()
 		if it.pfSpanCount == 0 || !it.servePrefetchReverse() {
 			it.valid = false
 		}
@@ -1401,16 +1446,67 @@ func (it *Iter) Prev() {
 	}
 
 	it.pKV, it.valid = db.mergedSeekLE(curKey, true)
-	db.topMutRW.RUnlock()
+	it.runlock()
 	it.dir = -1
 	it.valueResolved = true
 }
 
 // Close marks the iterator as closed and releases cursor state.
+// For locked iterators (created via NewLockedIter), Close releases
+// the exclusive write lock (topMutRW.Unlock()).
 func (it *Iter) Close() {
 	it.releaseIterState()
 	it.valid = false
 	it.closed = true
+	if it.locked {
+		it.db.topMutRW.Unlock()
+		it.locked = false
+	}
+}
+
+// ====================== Locked Iterator Mutation Methods ======================
+//
+// These methods are only available on locked iterators (created via
+// NewLockedIter). They call the write-lock-held internal methods
+// directly, avoiding deadlock since the lock is already held.
+// Calling these on an unlocked iterator panics.
+
+// Put inserts or updates a key-value pair through the locked iterator.
+// The write is immediately visible to subsequent Seek/Next/Prev calls.
+// Panics if the iterator is not locked.
+func (it *Iter) Put(key, value []byte) error {
+	if !it.locked {
+		panic("yogadb: Put called on unlocked iterator; use NewLockedIter")
+	}
+	return it.db.writeLockHeldPut(key, value)
+}
+
+// Delete removes a key through the locked iterator by writing a tombstone.
+// The deletion is immediately visible to subsequent Seek/Next/Prev calls.
+// Panics if the iterator is not locked.
+func (it *Iter) Delete(key []byte) error {
+	if !it.locked {
+		panic("yogadb: Delete called on unlocked iterator; use NewLockedIter")
+	}
+	return it.db.writeLockHeldPut(key, nil)
+}
+
+// Get retrieves the value for key through the locked iterator.
+// Returns nil, false if not found. Panics if the iterator is not locked.
+func (it *Iter) Get(key []byte) ([]byte, bool) {
+	if !it.locked {
+		panic("yogadb: Get called on unlocked iterator; use NewLockedIter")
+	}
+	return it.db.writeLockHeldGet(key)
+}
+
+// Sync flushes the active memtable to FlexSpace through the locked iterator.
+// Panics if the iterator is not locked.
+func (it *Iter) Sync() error {
+	if !it.locked {
+		panic("yogadb: Sync called on unlocked iterator; use NewLockedIter")
+	}
+	return it.db.writeLockHeldSync()
 }
 
 // Valid returns true if the iterator is positioned at a valid key.

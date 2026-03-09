@@ -2146,18 +2146,21 @@ func findSeekIter(it *Iter, smod SearchModifier, key []byte) (found, exact bool)
 }
 
 // findBuildKV constructs a *KV from the iterator's current
-// position. When findOwnedKV is true, the returned KV owns
-// copies of Key and Value (safe to retain). When false, Key
-// and Value point into cache memory (zero-copy, valid only
-// until the next iterator operation).
+// position. When findOwnedKV is true (and the iterator is not
+// locked), the returned KV owns copies of Key and Value (safe
+// to retain). When the iterator is locked or findOwnedKV is
+// false, Key and Value point into cache memory (zero-copy).
+// In locked mode, zero-copy is safe because the write lock
+// prevents concurrent mutation.
 func findBuildKV(it *Iter) *KV {
 	if it.pKV == nil {
 		return nil
 	}
 	src := it.pKV
-	if !findOwnedKV {
+	if !findOwnedKV || it.locked {
 		// Zero-copy fast path: return a shallow copy of the
 		// internal KV. Key and Value alias cache memory.
+		// Safe in locked mode (no concurrent mutation).
 		out := *src
 		return &out
 	}
@@ -2204,12 +2207,16 @@ func findBuildKV(it *Iter) *KV {
 // found indicates whether any key was found.
 // exact indicates an exact match to the query key.
 //
-// The returned iterator is positioned at the found key
-// and can be used to scan beyond it (Next/Prev). The caller
-// must call it.Close() when done. If found is false, the
-// iterator is not valid but must still be closed.
+// The returned iterator is a locked iterator (holds the exclusive
+// write lock) positioned at the found key. It can be used to scan
+// beyond the found key (Next/Prev) and to mutate the database
+// (it.Put, it.Delete, it.Get, it.Sync) without deadlock.
+// Do NOT call db.Put/db.Get/db.Delete/db.Sync while the iterator
+// is open — use the iterator's methods instead.
+// The caller must call it.Close() when done to release the lock.
+// If found is false, the iterator is not valid but must still be closed.
 func (db *FlexDB) FindIt(smod SearchModifier, key []byte) (kv *KV, found, exact bool, it *Iter) {
-	it = db.NewIter()
+	it = db.NewLockedIter()
 	found, exact = findSeekIter(it, smod, key)
 	if !found {
 		return
@@ -2292,6 +2299,50 @@ func (db *FlexDB) Get(key []byte) ([]byte, bool) {
 			out := make([]byte, len(val))
 			copy(out, val)
 			return out, true // not val!
+		}
+	}
+
+	// Check FlexSpace via sparse index
+	val, found := db.getPassthrough(key)
+	return val, found
+}
+
+// writeLockHeldGet retrieves the value for key without acquiring topMutRW.
+// Caller must already hold topMutRW.Lock() or topMutRW.RLock().
+func (db *FlexDB) writeLockHeldGet(key []byte) ([]byte, bool) {
+	// Check active memtable
+	active := db.activeMT
+	if !db.memtables[active].empty {
+		kv, ok := db.memtables[active].get(key)
+		if ok {
+			if kv.isTombstone() {
+				return nil, false
+			}
+			val, err := db.resolveVPtr(kv)
+			if err != nil {
+				return nil, false
+			}
+			out := make([]byte, len(val))
+			copy(out, val)
+			return out, true
+		}
+	}
+
+	// Check inactive memtable
+	inactive := 1 - db.activeMT
+	if !db.memtables[inactive].empty {
+		kv, ok := db.memtables[inactive].get(key)
+		if ok {
+			if kv.isTombstone() {
+				return nil, false
+			}
+			val, err := db.resolveVPtr(kv)
+			if err != nil {
+				return nil, false
+			}
+			out := make([]byte, len(val))
+			copy(out, val)
+			return out, true
 		}
 	}
 

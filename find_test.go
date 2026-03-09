@@ -223,11 +223,12 @@ func TestFindIt_IteratorContinuation(t *testing.T) {
 
 	// FindIt GTE key005, then iterate forward.
 	kv, found, _, it := db.FindIt(GTE, []byte("key005"))
-	defer it.Close()
 	if !found {
+		it.Close()
 		t.Fatal("GTE key005: not found")
 	}
 	if string(kv.Key) != "key005" {
+		it.Close()
 		t.Fatalf("got key %q, want key005", kv.Key)
 	}
 	var keys []string
@@ -235,6 +236,7 @@ func TestFindIt_IteratorContinuation(t *testing.T) {
 		keys = append(keys, string(it.Key()))
 		it.Next()
 	}
+	it.Close() // must close before opening next locked iterator
 	expected := []string{"key005", "key006", "key007", "key008", "key009", "key010"}
 	if len(keys) != len(expected) {
 		t.Fatalf("got %d keys, want %d: %v", len(keys), len(expected), keys)
@@ -373,6 +375,118 @@ func TestFetchLarge_InlineValue(t *testing.T) {
 	if string(val) != "val003" {
 		t.Fatalf("got %q, want val003", val)
 	}
+}
+
+// TestLockedIter_PutGetDelete verifies that it.Put, it.Get, and it.Delete
+// work correctly through a locked iterator, with read-your-writes visibility.
+func TestLockedIter_PutGetDelete(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+	populateFindTestDB(t, db)
+
+	it := db.NewLockedIter()
+	defer it.Close()
+
+	// Get existing key through iterator.
+	val, ok := it.Get([]byte("key005"))
+	if !ok {
+		t.Fatal("Get key005: not found")
+	}
+	if string(val) != "val005" {
+		t.Fatalf("Get key005: got %q, want val005", val)
+	}
+
+	// Put a new key through iterator.
+	if err := it.Put([]byte("key005a"), []byte("inserted")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read-your-writes: Get the just-inserted key.
+	val2, ok2 := it.Get([]byte("key005a"))
+	if !ok2 {
+		t.Fatal("Get key005a: not found after Put")
+	}
+	if string(val2) != "inserted" {
+		t.Fatalf("Get key005a: got %q, want inserted", val2)
+	}
+
+	// Delete a key through iterator.
+	if err := it.Delete([]byte("key003")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read-your-writes: deleted key should be gone.
+	_, ok3 := it.Get([]byte("key003"))
+	if ok3 {
+		t.Fatal("Get key003: should not be found after Delete")
+	}
+
+	// Scan forward from key004 — should see key005a but not key003.
+	it.Seek([]byte("key004"))
+	var keys []string
+	for it.Valid() {
+		keys = append(keys, string(it.Key()))
+		it.Next()
+	}
+	for _, k := range keys {
+		if k == "key003" {
+			t.Fatal("key003 should not appear in scan after Delete")
+		}
+	}
+	found005a := false
+	for _, k := range keys {
+		if k == "key005a" {
+			found005a = true
+		}
+	}
+	if !found005a {
+		t.Fatalf("key005a should appear in scan after Put; got keys: %v", keys)
+	}
+}
+
+// TestLockedIter_Sync verifies that it.Sync flushes the memtable.
+func TestLockedIter_Sync(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+	populateFindTestDB(t, db)
+
+	it := db.NewLockedIter()
+	defer it.Close()
+
+	// Sync should not error.
+	if err := it.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	// After sync, data should still be retrievable.
+	val, ok := it.Get([]byte("key007"))
+	if !ok {
+		t.Fatal("Get key007 after Sync: not found")
+	}
+	if string(val) != "val007" {
+		t.Fatalf("Get key007 after Sync: got %q, want val007", val)
+	}
+}
+
+// TestLockedIter_PanicOnUnlocked verifies that mutation methods panic
+// when called on an unlocked iterator.
+func TestLockedIter_PanicOnUnlocked(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+	it := db.NewIter()
+	defer it.Close()
+
+	assertPanics := func(name string, fn func()) {
+		t.Helper()
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatalf("%s on unlocked iterator should panic", name)
+			}
+		}()
+		fn()
+	}
+
+	assertPanics("Put", func() { it.Put([]byte("k"), []byte("v")) })
+	assertPanics("Delete", func() { it.Delete([]byte("k")) })
+	assertPanics("Get", func() { it.Get([]byte("k")) })
+	assertPanics("Sync", func() { it.Sync() })
 }
 
 // populateFindTestDB inserts 10 keys: key001..key010 with values val001..val010.
