@@ -312,8 +312,8 @@ func TestFind_AfterSync(t *testing.T) {
 	}
 }
 
-// TestFind_KVOwnership verifies that the returned KV is safe to
-// retain (when findOwnedKV is true) by mutating the DB after Find.
+// TestFind_KVOwnership verifies that the returned KV from Find is safe
+// to retain by mutating the DB after Find returns.
 func TestFind_KVOwnership(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateFindTestDB(t, db)
@@ -330,14 +330,12 @@ func TestFind_KVOwnership(t *testing.T) {
 	mustPut(t, db, "key005", "CHANGED")
 	db.Sync()
 
-	// The original KV should still hold the old values.
-	if findOwnedKV {
-		if string(kv.Key) != origKey {
-			t.Fatalf("key mutated: got %q, want %q", kv.Key, origKey)
-		}
-		if string(kv.Value) != origVal {
-			t.Fatalf("value mutated: got %q, want %q", kv.Value, origVal)
-		}
+	// The original KV should still hold the old values (owned copy).
+	if string(kv.Key) != origKey {
+		t.Fatalf("key mutated: got %q, want %q", kv.Key, origKey)
+	}
+	if string(kv.Value) != origVal {
+		t.Fatalf("value mutated: got %q, want %q", kv.Value, origVal)
 	}
 }
 
@@ -464,29 +462,6 @@ func TestLockedIter_Sync(t *testing.T) {
 	if string(val) != "val007" {
 		t.Fatalf("Get key007 after Sync: got %q, want val007", val)
 	}
-}
-
-// TestLockedIter_PanicOnUnlocked verifies that mutation methods panic
-// when called on an unlocked iterator.
-func TestLockedIter_PanicOnUnlocked(t *testing.T) {
-	db, _ := openTestDB(t, nil)
-	it := db.NewIter()
-	defer it.Close()
-
-	assertPanics := func(name string, fn func()) {
-		t.Helper()
-		defer func() {
-			if r := recover(); r == nil {
-				t.Fatalf("%s on unlocked iterator should panic", name)
-			}
-		}()
-		fn()
-	}
-
-	assertPanics("Put", func() { it.Put([]byte("k"), []byte("v")) })
-	assertPanics("Delete", func() { it.Delete([]byte("k")) })
-	assertPanics("Get", func() { it.Get([]byte("k")) })
-	assertPanics("Sync", func() { it.Sync() })
 }
 
 // populateFindTestDB inserts 10 keys: key001..key010 with values val001..val010.

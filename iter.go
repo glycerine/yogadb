@@ -66,28 +66,18 @@ type prefetchSpan struct {
 //   - Inactive memtable
 //   - FlexSpace via sparse index (lowest priority)
 //
-// There are two modes of operation:
-//
-// Unlocked mode (NewIter): The iterator holds NO locks between calls.
-// It uses an HLC snapshot for version detection and a span-based
-// prefetch buffer. On the fast path (both memtables empty, no
-// concurrent mutations), Next() serves from prefetched spans with
-// only an atomic HLC check — no lock, no seek. When the HLC has
-// changed (mutation occurred) or memtables are non-empty, the
-// iterator falls back to a merged re-seek under topMutRW.RLock().
-//
-// Locked mode (NewLockedIter): The iterator holds topMutRW.Lock()
-// (the exclusive write lock) for its entire lifetime, from creation
-// until Close(). This blocks the flush worker and all other
-// goroutines from reading or writing the database. In exchange:
+// The iterator holds topMutRW.Lock() (the exclusive write lock) for
+// its entire lifetime, from NewIter() until Close(). This blocks
+// the flush worker and all other goroutines from reading or writing
+// the database while the iterator is open. In exchange:
 //   - Zero-copy access to cache memory is safe (no concurrent mutation).
 //   - Mutations via it.Put/it.Delete are immediately visible to
 //     subsequent Next/Prev calls (read-your-writes).
 //   - it.Get provides point queries without additional locking.
 //   - it.Sync flushes the memtable to FlexSpace.
 //
-// In locked mode, do NOT call db.Put/db.Get/db.Delete/db.Sync
-// directly — they will deadlock. Use the iterator's methods instead.
+// Do NOT call db.Put/db.Get/db.Delete/db.Sync while an iterator is
+// open — they will deadlock. Use the iterator's methods instead.
 // Close the iterator promptly to release the lock.
 //
 // Large values (stored in VLOG) are not fetched by default. Use
@@ -95,20 +85,13 @@ type prefetchSpan struct {
 type Iter struct {
 	db *FlexDB
 
-	// pKV points to the current key-value pair. On the prefetch fast path
-	// it points directly into the cache (zero-copy). On the slow path it
-	// points to slowKV which holds an owned copy.
+	// pKV points to the current key-value pair. Points directly into
+	// cache memory (zero-copy), safe because the write lock is held.
 	pKV *KV
 
 	valid  bool
 	dir    int // 1=forward, -1=backward (informational)
 	closed bool
-
-	// locked is true when the iterator holds topMutRW.Lock() for
-	// its entire lifetime (created via NewLockedIter). When locked,
-	// Seek/Next/Prev skip lock acquisition (already held), and
-	// Close() releases the write lock.
-	locked bool
 
 	// Stateful FlexSpace cursor for O(1) amortized forward iteration.
 	fc flexCursor
@@ -127,7 +110,7 @@ type Iter struct {
 	// only copied into valBuf when Vin() is actually called by the user.
 	valueResolved bool
 
-	// Prefetch spans: recorded during fill (under lock), served lazily (no lock).
+	// Prefetch spans: recorded during fill (under lock), served lazily.
 	// Each span references a contiguous range within a cache interval's kvs[].
 	// Fill is O(intervals), not O(keys) — just records slice boundaries.
 	// Per-KV access (tombstone check, pointer deref) deferred to servePrefetch.
@@ -136,17 +119,10 @@ type Iter struct {
 	pfSpanIdx   int // current span being served
 }
 
-// NewIter creates an unlocked iterator. Call Seek, SeekToFirst, or
-// SeekToLast to position it. The iterator holds no locks between calls;
-// it is safe to call db.Put/db.Delete between iterator calls.
-func (db *FlexDB) NewIter() *Iter {
-	return &Iter{db: db}
-}
-
-// NewLockedIter creates a locked iterator that holds topMutRW.Lock()
-// (the exclusive write lock) until Close() is called. While the
-// iterator is open, no other goroutine can read or write the database
-// (including the background flush worker).
+// NewIter creates an iterator that holds topMutRW.Lock() (the exclusive
+// write lock) until Close() is called. While the iterator is open, no
+// other goroutine can read or write the database (including the
+// background flush worker).
 //
 // Use the iterator's Put, Get, Delete, and Sync methods to mutate the
 // database during iteration — do NOT call db.Put/db.Get/db.Delete/db.Sync
@@ -154,25 +130,15 @@ func (db *FlexDB) NewIter() *Iter {
 //
 // Mutations are immediately visible to subsequent Next/Prev calls.
 // Close the iterator promptly to release the lock.
-func (db *FlexDB) NewLockedIter() *Iter {
+func (db *FlexDB) NewIter() *Iter {
 	db.topMutRW.Lock()
-	return &Iter{db: db, locked: true}
+	return &Iter{db: db}
 }
 
-// rlock acquires topMutRW.RLock() unless the iterator already holds
-// the write lock (locked mode).
-func (it *Iter) rlock() {
-	if !it.locked {
-		it.db.topMutRW.RLock()
-	}
-}
-
-// runlock releases topMutRW.RUnlock() unless the iterator already holds
-// the write lock (locked mode).
-func (it *Iter) runlock() {
-	if !it.locked {
-		it.db.topMutRW.RUnlock()
-	}
+// NewLockedIter is an alias for NewIter. All iterators hold the
+// exclusive write lock for their entire lifetime.
+func (db *FlexDB) NewLockedIter() *Iter {
+	return db.NewIter()
 }
 
 // releaseIterState releases all stateful cursor resources.
@@ -1229,13 +1195,11 @@ func (it *Iter) Seek(target []byte) {
 	}
 	it.releaseIterState()
 	db := it.db
-	it.rlock()
 	it.initFlexCursorSeekGE(target)
 
 	// Prefetch fast path: both memtables empty → fill buffer from FlexSpace.
 	if db.memtables[0].empty && db.memtables[1].empty {
 		it.prefetchFillFlexSpaceOnly()
-		it.runlock()
 		if it.pfSpanCount == 0 || !it.servePrefetch() {
 			it.valid = false
 		}
@@ -1243,7 +1207,6 @@ func (it *Iter) Seek(target []byte) {
 	}
 
 	it.pKV, it.valid = it.mergedSeekGEFastFlexSpace(target, false)
-	it.runlock()
 	it.dir = 1
 }
 
@@ -1254,7 +1217,6 @@ func (it *Iter) seekLE(target []byte, strict bool) {
 	}
 	it.releaseIterState()
 	db := it.db
-	it.rlock()
 	it.initFlexCursorSeekLE(target)
 
 	// Prefetch fast path: both memtables empty → fill buffer backward from FlexSpace.
@@ -1263,7 +1225,6 @@ func (it *Iter) seekLE(target []byte, strict bool) {
 			it.retreatFlexCursorBefore(target, true)
 		}
 		it.prefetchFillFlexSpaceReverse()
-		it.runlock()
 		if it.pfSpanCount == 0 || !it.servePrefetchReverse() {
 			it.valid = false
 		}
@@ -1271,7 +1232,6 @@ func (it *Iter) seekLE(target []byte, strict bool) {
 	}
 
 	it.pKV, it.valid = db.mergedSeekLE(target, strict)
-	it.runlock()
 	it.dir = -1
 	it.valueResolved = true
 }
@@ -1288,13 +1248,11 @@ func (it *Iter) SeekToLast() {
 	}
 	it.releaseIterState()
 	db := it.db
-	it.rlock()
 	it.initFlexCursorSeekLE(nil)
 
 	// Prefetch fast path: both memtables empty → fill buffer backward from FlexSpace.
 	if db.memtables[0].empty && db.memtables[1].empty {
 		it.prefetchFillFlexSpaceReverse()
-		it.runlock()
 		if it.pfSpanCount == 0 || !it.servePrefetchReverse() {
 			it.valid = false
 		}
@@ -1302,7 +1260,6 @@ func (it *Iter) SeekToLast() {
 	}
 
 	it.pKV, it.valid = db.mergedSeekLE(nil, false)
-	it.runlock()
 	it.dir = -1
 	it.valueResolved = true
 }
@@ -1313,8 +1270,8 @@ func (it *Iter) Next() {
 		return
 	}
 
-	// Ultra-fast path: serve from prefetch spans (NO lock acquisition).
-	// Only an atomic HLC check to verify no mutations invalidated the batch.
+	// Fast path: serve from prefetch spans.
+	// HLC check detects mutations made via it.Put/it.Delete since last fill.
 	if it.pfSpanIdx < it.pfSpanCount {
 		if it.snapshotHLC == it.db.hlc.Aload() {
 			if it.servePrefetch() {
@@ -1329,7 +1286,6 @@ func (it *Iter) Next() {
 	}
 
 	db := it.db
-	it.rlock()
 
 	curKey := it.pKV.Key // save before any re-seek overwrites pKV
 
@@ -1338,8 +1294,7 @@ func (it *Iter) Next() {
 		// Cursor still valid. Try prefetch refill on the FlexSpace-only fast path.
 		if db.memtables[0].empty && db.memtables[1].empty {
 			it.prefetchFillFlexSpaceOnly()
-			it.snapshotHLC = currentHLC // no atomic needed, we hold the lock
-			it.runlock()
+			it.snapshotHLC = currentHLC
 			if it.pfSpanCount == 0 || !it.servePrefetch() {
 				it.valid = false
 			}
@@ -1348,7 +1303,6 @@ func (it *Iter) Next() {
 
 		// Non-empty memtables: single merged seek with cursor reuse.
 		it.pKV, it.valid = it.mergedSeekGEFastFlexSpace(curKey, true)
-		it.runlock()
 		return
 	}
 
@@ -1362,7 +1316,6 @@ func (it *Iter) Next() {
 		// Position cursor past curKey (strict > curKey).
 		it.positionFlexCursorForSeek(curKey, true)
 		it.prefetchFillFlexSpaceOnly()
-		it.runlock()
 		if it.pfSpanCount == 0 || !it.servePrefetch() {
 			it.valid = false
 		}
@@ -1371,7 +1324,6 @@ func (it *Iter) Next() {
 	}
 
 	it.pKV, it.valid = it.mergedSeekGEFastFlexSpace(curKey, true)
-	it.runlock()
 	it.dir = 1
 }
 
@@ -1381,7 +1333,8 @@ func (it *Iter) Prev() {
 		return
 	}
 
-	// Ultra-fast path: serve from reverse prefetch spans (NO lock acquisition).
+	// Fast path: serve from reverse prefetch spans.
+	// HLC check detects mutations made via it.Put/it.Delete since last fill.
 	if it.pfSpanIdx < it.pfSpanCount && it.dir == -1 {
 		if it.snapshotHLC == it.db.hlc.Aload() {
 			if it.servePrefetchReverse() {
@@ -1398,15 +1351,12 @@ func (it *Iter) Prev() {
 	db := it.db
 	curKey := it.pKV.Key // save before any re-seek overwrites pKV
 
-	it.rlock()
-
 	currentHLC := db.hlc.Aload()
 	if it.dir == -1 && it.snapshotHLC == currentHLC && it.snapshotHLC != 0 {
 		// Cursor still valid. Try prefetch refill on the FlexSpace-only fast path.
 		if db.memtables[0].empty && db.memtables[1].empty {
 			it.prefetchFillFlexSpaceReverse()
-			it.snapshotHLC = currentHLC // no atomic needed, we hold the lock
-			it.runlock()
+			it.snapshotHLC = currentHLC
 			if it.pfSpanCount == 0 || !it.servePrefetchReverse() {
 				it.valid = false
 			}
@@ -1415,7 +1365,6 @@ func (it *Iter) Prev() {
 
 		// Non-empty memtables: single merged seek.
 		it.pKV, it.valid = db.mergedSeekLE(curKey, true)
-		it.runlock()
 		it.valueResolved = true
 		return
 	}
@@ -1437,7 +1386,6 @@ func (it *Iter) Prev() {
 	// Try prefetch on fresh cursor if memtables are empty.
 	if db.memtables[0].empty && db.memtables[1].empty {
 		it.prefetchFillFlexSpaceReverse()
-		it.runlock()
 		if it.pfSpanCount == 0 || !it.servePrefetchReverse() {
 			it.valid = false
 		}
@@ -1446,66 +1394,48 @@ func (it *Iter) Prev() {
 	}
 
 	it.pKV, it.valid = db.mergedSeekLE(curKey, true)
-	it.runlock()
 	it.dir = -1
 	it.valueResolved = true
 }
 
-// Close marks the iterator as closed and releases cursor state.
-// For locked iterators (created via NewLockedIter), Close releases
-// the exclusive write lock (topMutRW.Unlock()).
+// Close marks the iterator as closed, releases cursor state, and
+// releases the exclusive write lock (topMutRW.Unlock()).
 func (it *Iter) Close() {
+	if it.closed {
+		return
+	}
 	it.releaseIterState()
 	it.valid = false
 	it.closed = true
-	if it.locked {
-		it.db.topMutRW.Unlock()
-		it.locked = false
-	}
+	it.db.topMutRW.Unlock()
 }
 
-// ====================== Locked Iterator Mutation Methods ======================
+// ====================== Iterator Mutation Methods ======================
 //
-// These methods are only available on locked iterators (created via
-// NewLockedIter). They call the write-lock-held internal methods
-// directly, avoiding deadlock since the lock is already held.
-// Calling these on an unlocked iterator panics.
+// The iterator holds the exclusive write lock, so these methods call
+// the write-lock-held internal methods directly without deadlock.
+// Mutations are immediately visible to subsequent Seek/Next/Prev calls.
 
-// Put inserts or updates a key-value pair through the locked iterator.
+// Put inserts or updates a key-value pair through the iterator.
 // The write is immediately visible to subsequent Seek/Next/Prev calls.
-// Panics if the iterator is not locked.
 func (it *Iter) Put(key, value []byte) error {
-	if !it.locked {
-		panic("yogadb: Put called on unlocked iterator; use NewLockedIter")
-	}
 	return it.db.writeLockHeldPut(key, value)
 }
 
-// Delete removes a key through the locked iterator by writing a tombstone.
+// Delete removes a key through the iterator by writing a tombstone.
 // The deletion is immediately visible to subsequent Seek/Next/Prev calls.
-// Panics if the iterator is not locked.
 func (it *Iter) Delete(key []byte) error {
-	if !it.locked {
-		panic("yogadb: Delete called on unlocked iterator; use NewLockedIter")
-	}
 	return it.db.writeLockHeldPut(key, nil)
 }
 
-// Get retrieves the value for key through the locked iterator.
-// Returns nil, false if not found. Panics if the iterator is not locked.
+// Get retrieves the value for key through the iterator.
+// Returns nil, false if not found.
 func (it *Iter) Get(key []byte) ([]byte, bool) {
-	if !it.locked {
-		panic("yogadb: Get called on unlocked iterator; use NewLockedIter")
-	}
 	return it.db.writeLockHeldGet(key)
 }
 
-// Sync flushes the active memtable to FlexSpace through the locked iterator.
-// Panics if the iterator is not locked.
+// Sync flushes the active memtable to FlexSpace through the iterator.
 func (it *Iter) Sync() error {
-	if !it.locked {
-		panic("yogadb: Sync called on unlocked iterator; use NewLockedIter")
-	}
 	return it.db.writeLockHeldSync()
 }
 
@@ -1630,7 +1560,7 @@ func (it *Iter) iterResolvedValue() []byte {
 
 // Ascend iterates key-value pairs in ascending order from the first key >= pivot.
 // If pivot is nil, starts from the beginning. Stops when iter returns false.
-// The callback may safely call db.Put/db.Delete.
+// The callback must NOT call db.Put/db.Get/db.Delete/db.Sync (deadlock).
 func (db *FlexDB) Ascend(pivot []byte, iter func(key, value []byte) bool) {
 	it := db.NewIter()
 	defer it.Close()
@@ -1645,7 +1575,7 @@ func (db *FlexDB) Ascend(pivot []byte, iter func(key, value []byte) bool) {
 
 // Descend iterates key-value pairs in descending order from the last key <= pivot.
 // If pivot is nil, starts from the end. Stops when iter returns false.
-// The callback may safely call db.Put/db.Delete.
+// The callback must NOT call db.Put/db.Get/db.Delete/db.Sync (deadlock).
 func (db *FlexDB) Descend(pivot []byte, iter func(key, value []byte) bool) {
 	it := db.NewIter()
 	defer it.Close()
@@ -1664,7 +1594,7 @@ func (db *FlexDB) Descend(pivot []byte, iter func(key, value []byte) bool) {
 
 // AscendRange iterates key-value pairs where key is in [greaterOrEqual, lessThan)
 // ascending. Either bound may be nil. Stops when iter returns false.
-// The callback may safely call db.Put/db.Delete.
+// The callback must NOT call db.Put/db.Get/db.Delete/db.Sync (deadlock).
 func (db *FlexDB) AscendRange(greaterOrEqual, lessThan []byte, iter func(key, value []byte) bool) {
 	it := db.NewIter()
 	defer it.Close()
@@ -1682,7 +1612,7 @@ func (db *FlexDB) AscendRange(greaterOrEqual, lessThan []byte, iter func(key, va
 
 // DescendRange iterates key-value pairs where key is in (greaterThan, lessOrEqual]
 // descending. Either bound may be nil. Stops when iter returns false.
-// The callback may safely call db.Put/db.Delete.
+// The callback must NOT call db.Put/db.Get/db.Delete/db.Sync (deadlock).
 func (db *FlexDB) DescendRange(lessOrEqual, greaterThan []byte, iter func(key, value []byte) bool) {
 	it := db.NewIter()
 	defer it.Close()

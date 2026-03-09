@@ -2087,26 +2087,6 @@ const (
 	LT SearchModifier = 4
 )
 
-// findOwnedKV controls whether Find/FindIt return an owned
-// copy of the KV (safe to retain indefinitely) or a zero-copy
-// pointer into cache memory (faster but only valid until the
-// next iterator operation or cache eviction). Set to false
-// to benchmark the zero-copy fast path.
-//
-// findOwnedKV = false:
-// Benchmark_Iter_YogaDB_Ascend-8  12.45 iter_ns/key
-//
-// findOwnedKV = true:
-// Benchmark_Iter_YogaDB_Ascend-8  16.26 iter_ns/key (31% slow down)
-//
-// compared to Bolt:
-// Benchmark_Iter_Bolt-8  12.12 iter_ns/key
-//
-// Unfortunately the flushWorker could invalidate the cache at
-// any point, so it is never safe to use findOwnedKV = false.
-// TODO: question: is that strictly true?
-const findOwnedKV = true
-
 // findSeekIter positions it according to smod and key.
 // Returns (found, exact). On return, it is either Valid
 // (found=true) or invalid (found=false).
@@ -2146,41 +2126,15 @@ func findSeekIter(it *Iter, smod SearchModifier, key []byte) (found, exact bool)
 }
 
 // findBuildKV constructs a *KV from the iterator's current
-// position. When findOwnedKV is true (and the iterator is not
-// locked), the returned KV owns copies of Key and Value (safe
-// to retain). When the iterator is locked or findOwnedKV is
-// false, Key and Value point into cache memory (zero-copy).
-// In locked mode, zero-copy is safe because the write lock
-// prevents concurrent mutation.
+// position. Returns a shallow copy of the internal KV — Key
+// and Value alias cache memory (zero-copy). This is safe
+// because the iterator holds the exclusive write lock,
+// preventing concurrent mutation.
 func findBuildKV(it *Iter) *KV {
 	if it.pKV == nil {
 		return nil
 	}
-	src := it.pKV
-	if !findOwnedKV || it.locked {
-		// Zero-copy fast path: return a shallow copy of the
-		// internal KV. Key and Value alias cache memory.
-		// Safe in locked mode (no concurrent mutation).
-		out := *src
-		return &out
-	}
-	// Owned copy: duplicate Key and inline Value.
-	out := KV{
-		Vptr:    src.Vptr,
-		HasVPtr: src.HasVPtr,
-		Hlc:     src.Hlc,
-	}
-	if src.Key != nil {
-		out.Key = make([]byte, len(src.Key))
-		copy(out.Key, src.Key)
-	}
-	if !src.HasVPtr && src.Value != nil {
-		// Trigger lazy copy in Vin() first so we read the
-		// right bytes, then copy into our own buffer.
-		v := it.Vin()
-		out.Value = make([]byte, len(v))
-		copy(out.Value, v)
-	}
+	out := *it.pKV
 	return &out
 }
 
@@ -2226,11 +2180,21 @@ func (db *FlexDB) FindIt(smod SearchModifier, key []byte) (kv *KV, found, exact 
 }
 
 // Find is a convenience wrapper around FindIt that closes
-// the iterator before returning. Use FindIt instead if you
-// want to scan beyond the found key.
+// the iterator before returning. The returned KV owns copies
+// of Key and Value (safe to retain indefinitely). Use FindIt
+// instead if you want to scan beyond the found key.
 func (db *FlexDB) Find(smod SearchModifier, key []byte) (kv *KV, found, exact bool) {
 	var it *Iter
 	kv, found, exact, it = db.FindIt(smod, key)
+	if kv != nil {
+		// Copy Key and Value since we're about to release the lock.
+		owned := KV{Vptr: kv.Vptr, HasVPtr: kv.HasVPtr, Hlc: kv.Hlc}
+		owned.Key = append([]byte{}, kv.Key...)
+		if !kv.HasVPtr && kv.Value != nil {
+			owned.Value = append([]byte{}, kv.Value...)
+		}
+		kv = &owned
+	}
 	it.Close()
 	return
 }
