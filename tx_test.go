@@ -225,7 +225,7 @@ func TestTx_ViewIterator(t *testing.T) {
 	}
 }
 
-func TestTx_MultipleIterators(t *testing.T) {
+func TestTx_MultipleIteratorsUpdate(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	mustPut(t, db, "a", "1")
 	mustPut(t, db, "b", "2")
@@ -241,19 +241,67 @@ func TestTx_MultipleIterators(t *testing.T) {
 		// Forward scan with it1.
 		var fwd []string
 		it1.SeekToFirst()
-		for it1.Valid() {
-			fwd = append(fwd, string(it1.Key()))
-			it1.Next()
-		}
-		expectKeys(t, "MultiIter-fwd", fwd, []string{"a", "b", "c", "d"})
 
 		// Backward scan with it2.
 		var bwd []string
 		it2.SeekToLast()
-		for it2.Valid() {
-			bwd = append(bwd, string(it2.Key()))
-			it2.Prev()
+
+		for it1.Valid() || it2.Valid() {
+			if it1.Valid() {
+				fwd = append(fwd, string(it1.Key()))
+				it1.Next()
+			}
+
+			if it2.Valid() {
+				bwd = append(bwd, string(it2.Key()))
+				it2.Prev()
+			}
 		}
+
+		expectKeys(t, "MultiIter-fwd", fwd, []string{"a", "b", "c", "d"})
+		expectKeys(t, "MultiIter-bwd", bwd, []string{"d", "c", "b", "a"})
+
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTx_MultipleIteratorsView(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+	mustPut(t, db, "a", "1")
+	mustPut(t, db, "b", "2")
+	mustPut(t, db, "c", "3")
+	mustPut(t, db, "d", "4")
+
+	err := db.View(func(roDB ReadOnlyDB) error {
+		it1 := roDB.NewIter()
+		it2 := roDB.NewIter()
+		defer it1.Close()
+		defer it2.Close()
+
+		// Forward scan with it1.
+		var fwd []string
+		it1.SeekToFirst()
+
+		// Backward scan with it2.
+		var bwd []string
+		it2.SeekToLast()
+
+		for it1.Valid() || it2.Valid() {
+			if it1.Valid() {
+				fwd = append(fwd, string(it1.Key()))
+				it1.Next()
+			}
+
+			if it2.Valid() {
+				bwd = append(bwd, string(it2.Key()))
+				it2.Prev()
+			}
+		}
+
+		expectKeys(t, "MultiIter-fwd", fwd, []string{"a", "b", "c", "d"})
 		expectKeys(t, "MultiIter-bwd", bwd, []string{"d", "c", "b", "a"})
 
 		return nil
