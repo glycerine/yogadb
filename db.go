@@ -275,10 +275,26 @@ func (s *Batch) Close() {
 
 // ====================== KV type ======================
 
-// KV is a key-value pair. Value==nil means tombstone (deletion marker).
+// KV is a key-value pair. Value==nil && Vptr.Length == 0
+// means tombstone (deletion marker).
+//
 // When Vptr.Length > 0, the value is stored in the VLOG file and Vptr
 // contains the location; Value holds the resolved bytes (or nil if not yet loaded).
 // Use kv.HasVPtr() to test whether the value is in the VLOG.
+//
+// KV is currently 64 bytes, a cache line on most systems. Be very wary of
+// making it any bigger, as this could really slow things down.
+//
+// The Key is just a string. There is no loss of generality over []byte,
+// just advantages: a) being immutable, we can avoid slow copies;
+// and being smaller (2 words, not 3) than a []byte our KV now
+// fits in one 64B cache line. Moreover users cannot corrupt
+// the Key, so it is safe to return from our internal caches.
+// The technical reason memory-mapped systems must use []byte
+// keys is that they are reason straight from a read-only
+// memory map. Since we do not use a memory-mapped design
+// we can get compile time safety, cache speed, and the benefits of
+// immutability by making Key a string.
 type KV struct {
 	Key   string
 	Value []byte
