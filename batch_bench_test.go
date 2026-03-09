@@ -487,6 +487,7 @@ func BenchmarkYogaDB_Batch(b *testing.B) {
 			b.Run(fmt.Sprintf("batch_%d_redo=%v", batchSize, redo), func(b *testing.B) {
 
 				//dir := b.TempDir() // racy, probably buggy.
+				//dir, fs := newTestFS(t) no t available!
 				dir, err := os.MkdirTemp("", "BenchmarkYogaDB_Batch*")
 				panicOn(err)
 				defer os.Remove(dir)

@@ -2092,6 +2092,19 @@ const (
 // pointer into cache memory (faster but only valid until the
 // next iterator operation or cache eviction). Set to false
 // to benchmark the zero-copy fast path.
+//
+// findOwnedKV = false:
+// Benchmark_Iter_YogaDB_Ascend-8  12.45 iter_ns/key
+//
+// findOwnedKV = true:
+// Benchmark_Iter_YogaDB_Ascend-8  16.26 iter_ns/key (31% slow down)
+//
+// compared to Bolt:
+// Benchmark_Iter_Bolt-8  12.12 iter_ns/key
+//
+// Unfortunately the flushWorker could invalidate the cache at
+// any point, so it is never safe to use findOwnedKV = false.
+// TODO: question: is that strictly true?
 const findOwnedKV = true
 
 // findSeekIter positions it according to smod and key.
