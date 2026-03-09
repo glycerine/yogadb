@@ -922,10 +922,13 @@ func TestFlexDB_VacuumKV_WriteAndVacuumAgain(t *testing.T) {
 	}
 }
 
-// ====================== Lock-free iterator mutation tests ======================
+// ====================== Iterator mutation tests ======================
+//
+// All iterators hold the exclusive write lock, so mutations during
+// iteration must go through it.Put/it.Delete (not db.Put/db.Delete).
 
 // TestFlexDB_IteratorDeleteDuringForward tests deleting the current key during
-// forward iteration. With the lock-free re-seeking iterator, this must not deadlock.
+// forward iteration via it.Delete.
 func TestFlexDB_IteratorDeleteDuringForward(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	for _, k := range []string{"a", "b", "c", "d", "e"} {
@@ -941,7 +944,9 @@ func TestFlexDB_IteratorDeleteDuringForward(t *testing.T) {
 		k := string(it.Key())
 		got = append(got, k)
 		if k == "c" {
-			mustDelete(t, db, "c")
+			if err := it.Delete([]byte("c")); err != nil {
+				t.Fatal(err)
+			}
 		}
 		it.Next()
 	}
@@ -965,8 +970,12 @@ func TestFlexDB_IteratorDeleteCurrentAndNext(t *testing.T) {
 		k := string(it.Key())
 		got = append(got, k)
 		if k == "b" {
-			mustDelete(t, db, "b")
-			mustDelete(t, db, "c")
+			if err := it.Delete([]byte("b")); err != nil {
+				t.Fatal(err)
+			}
+			if err := it.Delete([]byte("c")); err != nil {
+				t.Fatal(err)
+			}
 		}
 		it.Next()
 	}
@@ -974,21 +983,28 @@ func TestFlexDB_IteratorDeleteCurrentAndNext(t *testing.T) {
 	expectKeys(t, "delete current+next", got, []string{"a", "b", "d"})
 }
 
-// TestFlexDB_IteratorDeleteAllAscend deletes every key during Ascend callback.
-func TestFlexDB_IteratorDeleteAllAscend(t *testing.T) {
+// TestFlexDB_IteratorDeleteAllForward deletes every key during forward iteration.
+func TestFlexDB_IteratorDeleteAllForward(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	for _, k := range []string{"a", "b", "c", "d", "e"} {
 		mustPut(t, db, k, "v:"+k)
 	}
 
+	it := db.NewIter()
+	it.SeekToFirst()
+
 	var deleted []string
-	db.Ascend(nil, func(key, value []byte) bool {
-		k := string(key)
+	for it.Valid() {
+		k := string(it.Key())
 		deleted = append(deleted, k)
-		mustDelete(t, db, k)
-		return true
-	})
-	expectKeys(t, "ascend+delete all", deleted, []string{"a", "b", "c", "d", "e"})
+		if err := it.Delete([]byte(k)); err != nil {
+			it.Close()
+			t.Fatal(err)
+		}
+		it.Next()
+	}
+	it.Close()
+	expectKeys(t, "delete all forward", deleted, []string{"a", "b", "c", "d", "e"})
 
 	// DB should be empty
 	val, ok := db.Get([]byte("a"))
