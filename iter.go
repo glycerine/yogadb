@@ -135,12 +135,6 @@ func (db *FlexDB) NewIter() *Iter {
 	return &Iter{db: db}
 }
 
-// NewLockedIter is an alias for NewIter. All iterators hold the
-// exclusive write lock for their entire lifetime.
-func (db *FlexDB) NewLockedIter() *Iter {
-	return db.NewIter()
-}
-
 // releaseIterState releases all stateful cursor resources.
 func (it *Iter) releaseIterState() {
 	it.fc.reset()

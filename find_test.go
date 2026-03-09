@@ -381,7 +381,7 @@ func TestLockedIter_PutGetDelete(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateFindTestDB(t, db)
 
-	it := db.NewLockedIter()
+	it := db.NewIter()
 	defer it.Close()
 
 	// Get existing key through iterator.
@@ -446,7 +446,7 @@ func TestLockedIter_Sync(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateFindTestDB(t, db)
 
-	it := db.NewLockedIter()
+	it := db.NewIter()
 	defer it.Close()
 
 	// Sync should not error.

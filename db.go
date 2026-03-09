@@ -1,6 +1,6 @@
 package yogadb
 
-// yogadb/db.go — Go port of flexspace/flexdb.c
+// yogadb/db.go - Go port of flexspace/flexdb.c
 // FlexDB: a persistent ordered key-value store backed by FlexSpace.
 // Uses github.com/tidwall/btree for the in-memory write buffer (memtable).
 //
@@ -146,7 +146,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	for _, kv := range s.puts {
 		k := string(kv.Key)
 		if _, dup := seen[k]; dup {
-			// Duplicate key in this sub-batch — start new sub-batch.
+			// Duplicate key in this sub-batch - start new sub-batch.
 			seen = make(map[string]struct{})
 			curHLC = db.hlc.CreateSendOrLocalEvent()
 		}
@@ -169,7 +169,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 			}
 		}
 		if len(largeValues) > 0 {
-			// Batch write + single fsync — ensures all values are durable
+			// Batch write + single fsync - ensures all values are durable
 			// before any WAL entry references them.
 			ptrs, err := db.vlog.appendBatchAndSync(largeValues, largeHLCs)
 			if err != nil {
@@ -189,7 +189,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		}
 	}
 
-	// Bypass the transaction system entirely — no COW snapshots, no ffMu.RLock,
+	// Bypass the transaction system entirely - no COW snapshots, no ffMu.RLock,
 	// no write buffer btree. Instead, insert directly into the memtable and
 	// batch WAL writes under a single logMu hold.
 	// This amortizes both mutex acquisitions across the entire batch.
@@ -204,7 +204,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	for idx := 0; idx < len(s.puts); idx++ {
 
 		if mt.size >= memtableCap {
-			// Memtable full — flush inline.
+			// Memtable full - flush inline.
 			db.activeMT = 1 - wasActive
 			db.memtables[db.activeMT].empty = true
 			db.memtables[db.activeMT].size = 0
@@ -335,7 +335,7 @@ func (kv *KV) Large() bool {
 // The rawVlenVPtr sentinel (max uint64) can never collide with a real inline value
 // since that would require a value of length ~2^64 - 2.
 
-const rawVlenVPtr = ^uint64(0) // 0xFFFF FFFF FFFF FFFF — sentinel for VLOG pointer
+const rawVlenVPtr = ^uint64(0) // 0xFFFF FFFF FFFF FFFF - sentinel for VLOG pointer
 
 func kv128Encode(buf []byte, kv KV) []byte {
 	recordStart := len(buf)
@@ -607,7 +607,7 @@ type FlexDB struct {
 	totalLogicalBase  int64
 	totalPhysicalBase int64
 
-	// (iterator support — pfSpans are embedded in Iter, no free list needed)
+	// (iterator support - pfSpans are embedded in Iter, no free list needed)
 
 	// Live key counters (maintained incrementally, accessed under topMutRW).
 	liveKeys      int64 // total live (non-tombstone) keys = liveBigKeys + liveSmallKeys
@@ -676,7 +676,7 @@ func (db *FlexDB) writeLockHeldKeyState(key []byte) keyState {
 }
 
 // Len returns the total number of live (non-tombstone) keys in the database.
-// O(1) — reads a pre-maintained counter.
+// O(1) - reads a pre-maintained counter.
 // Goroutine safe.
 func (db *FlexDB) Len() int64 {
 	db.topMutRW.RLock()
@@ -688,7 +688,7 @@ func (db *FlexDB) Len() int64 {
 // LenBigSmall returns the live key count partitioned by storage location.
 // big: keys whose values are stored in the VLOG (> 64 bytes).
 // small: keys whose values are stored inline.
-// O(1) — reads pre-maintained counters.
+// O(1) - reads pre-maintained counters.
 // Goroutine safe.
 func (db *FlexDB) LenBigSmall() (big int64, small int64) {
 	db.topMutRW.RLock()
@@ -700,7 +700,7 @@ func (db *FlexDB) LenBigSmall() (big int64, small int64) {
 
 // recomputeKeyCountsLocked walks all FlexSpace intervals via the sparse index
 // and counts live (non-tombstone) keys. Called once at open time after recovery.
-// No locking needed — called before the flush worker is started and before the
+// No locking needed - called before the flush worker is started and before the
 // db reference is returned.
 func (db *FlexDB) recomputeKeyCountsLocked() {
 	var big, small int64
@@ -1212,7 +1212,7 @@ func (db *FlexDB) CumulativeMetrics() *Metrics {
 	}
 
 	// LogicalBytesWritten: FlexSpace MaxLoff is the total kv128-encoded
-	// data size across all sessions—the best cumulative approximation
+	// data size across all sessions-the best cumulative approximation
 	// of user payload without scanning every KV or persisting a counter.
 	m.LogicalBytesWritten = int64(db.ff.tree.MaxLoff)
 
@@ -1455,8 +1455,8 @@ func (z *VacuumKVStats) String() (r string) {
 // 5. Clean up stale .vacuum files on OpenFlexSpaceCoW
 //
 // See the tests:
-// TestFlexDB_VacuumKV_Basic — overwrites 200 keys, vacuums, verifies data integrity across reopen
-// TestFlexDB_VacuumKV_WithDeletes — deletes half of 100 keys, vacuums, verifies correct keys survive
+// TestFlexDB_VacuumKV_Basic - overwrites 200 keys, vacuums, verifies data integrity across reopen
+// TestFlexDB_VacuumKV_WithDeletes - deletes half of 100 keys, vacuums, verifies correct keys survive
 // .
 func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 	db.topMutRW.Lock()
@@ -1484,7 +1484,7 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 	stats.OldFileSize = fi.Size()
 
 	if ff.tree.LeafHead.IsIllegal() {
-		// Empty tree — nothing to vacuum.
+		// Empty tree - nothing to vacuum.
 		return stats, nil
 	}
 
@@ -1563,7 +1563,7 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 	// Truncate the new file to exactly writeOffset so that no stale
 	// data from the old file lingers beyond the live extents. Without
 	// this, a second VacuumKV would try to read poff values that
-	// point into the compacted region — past the actual data — and
+	// point into the compacted region - past the actual data - and
 	// get EOF because the .vacuum file is smaller than those offsets.
 	if err := ff.fdKV128blocks.Truncate(int64(writeOffset)); err != nil {
 		return stats, fmt.Errorf("vacuumkv: truncate: %w", err)
@@ -1588,7 +1588,7 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 	// slack from block-alignment rounding.
 	ff.truncateTrailingBlocks()
 
-	// Invalidate the sequential IO cache — poffs have all changed.
+	// Invalidate the sequential IO cache - poffs have all changed.
 	ff.globalEpoch++
 
 	// Mark ALL internal nodes dirty so SyncCoW will traverse them
@@ -2035,7 +2035,7 @@ func (db *FlexDB) writeLockHeldPut(key, value []byte) error {
 	}
 
 	if db.memtables[db.activeMT].size >= memtableCap {
-		// Inline flush — same pattern as Batch.Commit overflow path.
+		// Inline flush - same pattern as Batch.Commit overflow path.
 		wasActive := db.activeMT
 		db.activeMT = 1 - wasActive
 		db.memtables[db.activeMT].empty = true
@@ -2126,7 +2126,7 @@ func findSeekIter(it *Iter, smod SearchModifier, key []byte) (found, exact bool)
 }
 
 // findBuildKV constructs a *KV from the iterator's current
-// position. Returns a shallow copy of the internal KV — Key
+// position. Returns a shallow copy of the internal KV - Key
 // and Value alias cache memory (zero-copy). This is safe
 // because the iterator holds the exclusive write lock,
 // preventing concurrent mutation.
@@ -2166,11 +2166,11 @@ func findBuildKV(it *Iter) *KV {
 // beyond the found key (Next/Prev) and to mutate the database
 // (it.Put, it.Delete, it.Get, it.Sync) without deadlock.
 // Do NOT call db.Put/db.Get/db.Delete/db.Sync while the iterator
-// is open — use the iterator's methods instead.
+// is open - use the iterator's methods instead.
 // The caller must call it.Close() when done to release the lock.
 // If found is false, the iterator is not valid but must still be closed.
 func (db *FlexDB) FindIt(smod SearchModifier, key []byte) (kv *KV, found, exact bool, it *Iter) {
-	it = db.NewLockedIter()
+	it = db.NewIter()
 	found, exact = findSeekIter(it, smod, key)
 	if !found {
 		return
@@ -2338,9 +2338,9 @@ func (db *FlexDB) Delete(key []byte) error {
 // The begInclusive and endInclusive parameters control whether the
 // bounds are inclusive or exclusive:
 //
-//	DeleteRange(true,  a, z, true,  true)   // [a, z]  — both inclusive, include large values
-//	DeleteRange(true,  a, z, true,  false)  // [a, z)  — half-open, include large values
-//	DeleteRange(false, a, z, true,  true)   // [a, z]  — both inclusive, skip large values
+//	DeleteRange(true,  a, z, true,  true)   // [a, z]  - both inclusive, include large values
+//	DeleteRange(true,  a, z, true,  false)  // [a, z)  - half-open, include large values
+//	DeleteRange(false, a, z, true,  true)   // [a, z]  - both inclusive, skip large values
 //
 // Goroutine safe. Concurrent reads and writes are serialized via the
 // database write lock. However, when allGone is returned true, all
@@ -2375,11 +2375,11 @@ func (db *FlexDB) DeleteRange(includeLarge bool, begKey, endKey []byte, begInclu
 		var keys [][]byte
 		db.memtables[mtIdx].bt.Ascend(KV{Key: begKey}, func(item KV) bool {
 			if !deleteRangeInBounds(item.Key, begKey, endKey, begInclusive, endInclusive) {
-				// Past endKey — stop iteration.
+				// Past endKey - stop iteration.
 				if deleteRangePastEnd(item.Key, endKey, endInclusive) {
 					return false
 				}
-				// Before begKey (exclusive match) — skip but continue.
+				// Before begKey (exclusive match) - skip but continue.
 				return true
 			}
 			if !item.isTombstone() {
@@ -2430,7 +2430,7 @@ func (db *FlexDB) Clear(includeLarge bool) (allGone bool, err error) {
 	// !includeLarge: must iterate and tombstone only small-value keys.
 	// Use the same machinery as DeleteRange but with maximal bounds.
 	// Unlock first since deleteRangeSlow acquires its own lock
-	// — actually, we already hold the lock. Call the internal helpers directly.
+	// - actually, we already hold the lock. Call the internal helpers directly.
 
 	// Phase 1: Tombstone small-value keys in both memtables.
 	for _, mtIdx := range []int{db.activeMT, 1 - db.activeMT} {
@@ -2777,7 +2777,7 @@ func (db *FlexDB) deleteRangeFlexSpace(begKey, endKey []byte, begInclusive, endI
 				n++
 
 				if db.activeMT != prevActive {
-					// Memtable flushed — sparse index tree was rebuilt.
+					// Memtable flushed - sparse index tree was rebuilt.
 					// Re-seek strictly past this key in the new tree.
 					target = kv.Key
 					seekStrict = true
@@ -3088,7 +3088,7 @@ func (db *FlexDB) putPassthrough(kv KV, nh *memSparseIndexTreeHandler) {
 	anchorLoff := uint64(anchor.loff + nh.shift)
 	partition := db.cache.getPartition(anchor)
 
-	// Always load cache — no unsorted kv128 append path.
+	// Always load cache - no unsorted kv128 append path.
 	fce := partition.getEntry(anchor, anchorLoff, db)
 
 	// First write to this anchor: allocate a fixed-size page via Insert.
@@ -3144,7 +3144,7 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 		replaceIdx = idx
 	}
 	if !slottedPageWouldFit(fce.kvs, fce.count, kv, replaceIdx, int(anchor.psize)) {
-		// Page full — split first, then retry on the correct half.
+		// Page full - split first, then retry on the correct half.
 		// Insert into cache first so split sees the new entry.
 		if eq {
 			partition.cacheEntryReplace(fce, kv, idx)
@@ -3164,7 +3164,7 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 		partition.cacheEntryInsert(fce, kv, idx)
 	}
 
-	// Mark dirty — will be written to disk on Sync or eviction.
+	// Mark dirty - will be written to disk on Sync or eviction.
 	db.putPassthroughMarkDirty(nh, anchor, fce)
 }
 
@@ -3324,9 +3324,9 @@ In flextree.go:384, the tag layout is (in the TagPoff bit-packed uint64 field):
 ┌────────┬───────────────────────────────────────────────────────────────────┐
 │ Bit(s) │                              Meaning                              │
 ├────────┼───────────────────────────────────────────────────────────────────┤
-│ 0      │ Anchor flag — 1 = this extent starts a sparse index interval      │
+│ 0      │ Anchor flag - 1 = this extent starts a sparse index interval      │
 ├────────┼───────────────────────────────────────────────────────────────────┤
-│ 1–7    │ Unsorted count — number of unsorted KVs appended to this interval │
+│ 1–7    │ Unsorted count - number of unsorted KVs appended to this interval │
 ├────────┼───────────────────────────────────────────────────────────────────┤
 │ 8–15   │ Reserved                                                          │
 └────────┴───────────────────────────────────────────────────────────────────┘
@@ -3348,7 +3348,7 @@ db.go:recovery() (called from OpenFlexDB() when FlexSpace has existing data):
 
 1. Creates a FlexSpaceHandler at loff=0
 2. Walks every extent sequentially via fh.ForwardExtent()
-3. For each extent, calls fh.GetTag() — if flexdbTagIsAnchor(tag) is true:
+3. For each extent, calls fh.GetTag() - if flexdbTagIsAnchor(tag) is true:
   - Records loff, the anchor key (read from FlexSpace), and unsorted count
 
 4. Inserts all collected anchors into a fresh memSparseIndexTree in order
@@ -3368,7 +3368,7 @@ Q: How do we know there are only at most 7 bits (128) worh of unsorted KVs
 A: Here's the chain of invariants:
 
 	The quota is flexdbUnsortedWriteQuota = 15. That's the cap, and it's enforced
-	by the write path itself — not by the tag bit-width.
+	by the write path itself - not by the tag bit-width.
 
 	The flow for every unsorted write (putPassthrough -> putPassthroughUnsorted) is:
 
@@ -3386,7 +3386,7 @@ A: Here's the chain of invariants:
 
 	The unsorted count can never exceed 15 because the re-encode is forced
 	before the 16th unsorted append can happen. With a max of 15, only 4 bits are
-	actually needed. The 7 bits in the tag (max 127) have ample headroom — the operational
+	actually needed. The 7 bits in the tag (max 127) have ample headroom - the operational
 	invariant (flexdbUnsortedWriteQuota = 15) is far below the representational
 	limit (0x7f = 127).
 
