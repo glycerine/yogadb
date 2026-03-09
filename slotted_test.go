@@ -36,7 +36,7 @@ func TestSlottedPage_RoundTrip_Basic(t *testing.T) {
 	}
 
 	for i := range kvs {
-		if !bytes.Equal(decoded[i].Key, kvs[i].Key) {
+		if decoded[i].Key != kvs[i].Key {
 			t.Errorf("kv[%d] key: got %q, want %q", i, decoded[i].Key, kvs[i].Key)
 		}
 		if !bytes.Equal(decoded[i].Value, kvs[i].Value) {
@@ -99,7 +99,7 @@ func TestSlottedPage_RoundTrip_SameHLC(t *testing.T) {
 	kvs := make([]KV, 100)
 	for i := range kvs {
 		kvs[i] = KV{
-			Key:   []byte(fmt.Sprintf("key%04d", i)),
+			Key: fmt.Sprintf("key%04d", i)),
 			Value: []byte(fmt.Sprintf("val%04d", i)),
 			Hlc:   42,
 		}
@@ -129,7 +129,7 @@ func TestSlottedPage_RoundTrip_Large(t *testing.T) {
 	kvs := make([]KV, n)
 	for i := range kvs {
 		kvs[i] = KV{
-			Key:   []byte(fmt.Sprintf("key%06d", i)),
+			Key: fmt.Sprintf("key%06d", i)),
 			Value: []byte(fmt.Sprintf("v%06d-padding", i)),
 			Hlc:   HLC(1000 + i),
 		}
@@ -148,7 +148,7 @@ func TestSlottedPage_RoundTrip_Large(t *testing.T) {
 	}
 
 	for i := range kvs {
-		if !bytes.Equal(decoded[i].Key, kvs[i].Key) {
+		if decoded[i].Key != kvs[i].Key {
 			t.Fatalf("kv[%d] key mismatch", i)
 		}
 		if !bytes.Equal(decoded[i].Value, kvs[i].Value) {
