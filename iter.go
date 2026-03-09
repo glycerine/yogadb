@@ -12,7 +12,7 @@ import (
 // serve from spans with only an atomic HLC check (no lock).
 // With spans, larger values reduce refill frequency with minimal overhead
 // since fill is O(intervals) not O(keys).
-const iterPreFetchKeyCount = 512
+const iterPreFetchKeyCount = 512 // ; 2048=>11.25; 1024=>10.24; 512=>9.961 nsec; 400=>9.742 nsec; 350=>11.90; 450=>12.69; 600=>10.58; 550=>10.38; 500=>10.08; 400=>12.82; 512=>9.816
 
 // flexCursor holds the stateful position within FlexSpace's sparse index tree.
 // Instead of re-seeking from the root on every Next(), it maintains a pointer
@@ -1249,7 +1249,7 @@ func (it *Iter) Next() {
 			// because it contains loops) on every Next().
 			span := &it.pfSpans[it.pfSpanIdx]
 			if pos := span.pos; pos < span.end {
-				pkv := &span.kvs[pos] // one cache-line access (64B KV)
+				pkv := &span.kvs[pos]                        // one cache-line access (64B KV)
 				if pkv.Value != nil || pkv.Vptr.Length > 0 { // not tombstone
 					span.pos = pos + 1
 					it.pKV = pkv
@@ -1311,6 +1311,41 @@ func (it *Iter) Next() {
 	if it.dir == 1 && it.snapshotHLC == currentHLC && it.snapshotHLC != 0 {
 		// Cursor still valid. Try prefetch refill on the FlexSpace-only fast path.
 		if db.memtables[0].empty && db.memtables[1].empty {
+			// Inline single-interval refill: if the cursor still has entries
+			// in its current interval, create a span directly without calling
+			// prefetchFillFlexSpaceOnly (avoids function call + loop overhead).
+			if it.fc.fce != nil && it.fc.kvIdx < it.fc.fce.count {
+				count := it.fc.fce.count
+				idx := it.fc.kvIdx
+				n := count - idx
+				if n > iterPreFetchKeyCount {
+					n = iterPreFetchKeyCount
+				}
+				it.pfSpans[0] = prefetchSpan{
+					kvs: it.fc.fce.kvs[:count],
+					pos: idx,
+					end: idx + n,
+				}
+				it.pfSpanCount = 1
+				it.pfSpanIdx = 0
+				it.fc.kvIdx = idx + n
+				it.snapshotHLC = currentHLC
+				// Serve first entry inline.
+				pkv := &it.pfSpans[0].kvs[idx]
+				if pkv.Value != nil || pkv.Vptr.Length > 0 {
+					it.pfSpans[0].pos = idx + 1
+					it.pKV = pkv
+					it.valueResolved = false
+					it.valid = true
+					it.dir = 1
+					return
+				}
+				it.pfSpans[0].pos = idx + 1
+				if it.servePrefetch() {
+					return
+				}
+				// All remaining were tombstones; fall through to full refill.
+			}
 			it.prefetchFillFlexSpaceOnly()
 			it.snapshotHLC = currentHLC
 			if it.pfSpanCount == 0 || !it.servePrefetch() {
