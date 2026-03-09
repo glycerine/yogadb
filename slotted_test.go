@@ -99,7 +99,7 @@ func TestSlottedPage_RoundTrip_SameHLC(t *testing.T) {
 	kvs := make([]KV, 100)
 	for i := range kvs {
 		kvs[i] = KV{
-			Key: fmt.Sprintf("key%04d", i)),
+			Key: fmt.Sprintf("key%04d", i),
 			Value: []byte(fmt.Sprintf("val%04d", i)),
 			Hlc:   42,
 		}
@@ -129,7 +129,7 @@ func TestSlottedPage_RoundTrip_Large(t *testing.T) {
 	kvs := make([]KV, n)
 	for i := range kvs {
 		kvs[i] = KV{
-			Key: fmt.Sprintf("key%06d", i)),
+			Key: fmt.Sprintf("key%06d", i),
 			Value: []byte(fmt.Sprintf("v%06d-padding", i)),
 			Hlc:   HLC(1000 + i),
 		}
