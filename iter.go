@@ -1264,7 +1264,41 @@ func (it *Iter) Next() {
 			if it.servePrefetch() {
 				return
 			}
-			// Spans exhausted (all remaining were tombstones); fall through to refill.
+			// Spans exhausted (all remaining were tombstones).
+			// Try quick inline refill: if the flex cursor still has entries
+			// in the current interval, create a new span without calling
+			// prefetchFillFlexSpaceOnly.
+			if it.fc.fce != nil && it.fc.kvIdx < it.fc.fce.count {
+				count := it.fc.fce.count
+				idx := it.fc.kvIdx
+				n := count - idx
+				if n > iterPreFetchKeyCount {
+					n = iterPreFetchKeyCount
+				}
+				it.pfSpans[0] = prefetchSpan{
+					kvs: it.fc.fce.kvs[:count],
+					pos: idx,
+					end: idx + n,
+				}
+				it.pfSpanCount = 1
+				it.pfSpanIdx = 0
+				it.fc.kvIdx = idx + n
+				// Serve the first entry from the new span.
+				pkv := &it.pfSpans[0].kvs[idx]
+				if pkv.Value != nil || pkv.Vptr.Length > 0 {
+					it.pfSpans[0].pos = idx + 1
+					it.pKV = pkv
+					it.valueResolved = false
+					it.valid = true
+					it.dir = 1
+					return
+				}
+				it.pfSpans[0].pos = idx + 1
+				if it.servePrefetch() {
+					return
+				}
+			}
+			// Fall through to full refill.
 		} else {
 			// HLC changed: invalidate prefetch, fall through to slow path.
 			it.pfSpanCount = 0
@@ -1273,9 +1307,6 @@ func (it *Iter) Next() {
 	}
 
 	db := it.db
-
-	curKey := it.pKV.Key // save before any re-seek overwrites pKV
-
 	currentHLC := db.hlc.Aload()
 	if it.dir == 1 && it.snapshotHLC == currentHLC && it.snapshotHLC != 0 {
 		// Cursor still valid. Try prefetch refill on the FlexSpace-only fast path.
@@ -1289,11 +1320,14 @@ func (it *Iter) Next() {
 		}
 
 		// Non-empty memtables: single merged seek with cursor reuse.
+		curKey := it.pKV.Key // save before re-seek overwrites pKV
 		it.pKV, it.valid = it.mergedSeekGEFastFlexSpace(curKey, true)
 		return
 	}
 
 	// Slow path: HLC changed (mutation happened) or direction changed.
+	curKey := it.pKV.Key // save before re-seek overwrites pKV
+
 	// Re-seek FlexSpace cursor from scratch.
 	it.releaseIterState()
 	it.initFlexCursorSeekGE(curKey)
