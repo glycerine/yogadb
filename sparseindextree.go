@@ -1,8 +1,5 @@
 package yogadb
 
-import (
-	"bytes"
-)
 
 // ========== Sparse index tree: memSparseIndexTree ==========
 //
@@ -50,7 +47,7 @@ type memSparseIndexTreeNode struct {
 	prev    *memSparseIndexTreeNode
 	next    *memSparseIndexTreeNode
 	// internal fields
-	pivots   [flexMemSparseIndexTreeInternalCap][]byte
+	pivots   [flexMemSparseIndexTreeInternalCap]string
 	children [flexMemSparseIndexTreeInternalCap + 1]memSparseIndexTreeChild
 }
 
@@ -73,7 +70,7 @@ func memSparseIndexTreeCreate() *memSparseIndexTree {
 	t := &memSparseIndexTree{}
 	root := &memSparseIndexTreeNode{isLeaf: true, tree: t}
 	// Insert sentinel anchor (null key at loff=0)
-	root.anchors[0] = &dbAnchor{key: nil, loff: 0}
+	root.anchors[0] = &dbAnchor{key: "", loff: 0}
 	root.count = 1
 	t.root = root
 	t.leafHead = root
@@ -81,7 +78,7 @@ func memSparseIndexTreeCreate() *memSparseIndexTree {
 }
 
 // findAnchorPos traverses the tree and finds the leaf + position for key.
-func (t *memSparseIndexTree) findAnchorPos(key []byte, nh *memSparseIndexTreeHandler) {
+func (t *memSparseIndexTree) findAnchorPos(key string, nh *memSparseIndexTreeHandler) {
 	var shift int64
 	node := t.root
 	for !node.isLeaf {
@@ -96,11 +93,11 @@ func (t *memSparseIndexTree) findAnchorPos(key []byte, nh *memSparseIndexTreeHan
 
 // memSparseIndexTreeFindPosInternal: binary search for child index in internal node.
 // Returns i such that all pivots[j] <= key for j < i.
-func memSparseIndexTreeFindPosInternal(node *memSparseIndexTreeNode, key []byte) int {
+func memSparseIndexTreeFindPosInternal(node *memSparseIndexTreeNode, key string) int {
 	lo, hi := 0, node.count
 	for lo < hi {
 		mid := (lo + hi) >> 1
-		if bytes.Compare(key, node.pivots[mid]) >= 0 {
+		if key >= node.pivots[mid] {
 			lo = mid + 1
 		} else {
 			hi = mid
@@ -110,14 +107,13 @@ func memSparseIndexTreeFindPosInternal(node *memSparseIndexTreeNode, key []byte)
 }
 
 // memSparseIndexTreeFindPosLeafLE: returns index of anchor with the largest key <= search key.
-func memSparseIndexTreeFindPosLeafLE(node *memSparseIndexTreeNode, key []byte) int {
+func memSparseIndexTreeFindPosLeafLE(node *memSparseIndexTreeNode, key string) int {
 	lo, hi := 0, node.count
 	for lo+1 < hi {
 		mid := (lo + hi) >> 1
-		cmp := bytes.Compare(key, node.anchors[mid].key)
-		if cmp > 0 {
+		if key > node.anchors[mid].key {
 			lo = mid
-		} else if cmp < 0 {
+		} else if key < node.anchors[mid].key {
 			hi = mid
 		} else {
 			return mid
@@ -128,7 +124,7 @@ func memSparseIndexTreeFindPosLeafLE(node *memSparseIndexTreeNode, key []byte) i
 
 // handlerInsert inserts a new anchor at nh.idx.
 // loff is the actual absolute loff; stored relative: anchor.loff = int64(loff) - nh.shift.
-func (nh *memSparseIndexTreeHandler) handlerInsert(key []byte, loff uint64, psize uint32) *dbAnchor {
+func (nh *memSparseIndexTreeHandler) handlerInsert(key string, loff uint64, psize uint32) *dbAnchor {
 	node := nh.node
 	anchor := &dbAnchor{
 		key:   key,
@@ -182,7 +178,7 @@ func memSparseIndexTreeSplitLeaf(node *memSparseIndexTreeNode) {
 		node2.parent = parent
 		t.root = parent
 	}
-	pivotKey := dupBytes(node2.anchors[0].key)
+	pivotKey := node2.anchors[0].key
 	memSparseIndexTreeInsertIntoParent(node, node2, pivotKey, parent)
 	if parent.count > 1 {
 		memSparseIndexTreeNodeRebase(node)
@@ -206,7 +202,7 @@ func memSparseIndexTreeSplitInternal(node *memSparseIndexTreeNode) {
 	node.count = count
 	// Clear stale pivots and children to allow GC
 	for i := count; i < oldCount; i++ {
-		node.pivots[i] = nil
+		node.pivots[i] = ""
 	}
 	for i := count + 1; i <= oldCount; i++ {
 		node.children[i] = memSparseIndexTreeChild{}
@@ -230,7 +226,7 @@ func memSparseIndexTreeSplitInternal(node *memSparseIndexTreeNode) {
 	}
 }
 
-func memSparseIndexTreeInsertIntoParent(left, right *memSparseIndexTreeNode, pivot []byte, parent *memSparseIndexTreeNode) {
+func memSparseIndexTreeInsertIntoParent(left, right *memSparseIndexTreeNode, pivot string, parent *memSparseIndexTreeNode) {
 	if parent.count == 0 {
 		parent.children[0] = memSparseIndexTreeChild{node: left, shift: 0}
 		parent.children[1] = memSparseIndexTreeChild{node: right, shift: 0}
@@ -302,7 +298,7 @@ func memSparseIndexTreeHandlerInfoUpdate(nh *memSparseIndexTreeHandler) {
 }
 
 // treeNodeHandlerNextAnchor updates nh to the anchor for key (hinted search).
-func (t *memSparseIndexTree) treeNodeHandlerNextAnchor(nh *memSparseIndexTreeHandler, key []byte) {
+func (t *memSparseIndexTree) treeNodeHandlerNextAnchor(nh *memSparseIndexTreeHandler, key string) {
 	if nh.node == nil {
 		t.findAnchorPos(key, nh)
 		return
@@ -316,7 +312,7 @@ func (t *memSparseIndexTree) treeNodeHandlerNextAnchor(nh *memSparseIndexTreeHan
 			cnode = cnode.parent
 			node = cnode // track highest ancestor visited
 		} else {
-			if bytes.Compare(key, cnode.parent.pivots[pID]) < 0 {
+			if key < cnode.parent.pivots[pID] {
 				node = cnode
 				break
 			}
@@ -334,7 +330,7 @@ func (t *memSparseIndexTree) treeNodeHandlerNextAnchor(nh *memSparseIndexTreeHan
 }
 
 // memSparseIndexTreeUpdateSmallestKey updates the pivot key in ancestors when the first key in a subtree changes.
-func memSparseIndexTreeUpdateSmallestKey(since *memSparseIndexTreeNode, key []byte) {
+func memSparseIndexTreeUpdateSmallestKey(since *memSparseIndexTreeNode, key string) {
 	pIdx := since.parentID
 	tnode := since.parent
 	for tnode != nil {
@@ -346,11 +342,11 @@ func memSparseIndexTreeUpdateSmallestKey(since *memSparseIndexTreeNode, key []by
 		}
 	}
 	if tnode != nil {
-		tnode.pivots[pIdx-1] = dupBytes(key)
+		tnode.pivots[pIdx-1] = key
 	}
 }
 
-func memSparseIndexTreeFindSmallestKey(node *memSparseIndexTreeNode) []byte {
+func memSparseIndexTreeFindSmallestKey(node *memSparseIndexTreeNode) string {
 	n := node
 	for !n.isLeaf {
 		n = n.children[0].node
@@ -358,7 +354,7 @@ func memSparseIndexTreeFindSmallestKey(node *memSparseIndexTreeNode) []byte {
 	if n.count > 0 {
 		return n.anchors[0].key
 	}
-	return nil
+	return ""
 }
 
 func memSparseIndexTreeRecycleLinkedList(node *memSparseIndexTreeNode) {
@@ -422,7 +418,7 @@ func memSparseIndexTreeRecycleNode(node *memSparseIndexTreeNode) {
 				if gpIdx == 0 {
 					memSparseIndexTreeUpdateSmallestKey(gp, np)
 				} else {
-					gp.pivots[gpIdx-1] = dupBytes(np)
+					gp.pivots[gpIdx-1] = np
 				}
 			}
 		}
@@ -432,7 +428,7 @@ func memSparseIndexTreeRecycleNode(node *memSparseIndexTreeNode) {
 			copy(parent.pivots[:], parent.pivots[1:parent.count])
 			copy(parent.children[:], parent.children[1:parent.count+1])
 			parent.count--
-			parent.pivots[parent.count] = nil
+			parent.pivots[parent.count] = ""
 			parent.children[parent.count+1] = memSparseIndexTreeChild{}
 			for i := 0; i <= parent.count; i++ {
 				parent.children[i].node.parentID = i
@@ -443,7 +439,7 @@ func memSparseIndexTreeRecycleNode(node *memSparseIndexTreeNode) {
 			copy(parent.pivots[pIdx-1:], parent.pivots[pIdx:parent.count])
 			copy(parent.children[pIdx:], parent.children[pIdx+1:parent.count+1])
 			parent.count--
-			parent.pivots[parent.count] = nil
+			parent.pivots[parent.count] = ""
 			parent.children[parent.count+1] = memSparseIndexTreeChild{}
 			for i := pIdx; i <= parent.count; i++ {
 				parent.children[i].node.parentID = i

@@ -1,19 +1,17 @@
 package yogadb
 
-import "bytes"
-
 // ReadOnlyDB provides read-only access to the database within a View
 // transaction. Methods must not be used after the callback returns.
 type ReadOnlyDB interface {
-	Get(key []byte) ([]byte, bool)
-	Find(smod SearchModifier, key []byte) (kv *KV, found, exact bool)
-	FindIt(smod SearchModifier, key []byte) (kv *KV, found, exact bool, it *Iter)
+	Get(key string) ([]byte, bool)
+	Find(smod SearchModifier, key string) (kv *KV, found, exact bool)
+	FindIt(smod SearchModifier, key string) (kv *KV, found, exact bool, it *Iter)
 	FetchLarge(kv *KV) ([]byte, error)
 	NewIter() *Iter
-	Ascend(pivot []byte, iter func(key, value []byte) bool)
-	Descend(pivot []byte, iter func(key, value []byte) bool)
-	AscendRange(greaterOrEqual, lessThan []byte, iter func(key, value []byte) bool)
-	DescendRange(lessOrEqual, greaterThan []byte, iter func(key, value []byte) bool)
+	Ascend(pivot string, iter func(key string, value []byte) bool)
+	Descend(pivot string, iter func(key string, value []byte) bool)
+	AscendRange(greaterOrEqual, lessThan string, iter func(key string, value []byte) bool)
+	DescendRange(lessOrEqual, greaterThan string, iter func(key string, value []byte) bool)
 	Len() int64
 	LenBigSmall() (big, small int64)
 }
@@ -23,11 +21,11 @@ type ReadOnlyDB interface {
 // to the database (no buffering).
 type WritableDB interface {
 	ReadOnlyDB
-	Put(key, value []byte) error
-	Delete(key []byte) error
-	DeleteRange(includeLarge bool, begKey, endKey []byte, begInclusive, endInclusive bool) (n int64, allGone bool, err error)
+	Put(key string, value []byte) error
+	Delete(key string) error
+	DeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error)
 	Clear(includeLarge bool) (allGone bool, err error)
-	Merge(key []byte, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error
+	Merge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error
 	Sync() error
 }
 
@@ -59,15 +57,15 @@ func (tx *txBase) closeAll() {
 
 type writeTx struct{ txBase }
 
-func (tx *writeTx) Get(key []byte) ([]byte, bool) {
+func (tx *writeTx) Get(key string) ([]byte, bool) {
 	return tx.db.someLockHeldGet(key)
 }
 
-func (tx *writeTx) Put(key, value []byte) error {
+func (tx *writeTx) Put(key string, value []byte) error {
 	return tx.db.writeLockHeldPut(key, value)
 }
 
-func (tx *writeTx) Delete(key []byte) error {
+func (tx *writeTx) Delete(key string) error {
 	return tx.db.writeLockHeldPut(key, nil)
 }
 
@@ -75,7 +73,7 @@ func (tx *writeTx) Sync() error {
 	return tx.db.writeLockHeldSync()
 }
 
-func (tx *writeTx) Find(smod SearchModifier, key []byte) (kv *KV, found, exact bool) {
+func (tx *writeTx) Find(smod SearchModifier, key string) (kv *KV, found, exact bool) {
 	it := tx.newIter()
 	found, exact = findSeekIter(it, smod, key)
 	if found {
@@ -85,7 +83,7 @@ func (tx *writeTx) Find(smod SearchModifier, key []byte) (kv *KV, found, exact b
 	return
 }
 
-func (tx *writeTx) FindIt(smod SearchModifier, key []byte) (kv *KV, found, exact bool, it *Iter) {
+func (tx *writeTx) FindIt(smod SearchModifier, key string) (kv *KV, found, exact bool, it *Iter) {
 	it = tx.newIter()
 	found, exact = findSeekIter(it, smod, key)
 	if found {
@@ -110,7 +108,7 @@ func (tx *writeTx) LenBigSmall() (big, small int64) {
 	return tx.db.liveBigKeys, tx.db.liveSmallKeys
 }
 
-func (tx *writeTx) DeleteRange(includeLarge bool, begKey, endKey []byte, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
+func (tx *writeTx) DeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
 	return tx.db.writeLockHeldDeleteRange(includeLarge, begKey, endKey, begInclusive, endInclusive)
 }
 
@@ -118,11 +116,11 @@ func (tx *writeTx) Clear(includeLarge bool) (allGone bool, err error) {
 	return tx.db.writeLockHeldClear(includeLarge)
 }
 
-func (tx *writeTx) Merge(key []byte, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error {
+func (tx *writeTx) Merge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error {
 	return tx.db.writeLockHeldMerge(key, fn)
 }
 
-func (tx *writeTx) Ascend(pivot []byte, iter func(key, value []byte) bool) {
+func (tx *writeTx) Ascend(pivot string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
 	it.Seek(pivot)
@@ -134,10 +132,10 @@ func (tx *writeTx) Ascend(pivot []byte, iter func(key, value []byte) bool) {
 	}
 }
 
-func (tx *writeTx) Descend(pivot []byte, iter func(key, value []byte) bool) {
+func (tx *writeTx) Descend(pivot string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
-	if pivot == nil {
+	if pivot == "" {
 		it.SeekToLast()
 	} else {
 		it.seekLE(pivot, false)
@@ -150,12 +148,12 @@ func (tx *writeTx) Descend(pivot []byte, iter func(key, value []byte) bool) {
 	}
 }
 
-func (tx *writeTx) AscendRange(greaterOrEqual, lessThan []byte, iter func(key, value []byte) bool) {
+func (tx *writeTx) AscendRange(greaterOrEqual, lessThan string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
 	it.Seek(greaterOrEqual)
 	for it.Valid() {
-		if lessThan != nil && bytes.Compare(it.Key(), lessThan) >= 0 {
+		if lessThan != "" && it.Key() >= lessThan {
 			return
 		}
 		if !iter(it.Key(), it.iterResolvedValue()) {
@@ -165,16 +163,16 @@ func (tx *writeTx) AscendRange(greaterOrEqual, lessThan []byte, iter func(key, v
 	}
 }
 
-func (tx *writeTx) DescendRange(lessOrEqual, greaterThan []byte, iter func(key, value []byte) bool) {
+func (tx *writeTx) DescendRange(lessOrEqual, greaterThan string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
-	if lessOrEqual == nil {
+	if lessOrEqual == "" {
 		it.SeekToLast()
 	} else {
 		it.seekLE(lessOrEqual, false)
 	}
 	for it.Valid() {
-		if greaterThan != nil && bytes.Compare(it.Key(), greaterThan) <= 0 {
+		if greaterThan != "" && it.Key() <= greaterThan {
 			return
 		}
 		if !iter(it.Key(), it.iterResolvedValue()) {
@@ -188,11 +186,11 @@ func (tx *writeTx) DescendRange(lessOrEqual, greaterThan []byte, iter func(key, 
 
 type readTx struct{ txBase }
 
-func (tx *readTx) Get(key []byte) ([]byte, bool) {
+func (tx *readTx) Get(key string) ([]byte, bool) {
 	return tx.db.someLockHeldGet(key)
 }
 
-func (tx *readTx) Find(smod SearchModifier, key []byte) (kv *KV, found, exact bool) {
+func (tx *readTx) Find(smod SearchModifier, key string) (kv *KV, found, exact bool) {
 	it := tx.newIter()
 	found, exact = findSeekIter(it, smod, key)
 	if found {
@@ -202,7 +200,7 @@ func (tx *readTx) Find(smod SearchModifier, key []byte) (kv *KV, found, exact bo
 	return
 }
 
-func (tx *readTx) FindIt(smod SearchModifier, key []byte) (kv *KV, found, exact bool, it *Iter) {
+func (tx *readTx) FindIt(smod SearchModifier, key string) (kv *KV, found, exact bool, it *Iter) {
 	it = tx.newIter()
 	found, exact = findSeekIter(it, smod, key)
 	if found {
@@ -227,7 +225,7 @@ func (tx *readTx) LenBigSmall() (big, small int64) {
 	return tx.db.liveBigKeys, tx.db.liveSmallKeys
 }
 
-func (tx *readTx) Ascend(pivot []byte, iter func(key, value []byte) bool) {
+func (tx *readTx) Ascend(pivot string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
 	it.Seek(pivot)
@@ -239,10 +237,10 @@ func (tx *readTx) Ascend(pivot []byte, iter func(key, value []byte) bool) {
 	}
 }
 
-func (tx *readTx) Descend(pivot []byte, iter func(key, value []byte) bool) {
+func (tx *readTx) Descend(pivot string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
-	if pivot == nil {
+	if pivot == "" {
 		it.SeekToLast()
 	} else {
 		it.seekLE(pivot, false)
@@ -255,12 +253,12 @@ func (tx *readTx) Descend(pivot []byte, iter func(key, value []byte) bool) {
 	}
 }
 
-func (tx *readTx) AscendRange(greaterOrEqual, lessThan []byte, iter func(key, value []byte) bool) {
+func (tx *readTx) AscendRange(greaterOrEqual, lessThan string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
 	it.Seek(greaterOrEqual)
 	for it.Valid() {
-		if lessThan != nil && bytes.Compare(it.Key(), lessThan) >= 0 {
+		if lessThan != "" && it.Key() >= lessThan {
 			return
 		}
 		if !iter(it.Key(), it.iterResolvedValue()) {
@@ -270,16 +268,16 @@ func (tx *readTx) AscendRange(greaterOrEqual, lessThan []byte, iter func(key, va
 	}
 }
 
-func (tx *readTx) DescendRange(lessOrEqual, greaterThan []byte, iter func(key, value []byte) bool) {
+func (tx *readTx) DescendRange(lessOrEqual, greaterThan string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
-	if lessOrEqual == nil {
+	if lessOrEqual == "" {
 		it.SeekToLast()
 	} else {
 		it.seekLE(lessOrEqual, false)
 	}
 	for it.Valid() {
-		if greaterThan != nil && bytes.Compare(it.Key(), greaterThan) <= 0 {
+		if greaterThan != "" && it.Key() <= greaterThan {
 			return
 		}
 		if !iter(it.Key(), it.iterResolvedValue()) {

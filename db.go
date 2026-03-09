@@ -10,7 +10,6 @@ package yogadb
 //   Crash recovery: rebuild sparse index from FlexSpace tags, replay WAL logs
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
@@ -71,14 +70,12 @@ func (db *FlexDB) NewBatch() (b *Batch) {
 // Set copies key and value internally, so the
 // original memory is safe to be re-used by the
 // caller immediately after Set returns.
-func (s *Batch) Set(key, value []byte) (err error) {
+func (s *Batch) Set(key string, value []byte) (err error) {
 
-	// We must make copies here. Even after the Batch
-	// is Commit()-ed, these copies can remain unflushed
-	// in the memtables and interval caches, as they
-	// try and amortize the cost of disk writes.
+	// String keys are immutable — no copy needed.
+	// Value is []byte, so we must copy it.
 	s.puts = append(s.puts, &KV{
-		Key:   append([]byte{}, key...),
+		Key:   key,
 		Value: append([]byte{}, value...),
 	})
 	return nil
@@ -282,7 +279,7 @@ func (s *Batch) Close() {
 // When HasVPtr is true, the value is stored in the VLOG file and Vptr
 // contains the location; Value holds the resolved bytes (or nil if not yet loaded).
 type KV struct {
-	Key     []byte
+	Key     string
 	Value   []byte
 	Vptr    VPtr // valid when HasVPtr is true
 	HasVPtr bool // true = value lives in VLOG, Vptr is the location
@@ -291,7 +288,7 @@ type KV struct {
 
 func (z *KV) String() (r string) {
 	r = "&KV{\n"
-	r += fmt.Sprintf("    Key: %v,\n", string(z.Key))
+	r += fmt.Sprintf("    Key: %v,\n", z.Key)
 	r += fmt.Sprintf("  Value: %v,\n", string(z.Value))
 	r += fmt.Sprintf("   Vptr: %v,\n", z.Vptr)
 	r += fmt.Sprintf("HasVPtr: %v,\n", z.HasVPtr)
@@ -307,7 +304,7 @@ type HLCInterval struct {
 	Endx  HLC // exclusive upper bound (one past last)
 }
 
-func kvLess(a, b KV) bool { return bytes.Compare(a.Key, b.Key) < 0 }
+func kvLess(a, b KV) bool { return a.Key < b.Key }
 
 // kvSizeApprox returns the approximate in-memory size of a KV (matches C kv_size).
 func kvSizeApprox(kv *KV) int { return 24 + len(kv.Key) + len(kv.Value) }
@@ -399,8 +396,7 @@ func kv128Decode(src []byte) (kv KV, n int, ok bool) {
 		if crc32.Checksum(src[:total], crc32cTable) != binary.LittleEndian.Uint32(src[total:total+4]) {
 			return
 		}
-		kv.Key = make([]byte, klen)
-		copy(kv.Key, src[hdr:hdr+int(klen)])
+		kv.Key = string(src[hdr : hdr+int(klen)])
 		kv.Hlc = HLC(binary.BigEndian.Uint64(src[total-8 : total]))
 		return kv, total + 4, true
 	}
@@ -413,8 +409,7 @@ func kv128Decode(src []byte) (kv KV, n int, ok bool) {
 		if crc32.Checksum(src[:total], crc32cTable) != binary.LittleEndian.Uint32(src[total:total+4]) {
 			return
 		}
-		kv.Key = make([]byte, klen)
-		copy(kv.Key, src[hdr:hdr+int(klen)])
+		kv.Key = string(src[hdr : hdr+int(klen)])
 		kv.Vptr = decodeVPtr(src[hdr+int(klen) : hdr+int(klen)+vptrSize])
 		kv.HasVPtr = true
 		kv.Hlc = HLC(binary.BigEndian.Uint64(src[total-8 : total]))
@@ -428,8 +423,7 @@ func kv128Decode(src []byte) (kv KV, n int, ok bool) {
 	if crc32.Checksum(src[:total], crc32cTable) != binary.LittleEndian.Uint32(src[total:total+4]) {
 		return
 	}
-	kv.Key = make([]byte, klen)
-	copy(kv.Key, src[hdr:hdr+int(klen)])
+	kv.Key = string(src[hdr : hdr+int(klen)])
 	kv.Value = make([]byte, vlen)
 	copy(kv.Value, src[hdr+int(klen):hdr+int(klen)+vlen])
 	kv.Hlc = HLC(binary.BigEndian.Uint64(src[total-8 : total]))
@@ -481,8 +475,8 @@ func flexdbTagUnsorted(tag uint16) uint8 { return uint8((tag >> 1) & 0x7f) }
 
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
-func kvCRC32(key []byte) uint32 {
-	return crc32.Checksum(key, crc32cTable)
+func kvCRC32(key string) uint32 {
+	return crc32.Checksum([]byte(key), crc32cTable)
 }
 
 func fingerprint(h uint32) uint16 {
@@ -493,7 +487,7 @@ func fingerprint(h uint32) uint16 {
 	return fp
 }
 
-func cachePartitionID(key []byte) int {
+func cachePartitionID(key string) int {
 	return int(kvCRC32(key) & uint32(intervalCachePartitionMask))
 }
 
@@ -660,7 +654,7 @@ func (db *FlexDB) adjustKeyCounters(oldState, newState keyState) {
 // writeLockHeldKeyState checks the inactive memtable and FlexSpace for a key's state.
 // Called when a key is new to the active memtable.
 // Caller must hold topMutRW.Lock().
-func (db *FlexDB) writeLockHeldKeyState(key []byte) keyState {
+func (db *FlexDB) writeLockHeldKeyState(key string) keyState {
 	inactive := 1 - db.activeMT
 	if !db.memtables[inactive].empty {
 		if kv, ok := db.memtables[inactive].get(key); ok {
@@ -1867,7 +1861,8 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 			// Decode all KVs in the interval (slotted page + kv128 overflow)
 			src := itvBuf
 			kvCount := 0
-			var prevKey []byte
+			var prevKey string
+			hasPrev := false
 
 			if slottedPageIsSlotted(src) {
 				kvs, consumed, decErr := slottedPageDecode(src)
@@ -1878,12 +1873,13 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 				} else {
 					for _, kv := range kvs {
 						kvCount++
-						if prevKey != nil && bytes.Compare(kv.Key, prevKey) < 0 {
+						if hasPrev && kv.Key < prevKey {
 							addErr("key_order",
 								fmt.Sprintf("anchor %d (key=%q): key %q < prev key %q at position %d",
 									anchorCount, anchor.key, kv.Key, prevKey, kvCount), false)
 						}
 						prevKey = kv.Key
+						hasPrev = true
 					}
 					src = src[consumed:]
 				}
@@ -1900,6 +1896,7 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 				}
 				kvCount++
 				prevKey = kv.Key
+				hasPrev = true
 				src = src[sz:]
 			}
 
@@ -2007,13 +2004,13 @@ func (db *FlexDB) writeLockHeldSync() error {
 // completed a db.Sync() call. This allows the user to control
 // the rate of fsyncs and trade that against their durability
 // requirements.
-func (db *FlexDB) Put(key, value []byte) error {
+func (db *FlexDB) Put(key string, value []byte) error {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 	return db.writeLockHeldPut(key, value)
 }
 
-func (db *FlexDB) writeLockHeldPut(key, value []byte) error {
+func (db *FlexDB) writeLockHeldPut(key string, value []byte) error {
 
 	if len(key)+16 >= MaxKeySize {
 		return fmt.Errorf("flexdb: key too large (max %d bytes)", MaxKeySize-16)
@@ -2027,11 +2024,8 @@ func (db *FlexDB) writeLockHeldPut(key, value []byte) error {
 	// Tick the HLC for this write.
 	hlcVal := db.hlc.CreateSendOrLocalEvent()
 
-	// Defensive copy: the btree and interval cache store KV structs whose
-	// Key/Value slice headers point to the backing array. If we stored the
-	// caller's slices directly, the caller could mutate them after Put
-	// returns, corrupting btree ordering and cached/flushed data.
-	key = append([]byte{}, key...)
+	// String keys are immutable — no defensive copy needed.
+	// Value is []byte, so we must copy it.
 	if value != nil {
 		value = append([]byte{}, value...)
 	}
@@ -2105,30 +2099,22 @@ const (
 // findSeekIter positions it according to smod and key.
 // Returns (found, exact). On return, it is either Valid
 // (found=true) or invalid (found=false).
-func findSeekIter(it *Iter, smod SearchModifier, key []byte) (found, exact bool) {
+func findSeekIter(it *Iter, smod SearchModifier, key string) (found, exact bool) {
 	switch smod {
 	case GTE:
 		it.Seek(key)
 	case GT:
 		it.Seek(key)
-		if it.Valid() && key != nil && bytes.Equal(it.Key(), key) {
+		if it.Valid() && it.Key() == key {
 			it.Next()
 		}
 	case LTE:
-		if key == nil {
-			it.SeekToLast()
-		} else {
-			it.seekLE(key, false)
-		}
+		it.seekLE(key, false)
 	case LT:
-		if key == nil {
-			it.SeekToLast()
-		} else {
-			it.seekLE(key, true)
-		}
+		it.seekLE(key, true)
 	case Exact:
 		it.Seek(key)
-		if it.Valid() && !bytes.Equal(it.Key(), key) {
+		if it.Valid() && it.Key() != key {
 			it.releaseIterState()
 			it.valid = false
 			return false, false
@@ -2137,7 +2123,7 @@ func findSeekIter(it *Iter, smod SearchModifier, key []byte) (found, exact bool)
 	if !it.Valid() {
 		return false, false
 	}
-	return true, key != nil && bytes.Equal(it.Key(), key)
+	return true, it.Key() == key
 }
 
 // findBuildKV constructs a *KV from the iterator's current
@@ -2182,16 +2168,16 @@ func findBuildKV(it *Iter) *KV {
 // beyond the found key, use FindIt inside a View or Update transaction.
 //
 // Goroutine safe. Acquires the read lock internally.
-func (db *FlexDB) Find(smod SearchModifier, key []byte) (kv *KV, found, exact bool) {
+func (db *FlexDB) Find(smod SearchModifier, key string) (kv *KV, found, exact bool) {
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
 	it := &Iter{db: db}
 	found, exact = findSeekIter(it, smod, key)
 	if found {
 		zc := findBuildKV(it)
-		// Copy Key and Value since we're about to release the lock.
+		// String Key is immutable — no copy needed. Copy Value.
 		owned := KV{Vptr: zc.Vptr, HasVPtr: zc.HasVPtr, Hlc: zc.Hlc}
-		owned.Key = append([]byte{}, zc.Key...)
+		owned.Key = zc.Key
 		if !zc.HasVPtr && zc.Value != nil {
 			owned.Value = append([]byte{}, zc.Value...)
 		}
@@ -2202,7 +2188,7 @@ func (db *FlexDB) Find(smod SearchModifier, key []byte) (kv *KV, found, exact bo
 }
 
 // Get retrieves the value for key. Returns nil, false if not found.
-func (db *FlexDB) Get(key []byte) ([]byte, bool) {
+func (db *FlexDB) Get(key string) ([]byte, bool) {
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
 
@@ -2275,7 +2261,7 @@ func (db *FlexDB) Get(key []byte) ([]byte, bool) {
 
 // someLockHeldGet retrieves the value for key without acquiring topMutRW.
 // Caller must already hold topMutRW.Lock() or topMutRW.RLock().
-func (db *FlexDB) someLockHeldGet(key []byte) ([]byte, bool) {
+func (db *FlexDB) someLockHeldGet(key string) ([]byte, bool) {
 	// Check active memtable
 	active := db.activeMT
 	if !db.memtables[active].empty {
@@ -2318,7 +2304,7 @@ func (db *FlexDB) someLockHeldGet(key []byte) ([]byte, bool) {
 }
 
 // Delete removes key from the store.
-func (db *FlexDB) Delete(key []byte) error {
+func (db *FlexDB) Delete(key string) error {
 	// Put already does locking.
 
 	return db.Put(key, nil) // tombstone
@@ -2347,7 +2333,7 @@ func (db *FlexDB) Delete(key []byte) error {
 // Goroutine safe. Concurrent reads and writes are serialized via the
 // database write lock. However, when allGone is returned true, all
 // previously held iterators, cursors, and references are invalidated.
-func (db *FlexDB) DeleteRange(includeLarge bool, begKey, endKey []byte, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
+func (db *FlexDB) DeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 	return db.writeLockHeldDeleteRange(includeLarge, begKey, endKey, begInclusive, endInclusive)
@@ -2355,13 +2341,12 @@ func (db *FlexDB) DeleteRange(includeLarge bool, begKey, endKey []byte, begInclu
 
 // writeLockHeldDeleteRange is the lock-held body of DeleteRange.
 // Caller must hold topMutRW.Lock().
-func (db *FlexDB) writeLockHeldDeleteRange(includeLarge bool, begKey, endKey []byte, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
-	cmp := bytes.Compare(begKey, endKey)
-	if cmp > 0 {
+func (db *FlexDB) writeLockHeldDeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
+	if begKey > endKey {
 		return 0, false, fmt.Errorf("yogadb: DeleteRange: begKey > endKey")
 	}
 	// Equal keys with both exclusive means empty range.
-	if cmp == 0 && (!begInclusive || !endInclusive) {
+	if begKey == endKey && (!begInclusive || !endInclusive) {
 		return 0, false, nil
 	}
 
@@ -2379,7 +2364,7 @@ func (db *FlexDB) writeLockHeldDeleteRange(includeLarge bool, begKey, endKey []b
 			continue
 		}
 		// Collect keys first since writeLockHeldPut mutates the active memtable.
-		var keys [][]byte
+		var keys []string
 		db.memtables[mtIdx].bt.Ascend(KV{Key: begKey}, func(item KV) bool {
 			if !deleteRangeInBounds(item.Key, begKey, endKey, begInclusive, endInclusive) {
 				// Past endKey - stop iteration.
@@ -2393,7 +2378,7 @@ func (db *FlexDB) writeLockHeldDeleteRange(includeLarge bool, begKey, endKey []b
 				if !includeLarge && item.HasVPtr {
 					return true // skip large-value keys
 				}
-				keys = append(keys, append([]byte{}, item.Key...))
+				keys = append(keys, item.Key)
 			}
 			return true
 		})
@@ -2446,10 +2431,10 @@ func (db *FlexDB) writeLockHeldClear(includeLarge bool) (allGone bool, err error
 		if db.memtables[mtIdx].empty {
 			continue
 		}
-		var keys [][]byte
+		var keys []string
 		db.memtables[mtIdx].bt.Scan(func(item KV) bool {
 			if !item.isTombstone() && !item.HasVPtr {
-				keys = append(keys, append([]byte{}, item.Key...))
+				keys = append(keys, item.Key)
 			}
 			return true
 		})
@@ -2474,8 +2459,8 @@ func (db *FlexDB) writeLockHeldClear(includeLarge bool) (allGone bool, err error
 // returns true (nothing to delete, reinit is a no-op).
 //
 // Caller must hold topMutRW.Lock().
-func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey []byte, begInclusive, endInclusive bool) bool {
-	inBounds := func(key []byte) bool {
+func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey string, begInclusive, endInclusive bool) bool {
+	inBounds := func(key string) bool {
 		return deleteRangeInBounds(key, begKey, endKey, begInclusive, endInclusive)
 	}
 
@@ -2521,7 +2506,7 @@ func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey []byte, begInclusive
 	for node != nil && !firstKeyChecked {
 		for i := 0; i < node.count; i++ {
 			a := node.anchors[i]
-			if a != nil && a.key != nil { // skip nil-key sentinel
+			if a != nil && a.key != "" { // skip empty-key sentinel
 				if !inBounds(a.key) {
 					return false
 				}
@@ -2656,24 +2641,22 @@ func (db *FlexDB) writeLockHeldDeleteAll() error {
 
 // deleteRangeInBounds returns true if key is within the range defined by
 // [begKey, endKey] with the given inclusivity flags.
-func deleteRangeInBounds(key, begKey, endKey []byte, begInclusive, endInclusive bool) bool {
-	cmpBeg := bytes.Compare(key, begKey)
+func deleteRangeInBounds(key, begKey, endKey string, begInclusive, endInclusive bool) bool {
 	if begInclusive {
-		if cmpBeg < 0 {
+		if key < begKey {
 			return false
 		}
 	} else {
-		if cmpBeg <= 0 {
+		if key <= begKey {
 			return false
 		}
 	}
-	cmpEnd := bytes.Compare(key, endKey)
 	if endInclusive {
-		if cmpEnd > 0 {
+		if key > endKey {
 			return false
 		}
 	} else {
-		if cmpEnd >= 0 {
+		if key >= endKey {
 			return false
 		}
 	}
@@ -2681,12 +2664,11 @@ func deleteRangeInBounds(key, begKey, endKey []byte, begInclusive, endInclusive 
 }
 
 // deleteRangePastEnd returns true if key is beyond the end bound.
-func deleteRangePastEnd(key, endKey []byte, endInclusive bool) bool {
-	cmp := bytes.Compare(key, endKey)
+func deleteRangePastEnd(key, endKey string, endInclusive bool) bool {
 	if endInclusive {
-		return cmp > 0
+		return key > endKey
 	}
-	return cmp >= 0
+	return key >= endKey
 }
 
 // deleteRangeFlexSpace walks the sparse index tree's leaf linked list,
@@ -2698,7 +2680,7 @@ func deleteRangePastEnd(key, endKey []byte, endInclusive bool) bool {
 // processed key in the rebuilt sparse index tree.
 //
 // Caller must hold topMutRW.Lock().
-func (db *FlexDB) deleteRangeFlexSpace(begKey, endKey []byte, begInclusive, endInclusive, includeLarge bool) (int64, error) {
+func (db *FlexDB) deleteRangeFlexSpace(begKey, endKey string, begInclusive, endInclusive, includeLarge bool) (int64, error) {
 	var n int64
 	target := begKey
 	// On first seek, whether we include target depends on begInclusive.
@@ -2742,7 +2724,7 @@ func (db *FlexDB) deleteRangeFlexSpace(begKey, endKey []byte, begInclusive, endI
 			}
 
 			// Early exit: if anchor's first key is past end bound, we're done.
-			if anchor.key != nil && deleteRangePastEnd(anchor.key, endKey, endInclusive) {
+			if anchor.key != "" && deleteRangePastEnd(anchor.key, endKey, endInclusive) {
 				return n, nil
 			}
 
@@ -2756,13 +2738,12 @@ func (db *FlexDB) deleteRangeFlexSpace(begKey, endKey []byte, begInclusive, endI
 			// Process each KV in this interval.
 			for _, kv := range kvs {
 				// Skip keys before our current seek position.
-				cmpTarget := bytes.Compare(kv.Key, target)
 				if seekStrict {
-					if cmpTarget <= 0 {
+					if kv.Key <= target {
 						continue
 					}
 				} else {
-					if cmpTarget < 0 {
+					if kv.Key < target {
 						continue
 					}
 				}
@@ -2810,8 +2791,9 @@ func (db *FlexDB) deleteRangeFlexSpace(begKey, endKey []byte, begInclusive, endI
 // Caller must hold topMutRW.Lock().
 func (db *FlexDB) deleteRangeFlexSpaceClearSmall() (int64, error) {
 	var n int64
-	var target []byte
+	var target string
 	seekStrict := false
+	firstIteration := true
 
 	for {
 		t := db.tree
@@ -2824,7 +2806,8 @@ func (db *FlexDB) deleteRangeFlexSpaceClearSmall() (int64, error) {
 		var anchorIdx int
 		var shift int64
 
-		if target == nil && !seekStrict {
+		if firstIteration && !seekStrict {
+			firstIteration = false
 			// First iteration: start from the beginning.
 			node = t.leafHead
 			anchorIdx = 0
@@ -2871,12 +2854,12 @@ func (db *FlexDB) deleteRangeFlexSpaceClearSmall() (int64, error) {
 			}
 
 			for _, kv := range kvs {
-				if target != nil {
-					cmp := bytes.Compare(kv.Key, target)
-					if seekStrict && cmp <= 0 {
+				if seekStrict {
+					if kv.Key <= target {
 						continue
 					}
-					if !seekStrict && cmp < 0 {
+				} else if target != "" {
+					if kv.Key < target {
 						continue
 					}
 				}
@@ -2955,7 +2938,7 @@ func deleteRangeDedup(kvs []KV) []KV {
 	for i < len(kvs) {
 		best := i
 		j := i + 1
-		for j < len(kvs) && bytes.Equal(kvs[i].Key, kvs[j].Key) {
+		for j < len(kvs) && kvs[i].Key == kvs[j].Key {
 			if kvs[j].Hlc > kvs[best].Hlc {
 				best = j
 			}
@@ -2976,7 +2959,7 @@ func deleteRangeDedup(kvs []KV) []KV {
 // This mirrors C's flexdb_merge: it looks up the old value across all
 // layers (active memtable, inactive memtable, FlexSpace), applies the
 // user function, and writes the result atomically.
-func (db *FlexDB) Merge(key []byte, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error {
+func (db *FlexDB) Merge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 	return db.writeLockHeldMerge(key, fn)
@@ -2984,7 +2967,7 @@ func (db *FlexDB) Merge(key []byte, fn func(oldVal []byte, exists bool) (newVal 
 
 // writeLockHeldMerge is the lock-held body of Merge.
 // Caller must hold topMutRW.Lock().
-func (db *FlexDB) writeLockHeldMerge(key []byte, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error {
+func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error {
 	if len(key)+16 >= MaxKeySize {
 		return fmt.Errorf("flexdb: key too large for merge (max %d bytes)", MaxKeySize)
 	}
@@ -3052,7 +3035,7 @@ func (db *FlexDB) writeLockHeldMerge(key []byte, fn func(oldVal []byte, exists b
 // These operate directly on FlexSpace + sparse index.
 // Caller must hold db.topMutRW. but is RLock sufficient? should be since we change nothing.
 
-func (db *FlexDB) getPassthrough(key []byte) ([]byte, bool) {
+func (db *FlexDB) getPassthrough(key string) ([]byte, bool) {
 	var nh memSparseIndexTreeHandler
 	db.tree.findAnchorPos(key, &nh)
 	anchor := nh.node.anchors[nh.idx]
@@ -3079,7 +3062,7 @@ func (db *FlexDB) getPassthrough(key []byte) ([]byte, bool) {
 }
 
 // getPassthroughKV returns the full KV (including HLC) from the passthrough layer.
-func (db *FlexDB) getPassthroughKV(key []byte) (KV, bool) {
+func (db *FlexDB) getPassthroughKV(key string) (KV, bool) {
 	var nh memSparseIndexTreeHandler
 	db.tree.findAnchorPos(key, &nh)
 	anchor := nh.node.anchors[nh.idx]
@@ -3224,7 +3207,7 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 		leftSize += kvSizeApprox(&fce.kvs[i])
 	}
 
-	newAnchorKey := dupBytes(fce.kvs[leftCount].Key)
+	newAnchorKey := fce.kvs[leftCount].Key
 	nh.idx++
 	newAnchor := nh.handlerInsert(newAnchorKey, newAnchorLoff, rightPSize)
 	nh.idx--
@@ -3456,7 +3439,7 @@ func (db *FlexDB) clampAnchorPsizes() {
 				// Insert a new anchor for this sub-page.
 				db.tree.findAnchorPos(subKey, &nh)
 				nh.idx++
-				newAnchor := nh.handlerInsert(dupBytes(subKey), subLoff, uint32(slottedPageMaxSize))
+				newAnchor := nh.handlerInsert(subKey, subLoff, uint32(slottedPageMaxSize))
 				_ = newAnchor
 				nh.idx--
 
@@ -3481,7 +3464,7 @@ func (db *FlexDB) recovery() {
 	defer db.topMutRW.Unlock()
 
 	type anchorInfo struct {
-		key      []byte
+		key      string
 		loff     uint64
 		unsorted uint8
 	}
@@ -3502,9 +3485,9 @@ func (db *FlexDB) recovery() {
 			unsorted := flexdbTagUnsorted(tag)
 			kv, ok := flexdbReadKVFromHandler(fh, kvbuf)
 			if ok {
-				var anchorKey []byte
+				var anchorKey string
 				if loff > 0 {
-					anchorKey = dupBytes(kv.Key)
+					anchorKey = kv.Key
 				}
 				anchors = append(anchors, anchorInfo{key: anchorKey, loff: loff, unsorted: unsorted})
 			}
@@ -3514,7 +3497,7 @@ func (db *FlexDB) recovery() {
 
 	// Build sparse index tree from collected anchors (in order)
 	var nh memSparseIndexTreeHandler
-	db.tree.findAnchorPos(nil, &nh)
+	db.tree.findAnchorPos("", &nh)
 	lastAnchorLoff := uint64(0)
 
 	for _, ai := range anchors {

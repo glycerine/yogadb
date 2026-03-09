@@ -58,7 +58,7 @@ func (m *memtable) put(kv KV) (KV, bool) {
 	return old, replaced
 }
 
-func (m *memtable) get(key []byte) (KV, bool) {
+func (m *memtable) get(key string) (KV, bool) {
 	return m.bt.Get(KV{Key: key})
 }
 

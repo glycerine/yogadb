@@ -49,7 +49,7 @@ func justShowAll(db *yogadb.FlexDB, dbPath string) {
 	saw := 0
 	buf := make([]byte, 0, 4<<20)
 	db.View(func(roDB yogadb.ReadOnlyDB) error {
-		roDB.Ascend(nil, func(key, value []byte) bool {
+		roDB.Ascend("", func(key string, value []byte) bool {
 			need := 2 + len(key) + len(value)
 			if len(buf)+need <= cap(buf) {
 				// fine. write below.

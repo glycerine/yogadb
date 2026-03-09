@@ -305,8 +305,7 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 	kvs := make([]KV, count)
 	for i := 0; i < count; i++ {
 		kl := int(entries[i].keyLen)
-		kvs[i].Key = make([]byte, kl)
-		copy(kvs[i].Key, src[entries[i].keyOff:entries[i].keyOff+kl])
+		kvs[i].Key = string(src[entries[i].keyOff : entries[i].keyOff+kl])
 		kvs[i].Hlc = entries[i].hlc
 	}
 
@@ -372,17 +371,17 @@ func slottedValBytesOf(kv KV) []byte {
 
 // slottedPageFirstKey extracts the first key from a slotted page without
 // fully decoding it. Used by recovery to reconstruct anchor keys.
-func slottedPageFirstKey(src []byte) ([]byte, bool) {
+func slottedPageFirstKey(src []byte) (string, bool) {
 	// Need at least header + first entry's 4B slot header + 1B varint
 	if len(src) < slottedPageHeaderSize+5 {
-		return nil, false
+		return "", false
 	}
 	if src[0] != slottedPageMagic {
-		return nil, false
+		return "", false
 	}
 	count := int(binary.LittleEndian.Uint16(src[2:4]))
 	if count == 0 {
-		return nil, false
+		return "", false
 	}
 	// First entry record starts at offset 12 (header size).
 	off := slottedPageHeaderSize
@@ -391,15 +390,13 @@ func slottedPageFirstKey(src []byte) ([]byte, bool) {
 	// Skip HLC delta varint.
 	_, n := binary.Uvarint(src[off:])
 	if n <= 0 {
-		return nil, false
+		return "", false
 	}
 	off += n
 	if off+keyLen > len(src) {
-		return nil, false
+		return "", false
 	}
-	key := make([]byte, keyLen)
-	copy(key, src[off:off+keyLen])
-	return key, true
+	return string(src[off : off+keyLen]), true
 }
 
 // slottedValInfoToLen returns the number of value bytes for a valInfo.

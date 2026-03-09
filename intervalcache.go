@@ -1,7 +1,6 @@
 package yogadb
 
 import (
-	"bytes"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -24,7 +23,7 @@ import (
 //
 
 type dbAnchor struct {
-	key []byte // smallest key in this interval (nil = sentinel null key)
+	key string // smallest key in this interval ("" = sentinel null key)
 
 	// loff is the relative loff; actual loff = loff + accumulated shift from parents
 	// loff was promoted to int64 since we saw silent
@@ -366,18 +365,18 @@ func intervalCacheDedup(kvs []KV) ([]KV, []uint16, int) {
 	}
 	out := kvs[:0]
 	i := 0
-	var prevKey []byte
+	var prevKey string
+	hasPrev := false
 	for i < len(kvs) {
-		if len(prevKey) > 0 {
-			cmp := bytes.Compare(prevKey, kvs[i].Key)
-			if cmp > 0 {
-				panicf("internal logic error: PRE-condition violated, kvs was not sorted by key! cmp=%v; kvs='%#v'", cmp, kvs)
+		if hasPrev {
+			if prevKey > kvs[i].Key {
+				panicf("internal logic error: PRE-condition violated, kvs was not sorted by key! prevKey=%q > key=%q; kvs='%#v'", prevKey, kvs[i].Key, kvs)
 			}
 		}
 
 		best := i
 		j := i + 1
-		for j < len(kvs) && bytes.Equal(kvs[i].Key, kvs[j].Key) {
+		for j < len(kvs) && kvs[i].Key == kvs[j].Key {
 			if kvs[j].Hlc > kvs[best].Hlc {
 				best = j
 			}
@@ -386,6 +385,7 @@ func intervalCacheDedup(kvs []KV) ([]KV, []uint16, int) {
 		out = append(out, kvs[best])
 		if j < len(kvs) {
 			prevKey = kvs[i].Key
+			hasPrev = true
 		}
 		i = j
 	}
@@ -399,14 +399,13 @@ func intervalCacheDedup(kvs []KV) ([]KV, []uint16, int) {
 }
 
 // intervalCacheEntryFindKeyGE: binary search for first position >= key. Returns (idx, exact).
-func intervalCacheEntryFindKeyGE(fce *intervalCacheEntry, key []byte) (int, bool) {
+func intervalCacheEntryFindKeyGE(fce *intervalCacheEntry, key string) (int, bool) {
 	lo, hi := 0, fce.count
 	for lo < hi {
 		mid := (lo + hi) >> 1
-		cmp := bytes.Compare(key, fce.kvs[mid].Key)
-		if cmp > 0 {
+		if key > fce.kvs[mid].Key {
 			lo = mid + 1
-		} else if cmp < 0 {
+		} else if key < fce.kvs[mid].Key {
 			hi = mid
 		} else {
 			return mid, true
@@ -416,10 +415,10 @@ func intervalCacheEntryFindKeyGE(fce *intervalCacheEntry, key []byte) (int, bool
 }
 
 // intervalCacheEntryFindKeyEQ: linear scan using fingerprints for exact match.
-func intervalCacheEntryFindKeyEQ(fce *intervalCacheEntry, key []byte) (int, bool) {
+func intervalCacheEntryFindKeyEQ(fce *intervalCacheEntry, key string) (int, bool) {
 	fp := fingerprint(kvCRC32(key))
 	for i := 0; i < fce.count; i++ {
-		if fce.fps[i] == fp && bytes.Equal(key, fce.kvs[i].Key) {
+		if fce.fps[i] == fp && key == fce.kvs[i].Key {
 			return i, true
 		}
 	}
