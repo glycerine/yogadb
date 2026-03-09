@@ -36,7 +36,7 @@ const (
 	memtableCap                       = 1 << 30               // 1 GB
 	memtableWalBufCap                 = 4 << 20               // 4 MB log buffer (must be at least 2x than MaxKeySize + space for a KV struct) so we don't deadlock trying to flush the memtable and write a new large key.
 	memtableFlushBatch                = 1024
-	flexdbUnsortedWriteQuota          = 200 // was 200 ; limited to 127 anyway in flexdbTagUnsorted(tag uint16) uint8 { return uint8((tag >> 1) & 0x7f) }
+	flexdbUnsortedWriteQuota          = 15 // 200 // was 200 ; limited to 127 anyway in flexdbTagUnsorted(tag uint16) uint8 { return uint8((tag >> 1) & 0x7f) }
 	// sparseInterval = sortedCount + unsortedQuota + 1 = 32
 	flexdbSparseInterval        = flexdbSparseIntervalCount + flexdbUnsortedWriteQuota + 1
 	intervalCachePartitionCount = 1024
