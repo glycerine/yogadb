@@ -1228,6 +1228,7 @@ func (it *Iter) Next() {
 					it.dir = 1
 					return
 				}
+				span.pos = pos + 1 // skip tombstone so servePrefetch doesn't re-check
 			}
 			// Tombstone or span boundary — fall through to full loop.
 			if it.servePrefetch() {
