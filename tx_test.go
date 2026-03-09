@@ -321,32 +321,32 @@ func TestTx_UpdateAscendDescend(t *testing.T) {
 	err := db.Update(func(rwDB WritableDB) error {
 		// Ascend from "b".
 		var asc []string
-		rwDB.Ascend([]byte("b"), func(key, value []byte) bool {
-			asc = append(asc, string(key))
+		rwDB.Ascend("b", func(key string, value []byte) bool {
+			asc = append(asc, key)
 			return true
 		})
 		expectKeys(t, "Ascend-from-b", asc, []string{"b", "c", "d"})
 
 		// Descend from "c".
 		var desc []string
-		rwDB.Descend([]byte("c"), func(key, value []byte) bool {
-			desc = append(desc, string(key))
+		rwDB.Descend("c", func(key string, value []byte) bool {
+			desc = append(desc, key)
 			return true
 		})
 		expectKeys(t, "Descend-from-c", desc, []string{"c", "b", "a"})
 
 		// AscendRange [b, d).
 		var rng []string
-		rwDB.AscendRange([]byte("b"), []byte("d"), func(key, value []byte) bool {
-			rng = append(rng, string(key))
+		rwDB.AscendRange("b", "d", func(key string, value []byte) bool {
+			rng = append(rng, key)
 			return true
 		})
 		expectKeys(t, "AscendRange-b-d", rng, []string{"b", "c"})
 
 		// DescendRange [c, a).
 		var drng []string
-		rwDB.DescendRange([]byte("c"), []byte("a"), func(key, value []byte) bool {
-			drng = append(drng, string(key))
+		rwDB.DescendRange("c", "a", func(key string, value []byte) bool {
+			drng = append(drng, key)
 			return true
 		})
 		expectKeys(t, "DescendRange-c-a", drng, []string{"c", "b"})
@@ -368,7 +368,7 @@ func TestTx_UpdateDeleteRange(t *testing.T) {
 
 	err := db.Update(func(rwDB WritableDB) error {
 		// Delete range [b, d] inclusive.
-		n, _, err := rwDB.DeleteRange(false, []byte("b"), []byte("d"), true, true)
+		n, _, err := rwDB.DeleteRange(false, "b", "d", true, true)
 		if err != nil {
 			return err
 		}

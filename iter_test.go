@@ -29,7 +29,7 @@ func TestFlexDB_IteratorBasic(t *testing.T) {
 			if !it.Valid() {
 				t.Fatalf("iterator ended early; want key %q", wk)
 			}
-			if string(it.Key()) != wk {
+			if it.Key() != wk {
 				t.Fatalf("Key() = %q, want %q", it.Key(), wk)
 			}
 			if string(it.Vin()) != "v:"+wk {
@@ -56,17 +56,17 @@ func TestFlexDB_IteratorSeek(t *testing.T) {
 		it := roDB.NewIter()
 		defer it.Close()
 
-		it.Seek([]byte("ccc"))
-		if !it.Valid() || string(it.Key()) != "ccc" {
+		it.Seek("ccc")
+		if !it.Valid() || it.Key() != "ccc" {
 			t.Fatalf("Seek(ccc): got %v/%q", it.Valid(), it.Key())
 		}
 		it.Next()
-		if !it.Valid() || string(it.Key()) != "ddd" {
+		if !it.Valid() || it.Key() != "ddd" {
 			t.Fatalf("After Seek+Next: got %v/%q, want ddd", it.Valid(), it.Key())
 		}
 
-		it.Seek([]byte("d"))
-		if !it.Valid() || string(it.Key()) != "ddd" {
+		it.Seek("d")
+		if !it.Valid() || it.Key() != "ddd" {
 			t.Fatalf("Seek(d): got %v/%q, want ddd", it.Valid(), it.Key())
 		}
 		return nil
@@ -93,7 +93,7 @@ func TestFlexDB_IteratorAfterSync(t *testing.T) {
 			if !it.Valid() {
 				t.Fatalf("iterator ended early; want %q", wk)
 			}
-			if string(it.Key()) != wk {
+			if it.Key() != wk {
 				t.Fatalf("Key() = %q, want %q", it.Key(), wk)
 			}
 			it.Next()
@@ -127,7 +127,7 @@ func TestFlexDB_ManyKeysIterator(t *testing.T) {
 			if !it.Valid() {
 				t.Fatalf("iterator ended early; want %q", wk)
 			}
-			if string(it.Key()) != wk {
+			if it.Key() != wk {
 				t.Fatalf("Key() = %q, want %q", it.Key(), wk)
 			}
 			it.Next()
@@ -299,7 +299,7 @@ func TestFlexDB_IteratorPrev(t *testing.T) {
 
 		var keys []string
 		for it.Valid() {
-			keys = append(keys, string(it.Key()))
+			keys = append(keys, it.Key())
 			it.Prev()
 		}
 		expectKeys(t, "Iterator Prev", keys, []string{"eee", "ddd", "ccc", "bbb", "aaa"})
@@ -317,16 +317,16 @@ func TestFlexDB_IteratorSeekThenPrev(t *testing.T) {
 		defer it.Close()
 
 		// Seek to ccc, then go backward
-		it.Seek([]byte("ccc"))
-		if !it.Valid() || string(it.Key()) != "ccc" {
+		it.Seek("ccc")
+		if !it.Valid() || it.Key() != "ccc" {
 			t.Fatalf("Seek(ccc): got %v/%q", it.Valid(), it.Key())
 		}
 		it.Prev()
-		if !it.Valid() || string(it.Key()) != "bbb" {
+		if !it.Valid() || it.Key() != "bbb" {
 			t.Fatalf("After Prev: got %v/%q, want bbb", it.Valid(), it.Key())
 		}
 		it.Prev()
-		if !it.Valid() || string(it.Key()) != "aaa" {
+		if !it.Valid() || it.Key() != "aaa" {
 			t.Fatalf("After 2nd Prev: got %v/%q, want aaa", it.Valid(), it.Key())
 		}
 		it.Prev()
@@ -989,7 +989,7 @@ func TestFlexDB_IteratorDeleteDuringForward(t *testing.T) {
 
 		var got []string
 		for it.Valid() {
-			k := string(it.Key())
+			k := it.Key()
 			got = append(got, k)
 			if k == "c" {
 				if err := rwDB.Delete([]byte("c")); err != nil {
@@ -1018,7 +1018,7 @@ func TestFlexDB_IteratorDeleteCurrentAndNext(t *testing.T) {
 
 		var got []string
 		for it.Valid() {
-			k := string(it.Key())
+			k := it.Key()
 			got = append(got, k)
 			if k == "b" {
 				if err := rwDB.Delete([]byte("b")); err != nil {
@@ -1049,7 +1049,7 @@ func TestFlexDB_IteratorDeleteAllForward(t *testing.T) {
 
 		var deleted []string
 		for it.Valid() {
-			k := string(it.Key())
+			k := it.Key()
 			deleted = append(deleted, k)
 			if err := rwDB.Delete([]byte(k)); err != nil {
 				it.Close()
@@ -1083,7 +1083,7 @@ func TestFlexDB_IteratorPutDuringForward(t *testing.T) {
 
 		var got []string
 		for it.Valid() {
-			k := string(it.Key())
+			k := it.Key()
 			got = append(got, k)
 			if k == "c" {
 				if err := rwDB.Put([]byte("d"), []byte("v:d")); err != nil {
@@ -1112,7 +1112,7 @@ func TestFlexDB_IteratorDeleteDuringBackward(t *testing.T) {
 
 		var got []string
 		for it.Valid() {
-			k := string(it.Key())
+			k := it.Key()
 			got = append(got, k)
 			if k == "c" {
 				if err := rwDB.Delete([]byte("c")); err != nil {
@@ -1180,7 +1180,7 @@ func TestFlexDB_IteratorMutateAfterSync(t *testing.T) {
 
 		var got []string
 		for it.Valid() {
-			k := string(it.Key())
+			k := it.Key()
 			got = append(got, k)
 			if k == "b" {
 				if err := rwDB.Delete([]byte("c")); err != nil {
@@ -1213,7 +1213,7 @@ func TestFlexDB_IteratorEmptyDB(t *testing.T) {
 			t.Fatal("SeekToLast on empty DB should be invalid")
 		}
 
-		it.Seek([]byte("x"))
+		it.Seek("x")
 		if it.Valid() {
 			t.Fatal("Seek on empty DB should be invalid")
 		}
@@ -1230,8 +1230,8 @@ func TestFlexDB_IteratorSingleKey(t *testing.T) {
 		it := rwDB.NewIter()
 		defer it.Close()
 
-		it.Seek([]byte("only"))
-		if !it.Valid() || string(it.Key()) != "only" {
+		it.Seek("only")
+		if !it.Valid() || it.Key() != "only" {
 			t.Fatalf("Seek(only): valid=%v key=%q", it.Valid(), it.Key())
 		}
 
@@ -1259,7 +1259,7 @@ func TestFlexDB_IteratorDeleteAllBackward(t *testing.T) {
 
 		var got []string
 		for it.Valid() {
-			k := string(it.Key())
+			k := it.Key()
 			got = append(got, k)
 			if err := rwDB.Delete([]byte(k)); err != nil {
 				it.Close()
@@ -1298,7 +1298,7 @@ func TestFlexDB_IteratorHasInlineValue(t *testing.T) {
 		it.SeekToFirst()
 
 		// First key: "large" (alphabetically first)
-		if !it.Valid() || string(it.Key()) != "large" {
+		if !it.Valid() || it.Key() != "large" {
 			t.Fatalf("expected key 'large', got valid=%v key=%q", it.Valid(), it.Key())
 		}
 		if !it.Large() {
@@ -1320,7 +1320,7 @@ func TestFlexDB_IteratorHasInlineValue(t *testing.T) {
 
 		it.Next()
 		// Second key: "small"
-		if !it.Valid() || string(it.Key()) != "small" {
+		if !it.Valid() || it.Key() != "small" {
 			t.Fatalf("expected key 'small', got valid=%v key=%q", it.Valid(), it.Key())
 		}
 		if it.Large() {
@@ -1342,7 +1342,7 @@ func TestFlexDB_IteratorHasInlineValue(t *testing.T) {
 
 		it.Next()
 		// Third key: "zeeKeyToEmpty", with empty len(0) value.
-		if !it.Valid() || string(it.Key()) != "zeeKeyToEmpty" {
+		if !it.Valid() || it.Key() != "zeeKeyToEmpty" {
 			t.Fatalf("expected key 'zeeKeyToEmpty', got valid=%v key=%q", it.Valid(), it.Key())
 		}
 		if it.Large() {

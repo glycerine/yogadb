@@ -234,7 +234,7 @@ func TestFindIt_IteratorContinuation(t *testing.T) {
 		}
 		var keys []string
 		for it.Valid() {
-			keys = append(keys, string(it.Key()))
+			keys = append(keys, it.Key())
 			it.Next()
 		}
 		it.Close() // must close before opening next iterator
@@ -425,10 +425,10 @@ func TestLockedIter_PutGetDelete(t *testing.T) {
 		// Scan forward from key004 — should see key005a but not key003.
 		it := rwDB.NewIter()
 		defer it.Close()
-		it.Seek([]byte("key004"))
+		it.Seek("key004")
 		var keys []string
 		for it.Valid() {
-			keys = append(keys, string(it.Key()))
+			keys = append(keys, it.Key())
 			it.Next()
 		}
 		for _, k := range keys {
