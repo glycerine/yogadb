@@ -1364,3 +1364,169 @@ func TestFlexDB_IteratorHasInlineValue(t *testing.T) {
 		return nil
 	})
 }
+
+// ====================== Iter.KV() tests ======================
+
+// TestIterKV_ViewBasic tests KV() returns correct fields during a View scan.
+func TestIterKV_ViewBasic(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+	populateDB(t, db, false) // aaa..eee
+
+	db.View(func(roDB ReadOnlyDB) error {
+		it := roDB.NewIter()
+		defer it.Close()
+		it.SeekToFirst()
+
+		var keys []string
+		for it.Valid() {
+			kv := it.KV()
+			if kv == nil {
+				t.Fatal("KV() returned nil on valid iterator")
+			}
+			keys = append(keys, string(kv.Key))
+			wantVal := "v:" + string(kv.Key)
+			if string(kv.Value) != wantVal {
+				t.Fatalf("KV().Value = %q, want %q", kv.Value, wantVal)
+			}
+			if kv.Hlc == 0 {
+				t.Fatalf("KV().Hlc is zero for key %q", kv.Key)
+			}
+			it.Next()
+		}
+		expectKeys(t, "KV() View scan", keys, []string{"aaa", "bbb", "ccc", "ddd", "eee"})
+		return nil
+	})
+}
+
+// TestIterKV_UpdateMutate tests KV() during an Update with mutations.
+func TestIterKV_UpdateMutate(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+	for _, k := range []string{"a", "b", "c", "d", "e"} {
+		mustPut(t, db, k, "v:"+k)
+	}
+
+	var got []string
+	db.Update(func(rwDB WritableDB) error {
+		it := rwDB.NewIter()
+		defer it.Close()
+		it.SeekToFirst()
+
+		for it.Valid() {
+			kv := it.KV()
+			if kv == nil {
+				t.Fatal("KV() nil")
+			}
+			got = append(got, string(kv.Key))
+			// Delete "c" when we see it
+			if string(kv.Key) == "c" {
+				if err := rwDB.Delete([]byte("c")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			it.Next()
+		}
+		return nil
+	})
+	// "c" was seen before deletion, then re-seek skips it
+	expectKeys(t, "KV() Update scan", got, []string{"a", "b", "c", "d", "e"})
+	mustMiss(t, db, "c")
+}
+
+// TestIterKV_NilOnInvalid tests KV() returns nil when iterator is invalid.
+func TestIterKV_NilOnInvalid(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+
+	db.View(func(roDB ReadOnlyDB) error {
+		it := roDB.NewIter()
+		defer it.Close()
+
+		// Before any seek
+		if kv := it.KV(); kv != nil {
+			t.Fatalf("KV() should be nil before seek, got key=%q", kv.Key)
+		}
+
+		// After seek on empty DB
+		it.SeekToFirst()
+		if kv := it.KV(); kv != nil {
+			t.Fatalf("KV() should be nil on empty DB, got key=%q", kv.Key)
+		}
+		return nil
+	})
+}
+
+// TestIterKV_LargeValue tests KV() on a large-value key (VLOG pointer).
+func TestIterKV_LargeValue(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+
+	bigVal := makeTestValue(vlogInlineThreshold + 1)
+	mustPut(t, db, "bigkey", bigVal)
+	mustPut(t, db, "small", "tiny")
+
+	db.View(func(roDB ReadOnlyDB) error {
+		it := roDB.NewIter()
+		defer it.Close()
+		it.SeekToFirst()
+
+		// First key: "bigkey"
+		if !it.Valid() {
+			t.Fatal("not valid")
+		}
+		kv := it.KV()
+		if string(kv.Key) != "bigkey" {
+			t.Fatalf("got key %q, want bigkey", kv.Key)
+		}
+		if !kv.HasVPtr {
+			t.Fatal("expected HasVPtr for large value")
+		}
+		// Value should be nil for VLOG entries
+		if kv.Value != nil {
+			t.Fatal("expected nil Value for VLOG entry")
+		}
+
+		// Use FetchLarge to get the actual value
+		val, err := roDB.FetchLarge(kv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(val) != bigVal {
+			t.Fatalf("FetchLarge: got len=%d, want len=%d", len(val), len(bigVal))
+		}
+
+		it.Next()
+		kv2 := it.KV()
+		if string(kv2.Key) != "small" {
+			t.Fatalf("got key %q, want small", kv2.Key)
+		}
+		if kv2.HasVPtr {
+			t.Fatal("small value should not have VPtr")
+		}
+		if string(kv2.Value) != "tiny" {
+			t.Fatalf("got value %q, want tiny", kv2.Value)
+		}
+		return nil
+	})
+}
+
+// TestIterKV_AfterSync tests KV() with data flushed to FlexSpace.
+func TestIterKV_AfterSync(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+	populateDB(t, db, true) // flush to FlexSpace
+
+	db.View(func(roDB ReadOnlyDB) error {
+		it := roDB.NewIter()
+		defer it.Close()
+		it.SeekToFirst()
+
+		var keys []string
+		for it.Valid() {
+			kv := it.KV()
+			keys = append(keys, string(kv.Key))
+			if string(kv.Value) != "v:"+string(kv.Key) {
+				t.Fatalf("after sync: key=%q value=%q", kv.Key, kv.Value)
+			}
+			it.Next()
+		}
+		expectKeys(t, "KV() after sync", keys, []string{"aaa", "bbb", "ccc", "ddd", "eee"})
+		return nil
+	})
+}

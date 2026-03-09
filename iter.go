@@ -1385,7 +1385,10 @@ func (it *Iter) Close() {
 // Valid returns true if the iterator is positioned at a valid key.
 func (it *Iter) Valid() bool { return it.valid }
 
-// KV returns the current *KV
+// KV returns the current *KV with its value resolved (lazy-copied
+// from cache memory). The returned pointer is owned by the iterator
+// and must not be retained past the next Next()/Prev()/Seek() call.
+// Copy Key and Value if you need them to outlive the iterator step.
 func (it *Iter) KV() *KV {
 	if it.pKV == nil {
 		return nil
