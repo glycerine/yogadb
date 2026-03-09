@@ -2066,7 +2066,7 @@ const (
 	LT SearchModifier = 4
 )
 
-// Find allows GTE, GT, LTE, LT, and Exact searches.
+// FindIt allows GTE, GT, LTE, LT, and Exact searches.
 //
 // GTE: find a leaf greater-than-or-equal to key;
 // the smallest such key.
@@ -2094,11 +2094,11 @@ const (
 // exact means an exact matching key to the query was found.
 // large means the value is large and only returned in value if fetchLarge was true.
 //
-// The returned iterator is positioned at the found key
+// The returned iterator, it, is positioned at the found key
 // and can be used to scan beyond it (Next/Prev). The caller
 // must call it.Close() when done. If found is false, the
 // iterator is not valid but must still be closed.
-func (db *FlexDB) Find(smod SearchModifier, key []byte, fetchLarge bool) (value []byte, found, exact, large bool, it *Iter) {
+func (db *FlexDB) FindIt(smod SearchModifier, key []byte, fetchLarge bool) (value []byte, found, exact, large bool, it *Iter) {
 	it = db.NewIter()
 
 	switch smod {
@@ -2156,6 +2156,20 @@ func (db *FlexDB) Find(smod SearchModifier, key []byte, fetchLarge bool) (value 
 		}
 	}
 
+	return
+}
+
+// Find is a convenience wrapper around FindIt that
+// closes the iterator before returning so that callers don't
+// need to manage `it` if they don't need `it`.
+//
+// If you want to traverse the key space after Find-ing
+// your key (or the next nearest), use FindIt to get
+// an Iter back instead of Find.
+func (db *FlexDB) Find(smod SearchModifier, key []byte, fetchLarge bool) (value []byte, found, exact, large bool) {
+	var it *Iter
+	value, found, exact, large, it = db.FindIt(smod, key, fetchLarge)
+	it.Close()
 	return
 }
 
