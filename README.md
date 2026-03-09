@@ -296,6 +296,18 @@ type Config struct {
 	// if your process crashes you have no intermediate state and have to
 	// start again at the beginning; which may be fine.
 	OmitMemWalFsync bool
+    
+	// PiggybackGC_on_SyncOrFlush enables automatic GC at the end of
+	// every Sync() and flush operation. GC runs only if the garbage
+	// fraction (wasted bytes / total bytes in used blocks) exceeds
+	// GCGarbagePct. Default false (disabled).
+	PiggybackGC_on_SyncOrFlush bool
+
+	// GCGarbagePct is the minimum fraction of wasted bytes in used
+	// blocks (garbage / (garbage + live)) required to trigger piggyback GC.
+	// Value between 0.0 and 1.0. Default 0.50 (50%) when zero and
+	// PiggybackGC_on_SyncOrFlush is true.
+	GCGarbagePct float64
 }
     Config allow configuration of a FlexDB.
 
@@ -901,6 +913,154 @@ B. final write amplification work, summary of changes
   
 ~~~
 
+# Plan for more aggressive Garbage Collection: Piggyback GC on Sync/Flush for YogaDB
+
+The flush-worker goroutine aleady tries to flush every 5 seconds in the background.
+The user can choose to have that flush also do GC at the end of its flush, or
+to manually run Sync themselves with the Config flags set to indicate that a GC
+should be done at the end of a Sync; or as a third very manual option, simply
+call VacuumKV and/or VacuumVLOG when they wish.
+
+~~~
+## Context
+
+YogaDB's FlexSpace GC is currently synchronous and demand-driven: it only runs when a write needs a new block and free blocks < 64. For workloads with heavy overwrites/deletes, fragmentation accumulates in `FLEXSPACE.KV128_BLOCKS` without being reclaimed until critically low on blocks. Adding a simple opt-in flag to run GC at every Sync/flush boundary when garbage exceeds a threshold.
+
+## Approach: Piggyback on Sync/Flush (Mode A only)
+
+Run GC at the end of `writeLockHeldSync()` and `doFlush()` when the write lock is already held. No new goroutines. No timer/cooldown — just check garbage fraction on every sync.
+
+## Config Fields (db.go ~line 533)
+
+```go
+// PiggybackGC_on_SyncOrFlush enables automatic GC at the end of
+// every Sync() and flush operation. GC runs only if the garbage
+// fraction (wasted bytes / total bytes in used blocks) exceeds
+// GCGarbagePct. Default false (disabled).
+PiggybackGC_on_SyncOrFlush bool
+
+// GCGarbagePct is the minimum fraction of wasted bytes in used
+// blocks (garbage / (garbage + live)) required to trigger piggyback GC.
+// Value between 0.0 and 1.0. Default 0.50 (50%) when zero and
+// PiggybackGC_on_SyncOrFlush is true.
+GCGarbagePct float64
+```
+
+## FlexDB Fields (db.go ~line 541)
+
+```go
+piggyGCStats PiggybackGCStats
+```
+
+## New Types
+
+```go
+type PiggybackGCStats struct {
+    LastGCTime     time.Time
+    LastGCDuration time.Duration
+    TotalGCRuns    int64
+}
+```
+
+## New Method: `maybePiggybackGC()` (db.go)
+
+```go
+func (db *FlexDB) maybePiggybackGC() {
+    if !db.cfg.PiggybackGC_on_SyncOrFlush {
+        return
+    }
+    threshold := db.cfg.GCGarbagePct
+    if threshold <= 0 {
+        threshold = 0.50
+    }
+    live, garbage, _, _ := db.ff.garbageMetrics(db.cfg.LowBlockUtilizationPct)
+    total := live + garbage
+    if total == 0 || float64(garbage)/float64(total) < threshold {
+        return
+    }
+    start := time.Now()
+    db.ff.GC()
+    db.piggyGCStats.LastGCTime = time.Now()
+    db.piggyGCStats.LastGCDuration = time.Since(start)
+    db.piggyGCStats.TotalGCRuns++
+}
+```
+
+## Call Sites
+
+1. `writeLockHeldSync()` (db.go:1881) — after `db.ff.Sync()`:
+   ```go
+   db.ff.Sync()
+   db.maybePiggybackGC()  // <-- insert here
+   db.verifyAnchorTags()
+   ```
+
+2. `doFlush()` (db.go:3461) — after `db.ff.Sync()`:
+   ```go
+   db.ff.Sync()
+   db.maybePiggybackGC()  // <-- insert here
+   ```
+
+## Metrics (db.go Metrics struct ~line 945)
+
+Add to `Metrics`:
+```go
+PiggybackGCRuns      int64
+PiggybackGCLastDurMs int64
+```
+
+Populate in `SessionMetrics()`, `CumulativeMetrics()`, `finalMetrics()`.
+
+## Defaults
+- `PiggybackGC_on_SyncOrFlush = false` → disabled (opt-in)
+- `GCGarbagePct = 0` → default 0.50 when PiggybackGC_on_SyncOrFlush is true
+
+## Files to Modify
+
+| File | Changes |
+|------|---------|
+| `db.go` | Config fields, FlexDB field, `maybePiggybackGC()`, `PiggybackGCStats` type, Metrics fields, call sites in `writeLockHeldSync` and `doFlush` |
+| `gc_test.go` | Add piggyback GC tests |
+
+## Verification
+
+1. Unit tests in `gc_test.go`:
+   - `TestPiggybackGC_TriggersOnSync` — enable flag, create fragmentation, Sync, verify `TotalGCRuns > 0`
+   - `TestPiggybackGC_RespectsGarbageThreshold` — set threshold=0.99, verify GC does NOT run
+   - `TestPiggybackGC_DisabledByDefault` — default config, verify no piggyback GC
+   - `TestPiggybackGC_ReclaimsSpace` — write, delete half, enable, Sync, check free blocks increased
+
+2. Run full test suite: `go test ./...` — ensure no regressions
+
+## Critical Files
+
+- `db.go` — Config (line 498), FlexDB struct (line 541), `writeLockHeldSync` (line 1857), `doFlush` (line 3440), Metrics (line 945)
+- `flexspace.go` — `FlexSpace.GC()` (line 1272), `garbageMetrics()` (line 1081)
+- `gc_test.go` — existing GC test patterns, test helpers (`openTestDB`, etc.)
+
+
+  db.go
+
+  1. Config fields (after line 533): Added PiggybackGC_on_SyncOrFlush bool and GCGarbagePct float64
+  2. PiggybackGCStats type (before FlexDB struct): Tracks LastGCTime, LastGCDuration, TotalGCRuns
+  3. FlexDB field: Added piggyGCStats PiggybackGCStats
+  4. maybePiggybackGC() method: Checks if piggyback GC is enabled, computes garbage fraction via garbageMetrics(), runs
+   ff.GC() if above threshold (default 50%)
+  5. Call sites: Inserted db.maybePiggybackGC() after db.ff.Sync() in both writeLockHeldSync() and doFlush()
+  6. Metrics fields: Added PiggybackGCRuns int64 and PiggybackGCLastDurMs int64
+  7. Metrics population: Added piggyback stats to writeLockHeldSessionMetrics(), finalMetrics(), and
+  CumulativeMetrics()
+  8. String(): Conditionally prints piggyback GC section when PiggybackGCRuns > 0
+
+  gc_test.go
+
+  Added 4 tests:
+  - TestPiggybackGC_TriggersOnSync — enables flag, creates fragmentation, verifies GC runs
+  - TestPiggybackGC_RespectsGarbageThreshold — threshold=1.0, verifies GC does NOT run
+  - TestPiggybackGC_DisabledByDefault — default config, verifies no piggyback GC
+  - TestPiggybackGC_ReclaimsSpace — write, delete half, sync, verify data correctness
+
+~~~
 
 ---------
 Author: Jason E. Aten, Ph.D.

@@ -531,6 +531,25 @@ type Config struct {
 	// if your process crashes you have no intermediate state and have to
 	// start again at the beginning; which may be fine.
 	OmitMemWalFsync bool
+
+	// PiggybackGC_on_SyncOrFlush enables automatic GC at the end of
+	// every Sync() and flush operation. GC runs only if the garbage
+	// fraction (wasted bytes / total bytes in used blocks) exceeds
+	// GCGarbagePct. Default false (disabled).
+	PiggybackGC_on_SyncOrFlush bool
+
+	// GCGarbagePct is the minimum fraction of wasted bytes in used
+	// blocks (garbage / (garbage + live)) required to trigger piggyback GC.
+	// Value between 0.0 and 1.0. Default 0.50 (50%) when zero and
+	// PiggybackGC_on_SyncOrFlush is true.
+	GCGarbagePct float64
+}
+
+// PiggybackGCStats tracks statistics for piggyback GC runs.
+type PiggybackGCStats struct {
+	LastGCTime     time.Time
+	LastGCDuration time.Duration
+	TotalGCRuns    int64
 }
 
 // ====================== FlexDB ======================
@@ -547,6 +566,8 @@ type FlexDB struct {
 	Path string
 	cfg  Config
 	vfs  vfs.FS
+
+	piggyGCStats PiggybackGCStats
 
 	ff    *FlexSpace          // underlying FlexSpace
 	vlog  *valueLog           // append-only value log for large values (nil if disabled)
@@ -975,6 +996,12 @@ type Metrics struct {
 	// LowBlockUtilizationPct we used; copied from Config
 	// or what default we used if not set.
 	LowBlockUtilizationPct float64
+
+	// PiggybackGCRuns is the number of piggyback GC runs during this session.
+	PiggybackGCRuns int64
+
+	// PiggybackGCLastDurMs is the duration of the last piggyback GC run in milliseconds.
+	PiggybackGCLastDurMs int64
 }
 
 func (z *Metrics) String() (r string) {
@@ -1000,6 +1027,11 @@ func (z *Metrics) String() (r string) {
 	r += fmt.Sprintf("  BlocksWithLowUtilization: %v\n", z.BlocksWithLowUtilization)
 	r += fmt.Sprintf("\n   -------- based on parameters used --------  \n")
 	r += fmt.Sprintf("    LowBlockUtilizationPct: %0.1f %%\n", 100*z.LowBlockUtilizationPct)
+	if z.PiggybackGCRuns > 0 {
+		r += fmt.Sprintf("\n   -------- piggyback GC --------  \n")
+		r += fmt.Sprintf("          PiggybackGCRuns: %v\n", z.PiggybackGCRuns)
+		r += fmt.Sprintf("     PiggybackGCLastDurMs: %v\n", z.PiggybackGCLastDurMs)
+	}
 
 	r += "}\n"
 	return
@@ -1039,6 +1071,9 @@ func (db *FlexDB) writeLockHeldSessionMetrics() *Metrics {
 
 	m.TotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksInUse, m.BlocksWithLowUtilization =
 		db.ff.garbageMetrics(db.cfg.LowBlockUtilizationPct)
+
+	m.PiggybackGCRuns = db.piggyGCStats.TotalGCRuns
+	m.PiggybackGCLastDurMs = db.piggyGCStats.LastGCDuration.Milliseconds()
 
 	return m
 }
@@ -1110,6 +1145,9 @@ func (db *FlexDB) finalMetrics() *Metrics {
 
 	m.TotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksInUse, m.BlocksWithLowUtilization =
 		db.ff.garbageMetrics(db.cfg.LowBlockUtilizationPct)
+
+	m.PiggybackGCRuns = db.piggyGCStats.TotalGCRuns
+	m.PiggybackGCLastDurMs = db.piggyGCStats.LastGCDuration.Milliseconds()
 
 	return m
 }
@@ -1183,6 +1221,9 @@ func (db *FlexDB) CumulativeMetrics() *Metrics {
 
 	m.TotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksInUse, m.BlocksWithLowUtilization =
 		db.ff.garbageMetrics(db.cfg.LowBlockUtilizationPct)
+
+	m.PiggybackGCRuns = db.piggyGCStats.TotalGCRuns
+	m.PiggybackGCLastDurMs = db.piggyGCStats.LastGCDuration.Milliseconds()
 
 	return m
 }
@@ -1854,6 +1895,28 @@ func (db *FlexDB) Sync() error {
 	return db.writeLockHeldSync()
 }
 
+// maybePiggybackGC runs GC if PiggybackGC_on_SyncOrFlush is enabled
+// and the garbage fraction exceeds GCGarbagePct. Called with write lock held.
+func (db *FlexDB) maybePiggybackGC() {
+	if !db.cfg.PiggybackGC_on_SyncOrFlush {
+		return
+	}
+	threshold := db.cfg.GCGarbagePct
+	if threshold <= 0 {
+		threshold = 0.50
+	}
+	live, garbage, _, _ := db.ff.garbageMetrics(db.cfg.LowBlockUtilizationPct)
+	total := live + garbage
+	if total == 0 || float64(garbage)/float64(total) < threshold {
+		return
+	}
+	start := time.Now()
+	db.ff.GC()
+	db.piggyGCStats.LastGCTime = time.Now()
+	db.piggyGCStats.LastGCDuration = time.Since(start)
+	db.piggyGCStats.TotalGCRuns++
+}
+
 func (db *FlexDB) writeLockHeldSync() error {
 
 	wasActive := db.activeMT
@@ -1879,6 +1942,7 @@ func (db *FlexDB) writeLockHeldSync() error {
 	db.cache.flushDirtyPages()
 	db.persistCounters()
 	db.ff.Sync() // fsyncs FLEXSPACE.KV128.BLOCKS
+	db.maybePiggybackGC()
 	db.verifyAnchorTags()
 
 	// Sync the parent directory so new/renamed files are durable.
@@ -3459,6 +3523,7 @@ func (db *FlexDB) doFlush() {
 	db.flushMemtable(inactive)
 	db.persistCounters()
 	db.ff.Sync()
+	db.maybePiggybackGC()
 
 	// Truncate WAL (always use 20-byte versioned header for consistent disk format)
 	ts := uint64(time.Now().UnixNano())

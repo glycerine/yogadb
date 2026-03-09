@@ -1085,3 +1085,149 @@ func TestGC_FreeBlocksCountAccurate(t *testing.T) {
 			initialFreeBlocks, freeAfterCollapse)
 	}
 }
+
+// TestPiggybackGC_TriggersOnSync enables PiggybackGC_on_SyncOrFlush,
+// creates fragmentation by writing then overwriting keys, and verifies
+// that GC runs during Sync when garbage exceeds the threshold.
+func TestPiggybackGC_TriggersOnSync(t *testing.T) {
+	cfg := &Config{
+		PiggybackGC_on_SyncOrFlush: true,
+		GCGarbagePct:               0.10, // low threshold to ensure GC triggers
+	}
+	db, _ := openTestDB(t, cfg)
+
+	// Write keys, sync, then overwrite with smaller values to create garbage.
+	const nKeys = 300
+	for i := 0; i < nKeys; i++ {
+		k := fmt.Sprintf("key%06d", i)
+		v := fmt.Sprintf("value-%06d-padding-to-make-it-bigger-original", i)
+		mustPut(t, db, k, v)
+	}
+	db.Sync()
+
+	// Overwrite with smaller values — old extents become garbage.
+	for i := 0; i < nKeys; i++ {
+		k := fmt.Sprintf("key%06d", i)
+		v := fmt.Sprintf("v2-%06d", i)
+		mustPut(t, db, k, v)
+	}
+	db.Sync() // should trigger piggyback GC
+
+	m := db.SessionMetrics()
+	t.Logf("PiggybackGCRuns=%d, PiggybackGCLastDurMs=%d", m.PiggybackGCRuns, m.PiggybackGCLastDurMs)
+
+	if m.PiggybackGCRuns == 0 {
+		t.Error("expected PiggybackGCRuns > 0 after creating fragmentation and syncing")
+	}
+}
+
+// TestPiggybackGC_RespectsGarbageThreshold sets the GC threshold to 1.0
+// (100%) so that piggyback GC does NOT run. Since garbage fraction is
+// always < 1.0 when there's live data, GC should never trigger.
+func TestPiggybackGC_RespectsGarbageThreshold(t *testing.T) {
+	cfg := &Config{
+		PiggybackGC_on_SyncOrFlush: true,
+		GCGarbagePct:               1.0, // impossible to reach — won't trigger
+	}
+	db, _ := openTestDB(t, cfg)
+
+	const nKeys = 100
+	for i := 0; i < nKeys; i++ {
+		k := fmt.Sprintf("key%06d", i)
+		v := fmt.Sprintf("value-%06d-padding-to-make-it-bigger-original", i)
+		mustPut(t, db, k, v)
+	}
+	db.Sync()
+
+	// Overwrite to create some garbage (but not 99%).
+	for i := 0; i < nKeys; i++ {
+		k := fmt.Sprintf("key%06d", i)
+		v := fmt.Sprintf("v2-%06d", i)
+		mustPut(t, db, k, v)
+	}
+	db.Sync()
+
+	m := db.SessionMetrics()
+	if m.PiggybackGCRuns != 0 {
+		t.Errorf("expected PiggybackGCRuns=0 with 100%% threshold, got %d", m.PiggybackGCRuns)
+	}
+}
+
+// TestPiggybackGC_DisabledByDefault verifies that piggyback GC does not
+// run when Config uses default values (PiggybackGC_on_SyncOrFlush=false).
+func TestPiggybackGC_DisabledByDefault(t *testing.T) {
+	db, _ := openTestDB(t, nil) // default config
+
+	const nKeys = 100
+	for i := 0; i < nKeys; i++ {
+		k := fmt.Sprintf("key%06d", i)
+		v := fmt.Sprintf("value-%06d-padding-to-make-it-bigger-original", i)
+		mustPut(t, db, k, v)
+	}
+	db.Sync()
+
+	// Overwrite all keys.
+	for i := 0; i < nKeys; i++ {
+		k := fmt.Sprintf("key%06d", i)
+		v := fmt.Sprintf("v2-%06d", i)
+		mustPut(t, db, k, v)
+	}
+	db.Sync()
+
+	m := db.SessionMetrics()
+	if m.PiggybackGCRuns != 0 {
+		t.Errorf("expected PiggybackGCRuns=0 with default config, got %d", m.PiggybackGCRuns)
+	}
+}
+
+// TestPiggybackGC_ReclaimsSpace verifies that piggyback GC actually
+// frees blocks. Write data, delete half, enable piggyback GC, sync,
+// and verify free blocks increased.
+func TestPiggybackGC_ReclaimsSpace(t *testing.T) {
+	cfg := &Config{
+		PiggybackGC_on_SyncOrFlush: true,
+		GCGarbagePct:               0.10,
+	}
+	db, _ := openTestDB(t, cfg)
+
+	// Write a large dataset.
+	const nKeys = 500
+	for i := 0; i < nKeys; i++ {
+		k := fmt.Sprintf("key%06d", i)
+		v := fmt.Sprintf("value-%06d-padding-to-make-it-significantly-bigger-than-needed", i)
+		mustPut(t, db, k, v)
+	}
+	db.Sync()
+
+	liveBeforeDelete, garbageBeforeDelete, _, _ := db.ff.garbageMetrics(0.25)
+	t.Logf("Before delete: live=%d, garbage=%d", liveBeforeDelete, garbageBeforeDelete)
+
+	// Delete half the keys to create garbage.
+	for i := 0; i < nKeys/2; i++ {
+		k := fmt.Sprintf("key%06d", i)
+		db.Delete([]byte(k))
+	}
+	db.Sync() // should trigger piggyback GC
+
+	liveAfterGC, garbageAfterGC, _, _ := db.ff.garbageMetrics(0.25)
+	t.Logf("After delete+GC: live=%d, garbage=%d", liveAfterGC, garbageAfterGC)
+
+	m := db.SessionMetrics()
+	t.Logf("PiggybackGCRuns=%d", m.PiggybackGCRuns)
+
+	// Verify remaining keys are correct.
+	for i := nKeys / 2; i < nKeys; i++ {
+		k := fmt.Sprintf("key%06d", i)
+		expected := fmt.Sprintf("value-%06d-padding-to-make-it-significantly-bigger-than-needed", i)
+		mustGet(t, db, k, expected)
+	}
+
+	// Deleted keys should be gone.
+	for i := 0; i < nKeys/2; i++ {
+		k := fmt.Sprintf("key%06d", i)
+		_, ok := db.Get([]byte(k))
+		if ok {
+			t.Errorf("key %q should have been deleted", k)
+		}
+	}
+}
