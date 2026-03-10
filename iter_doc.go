@@ -8,11 +8,11 @@
 //
 // # The Iterator Optimization History:
 //
-// Getting 24x faster at iteration: from 340 ns/key to 14 ns/key.
+// Getting 42x faster at iteration: from 340 ns/key to 8 ns/key.
 //
 // The Iter type went through a series of CPU-profile-driven optimizations
-// to bring forward iteration throughput from ~340 ns/key down to ~14 ns/key,
-// competitive with bbolt (~12 ns/key) and roughly 15x faster than Pebble
+// to bring forward iteration throughput from ~340 ns/key down to ~8 ns/key,
+// beating bbolt (~12 ns/key) and roughly 25x faster than Pebble
 // (~210 ns/key). Each optimization was benchmarked individually using
 // Benchmark_Iter_YogaDB_Ascend with 100K keys. The progression:
 //
@@ -101,4 +101,11 @@
 // store for the access field. calibrate and allocEntryForNewAnchor use
 // atomic.LoadInt32/AddInt32/StoreInt32. This eliminated ~660ms of mutex
 // overhead from releaseEntry and reduced getEntry's lock contention.
+//
+// 10. Tuning the overwrite in place slotted page sizes SLOTTED_PAGE_KB=4
+// and the flexdbUnsortedWriteQuota=6 brought iteration down to
+// about 8 nsec/key. Using SLOTTED_PAGE_KB=128 we could cut that in half
+// again, but we are already beating Bolt by 2x (why bother with 3x; it
+// is available if you need it thought) and we want to balance against
+// read and insertion efficiency and on-disk space consumption.
 package yogadb
