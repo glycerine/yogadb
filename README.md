@@ -51,6 +51,14 @@ in Go is the port of FlexDB in C. In the architecture, in both
 cases, the name FlexDB refers to the top layer. FlexDB calls 
 down into the FlexSpace, which in turn calls down to the FlexTree.
 
+Personally I find it charming that a "back to basics" approach
+is competitive with the latest baroque "fractured", "splintered"[2], 
+or "turtled" approaches[3] that the $\beta^{\epsilon}$-tree 
+folks have been pursuing. These could be worth reviewing,
+but to my thinking are overly baroque. Lets not forget to
+mention their lack of buildable/usable code either (C/C++ is
+the enemy of re-usable code after all... there, I said it!)
+
 <img width="1230" height="373" alt="image" src="https://github.com/user-attachments/assets/9519abbb-b1fe-4c82-9064-859591b0d341" />
 
 Figure 2: the fundamentally new data structure is the FlexTree.
@@ -220,10 +228,10 @@ In his Recap slide #56, Dr. Chen says,
 
 > "FlexDB manages sorted data without using extra persistent indirections."
 
-They map keys to physical locations on disk without 
+The approach is to map keys to physical locations on disk without 
 maintaining a massive, constantly updating on-disk index.
 
-The approach is to split the problem into two in-memory structures.
+The strategy is to split the problem into two in-memory structures.
 
 The Logical Illusion (FlexDB): FlexDB uses the insert-range API to shift logical addresses. The keys then appear perfectly sorted in a contiguous logical space. FlexDB only needs a tiny, lightweight, sparse index (e.g., "Keys A through M are in Logical Block 1"), which easily fits entirely in RAM.
 
