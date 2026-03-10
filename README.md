@@ -51,9 +51,9 @@ in Go is the port of FlexDB in C. In the architecture, in both
 cases, the name FlexDB refers to the top layer. FlexDB calls 
 down into the FlexSpace, which in turn calls down to the FlexTree.
 
-Personally I find it charming that a "back to basics" approach
+Personally, I find it charming that a "back to basics" design
 is competitive with the latest "fractured", "splintered"[2], 
-or "turtled" approaches[3] that the $\beta^{\epsilon}$-tree 
+or "turtled" write-optimized research[3] that the $\beta^{\epsilon}$-tree 
 folks have been pursuing. These could be worth reviewing,
 but to my thinking are overly baroque (and difficult to build;
 their C/C++ dependencies are a nightmare).
