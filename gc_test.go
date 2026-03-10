@@ -422,6 +422,9 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	}
 	defer db.Close()
 
+	db.gcTestDiag = true
+	debugNextBlock = true
+
 	const nKeys = 500
 	keys := make([]string, nKeys)
 	for i := range keys {
@@ -429,6 +432,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	}
 
 	// Round 0: initial write — triggers block pre-allocation.
+	t.Logf("=== Round 0: initial write ===")
 	for i, k := range keys {
 		val := fmt.Sprintf("val-round0-%06d-padding-data-here", i)
 		if err := db.Put(k, []byte(val)); err != nil {
@@ -436,8 +440,12 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 		}
 	}
 	db.Sync()
+	t.Logf("Round 0 after Sync: blkid=%d blkoff=%d dirSize=%d",
+		db.ff.bm.blkid, db.ff.bm.blkoff, mustDirSize(fs, dir))
+	logPerFileSizes(t, fs, dir)
 
 	// Round 1: first overwrite — after this, pre-allocation is stable.
+	t.Logf("=== Round 1: first overwrite ===")
 	for i, k := range keys {
 		val := fmt.Sprintf("val-round1-%06d-padding-data-here", i)
 		if err := db.Put(k, []byte(val)); err != nil {
@@ -447,10 +455,12 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	db.Sync()
 	sizeAfterRound1 := mustDirSize(fs, dir)
 	t.Logf("Round 1 disk size: %d bytes (baseline after pre-alloc)", sizeAfterRound1)
+	logPerFileSizes(t, fs, dir)
 
 	// Rounds 2-9: overwrite every key 8 more times.
 	const rounds = 9
 	for r := 2; r <= rounds; r++ {
+		t.Logf("=== Round %d ===", r)
 		for i, k := range keys {
 			val := fmt.Sprintf("val-round%d-%06d-padding-data-here", r, i)
 			if err := db.Put(k, []byte(val)); err != nil {
@@ -463,6 +473,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	sizeAfterAllRounds := mustDirSize(fs, dir)
 	t.Logf("After %d rounds disk size: %d bytes (%.2fx vs round 1)",
 		rounds, sizeAfterAllRounds, float64(sizeAfterAllRounds)/float64(sizeAfterRound1))
+	logPerFileSizes(t, fs, dir)
 
 	// After pre-allocation stabilizes at round 1, 8 more rounds of
 	// overwrites should NOT cause significant disk growth.
@@ -487,6 +498,20 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 		if string(got) != expected {
 			t.Fatalf("key %q: got %q, want %q", k, got, expected)
 		}
+	}
+	debugNextBlock = false
+}
+
+func logPerFileSizes(t *testing.T, fs vfs.FS, dir string) {
+	t.Helper()
+	files, _ := fs.List(dir)
+	for _, name := range files {
+		path := filepath.Join(dir, name)
+		fi, err := fs.Stat(path)
+		if err != nil {
+			continue
+		}
+		t.Logf("  %-40s %10d bytes", name, fi.Size())
 	}
 }
 

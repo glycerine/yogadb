@@ -128,10 +128,23 @@ func (c *intervalCache) flushDirtyPages() {
 			}
 			absLoff := uint64(anchor.loff + shift)
 			buf := slottedPageEncodePadded(fce.kvs[:fce.count], int(anchor.psize))
-			err := c.db.ff.Overwrite(buf, absLoff, uint64(anchor.psize))
-			if err != nil {
-				panicf("flushDirtyPages: anchor.loff=%d shift=%d absLoff=%d psize=%d maxLoff=%d count=%d key=%q err=%v",
-					anchor.loff, shift, absLoff, anchor.psize, c.db.ff.tree.MaxLoff, fce.count, anchor.key, err)
+			if len(buf) == int(anchor.psize) {
+				// Normal case: padded page fits exactly.
+				err := c.db.ff.Overwrite(buf, absLoff, uint64(anchor.psize))
+				if err != nil {
+					panicf("flushDirtyPages: anchor.loff=%d shift=%d absLoff=%d psize=%d maxLoff=%d count=%d key=%q err=%v",
+						anchor.loff, shift, absLoff, anchor.psize, c.db.ff.tree.MaxLoff, fce.count, anchor.key, err)
+				}
+			} else {
+				// HLC delta overflow: encoded tight (larger than psize).
+				// Use Update (collapse old + insert new) to change the
+				// extent size. This path is rare and transient.
+				_, err := c.db.ff.Update(buf, absLoff, uint64(len(buf)), uint64(anchor.psize))
+				if err != nil {
+					panicf("flushDirtyPages Update: anchor.loff=%d absLoff=%d psize=%d bufLen=%d err=%v",
+						anchor.loff, absLoff, anchor.psize, len(buf), err)
+				}
+				anchor.psize = uint32(len(buf))
 			}
 			fce.dirty = false
 		}
@@ -215,9 +228,18 @@ func (p *intervalCachePartition) flushDirtyEntry(fce *intervalCacheEntry) {
 	}
 	absLoff := uint64(anchor.loff + shift)
 	buf := slottedPageEncodePadded(fce.kvs[:fce.count], int(anchor.psize))
-	err := p.db.ff.Overwrite(buf, absLoff, uint64(anchor.psize))
-	if err != nil {
-		panicf("flushDirtyEntry: %v", err)
+	if len(buf) == int(anchor.psize) {
+		err := p.db.ff.Overwrite(buf, absLoff, uint64(anchor.psize))
+		if err != nil {
+			panicf("flushDirtyEntry: %v", err)
+		}
+	} else {
+		// HLC delta overflow: see flushDirtyPages for explanation.
+		_, err := p.db.ff.Update(buf, absLoff, uint64(len(buf)), uint64(anchor.psize))
+		if err != nil {
+			panicf("flushDirtyEntry Update: %v", err)
+		}
+		anchor.psize = uint32(len(buf))
 	}
 	fce.dirty = false
 	fce.dirtyNode = nil

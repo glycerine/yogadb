@@ -167,9 +167,13 @@ func slottedPageEncodeInto(kvs []KV, unsorted uint8, targetSize int) []byte {
 	totalSize := contentSize
 	if targetSize > 0 {
 		if contentSize > targetSize {
-			panic(fmt.Sprintf("slottedPageEncode: content %d exceeds targetSize %d", contentSize, targetSize))
+			// Content exceeds target — can happen transiently during flush
+			// when HLC deltas are mixed (some entries updated, others not).
+			// Encode tight (no padding); caller must handle the size mismatch.
+			targetSize = 0
+		} else {
+			totalSize = targetSize
 		}
-		totalSize = targetSize
 	}
 
 	buf := make([]byte, totalSize)
@@ -478,6 +482,25 @@ func slottedPageWouldFit(kvs []KV, count int, newKV KV, replaceIdx int, targetSi
 		totalValsSize += slottedValBytes(newKV)
 	}
 
+	contentSize := slottedPageHeaderSize + totalEntriesSize + totalValsSize + slottedPageCRCSize
+	return contentSize <= targetSize
+}
+
+// slottedPageWouldFitUniformHLC checks whether the page would fit if all
+// entries had the same HLC (i.e., all deltas are 0, using 1-byte varints).
+// This detects the case where overflow is caused solely by transient mixed
+// HLC deltas during a flush, not by genuine key/value size growth.
+func slottedPageWouldFitUniformHLC(kvs []KV, count int, newKV KV, replaceIdx int, targetSize int) bool {
+	totalEntriesSize := 0
+	totalValsSize := 0
+	for i := 0; i < count; i++ {
+		kv := kvs[i]
+		if i == replaceIdx {
+			kv = newKV
+		}
+		totalEntriesSize += 4 + 1 + len(kv.Key) // 4=header, 1=varint(0)
+		totalValsSize += slottedValBytes(kv)
+	}
 	contentSize := slottedPageHeaderSize + totalEntriesSize + totalValsSize + slottedPageCRCSize
 	return contentSize <= targetSize
 }

@@ -632,6 +632,8 @@ type FlexDB struct {
 	liveKeys      int64 // total live (non-tombstone) keys = liveBigKeys + liveSmallKeys
 	liveBigKeys   int64 // keys whose values are in VLOG (HasVPtr=true)
 	liveSmallKeys int64 // keys with inline values
+
+	gcTestDiag bool // when true, print diagnostic info during GC tests
 }
 
 // keyState classifies a key's storage state for live-key counter tracking.
@@ -1980,10 +1982,16 @@ func (db *FlexDB) writeLockHeldSync() error {
 
 	wasActive := db.activeMT
 	if db.memtables[wasActive].empty {
-		//vv("FlexDB.Sync(): memtable[%v] is empty, no syncing today", wasActive)
+		if db.gcTestDiag {
+			alwaysPrintf("writeLockHeldSync: memtable[%d] EMPTY, returning early! blkid=%d blkoff=%d",
+				wasActive, db.ff.bm.blkid, db.ff.bm.blkoff)
+		}
 		return nil // nothing to flush
 	}
-	//vv("FlexDB.Sync(): memtable[%v] NOT empty, so syncing it! '%v'", wasActive, db.memtables[wasActive].memWalFD.Name())
+	if db.gcTestDiag {
+		alwaysPrintf("writeLockHeldSync: flushing memtable[%d], blkid=%d blkoff=%d",
+			wasActive, db.ff.bm.blkid, db.ff.bm.blkoff)
+	}
 
 	// Switch writes to the other table.
 	newActive := 1 - wasActive
@@ -1998,9 +2006,17 @@ func (db *FlexDB) writeLockHeldSync() error {
 		db.memtables[wasActive].logSync() // flush + fdatasync. here in FlexDB.Sync()
 	}
 	db.flushMemtable(wasActive)
+	if db.gcTestDiag {
+		alwaysPrintf("writeLockHeldSync: after flushMemtable, blkid=%d blkoff=%d",
+			db.ff.bm.blkid, db.ff.bm.blkoff)
+	}
 	db.cache.flushDirtyPages()
 	db.persistCounters()
 	db.ff.Sync() // fsyncs FLEXSPACE.KV128.BLOCKS
+	if db.gcTestDiag {
+		alwaysPrintf("writeLockHeldSync: after ff.Sync, blkid=%d blkoff=%d",
+			db.ff.bm.blkid, db.ff.bm.blkoff)
+	}
 	db.maybePiggybackGC()
 	db.verifyAnchorTags()
 
@@ -2380,7 +2396,7 @@ func (db *FlexDB) writeLockHeldDeleteRange(includeLarge bool, begKey, endKey str
 	// including large values, reinitialize instead of iterating.
 	// When !includeLarge, large-value keys survive so we can't wipe.
 	if includeLarge && db.writeLockHeldCoversAllKeys(begKey, endKey, begInclusive, endInclusive) {
-		err := db.writeLockHeldDeleteAll()
+		err := db.writeLockHeldDeleteAll() // only place called
 		return 0, true, err
 	}
 
@@ -3167,7 +3183,20 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 		replaceIdx = idx
 	}
 	if !slottedPageWouldFit(fce.kvs, fce.count, kv, replaceIdx, int(anchor.psize)) {
-		// Page full - split first, then retry on the correct half.
+		// When replacing an existing key (eq=true), the page may temporarily
+		// exceed the target size due to mixed HLC deltas: during a flush,
+		// some entries already have new (large) HLCs while others retain
+		// old (small) HLCs, inflating varint sizes. Once all entries are
+		// updated, the HLCs will be uniform and the page will fit again.
+		//
+		// Check: would the page fit with uniform HLCs? If yes, skip the
+		// split — just replace the entry and let flushDirtyPages handle it.
+		if eq && slottedPageWouldFitUniformHLC(fce.kvs, fce.count, kv, replaceIdx, int(anchor.psize)) {
+			partition.cacheEntryReplace(fce, kv, idx)
+			db.putPassthroughMarkDirty(nh, anchor, fce)
+			return
+		}
+		// Page genuinely full — split.
 		// Insert into cache first so split sees the new entry.
 		if eq {
 			partition.cacheEntryReplace(fce, kv, idx)
@@ -3728,6 +3757,10 @@ func (db *FlexDB) doFlush() {
 	wasActive := db.activeMT
 	if db.memtables[wasActive].empty {
 		return
+	}
+	if db.gcTestDiag {
+		alwaysPrintf("doFlush: flushWorker firing! memtable[%d] not empty, blkid=%d blkoff=%d",
+			wasActive, db.ff.bm.blkid, db.ff.bm.blkoff)
 	}
 	// Swap memtables
 	db.activeMT = 1 - db.activeMT

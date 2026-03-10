@@ -207,6 +207,10 @@ func (bm *blockManager) nextBlock(isGC bool) {
 	if oldBlkid == newBlkid {
 		return // current block is already empty (blkoff==0), nothing to do
 	}
+	if debugNextBlock {
+		alwaysPrintf("nextBlock: oldBlkid=%d newBlkid=%d blkoff=%d isGC=%v",
+			oldBlkid, newBlkid, bm.blkoff, isGC)
+	}
 	// Write the filled portion of the current block to disk
 	off := int64(oldBlkid * FLEXSPACE_BLOCK_SIZE)
 	_, err := bm.file.fdKV128blocks.WriteAt(bm.buf[:bm.blkoff], off)
@@ -215,6 +219,8 @@ func (bm *blockManager) nextBlock(isGC bool) {
 	bm.blkid = newBlkid
 	bm.blkoff = 0
 }
+
+var debugNextBlock = false
 
 // flush persists the current in-memory block to disk and syncs the data file.
 func (bm *blockManager) flush(isGC bool) {
