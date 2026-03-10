@@ -84,7 +84,7 @@ The C benchmarks use a `forker_passes` framework that:
 ## 3. Go Benchmark File Layout
 
 ```
-comparison/
+yogabench/
 ├── main.go            CLI entry point + flag parsing (maps to reproduce.sh + shell scripts)
 ├── keygen.go          Key generation matching C's kv_refill_hex64_klen
 ├── zipfian.go         Zipfian, Clustered Zipfian, Latest, Uniform distributions (from lib.c)
@@ -202,7 +202,8 @@ uses YogaDB's built-in `Metrics` from `db.Close()`, which reports:
 
 ```bash
 # Build
-go build -o yogabench ./comparison/
+old: go build -o yogabench ./comparison/
+new: cd cmd/yogabench; go install; go build
 
 # Quick smoke test (in-memory, 2-second phases)
 ./yogabench all -dataset udb -count 10000 -nodisk -duration 2s

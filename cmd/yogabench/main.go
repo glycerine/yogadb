@@ -1,4 +1,4 @@
-// comparison/main.go — Go benchmark harness for YogaDB,
+// cmd/yogabench/main.go — Go benchmark harness for YogaDB,
 // equivalent to the C FlexDB benchmarks in study/eurosys22-artifact/flexdb_benchmark/.
 //
 // Usage:
