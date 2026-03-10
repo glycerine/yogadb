@@ -1276,10 +1276,12 @@ func (it *Iter) Next() {
 		return
 	}
 
+	currentHLC := it.db.hlc.Aload()
+
 	// Fast path: serve from prefetch spans.
 	// HLC check detects mutations made via it.Put/it.Delete since last fill.
 	if it.pfSpanIdx < it.pfSpanCount {
-		if it.snapshotHLC == it.db.hlc.Aload() {
+		if it.snapshotHLC == currentHLC {
 			// Inline the common case: next entry in current span, not a tombstone.
 			// This avoids a function call to servePrefetch (which Go can't inline
 			// because it contains loops) on every Next().
@@ -1348,7 +1350,6 @@ func (it *Iter) Next() {
 	}
 
 	db := it.db
-	currentHLC := db.hlc.Aload()
 	if it.dir == 1 && it.snapshotHLC == currentHLC && it.snapshotHLC != 0 {
 		// Cursor still valid. Try prefetch refill on the FlexSpace-only fast path.
 		if db.memtables[0].empty && db.memtables[1].empty {
@@ -1437,10 +1438,12 @@ func (it *Iter) Prev() {
 		return
 	}
 
+	currentHLC := it.db.hlc.Aload()
+
 	// Fast path: serve from reverse prefetch spans.
 	// HLC check detects mutations made via it.Put/it.Delete since last fill.
 	if it.pfSpanIdx < it.pfSpanCount && it.dir == -1 {
-		if it.snapshotHLC == it.db.hlc.Aload() {
+		if it.snapshotHLC == currentHLC {
 			if it.servePrefetchReverse() {
 				return
 			}
@@ -1455,7 +1458,6 @@ func (it *Iter) Prev() {
 	db := it.db
 	curKey := it.pKV.Key // save before any re-seek overwrites pKV
 
-	currentHLC := db.hlc.Aload()
 	if it.dir == -1 && it.snapshotHLC == currentHLC && it.snapshotHLC != 0 {
 		// Cursor still valid. Try prefetch refill on the FlexSpace-only fast path.
 		if db.memtables[0].empty && db.memtables[1].empty {
