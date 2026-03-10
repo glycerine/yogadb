@@ -633,7 +633,6 @@ type FlexDB struct {
 	liveBigKeys   int64 // keys whose values are in VLOG (HasVPtr=true)
 	liveSmallKeys int64 // keys with inline values
 
-	gcTestDiag bool // when true, print diagnostic info during GC tests
 }
 
 // keyState classifies a key's storage state for live-key counter tracking.
@@ -1982,15 +1981,7 @@ func (db *FlexDB) writeLockHeldSync() error {
 
 	wasActive := db.activeMT
 	if db.memtables[wasActive].empty {
-		if db.gcTestDiag {
-			alwaysPrintf("writeLockHeldSync: memtable[%d] EMPTY, returning early! blkid=%d blkoff=%d",
-				wasActive, db.ff.bm.blkid, db.ff.bm.blkoff)
-		}
 		return nil // nothing to flush
-	}
-	if db.gcTestDiag {
-		alwaysPrintf("writeLockHeldSync: flushing memtable[%d], blkid=%d blkoff=%d",
-			wasActive, db.ff.bm.blkid, db.ff.bm.blkoff)
 	}
 
 	// Switch writes to the other table.
@@ -2006,17 +1997,9 @@ func (db *FlexDB) writeLockHeldSync() error {
 		db.memtables[wasActive].logSync() // flush + fdatasync. here in FlexDB.Sync()
 	}
 	db.flushMemtable(wasActive)
-	if db.gcTestDiag {
-		alwaysPrintf("writeLockHeldSync: after flushMemtable, blkid=%d blkoff=%d",
-			db.ff.bm.blkid, db.ff.bm.blkoff)
-	}
 	db.cache.flushDirtyPages()
 	db.persistCounters()
 	db.ff.Sync() // fsyncs FLEXSPACE.KV128.BLOCKS
-	if db.gcTestDiag {
-		alwaysPrintf("writeLockHeldSync: after ff.Sync, blkid=%d blkoff=%d",
-			db.ff.bm.blkid, db.ff.bm.blkoff)
-	}
 	db.maybePiggybackGC()
 	db.verifyAnchorTags()
 
@@ -3757,10 +3740,6 @@ func (db *FlexDB) doFlush() {
 	wasActive := db.activeMT
 	if db.memtables[wasActive].empty {
 		return
-	}
-	if db.gcTestDiag {
-		alwaysPrintf("doFlush: flushWorker firing! memtable[%d] not empty, blkid=%d blkoff=%d",
-			wasActive, db.ff.bm.blkid, db.ff.bm.blkoff)
 	}
 	// Swap memtables
 	db.activeMT = 1 - db.activeMT
