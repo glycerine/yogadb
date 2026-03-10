@@ -408,7 +408,7 @@ Read-only (View) and read-write (Update) transactions are available.
 
 ~~~
 
-# Q & A
+# Q and A
 
 Q1: What is the system architecture? I see
 mention of FlexTree, FlexSpace, and FlexDB. How are they related?
