@@ -494,7 +494,7 @@ func TestFlexDB_EmptyDB(t *testing.T) {
 
 	mustMiss(t, db, "anything")
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		it.SeekToFirst()
 		if it.Valid() {
@@ -750,7 +750,7 @@ func populateDB(t *testing.T, db *FlexDB, doSync bool) {
 // collectAscend is a helper that collects all keys from db.Ascend.
 func collectAscend(db *FlexDB, pivot string) []string {
 	var keys []string
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		roDB.Ascend(pivot, func(key string, value []byte) bool {
 			keys = append(keys, key)
 			return true
@@ -763,7 +763,7 @@ func collectAscend(db *FlexDB, pivot string) []string {
 // collectDescend is a helper that collects all keys from db.Descend.
 func collectDescend(db *FlexDB, pivot string) []string {
 	var keys []string
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		roDB.Descend(pivot, func(key string, value []byte) bool {
 			keys = append(keys, key)
 			return true
@@ -827,7 +827,7 @@ func TestFlexDB_AscendEarlyStop(t *testing.T) {
 	populateDB(t, db, false)
 
 	var keys []string
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		roDB.Ascend("", func(key string, value []byte) bool {
 			keys = append(keys, key)
 			return len(keys) < 3 // stop after 3
@@ -867,7 +867,7 @@ func TestFlexDB_DescendAll_big(t *testing.T) {
 	slices.SortFunc(keys, bytes.Compare)
 	slices.Reverse(keys) // compare to Descending
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		it.SeekToLast()
 		count := 0
@@ -919,7 +919,7 @@ func TestFlexDB_DescendEarlyStop(t *testing.T) {
 	populateDB(t, db, false)
 
 	var keys []string
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		roDB.Descend("", func(key string, value []byte) bool {
 			keys = append(keys, key)
 			return len(keys) < 2

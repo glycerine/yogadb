@@ -18,7 +18,7 @@ func TestFlexDB_IteratorBasic(t *testing.T) {
 		mustPut(t, db, k, "v:"+k)
 	}
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		it.SeekToFirst()
 		defer it.Close()
@@ -51,7 +51,7 @@ func TestFlexDB_IteratorSeek(t *testing.T) {
 		mustPut(t, db, k, k)
 	}
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		defer it.Close()
 
@@ -82,7 +82,7 @@ func TestFlexDB_IteratorAfterSync(t *testing.T) {
 	}
 	db.Sync()
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		it.SeekToFirst()
 		defer it.Close()
@@ -116,7 +116,7 @@ func TestFlexDB_ManyKeysIterator(t *testing.T) {
 	}
 	db.Sync()
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		it.SeekToFirst()
 		defer it.Close()
@@ -143,7 +143,7 @@ func TestFlexDB_AscendRange(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, false)
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		// [bbb, ddd) - should include bbb, ccc but NOT ddd
 		var keys []string
 		roDB.AscendRange("bbb", "ddd", func(key string, value []byte) bool {
@@ -184,7 +184,7 @@ func TestFlexDB_DescendRange(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, false)
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		// (bbb, ddd] - should include ddd, ccc but NOT bbb
 		var keys []string
 		roDB.DescendRange("ddd", "bbb", func(key string, value []byte) bool {
@@ -225,7 +225,7 @@ func TestFlexDB_AscendRangeAfterSync(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, true)
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		var keys []string
 		roDB.AscendRange("bbb", "eee", func(key string, value []byte) bool {
 			keys = append(keys, key)
@@ -241,7 +241,7 @@ func TestFlexDB_DescendRangeAfterSync(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, true)
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		var keys []string
 		roDB.DescendRange("ddd", "aaa", func(key string, value []byte) bool {
 			keys = append(keys, key)
@@ -257,7 +257,7 @@ func TestFlexDB_AscendValues(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, false)
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		var pairs []string
 		roDB.Ascend("bbb", func(key string, value []byte) bool {
 			pairs = append(pairs, key+"="+string(value))
@@ -274,7 +274,7 @@ func TestFlexDB_DescendValues(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, false)
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		var pairs []string
 		roDB.Descend("ddd", func(key string, value []byte) bool {
 			pairs = append(pairs, key+"="+string(value))
@@ -291,7 +291,7 @@ func TestFlexDB_IteratorPrev(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, false)
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		it.SeekToLast()
 		defer it.Close()
@@ -311,7 +311,7 @@ func TestFlexDB_IteratorSeekThenPrev(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, false)
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		defer it.Close()
 
@@ -350,7 +350,7 @@ func TestFlexDB_AscendManyKeys(t *testing.T) {
 	db.Sync()
 	sort.Strings(allKeys)
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		// Ascend from key000100
 		var keys []string
 		roDB.Ascend("key000100", func(key string, value []byte) bool {
@@ -981,7 +981,7 @@ func TestFlexDB_IteratorDeleteDuringForward(t *testing.T) {
 		mustPut(t, db, k, "v:"+k)
 	}
 
-	db.Update(func(rwDB WritableDB) error {
+	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
 		defer it.Close()
 		it.SeekToFirst()
@@ -1010,7 +1010,7 @@ func TestFlexDB_IteratorDeleteCurrentAndNext(t *testing.T) {
 		mustPut(t, db, k, "v:"+k)
 	}
 
-	db.Update(func(rwDB WritableDB) error {
+	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
 		defer it.Close()
 		it.SeekToFirst()
@@ -1042,7 +1042,7 @@ func TestFlexDB_IteratorDeleteAllForward(t *testing.T) {
 		mustPut(t, db, k, "v:"+k)
 	}
 
-	db.Update(func(rwDB WritableDB) error {
+	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
 		it.SeekToFirst()
 
@@ -1075,7 +1075,7 @@ func TestFlexDB_IteratorPutDuringForward(t *testing.T) {
 		mustPut(t, db, k, "v:"+k)
 	}
 
-	db.Update(func(rwDB WritableDB) error {
+	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
 		defer it.Close()
 		it.SeekToFirst()
@@ -1104,7 +1104,7 @@ func TestFlexDB_IteratorDeleteDuringBackward(t *testing.T) {
 		mustPut(t, db, k, "v:"+k)
 	}
 
-	db.Update(func(rwDB WritableDB) error {
+	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
 		defer it.Close()
 		it.SeekToLast()
@@ -1135,7 +1135,7 @@ func TestFlexDB_IteratorDeleteOldTimestamps(t *testing.T) {
 	mustPut(t, db, "2025-06-01:k4", "new2")
 
 	cutoff := "2025-"
-	db.Update(func(rwDB WritableDB) error {
+	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
 		it.SeekToFirst()
 		for it.Valid() {
@@ -1152,7 +1152,7 @@ func TestFlexDB_IteratorDeleteOldTimestamps(t *testing.T) {
 	})
 
 	// Only new keys should remain
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		var remaining []string
 		roDB.Ascend("", func(key string, value []byte) bool {
 			remaining = append(remaining, key)
@@ -1172,7 +1172,7 @@ func TestFlexDB_IteratorMutateAfterSync(t *testing.T) {
 	db.Sync()
 
 	// Delete "c" during forward iteration over FlexSpace data
-	db.Update(func(rwDB WritableDB) error {
+	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
 		defer it.Close()
 		it.SeekToFirst()
@@ -1198,7 +1198,7 @@ func TestFlexDB_IteratorMutateAfterSync(t *testing.T) {
 func TestFlexDB_IteratorEmptyDB(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		defer it.Close()
 
@@ -1225,7 +1225,7 @@ func TestFlexDB_IteratorSingleKey(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	mustPut(t, db, "only", "val")
 
-	db.Update(func(rwDB WritableDB) error {
+	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
 		defer it.Close()
 
@@ -1252,7 +1252,7 @@ func TestFlexDB_IteratorDeleteAllBackward(t *testing.T) {
 		mustPut(t, db, k, "v:"+k)
 	}
 
-	db.Update(func(rwDB WritableDB) error {
+	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
 		it.SeekToLast()
 
@@ -1291,7 +1291,7 @@ func TestFlexDB_IteratorHasInlineValue(t *testing.T) {
 	// Small (inline) empty value
 	mustPut(t, db, "zeeKeyToEmpty", "")
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		defer it.Close()
 		it.SeekToFirst()
@@ -1371,7 +1371,7 @@ func TestIterKV_ViewBasic(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, false) // aaa..eee
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		defer it.Close()
 		it.SeekToFirst()
@@ -1405,7 +1405,7 @@ func TestIterKV_UpdateMutate(t *testing.T) {
 	}
 
 	var got []string
-	db.Update(func(rwDB WritableDB) error {
+	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
 		defer it.Close()
 		it.SeekToFirst()
@@ -1435,7 +1435,7 @@ func TestIterKV_UpdateMutate(t *testing.T) {
 func TestIterKV_NilOnInvalid(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		defer it.Close()
 
@@ -1461,7 +1461,7 @@ func TestIterKV_LargeValue(t *testing.T) {
 	mustPut(t, db, "bigkey", bigVal)
 	mustPut(t, db, "small", "tiny")
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		defer it.Close()
 		it.SeekToFirst()
@@ -1511,7 +1511,7 @@ func TestIterKV_AfterSync(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateDB(t, db, true) // flush to FlexSpace
 
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		defer it.Close()
 		it.SeekToFirst()

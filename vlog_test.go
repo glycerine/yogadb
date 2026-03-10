@@ -160,7 +160,7 @@ func TestFlexDB_VLOG_Ascend(t *testing.T) {
 
 	// Ascend and verify values
 	var gotKeys []string
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		roDB.Ascend("", func(key string, value []byte) bool {
 			k := string(key)
 			gotKeys = append(gotKeys, k)
@@ -178,7 +178,7 @@ func TestFlexDB_VLOG_Ascend(t *testing.T) {
 
 	// Descend
 	var descKeys []string
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		roDB.Descend("", func(key string, value []byte) bool {
 			k := string(key)
 			descKeys = append(descKeys, k)

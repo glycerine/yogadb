@@ -221,7 +221,7 @@ func TestFindIt_IteratorContinuation(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateFindTestDB(t, db)
 
-	err := db.View(func(roDB ReadOnlyDB) error {
+	err := db.View(func(roDB *ReadOnlyTx) error {
 		// FindIt GTE key005, then iterate forward.
 		kv, found, _, it := roDB.FindIt(GTE, "key005")
 		if !found {
@@ -387,7 +387,7 @@ func TestLockedIter_PutGetDelete(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateFindTestDB(t, db)
 
-	err := db.Update(func(rwDB WritableDB) error {
+	err := db.Update(func(rwDB *WriteTx) error {
 		// Get existing key.
 		val, ok := rwDB.Get("key005")
 		if !ok {
@@ -457,7 +457,7 @@ func TestLockedIter_Sync(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateFindTestDB(t, db)
 
-	err := db.Update(func(rwDB WritableDB) error {
+	err := db.Update(func(rwDB *WriteTx) error {
 		// Sync should not error.
 		if err := rwDB.Sync(); err != nil {
 			t.Fatal(err)

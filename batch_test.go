@@ -272,7 +272,7 @@ func batchLoadAndReadOut(fs vfs.FS, t *testing.T, db *FlexDB, dataPath string) e
 
 	// write back out, to check completeness (no data is lost) and sorted-ness (proper order).
 	saw := 0
-	db.View(func(roDB ReadOnlyDB) error {
+	db.View(func(roDB *ReadOnlyTx) error {
 		roDB.Ascend("", func(key string, value []byte) bool {
 			saw++
 			_, ok := verify[key]

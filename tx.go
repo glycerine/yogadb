@@ -18,7 +18,9 @@ type ReadOnlyDB interface {
 
 // WritableDB extends ReadOnlyDB with mutation methods. Passed to
 // Update transaction callbacks. Writes are applied immediately
-// to the database (no buffering).
+// to the database (no buffering). Since there is only ever
+// a single writer at a time, and no concurrent readers, there
+// is no point in waiting to apply each action.
 type WritableDB interface {
 	ReadOnlyDB
 	Put(key string, value []byte) error
@@ -53,27 +55,29 @@ func (tx *txBase) closeAll() {
 	tx.iters = tx.iters[:0]
 }
 
-// ====================== writeTx (implements WritableDB) ======================
+// ====================== WriteTx (implements WritableDB) ======================
 
-type writeTx struct{ txBase }
+var _ WritableDB = (*WriteTx)(nil)
 
-func (tx *writeTx) Get(key string) ([]byte, bool) {
+type WriteTx struct{ txBase }
+
+func (tx *WriteTx) Get(key string) ([]byte, bool) {
 	return tx.db.someLockHeldGet(key)
 }
 
-func (tx *writeTx) Put(key string, value []byte) error {
+func (tx *WriteTx) Put(key string, value []byte) error {
 	return tx.db.writeLockHeldPut(key, value)
 }
 
-func (tx *writeTx) Delete(key string) error {
+func (tx *WriteTx) Delete(key string) error {
 	return tx.db.writeLockHeldPut(key, nil)
 }
 
-func (tx *writeTx) Sync() error {
+func (tx *WriteTx) Sync() error {
 	return tx.db.writeLockHeldSync()
 }
 
-func (tx *writeTx) Find(smod SearchModifier, key string) (kv *KV, found, exact bool) {
+func (tx *WriteTx) Find(smod SearchModifier, key string) (kv *KV, found, exact bool) {
 	it := tx.newIter()
 	found, exact = findSeekIter(it, smod, key)
 	if found {
@@ -83,7 +87,7 @@ func (tx *writeTx) Find(smod SearchModifier, key string) (kv *KV, found, exact b
 	return
 }
 
-func (tx *writeTx) FindIt(smod SearchModifier, key string) (kv *KV, found, exact bool, it *Iter) {
+func (tx *WriteTx) FindIt(smod SearchModifier, key string) (kv *KV, found, exact bool, it *Iter) {
 	it = tx.newIter()
 	found, exact = findSeekIter(it, smod, key)
 	if found {
@@ -92,35 +96,35 @@ func (tx *writeTx) FindIt(smod SearchModifier, key string) (kv *KV, found, exact
 	return
 }
 
-func (tx *writeTx) FetchLarge(kv *KV) ([]byte, error) {
+func (tx *WriteTx) FetchLarge(kv *KV) ([]byte, error) {
 	return tx.db.lockHeldFetchLarge(kv)
 }
 
-func (tx *writeTx) NewIter() *Iter {
+func (tx *WriteTx) NewIter() *Iter {
 	return tx.newIter()
 }
 
-func (tx *writeTx) Len() int64 {
+func (tx *WriteTx) Len() int64 {
 	return tx.db.liveKeys
 }
 
-func (tx *writeTx) LenBigSmall() (big, small int64) {
+func (tx *WriteTx) LenBigSmall() (big, small int64) {
 	return tx.db.liveBigKeys, tx.db.liveSmallKeys
 }
 
-func (tx *writeTx) DeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
+func (tx *WriteTx) DeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
 	return tx.db.writeLockHeldDeleteRange(includeLarge, begKey, endKey, begInclusive, endInclusive)
 }
 
-func (tx *writeTx) Clear(includeLarge bool) (allGone bool, err error) {
+func (tx *WriteTx) Clear(includeLarge bool) (allGone bool, err error) {
 	return tx.db.writeLockHeldClear(includeLarge)
 }
 
-func (tx *writeTx) Merge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error {
+func (tx *WriteTx) Merge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error {
 	return tx.db.writeLockHeldMerge(key, fn)
 }
 
-func (tx *writeTx) Ascend(pivot string, iter func(key string, value []byte) bool) {
+func (tx *WriteTx) Ascend(pivot string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
 	it.Seek(pivot)
@@ -132,7 +136,7 @@ func (tx *writeTx) Ascend(pivot string, iter func(key string, value []byte) bool
 	}
 }
 
-func (tx *writeTx) Descend(pivot string, iter func(key string, value []byte) bool) {
+func (tx *WriteTx) Descend(pivot string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
 	if pivot == "" {
@@ -148,7 +152,7 @@ func (tx *writeTx) Descend(pivot string, iter func(key string, value []byte) boo
 	}
 }
 
-func (tx *writeTx) AscendRange(greaterOrEqual, lessThan string, iter func(key string, value []byte) bool) {
+func (tx *WriteTx) AscendRange(greaterOrEqual, lessThan string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
 	it.Seek(greaterOrEqual)
@@ -163,7 +167,7 @@ func (tx *writeTx) AscendRange(greaterOrEqual, lessThan string, iter func(key st
 	}
 }
 
-func (tx *writeTx) DescendRange(lessOrEqual, greaterThan string, iter func(key string, value []byte) bool) {
+func (tx *WriteTx) DescendRange(lessOrEqual, greaterThan string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
 	if lessOrEqual == "" {
@@ -182,15 +186,17 @@ func (tx *writeTx) DescendRange(lessOrEqual, greaterThan string, iter func(key s
 	}
 }
 
-// ====================== readTx (implements ReadOnlyDB) ======================
+// ====================== ReadOnlyTx (implements ReadOnlyDB) ======================
 
-type readTx struct{ txBase }
+var _ ReadOnlyDB = (*ReadOnlyTx)(nil)
 
-func (tx *readTx) Get(key string) ([]byte, bool) {
+type ReadOnlyTx struct{ txBase }
+
+func (tx *ReadOnlyTx) Get(key string) ([]byte, bool) {
 	return tx.db.someLockHeldGet(key)
 }
 
-func (tx *readTx) Find(smod SearchModifier, key string) (kv *KV, found, exact bool) {
+func (tx *ReadOnlyTx) Find(smod SearchModifier, key string) (kv *KV, found, exact bool) {
 	it := tx.newIter()
 	found, exact = findSeekIter(it, smod, key)
 	if found {
@@ -200,7 +206,7 @@ func (tx *readTx) Find(smod SearchModifier, key string) (kv *KV, found, exact bo
 	return
 }
 
-func (tx *readTx) FindIt(smod SearchModifier, key string) (kv *KV, found, exact bool, it *Iter) {
+func (tx *ReadOnlyTx) FindIt(smod SearchModifier, key string) (kv *KV, found, exact bool, it *Iter) {
 	it = tx.newIter()
 	found, exact = findSeekIter(it, smod, key)
 	if found {
@@ -209,23 +215,23 @@ func (tx *readTx) FindIt(smod SearchModifier, key string) (kv *KV, found, exact 
 	return
 }
 
-func (tx *readTx) FetchLarge(kv *KV) ([]byte, error) {
+func (tx *ReadOnlyTx) FetchLarge(kv *KV) ([]byte, error) {
 	return tx.db.lockHeldFetchLarge(kv)
 }
 
-func (tx *readTx) NewIter() *Iter {
+func (tx *ReadOnlyTx) NewIter() *Iter {
 	return tx.newIter()
 }
 
-func (tx *readTx) Len() int64 {
+func (tx *ReadOnlyTx) Len() int64 {
 	return tx.db.liveKeys
 }
 
-func (tx *readTx) LenBigSmall() (big, small int64) {
+func (tx *ReadOnlyTx) LenBigSmall() (big, small int64) {
 	return tx.db.liveBigKeys, tx.db.liveSmallKeys
 }
 
-func (tx *readTx) Ascend(pivot string, iter func(key string, value []byte) bool) {
+func (tx *ReadOnlyTx) Ascend(pivot string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
 	it.Seek(pivot)
@@ -237,7 +243,7 @@ func (tx *readTx) Ascend(pivot string, iter func(key string, value []byte) bool)
 	}
 }
 
-func (tx *readTx) Descend(pivot string, iter func(key string, value []byte) bool) {
+func (tx *ReadOnlyTx) Descend(pivot string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
 	if pivot == "" {
@@ -253,7 +259,7 @@ func (tx *readTx) Descend(pivot string, iter func(key string, value []byte) bool
 	}
 }
 
-func (tx *readTx) AscendRange(greaterOrEqual, lessThan string, iter func(key string, value []byte) bool) {
+func (tx *ReadOnlyTx) AscendRange(greaterOrEqual, lessThan string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
 	it.Seek(greaterOrEqual)
@@ -268,7 +274,7 @@ func (tx *readTx) AscendRange(greaterOrEqual, lessThan string, iter func(key str
 	}
 }
 
-func (tx *readTx) DescendRange(lessOrEqual, greaterThan string, iter func(key string, value []byte) bool) {
+func (tx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
 	if lessOrEqual == "" {
@@ -301,14 +307,14 @@ func (tx *readTx) DescendRange(lessOrEqual, greaterThan string, iter func(key st
 //
 // Do NOT call db.Put/db.Get/db.Delete/db.Sync inside fn - use rwDB
 // methods instead (deadlock).
-func (db *FlexDB) Update(fn func(rwDB WritableDB) error) error {
+func (db *FlexDB) Update(fn func(rw *WriteTx) error) error {
 	db.topMutRW.Lock()
-	tx := writeTx{txBase{db: db}}
+	tx := &WriteTx{txBase{db: db}}
 	defer func() {
 		tx.closeAll()
 		db.topMutRW.Unlock()
 	}()
-	return fn(&tx)
+	return fn(tx)
 }
 
 // View runs fn inside a read-only transaction. The read lock
@@ -319,12 +325,12 @@ func (db *FlexDB) Update(fn func(rwDB WritableDB) error) error {
 // are automatically closed when fn returns.
 //
 // Do NOT call db.Get inside fn - use roDB methods instead (deadlock).
-func (db *FlexDB) View(fn func(roDB ReadOnlyDB) error) error {
+func (db *FlexDB) View(fn func(ro *ReadOnlyTx) error) error {
 	db.topMutRW.RLock()
-	tx := readTx{txBase{db: db}}
+	tx := &ReadOnlyTx{txBase{db: db}}
 	defer func() {
 		tx.closeAll()
 		db.topMutRW.RUnlock()
 	}()
-	return fn(&tx)
+	return fn(tx)
 }

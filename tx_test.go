@@ -11,7 +11,7 @@ func TestTx_UpdateBasic(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	mustPut(t, db, "k1", "v1")
 
-	err := db.Update(func(rwDB WritableDB) error {
+	err := db.Update(func(rwDB *WriteTx) error {
 		if err := rwDB.Put("k2", []byte("v2")); err != nil {
 			return err
 		}
@@ -34,7 +34,7 @@ func TestTx_ViewBasic(t *testing.T) {
 	mustPut(t, db, "k1", "v1")
 	mustPut(t, db, "k2", "v2")
 
-	err := db.View(func(roDB ReadOnlyDB) error {
+	err := db.View(func(roDB *ReadOnlyTx) error {
 		val, ok := roDB.Get("k1")
 		if !ok || string(val) != "v1" {
 			t.Fatalf("View Get(k1) = %q, %v; want v1, true", val, ok)
@@ -58,7 +58,7 @@ func TestTx_UpdateSeesOwnWrites(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	mustPut(t, db, "k1", "v1")
 
-	err := db.Update(func(rwDB WritableDB) error {
+	err := db.Update(func(rwDB *WriteTx) error {
 		// Should see pre-existing key.
 		val, ok := rwDB.Get("k1")
 		if !ok || string(val) != "v1" {
@@ -111,7 +111,7 @@ func TestTx_ViewCannotMutate(t *testing.T) {
 
 	// ReadOnlyDB has no Put or Delete methods -- this is a compile-time
 	// guarantee. We just verify that Get works inside View.
-	err := db.View(func(roDB ReadOnlyDB) error {
+	err := db.View(func(roDB *ReadOnlyTx) error {
 		val, ok := roDB.Get("k1")
 		if !ok || string(val) != "v1" {
 			t.Fatalf("View Get(k1) = %q, %v; want v1, true", val, ok)
@@ -123,7 +123,7 @@ func TestTx_ViewCannotMutate(t *testing.T) {
 	}
 
 	// Compile-time check: ReadOnlyDB does not satisfy WritableDB.
-	var _ ReadOnlyDB = (*readTx)(nil)
+	var _ ReadOnlyDB = (*ReadOnlyTx)(nil)
 	// The following would fail to compile:
 	// var _ WritableDB = (*readTx)(nil)
 }
@@ -139,7 +139,7 @@ func TestTx_SerializedUpdates(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = db.Update(func(rwDB WritableDB) error {
+			errs[i] = db.Update(func(rwDB *WriteTx) error {
 				// Read current counter value.
 				val, ok := rwDB.Get("counter")
 				if !ok {
@@ -181,7 +181,7 @@ func TestTx_UpdateIterator(t *testing.T) {
 	mustPut(t, db, "b", "2")
 	mustPut(t, db, "c", "3")
 
-	err := db.Update(func(rwDB WritableDB) error {
+	err := db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
 		defer it.Close()
 
@@ -206,7 +206,7 @@ func TestTx_ViewIterator(t *testing.T) {
 	mustPut(t, db, "y", "20")
 	mustPut(t, db, "z", "30")
 
-	err := db.View(func(roDB ReadOnlyDB) error {
+	err := db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		defer it.Close()
 
@@ -232,7 +232,7 @@ func TestTx_MultipleIteratorsUpdate(t *testing.T) {
 	mustPut(t, db, "c", "3")
 	mustPut(t, db, "d", "4")
 
-	err := db.Update(func(rwDB WritableDB) error {
+	err := db.Update(func(rwDB *WriteTx) error {
 		it1 := rwDB.NewIter()
 		it2 := rwDB.NewIter()
 		defer it1.Close()
@@ -275,7 +275,7 @@ func TestTx_MultipleIteratorsView(t *testing.T) {
 	mustPut(t, db, "c", "3")
 	mustPut(t, db, "d", "4")
 
-	err := db.View(func(roDB ReadOnlyDB) error {
+	err := db.View(func(roDB *ReadOnlyTx) error {
 		it1 := roDB.NewIter()
 		it2 := roDB.NewIter()
 		defer it1.Close()
@@ -318,7 +318,7 @@ func TestTx_UpdateAscendDescend(t *testing.T) {
 	mustPut(t, db, "c", "3")
 	mustPut(t, db, "d", "4")
 
-	err := db.Update(func(rwDB WritableDB) error {
+	err := db.Update(func(rwDB *WriteTx) error {
 		// Ascend from "b".
 		var asc []string
 		rwDB.Ascend("b", func(key string, value []byte) bool {
@@ -366,7 +366,7 @@ func TestTx_UpdateDeleteRange(t *testing.T) {
 	mustPut(t, db, "d", "4")
 	mustPut(t, db, "e", "5")
 
-	err := db.Update(func(rwDB WritableDB) error {
+	err := db.Update(func(rwDB *WriteTx) error {
 		// Delete range [b, d] inclusive.
 		n, _, err := rwDB.DeleteRange(false, "b", "d", true, true)
 		if err != nil {
@@ -394,7 +394,7 @@ func TestTx_ErrorPropagation(t *testing.T) {
 	sentinel := errors.New("test sentinel error")
 
 	// Update should propagate callback error.
-	err := db.Update(func(rwDB WritableDB) error {
+	err := db.Update(func(rwDB *WriteTx) error {
 		return sentinel
 	})
 	if !errors.Is(err, sentinel) {
@@ -402,7 +402,7 @@ func TestTx_ErrorPropagation(t *testing.T) {
 	}
 
 	// View should propagate callback error.
-	err = db.View(func(roDB ReadOnlyDB) error {
+	err = db.View(func(roDB *ReadOnlyTx) error {
 		return sentinel
 	})
 	if !errors.Is(err, sentinel) {
