@@ -685,7 +685,7 @@ func TestRecovery_LinearizabilitySingleKey(t *testing.T) {
 // TestRecovery_LinearizabilityMultiKey verifies invariant S6 with
 // multiple independent keys and concurrent writers/readers.
 //
-// Update: we now pre-compute random choices before spawing goro
+// Update: we now pre-compute random choices before spawning goro
 // to avoid data races on rand.Rand.
 func TestRecovery_LinearizabilityMultiKey(t *testing.T) {
 	dir := "test_recovery_linz_multi"

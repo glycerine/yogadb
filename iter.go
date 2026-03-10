@@ -1624,7 +1624,7 @@ func (it *Iter) Large() bool {
 // from the VLOG if the iterator points to a large value.
 // For inline values, this is equivalent to Vin(). Returns the value
 // bytes and any error from the VLOG read. If the value is
-// inline and not large, it will stiill be returned
+// inline and not large, it will still be returned
 // (and the error will be nil).
 func (it *Iter) FetchV() ([]byte, error) {
 	if !it.valid || it.pKV == nil {

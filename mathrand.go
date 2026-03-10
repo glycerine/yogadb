@@ -86,7 +86,7 @@ func (rng *prng) pseudoRandBool() (b bool) {
 // We use a bitmask + rejection approach; rejecting
 // if our draw happens to fall between nChoices and
 // (2^k)-1 where 2^k is the next highest power
-// of 2 the occurs > nChoices. This gives
+// of 2 that occurs > nChoices. This gives
 // an un-biased random number.
 func (rng *prng) pseudoRandNonNegInt64Range(nChoices int64) (r int64) {
 	rng.mut.Lock()

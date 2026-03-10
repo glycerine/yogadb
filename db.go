@@ -292,7 +292,7 @@ func (s *Batch) Close() {
 // fits in one 64B cache line. Moreover users cannot corrupt
 // the Key, so it is safe to return from our internal caches.
 // The technical reason memory-mapped systems must use []byte
-// keys is that they are reason straight from a read-only
+// keys is that they are read straight from a read-only
 // memory map. Since we do not use a memory-mapped design
 // we can get compile time safety, cache speed, and the benefits of
 // immutability by making Key a string.
@@ -524,7 +524,7 @@ func dupBytes(b []byte) []byte {
 	return dup
 }
 
-// Config allow configuration of a FlexDB.
+// Config allows configuration of a FlexDB.
 type Config struct {
 	CacheMB uint64 // default 32 (for 32 MB)
 
@@ -556,7 +556,7 @@ type Config struct {
 	LowBlockUtilizationPct float64
 
 	// OmitMemWalFsync true means we do not durably fdatasync the MEMWAL1/2 files.
-	// This is useful for batch loading alot of data quickly, and then doing
+	// This is useful for batch loading a lot of data quickly, and then doing
 	// one fsync at the end for durability. The proviso of course is that
 	// if your process crashes you have no intermediate state and have to
 	// start again at the beginning; which may be fine.

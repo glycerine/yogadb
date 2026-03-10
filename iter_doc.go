@@ -106,6 +106,6 @@
 // and the flexdbUnsortedWriteQuota=6 brought iteration down to
 // about 8 nsec/key. Using SLOTTED_PAGE_KB=128 we could cut that in half
 // again, but we are already beating Bolt by 2x (why bother with 3x; it
-// is available if you need it thought) and we want to balance against
+// is available if you need it though) and we want to balance against
 // read and insertion efficiency and on-disk space consumption.
 package yogadb

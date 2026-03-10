@@ -108,7 +108,7 @@ func cryptoRandNonNegInt64Range(nChoices int64) (r int64) {
 			// every other positive integer has
 			// probability 2/2^64... So
 			// without this next line we are
-			// (very subtlely) biased against zero.
+			// (very subtly) biased against zero.
 			// To correct that, we
 			// give 0 one more chance by
 			// letting it have the last negative
@@ -140,7 +140,7 @@ func cryptoRandNonNegInt64Range(nChoices int64) (r int64) {
 // if largestPositiveChoice is math.MaxInt64;
 // since math.MinInt64 is greater in
 // absolute value than math.MaxInt64.
-// Returning 0 is always a posibility, and
+// Returning 0 is always a possibility, and
 // there are always an odd number of
 // possible returned r values.
 func cryptoRandInt64RangePosOrNeg(largestPositiveChoice int64) (r int64) {

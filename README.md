@@ -57,14 +57,14 @@ Figure 2: the fundamentally new data structure is the FlexTree.
 The FlexSpace architecture is heavily inspired by Log-structured File Systems (LFS),
 and how filesystems in general handle extents (contiguous spans of
 disk space). In addition, FlexSpace introduces a new data structure
-called the FlexTree; a B-tree variant that has asymptodically better
+called the FlexTree; a B-tree variant that has asymptotically better
 big-O performance for Insert-Range extent operations. The third
 idea is to separate logical from physical address space, and to sort
 in logical space to minimize physical data movement.
 
 * Why YogaDB: faster reads and writes than LSM trees. About 2x faster writes.
 
-Part of the speed is due to defering compaction and on-disk garbage
+Part of the speed is due to deferring compaction and on-disk garbage
 collection (often called vacuuming, cf PostgreSQL). So YogaDB
 becomes a space-time tradeoff. You can (temporarily) use more disk space to go faster.
 Then call VacuumKV() and VacuumVLOG() only when you are ready.
@@ -180,7 +180,7 @@ optimized for logical sorting. Persistence of the sorted structure is
 done with Copy-on-write. YogaDB's FlexSpace can 
 handle more keys than can fit in RAM.
 
-* The result: the C gets 2x the throughput of RocksDB (on both writes and reads). See pages 10-14 of the paper. Also, much better latency.
+* The result: the C version gets 2x the throughput of RocksDB (on both writes and reads). See pages 10-14 of the paper. Also, much better latency.
 
 * Bottom line: Your SSD and NVMe drives are your friends. They want to 
 help you write quickly while not sacrificing
@@ -458,7 +458,7 @@ top level memtable for the top YogaDB layer. This is nice since it has Copy-on-W
 
 A2: The dual-memtable design enables non-blocking writes during flush.
 
-With a single memtable, when it's time to flush to FlexSpace, there are two (bad options:
+With a single memtable, when it's time to flush to FlexSpace, there are two (bad) options:
 
 a) Block all writes while the flush completes (the memtable is being 
 read by the flush worker and can't accept new writes simultaneously)
@@ -815,7 +815,7 @@ B. final write amplification work, summary of changes
 
 # Plan for more aggressive Garbage Collection: Piggyback GC on Sync/Flush for YogaDB
 
-The flush-worker goroutine aleady tries to flush every 5 seconds in the background.
+The flush-worker goroutine already tries to flush every 5 seconds in the background.
 The user can choose to have that flush also do GC at the end of its flush, or
 to manually run Sync themselves with the Config flags set to indicate that a GC
 should be done at the end of a Sync; or as a third very manual option, simply

@@ -23,7 +23,7 @@ import (
 // happens to not 64-bit align your data in memory.
 //
 // So: if you need this package on a 32-bit system,
-// insure your HLCs are always the very first
+// ensure your HLCs are always the very first
 // field(s) in your struct, so they are 64-bit
 // aligned.
 //
@@ -82,7 +82,7 @@ func (hlc *HLC) String() string {
 //const rfc3339MsecTz0 = "2006-01-02T15:04:05.000Z07:00"
 
 // AssembleHLC does the simple addition,
-// but takes care of the type converstion too.
+// but takes care of the type conversation too.
 // For safety, it masks off the low 16 bits
 // of lc that should always be 0 anyway before
 // doing the addition.
