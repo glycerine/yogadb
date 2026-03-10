@@ -284,10 +284,11 @@ func (s *Batch) Close() {
 
 // ====================== KV type ======================
 
-// KV is a key-value pair. Tombstones are marked by Vptr.Length == tombstoneVPtrLength (1).
-// A nil Value with Vptr.Length == 0 is a live key with nil value (set member).
+// KV is a key-value pair. Tombstones are marked by Vptr.Length == tombstoneVPtrLength == 1
+// A nil Value with Vptr.Length == 0 is a live key with nil value (just a
+// key that is present but has no value; this is fine).
 //
-// When Vptr.Length > tombstoneVPtrLength, the value is stored in the VLOG file
+// When Vptr.Length > tombstoneVPtrLength (== 1), the value is stored in the VLOG file
 // and Vptr contains the location. Use kv.HasVPtr() to test this.
 //
 // KV is currently 64 bytes, a cache line on most systems. Be very wary of
@@ -306,7 +307,7 @@ func (s *Batch) Close() {
 type KV struct {
 	Key   string
 	Value []byte
-	Vptr  VPtr // Length==1: tombstone; Length>1: VLOG pointer; Length==0: inline/nil
+	Vptr  VPtr // Vptr.Length==1 means tombstone; Length>1: VLOG pointer; Length==0: inline/nil
 	Hlc   HLC  // hybrid logical clock timestamp. LSN like per mini batch, but has big gaps.
 }
 
@@ -338,7 +339,7 @@ func kvLess(a, b KV) bool { return a.Key < b.Key }
 func kvSizeApprox(kv *KV) int { return 24 + len(kv.Key) + len(kv.Value) }
 
 // isTombstone returns true if this KV is a deletion marker.
-// A tombstone is marked by the sentinel VPtr.Length == tombstoneVPtrLength (1).
+// A tombstone is marked by the sentinel VPtr.Length == tombstoneVPtrLength == 1.
 func (kv *KV) isTombstone() bool {
 	return kv.Vptr.Length == tombstoneVPtrLength
 }
