@@ -2058,10 +2058,13 @@ func (db *FlexDB) writeLockHeldSync() error {
 	return nil
 }
 
-// Put writes key -> value. value==nil deletes the key.
+// Put writes key -> value. len(value) == 0 is fine, if desired.
+// Call Delete instead of Put to delete a key and any associated value.
+//
 // Values of any size are accepted. Values > vlogInlineThreshold (64 bytes) are
 // stored in the VLOG file; smaller values are stored inline in
 // the FLEXSPACE.KV128_BLOCKS file with the keys.
+//
 // Large values are written exactly once: to the VLOG. The WAL stores only
 // the VPtr (16 bytes), not the full value.
 //

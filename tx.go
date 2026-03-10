@@ -78,9 +78,20 @@ func (tx *WriteTx) GetKV(key string) (kv *KV, found bool) {
 	return
 }
 
-// Put writes key -> value. value==nil stores a live key with nil value
-// (useful for sets); []byte{} stores a live key with zero-length value.
-// Use Delete to remove a key. Not durable until Sync is called.
+// Put writes key -> value. len(value) == 0 is fine, if desired.
+// Call Delete instead of Put to delete a key and any associated value.
+//
+// Values of any size are accepted. Values > vlogInlineThreshold (64 bytes) are
+// stored in the VLOG file; smaller values are stored inline in
+// the FLEXSPACE.KV128_BLOCKS file with the keys.
+//
+// Large values are written exactly once: to the VLOG. The WAL stores only
+// the VPtr (16 bytes), not the full value.
+//
+// Puts are not durably on disk until after the user has also
+// completed a db.Sync() call. This allows the user to control
+// the rate of fsyncs and trade that against their durability
+// requirements.
 func (tx *WriteTx) Put(key string, value []byte) error {
 	return tx.db.writeLockHeldPut(key, value, false)
 }
