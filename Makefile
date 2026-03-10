@@ -3,6 +3,9 @@
 
 all: 
 	go install
+	cd cmd/yload && go install
+	cd cmd/yview && go install
+	cd cmd/yvac && go install
 
 fuzz:
 	go test -fuzz FuzzFlexTree -fuzztime 5m -run=xxx || true
