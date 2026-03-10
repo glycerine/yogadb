@@ -1546,6 +1546,8 @@ func (it *Iter) GetAnySize() (key string, val []byte, found bool, err error) {
 	if !it.valid || it.pKV == nil {
 		return
 	}
+	found = true
+	key = it.pKV.Key
 	if !it.valueResolved && it.pKV.Value != nil {
 		it.valBuf = reuseAppend(it.valBuf, it.pKV.Value)
 		it.pKV.Value = it.valBuf

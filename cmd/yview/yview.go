@@ -1,10 +1,13 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"time"
 
+	cristalbase64 "github.com/cristalhq/base64"
+	"github.com/glycerine/blake3"
 	"github.com/glycerine/yogadb"
 )
 
@@ -13,13 +16,31 @@ var colonarrow = []byte(" ::: ")
 
 const cmd = "yview"
 
+type YviewConfig struct {
+	KeysOnly bool
+}
+
+func (c *YviewConfig) SetFlags(fs *flag.FlagSet) {
+	fs.BoolVar(&c.KeysOnly, "keys", false, "show keys only")
+}
+func (c *YviewConfig) FinishConfig(fs *flag.FlagSet) (err error) {
+	return nil
+}
+
 func main() {
 
-	if len(os.Args) != 2 {
-		fmt.Fprintf(os.Stderr, "%v error: provide path to database to dump as only argument.\n", cmd)
+	cmdCfg := YviewConfig{}
+	fs := flag.NewFlagSet("yview", flag.ExitOnError)
+	cmdCfg.SetFlags(fs)
+	fs.Parse(os.Args[1:])
+	err := cmdCfg.FinishConfig(fs)
+
+	left := fs.Args()
+	if len(left) != 1 {
+		fmt.Fprintf(os.Stderr, "%v error: provide path to database to dump.\n", cmd)
 		os.Exit(1)
 	}
-	dbPath := os.Args[1]
+	dbPath := left[0]
 	if !dirExists(dbPath) {
 		fmt.Fprintf(os.Stderr, "%v error: path to database does not exist: '%v'\n", cmd, dbPath)
 		os.Exit(1)
@@ -42,10 +63,10 @@ func main() {
 		}()
 	}
 
-	justShowAll(db, dbPath)
+	cmdCfg.justShowAll(db, dbPath)
 }
 
-func justShowAll(db *yogadb.FlexDB, dbPath string) {
+func (c *YviewConfig) justShowAll(db *yogadb.FlexDB, dbPath string) {
 	saw := 0
 	buf := make([]byte, 0, 4<<20)
 	db.View(func(roDB *yogadb.ReadOnlyTx) error {
@@ -58,9 +79,14 @@ func justShowAll(db *yogadb.FlexDB, dbPath string) {
 				buf = buf[:0]
 			}
 			buf = append(buf, key...)
-			if len(value) > 0 {
-				buf = append(buf, colonarrow...)
-				buf = append(buf, value...)
+			if c.KeysOnly {
+				b3 := blake3OfBytes(value)
+				buf = append(buf, []byte(fmt.Sprintf(" => val len %v b3: %v", len(value), b3))...)
+			} else {
+				if len(value) > 0 {
+					buf = append(buf, colonarrow...)
+					buf = append(buf, value...)
+				}
 			}
 			buf = append(buf, newline...)
 
@@ -74,4 +100,11 @@ func justShowAll(db *yogadb.FlexDB, dbPath string) {
 	}
 	os.Stdout.Sync()
 	fmt.Fprintf(os.Stderr, "YogaDB saw %v key-value pair(s) in database '%v'.\n", saw, dbPath)
+}
+
+func blake3OfBytes(by []byte) string {
+	h := blake3.New(64, nil)
+	h.Write(by)
+	sum := h.Sum(nil)
+	return "blake3.33B-" + cristalbase64.URLEncoding.EncodeToString(sum[:33])
 }
