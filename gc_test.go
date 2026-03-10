@@ -102,7 +102,7 @@ Put Operation Flow (lines 1551-1598)
 When db.Put(key, value) is called:
 1. Key/value written to in-memory memtable (btree)
 2. Entry logged to WAL (write-ahead log)
-3. Data is NOT immediately flushed to FlexSpace — flushed
+3. Data is NOT immediately flushed to FlexSpace - flushed
    asynchronously or on explicit Sync()
 
 Flush Path (lines 2332-2350): flushMemtable()
@@ -249,7 +249,7 @@ Example: Overwriting "key1" with new value
 
 │           Scenario     │        Block Usage Update              │GC Trigger            │ Reclamation Timing  │
 ----------------------------------------------------------------------------------------------------------------
-│ New key written        │ updateBlkUsage(blk, +len)              │ If freeBlocks < 64   │ —                   │
+│ New key written        │ updateBlkUsage(blk, +len)              │ If freeBlocks < 64   │ -                   │
 │ Key overwritten        │ Old block: updateBlkUsage(blk, -len)   │ If old block becomes │                     │
                                                                   │ free &&              │                     │
                                                                   │ freeBlocks < 64      │ Immediate (counter) │
@@ -292,7 +292,7 @@ File Locations Summary
 Key findings:
 1. FlexSpace.Update() does call collapseR() which does decrement blkusage for replaced data
 2. FlexDB.putPassthroughR() correctly calls ff.Update() when eq == true (key already exists)
-3. However, GC only triggers when freeBlocks < 64 — meaning you need 64+ completely empty blocks before GC even considers running
+3. However, GC only triggers when freeBlocks < 64 - meaning you need 64+ completely empty blocks before GC even considers running
 */
 
 // mustFileSize returns the size of the named file, or 0 if it doesn't exist.
@@ -384,7 +384,7 @@ func TestGC_OverwriteSameKeys_BlockUsageDecreases(t *testing.T) {
 	usageAfterAllRounds := totalBlockUsage(db.ff)
 
 	// The key assertion: after overwriting the same keys 4 more times,
-	// the total block usage should be bounded — ideally close to the
+	// the total block usage should be bounded - ideally close to the
 	// single-round usage, NOT 5x the initial.
 	//
 	// We allow 3x as a generous upper bound. If block usage tracking
@@ -428,7 +428,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 		keys[i] = fmt.Sprintf("key%06d", i)
 	}
 
-	// Round 0: initial write — triggers block pre-allocation.
+	// Round 0: initial write - triggers block pre-allocation.
 	for i, k := range keys {
 		val := fmt.Sprintf("val-round0-%06d-padding-data-here", i)
 		if err := db.Put(k, []byte(val)); err != nil {
@@ -437,7 +437,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	}
 	db.Sync()
 
-	// Round 1: first overwrite — after this, pre-allocation is stable.
+	// Round 1: first overwrite - after this, pre-allocation is stable.
 	for i, k := range keys {
 		val := fmt.Sprintf("val-round1-%06d-padding-data-here", i)
 		if err := db.Put(k, []byte(val)); err != nil {
@@ -550,7 +550,7 @@ func TestGC_PartialOverwrite_NoBlockGrowth(t *testing.T) {
 	t.Logf("After %d partial-overwrite rounds: %d bytes (%.2fx vs round 1)",
 		rounds, sizeAfterPartialRounds, float64(sizeAfterPartialRounds)/float64(sizeAfterRound1))
 
-	// Allow 2x as the bound — pages may grow slightly from HLC varint
+	// Allow 2x as the bound - pages may grow slightly from HLC varint
 	// overhead but should NOT trigger 4MB block allocations.
 	maxAcceptable := int64(float64(sizeAfterRound1) * 2.0)
 	if sizeAfterPartialRounds > maxAcceptable {
@@ -674,7 +674,7 @@ func TestGC_OverwriteSameKeys_RedoLogGrows(t *testing.T) {
 	}
 	db.Sync()
 
-	// Round 1: first overwrite — stabilizes block pre-allocation.
+	// Round 1: first overwrite - stabilizes block pre-allocation.
 	for i, k := range keys {
 		val := fmt.Sprintf("val-round1-%06d-some-padding", i)
 		db.Put(k, []byte(val))
@@ -785,7 +785,7 @@ func TestGC_BlockUsageTracking_UpdatePath(t *testing.T) {
 	usageAfterManyUpdates := totalBlockUsage(ff)
 	t.Logf("After 10 more updates: totalBlockUsage=%d", usageAfterManyUpdates)
 
-	// Should still be bounded — not 12x the initial.
+	// Should still be bounded - not 12x the initial.
 	if usageAfterManyUpdates > usageAfterInsert*3 {
 		t.Errorf("block usage grew after repeated updates: insert=%d, after 10 more=%d (%.1fx)",
 			usageAfterInsert, usageAfterManyUpdates,
@@ -956,7 +956,7 @@ func TestGC_CrossSession_BlockReuse(t *testing.T) {
 			t.Fatalf("session %d: %v", s, err)
 		}
 
-		// Check block manager state on open — are old blocks seen as used?
+		// Check block manager state on open - are old blocks seen as used?
 		usageOnOpen := totalBlockUsage(db.ff)
 		blocksOnOpen := countUsedBlocks(db.ff)
 		freeOnOpen := db.ff.bm.freeBlocks
@@ -1078,10 +1078,10 @@ func TestGC_CrossSession_ManyReopens_SameDataset(t *testing.T) {
 	t.Logf("  Dir:   session 1 = %d → session %d = %d  (%.2fx)", baseline, sessions-1, final, growth)
 	t.Logf("  KV128: session 1 = %d → session %d = %d  (%.2fx)", kv128Baseline, sessions-1, kv128Final, kv128Growth)
 
-	// The ideal is 1.0x — identical data rewritten yields no growth.
+	// The ideal is 1.0x - identical data rewritten yields no growth.
 	// With block-granularity overhead, allow up to 2x.
 	if kv128Growth > 2.0 {
-		t.Errorf("KV128_BLOCKS grew %.2fx over %d sessions of identical data — block reuse not working across sessions",
+		t.Errorf("KV128_BLOCKS grew %.2fx over %d sessions of identical data - block reuse not working across sessions",
 			kv128Growth, sessions)
 	}
 	if growth > 2.0 {
@@ -1170,7 +1170,7 @@ func TestGC_GarbageMetrics_CustomThreshold(t *testing.T) {
 
 	// With threshold=0.001 (0.1%), the same data may or may not count
 	// depending on exact size. Use a very tight threshold to show it changes.
-	cfg2 := &Config{LowBlockUtilizationPct: 0.0001} // 0.01% — ~420 bytes
+	cfg2 := &Config{LowBlockUtilizationPct: 0.0001} // 0.01% - ~420 bytes
 	db2, _ := openTestDB(t, cfg2)
 	for i := 0; i < 50; i++ {
 		mustPut(t, db2, fmt.Sprintf("k%04d", i), fmt.Sprintf("v%04d-pad", i))
@@ -1259,7 +1259,7 @@ func TestPiggybackGC_TriggersOnSync(t *testing.T) {
 	}
 	db.Sync()
 
-	// Overwrite with smaller values — old extents become garbage.
+	// Overwrite with smaller values - old extents become garbage.
 	for i := 0; i < nKeys; i++ {
 		k := fmt.Sprintf("key%06d", i)
 		v := fmt.Sprintf("v2-%06d", i)
@@ -1281,7 +1281,7 @@ func TestPiggybackGC_TriggersOnSync(t *testing.T) {
 func TestPiggybackGC_RespectsGarbageThreshold(t *testing.T) {
 	cfg := &Config{
 		PiggybackGC_on_SyncOrFlush: true,
-		GCGarbagePct:               1.0, // impossible to reach — won't trigger
+		GCGarbagePct:               1.0, // impossible to reach - won't trigger
 	}
 	db, _ := openTestDB(t, cfg)
 

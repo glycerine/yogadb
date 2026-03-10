@@ -74,7 +74,7 @@ func (db *FlexDB) NewBatch() (b *Batch) {
 // caller immediately after Set returns.
 func (s *Batch) Set(key string, value []byte) (err error) {
 
-	// String keys are immutable — no copy needed.
+	// String keys are immutable - no copy needed.
 	// Value is []byte, so we must copy it.
 	s.puts = append(s.puts, &KV{
 		Key:   key,
@@ -2049,7 +2049,7 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte) error {
 	// Tick the HLC for this write.
 	hlcVal := db.hlc.CreateSendOrLocalEvent()
 
-	// String keys are immutable — no defensive copy needed.
+	// String keys are immutable - no defensive copy needed.
 	// Value is []byte, so we must copy it.
 	if value != nil {
 		value = append([]byte{}, value...)
@@ -2200,7 +2200,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kv *KV, found, exact bo
 	found, exact = findSeekIter(it, smod, key)
 	if found {
 		zc := findBuildKV(it)
-		// String Key is immutable — no copy needed. Copy Value.
+		// String Key is immutable - no copy needed. Copy Value.
 		owned := KV{Vptr: zc.Vptr, Hlc: zc.Hlc}
 		owned.Key = zc.Key
 		if !zc.HasVPtr() && zc.Value != nil {
@@ -3167,7 +3167,7 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 	}
 	if !slottedPageWouldFit(fce.kvs, fce.count, kv, replaceIdx, int(anchor.psize)) {
 		if eq {
-			// Replacing an existing key — the entry count stays the same.
+			// Replacing an existing key - the entry count stays the same.
 			// The overflow is from HLC varint growth (mixed old/new HLCs
 			// inflate delta encoding). Instead of splitting (which would
 			// allocate a new 4MB block for a half-page of data), grow the
@@ -3175,7 +3175,7 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 			partition.cacheEntryReplace(fce, kv, idx)
 			newSize := slottedPageComputeSize(fce.kvs[:fce.count])
 			if newSize > int(anchor.psize) && newSize < 2*slottedPageMaxSize {
-				// Page genuinely grew — resize the extent in place.
+				// Page genuinely grew - resize the extent in place.
 				buf := slottedPageEncode(fce.kvs[:fce.count])
 				anchorLoff := uint64(anchor.loff + nh.shift)
 				db.ff.Update(buf, anchorLoff, uint64(len(buf)), uint64(anchor.psize))
@@ -3184,7 +3184,7 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 				fce.dirty = false // just written
 				fce.dirtyNode = nil
 			} else if newSize >= 2*slottedPageMaxSize {
-				// Pathological growth — fall through to split.
+				// Pathological growth - fall through to split.
 				db.treeInsertAnchor(nh, partition, fce)
 				db.putPassthroughMarkDirty(nh, anchor, fce)
 			} else {
@@ -3193,7 +3193,7 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 			}
 			return
 		}
-		// Inserting a new key — page genuinely full. Split.
+		// Inserting a new key - page genuinely full. Split.
 		partition.cacheEntryInsert(fce, kv, idx)
 		db.treeInsertAnchor(nh, partition, fce)
 		db.putPassthroughMarkDirty(nh, anchor, fce)
