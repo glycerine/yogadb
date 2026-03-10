@@ -2260,7 +2260,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kv *KV, found, exact bo
 }
 
 // Get retrieves the value for key. Returns nil, false if not found.
-func (db *FlexDB) Get(key string) ([]byte, bool) {
+func (db *FlexDB) Get(key string) (value []byte, found bool) {
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
 

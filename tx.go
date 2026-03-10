@@ -66,7 +66,7 @@ type WriteTx struct{ txBase }
 
 // Get retrieves the value for key. Returns (nil, false) if not found
 // or deleted. The returned []byte is a copy, safe to retain.
-func (tx *WriteTx) Get(key string) ([]byte, bool) {
+func (tx *WriteTx) Get(key string) (value []byte, found bool) {
 	return tx.db.someLockHeldGet(key)
 }
 
@@ -257,7 +257,7 @@ type ReadOnlyTx struct{ txBase }
 
 // Get retrieves the value for key. Returns (nil, false) if not found
 // or deleted. The returned []byte is a copy, safe to retain.
-func (tx *ReadOnlyTx) Get(key string) ([]byte, bool) {
+func (tx *ReadOnlyTx) Get(key string) (value []byte, found bool) {
 	return tx.db.someLockHeldGet(key)
 }
 
