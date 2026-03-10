@@ -33,8 +33,12 @@ func runGCBench(args []string) {
 	fmt.Println("--- Phase 1: Sequential Fill ---")
 	parallelFill(db, cf.Count, 4, p.KeyLen, p.ValLen)
 
-	// Phase 2: 100M overwrites to create garbage
+	// Phase 2: Overwrites to create garbage.
+	// Default 100M, but can be reduced via -count for quick testing.
 	overwriteOps := int64(100_000_000)
+	if cf.Count < overwriteOps {
+		overwriteOps = cf.Count // use -count if smaller
+	}
 	fmt.Printf("--- Phase 2: %s overwrites (%d ops) ---\n", cf.Dist, overwriteOps)
 
 	switch cf.Dist {
