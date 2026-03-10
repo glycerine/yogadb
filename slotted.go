@@ -486,25 +486,6 @@ func slottedPageWouldFit(kvs []KV, count int, newKV KV, replaceIdx int, targetSi
 	return contentSize <= targetSize
 }
 
-// slottedPageWouldFitUniformHLC checks whether the page would fit if all
-// entries had the same HLC (i.e., all deltas are 0, using 1-byte varints).
-// This detects the case where overflow is caused solely by transient mixed
-// HLC deltas during a flush, not by genuine key/value size growth.
-func slottedPageWouldFitUniformHLC(kvs []KV, count int, newKV KV, replaceIdx int, targetSize int) bool {
-	totalEntriesSize := 0
-	totalValsSize := 0
-	for i := 0; i < count; i++ {
-		kv := kvs[i]
-		if i == replaceIdx {
-			kv = newKV
-		}
-		totalEntriesSize += 4 + 1 + len(kv.Key) // 4=header, 1=varint(0)
-		totalValsSize += slottedValBytes(kv)
-	}
-	contentSize := slottedPageHeaderSize + totalEntriesSize + totalValsSize + slottedPageCRCSize
-	return contentSize <= targetSize
-}
-
 // slottedPageDump returns a human-readable multi-line string describing the
 // structure of a raw slotted page buffer. Useful for debugging.
 func slottedPageDump(src []byte) string {

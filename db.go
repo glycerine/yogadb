@@ -3166,28 +3166,36 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 		replaceIdx = idx
 	}
 	if !slottedPageWouldFit(fce.kvs, fce.count, kv, replaceIdx, int(anchor.psize)) {
-		// When replacing an existing key (eq=true), the page may temporarily
-		// exceed the target size due to mixed HLC deltas: during a flush,
-		// some entries already have new (large) HLCs while others retain
-		// old (small) HLCs, inflating varint sizes. Once all entries are
-		// updated, the HLCs will be uniform and the page will fit again.
-		//
-		// Check: would the page fit with uniform HLCs? If yes, skip the
-		// split — just replace the entry and let flushDirtyPages handle it.
-		if eq && slottedPageWouldFitUniformHLC(fce.kvs, fce.count, kv, replaceIdx, int(anchor.psize)) {
+		if eq {
+			// Replacing an existing key — the entry count stays the same.
+			// The overflow is from HLC varint growth (mixed old/new HLCs
+			// inflate delta encoding). Instead of splitting (which would
+			// allocate a new 4MB block for a half-page of data), grow the
+			// page in-place via ff.Update (collapse old + insert new).
 			partition.cacheEntryReplace(fce, kv, idx)
-			db.putPassthroughMarkDirty(nh, anchor, fce)
+			newSize := slottedPageComputeSize(fce.kvs[:fce.count])
+			if newSize > int(anchor.psize) && newSize < 2*slottedPageMaxSize {
+				// Page genuinely grew — resize the extent in place.
+				buf := slottedPageEncode(fce.kvs[:fce.count])
+				anchorLoff := uint64(anchor.loff + nh.shift)
+				db.ff.Update(buf, anchorLoff, uint64(len(buf)), uint64(anchor.psize))
+				nh.shiftUpPropagate(int64(len(buf)) - int64(anchor.psize))
+				anchor.psize = uint32(len(buf))
+				fce.dirty = false // just written
+				fce.dirtyNode = nil
+			} else if newSize >= 2*slottedPageMaxSize {
+				// Pathological growth — fall through to split.
+				db.treeInsertAnchor(nh, partition, fce)
+				db.putPassthroughMarkDirty(nh, anchor, fce)
+			} else {
+				// Fits after replace (e.g., new value is smaller).
+				db.putPassthroughMarkDirty(nh, anchor, fce)
+			}
 			return
 		}
-		// Page genuinely full — split.
-		// Insert into cache first so split sees the new entry.
-		if eq {
-			partition.cacheEntryReplace(fce, kv, idx)
-		} else {
-			partition.cacheEntryInsert(fce, kv, idx)
-		}
+		// Inserting a new key — page genuinely full. Split.
+		partition.cacheEntryInsert(fce, kv, idx)
 		db.treeInsertAnchor(nh, partition, fce)
-		// After split, fce is the left half. Mark dirty.
 		db.putPassthroughMarkDirty(nh, anchor, fce)
 		return
 	}

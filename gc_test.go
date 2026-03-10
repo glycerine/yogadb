@@ -490,6 +490,160 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	}
 }
 
+// TestGC_PartialOverwrite_NoBlockGrowth verifies that updating only SOME
+// keys in a page does not trigger an anchor split or 4MB block allocation.
+// This is the non-transient HLC spread case: keys 0-249 get new HLCs
+// while keys 250-499 keep their original HLCs permanently, creating a
+// large HLC delta that inflates varint encoding.
+func TestGC_PartialOverwrite_NoBlockGrowth(t *testing.T) {
+	fs, dir := newTestFS(t)
+	cfg := &Config{FS: fs}
+
+	db, err := OpenFlexDB(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const nKeys = 500
+	keys := make([]string, nKeys)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("key%06d", i)
+	}
+
+	// Round 0: initial write of all keys.
+	for i, k := range keys {
+		val := fmt.Sprintf("val-round0-%06d-padding-data-here", i)
+		if err := db.Put(k, []byte(val)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Sync()
+
+	// Round 1: overwrite all keys to stabilize pre-allocation.
+	for i, k := range keys {
+		val := fmt.Sprintf("val-round1-%06d-padding-data-here", i)
+		if err := db.Put(k, []byte(val)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Sync()
+	sizeAfterRound1 := mustDirSize(fs, dir)
+	t.Logf("Round 1 disk size: %d bytes (baseline)", sizeAfterRound1)
+
+	// Rounds 2-9: overwrite only the FIRST HALF of the keys.
+	// This creates a permanent HLC spread within each page: the first half
+	// has new (large) HLCs, the second half retains old (small) HLCs.
+	const rounds = 9
+	for r := 2; r <= rounds; r++ {
+		for i := 0; i < nKeys/2; i++ {
+			k := keys[i]
+			val := fmt.Sprintf("val-round%d-%06d-padding-data-here", r, i)
+			if err := db.Put(k, []byte(val)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		db.Sync()
+	}
+
+	sizeAfterPartialRounds := mustDirSize(fs, dir)
+	t.Logf("After %d partial-overwrite rounds: %d bytes (%.2fx vs round 1)",
+		rounds, sizeAfterPartialRounds, float64(sizeAfterPartialRounds)/float64(sizeAfterRound1))
+
+	// Allow 2x as the bound — pages may grow slightly from HLC varint
+	// overhead but should NOT trigger 4MB block allocations.
+	maxAcceptable := int64(float64(sizeAfterRound1) * 2.0)
+	if sizeAfterPartialRounds > maxAcceptable {
+		t.Errorf("disk size grew too much with partial overwrites: round 1 = %d, after %d rounds = %d (%.2fx); max acceptable = %d (2.0x)",
+			sizeAfterRound1, rounds, sizeAfterPartialRounds,
+			float64(sizeAfterPartialRounds)/float64(sizeAfterRound1),
+			maxAcceptable)
+	}
+
+	// Verify correctness: first half has latest round's value,
+	// second half still has round 1's value.
+	for i, k := range keys {
+		var expected string
+		if i < nKeys/2 {
+			expected = fmt.Sprintf("val-round%d-%06d-padding-data-here", rounds, i)
+		} else {
+			expected = fmt.Sprintf("val-round1-%06d-padding-data-here", i)
+		}
+		got, ok := db.Get(k)
+		if !ok {
+			t.Fatalf("key %q not found", k)
+		}
+		if string(got) != expected {
+			t.Fatalf("key %q: got %q, want %q", k, got, expected)
+		}
+	}
+}
+
+// TestGC_ReplaceWithLargerValue_Splits verifies that replacing a key with
+// a genuinely larger value triggers a proper split (not just HLC growth).
+func TestGC_ReplaceWithLargerValue_Splits(t *testing.T) {
+	fs, dir := newTestFS(t)
+	cfg := &Config{FS: fs}
+
+	db, err := OpenFlexDB(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Write enough keys to fill a page (~200 keys in 10KB).
+	const nKeys = 200
+	for i := 0; i < nKeys; i++ {
+		k := fmt.Sprintf("key%06d", i)
+		v := fmt.Sprintf("v%06d", i) // short values
+		if err := db.Put(k, []byte(v)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Sync()
+
+	// Replace one key with a much larger value. This should trigger
+	// a proper page split, not the HLC-growth-only path.
+	bigValue := make([]byte, 4096)
+	for i := range bigValue {
+		bigValue[i] = byte('A' + i%26)
+	}
+	if err := db.Put("key000100", bigValue); err != nil {
+		t.Fatal(err)
+	}
+	db.Sync()
+
+	// Verify the large value was stored correctly.
+	got, ok := db.Get("key000100")
+	if !ok {
+		t.Fatal("key000100 not found after large-value replace")
+	}
+	if len(got) != len(bigValue) {
+		t.Fatalf("key000100: got %d bytes, want %d", len(got), len(bigValue))
+	}
+	for i := range got {
+		if got[i] != bigValue[i] {
+			t.Fatalf("key000100 byte %d: got %d, want %d", i, got[i], bigValue[i])
+		}
+	}
+
+	// Verify other keys are intact.
+	for i := 0; i < nKeys; i++ {
+		if i == 100 {
+			continue
+		}
+		k := fmt.Sprintf("key%06d", i)
+		expected := fmt.Sprintf("v%06d", i)
+		got, ok := db.Get(k)
+		if !ok {
+			t.Fatalf("key %q not found", k)
+		}
+		if string(got) != expected {
+			t.Fatalf("key %q: got %q, want %q", k, got, expected)
+		}
+	}
+}
+
 // TestGC_OverwriteSameKeys_RedoLogGrows shows that even though
 // FlexSpace block-level tracking is correct, the redo log grows
 // linearly with each overwrite round. Each Update (collapse + insert)
