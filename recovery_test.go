@@ -231,7 +231,7 @@ func checkLinzOps(t *testing.T, ops []porc.Operation) {
 	if porc.CheckOperations(kvModel, ops) {
 		return
 	}
-	// Not linearizable — visualize and fail.
+	// Not linearizable - visualize and fail.
 	res, info := porc.CheckOperationsVerbose(kvModel, ops, 0)
 	if res != porc.Illegal {
 		t.Fatalf("expected Illegal, got %v", res)
@@ -496,7 +496,7 @@ func TestRecovery_KeyCountConsistency(t *testing.T) {
 }
 
 // TestRecovery_UnsyncedDataLoss verifies that un-synced Puts
-// may be lost after crash — and that is NOT a bug.
+// may be lost after crash - and that is NOT a bug.
 func TestRecovery_UnsyncedDataLoss(t *testing.T) {
 	dir := "test_recovery_unsynced"
 	fs := vfs.NewCrashableMem()
@@ -1042,7 +1042,7 @@ func TestRecovery_ConcurrentWritersCrash(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Sync everything — all writes become durable.
+	// Sync everything - all writes become durable.
 	panicOn(db.Sync())
 	for w := 0; w < numWriters; w++ {
 		for i := 0; i < numOps; i++ {
@@ -1098,7 +1098,7 @@ func (kt *keyTracker) markMaybeSet(key, value string) {
 	kt.mu.Lock()
 	e := kt.entries[key]
 	if e.state == ksSet {
-		// Preserve the synced value — after crash, the DB should
+		// Preserve the synced value - after crash, the DB should
 		// have either this synced value or the new unsynced value.
 		e.syncedValue = e.value
 		e.wasSynced = true
@@ -1601,7 +1601,7 @@ func TestRecoveryStress_UnsyncedDataPartial(t *testing.T) {
 	db2, err := OpenFlexDB(dir, recoverCfg)
 	if err != nil {
 		// Partial unsynced data can create inconsistent state.
-		// Log it but don't fail — this is an expected possibility.
+		// Log it but don't fail - this is an expected possibility.
 		t.Logf("OpenFlexDB with partial unsynced data failed (expected possibility): %v", err)
 		return
 	}
@@ -1662,7 +1662,7 @@ func TestRecoveryStress_CrashNearSync(t *testing.T) {
 				syncDone <- db.Sync()
 			}()
 
-			// Take crash clone immediately — Sync may or may not have completed.
+			// Take crash clone immediately - Sync may or may not have completed.
 			crashedFS := fs.CrashClone(vfs.CrashCloneCfg{UnsyncedDataPercent: 0})
 
 			// Wait for Sync to finish (it may succeed or fail, doesn't matter).

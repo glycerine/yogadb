@@ -351,7 +351,7 @@ func TestFlexDB_kv128CRC32C(t *testing.T) {
 		t.Fatal("clean kv128Decode failed")
 	}
 
-	// Flip a bit in the key — CRC should catch it
+	// Flip a bit in the key - CRC should catch it
 	corrupted := make([]byte, len(buf))
 	copy(corrupted, buf)
 	corrupted[3] ^= 0x01 // flip a bit in the key area
@@ -1238,7 +1238,7 @@ func TestDeleteRange_Basic(t *testing.T) {
 		mustPut(t, db, string([]byte{c}), fmt.Sprintf("val_%c", c))
 	}
 
-	// Delete range [c, f] — both inclusive
+	// Delete range [c, f] - both inclusive
 	n, _, err := db.DeleteRange(true, "c", "f", true, true)
 	if err != nil {
 		t.Fatal(err)
@@ -1700,7 +1700,7 @@ func TestDeleteRange_AllGone(t *testing.T) {
 	})
 
 	t.Run("superset_range", func(t *testing.T) {
-		// Range much larger than actual keys — still triggers allGone.
+		// Range much larger than actual keys - still triggers allGone.
 		db, _ := openTestDB(t, nil)
 		mustPut(t, db, "m", "1")
 		mustPut(t, db, "n", "2")
@@ -2312,7 +2312,7 @@ func TestLen(t *testing.T) {
 		if n := db.Len(); n != 20 {
 			t.Fatalf("Len() = %d, want 20", n)
 		}
-		// Delete range [key0005, key0014] — should delete 10 keys (0005..0014)
+		// Delete range [key0005, key0014] - should delete 10 keys (0005..0014)
 		db.DeleteRange(false, "key0005", "key0014", true, true)
 		want := int64(10) // 20 - 10 = 10
 		if n := db.Len(); n != want {

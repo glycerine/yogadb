@@ -47,11 +47,11 @@ The mapping is linear within an extent: `logical_byte_i → Poff + (i - Loff)`.
 
 - **collapse-range(loff, len)** (= Delete): Remove the mapping at `[loff, loff+len)`.
   All data beyond `loff+len` shifts backward by `len`. MaxLoff decreases by `len`.
-  This "closes the gap" — no hole is left behind.
+  This "closes the gap" - no hole is left behind.
 
-- **PQuery(loff)**: Point lookup — return the physical offset for logical byte `loff`.
+- **PQuery(loff)**: Point lookup - return the physical offset for logical byte `loff`.
 
-- **Query(loff, len)**: Range lookup — return a list of `(poff, len)` chunks covering
+- **Query(loff, len)**: Range lookup - return a list of `(poff, len)` chunks covering
   `[loff, loff+len)`.
 
 - **SetTag(loff, tag)** / **GetTag(loff)**: Attach/retrieve a 16-bit tag at the start of
@@ -62,7 +62,7 @@ The mapping is linear within an extent: `logical_byte_i → Poff + (i - Loff)`.
 ### Holes
 
 When inserting at `loff > MaxLoff`, the gap `[MaxLoff, loff)` is automatically filled
-with **hole extents** — extents whose `Poff` has bit 47 set (`FLEXTREE_HOLE = 1 << 47`).
+with **hole extents** - extents whose `Poff` has bit 47 set (`FLEXTREE_HOLE = 1 << 47`).
 Holes are real extents in the array; they participate in all invariants. They represent
 unmapped logical space (like sparse file regions).
 
@@ -74,7 +74,7 @@ Adjacent extents merge into one when ALL of these hold:
 3. Combined size ≤ MaxExtentSize
 4. Tag == 0 (only untagged extents merge)
 
-This is an optimization, not a semantic requirement — merging reduces extent count
+This is an optimization, not a semantic requirement - merging reduces extent count
 but doesn't change the logical-to-physical mapping.
 
 ---
@@ -206,20 +206,20 @@ Tags are only retrievable at extent boundaries.
 ## Answers to High-Level Questions
 
 **Do extents partition the domain space?**
-Yes — they form a **perfect partition** of `[0, MaxLoff)`. Every byte is in exactly one
+Yes - they form a **perfect partition** of `[0, MaxLoff)`. Every byte is in exactly one
 extent. There are no gaps and no overlaps. Holes are explicit extents (with FLEXTREE_HOLE
 in their Poff), not empty gaps.
 
 **What is the domain space?**
-`[0, MaxLoff)` — a linear byte-addressable logical address space. It starts at 0 and
+`[0, MaxLoff)` - a linear byte-addressable logical address space. It starts at 0 and
 grows with Insert operations, shrinks with Delete operations.
 
 **Must extents be contiguous?**
-Yes — always. INV-2 requires `Extents[i].Loff + Extents[i].Len == Extents[i+1].Loff`.
+Yes - always. INV-2 requires `Extents[i].Loff + Extents[i].Len == Extents[i+1].Loff`.
 The array covers the entire `[0, MaxLoff)` range with no gaps.
 
 **Are extents allowed to overlap?**
-No — never. INV-1 (strict ordering) + INV-2 (contiguity) together guarantee non-overlap.
+No - never. INV-1 (strict ordering) + INV-2 (contiguity) together guarantee non-overlap.
 Each logical byte maps to exactly one physical byte.
 
 ---
@@ -467,7 +467,7 @@ func spotCheckQueries(t testing.TB, bf *bruteForce, rng *rand.Rand) {
 		t.Fatalf("[INV-9] PQuery(MaxLoff+100) should return not-found")
 	}
 
-	// INV-10: PQuery-extent agreement — check one random byte per extent
+	// INV-10: PQuery-extent agreement - check one random byte per extent
 	for idx := range bf.Extents {
 		e := &bf.Extents[idx]
 		// Pick a random offset within this extent
@@ -483,7 +483,7 @@ func spotCheckQueries(t testing.TB, bf *bruteForce, rng *rand.Rand) {
 		}
 	}
 
-	// INV-11: Query covers full range — a few random ranges
+	// INV-11: Query covers full range - a few random ranges
 	for i := 0; i < 5; i++ {
 		start := uint64(rng.Int63n(int64(bf.MaxLoff)))
 		maxLen := bf.MaxLoff - start
@@ -551,7 +551,7 @@ func verifyDeleteShift(t testing.TB, bf *bruteForce, delLoff, delLen uint64, pre
 					loff, newLoff, got, oldPoff)
 			}
 		}
-		// Bytes inside the deleted range are gone — no check needed
+		// Bytes inside the deleted range are gone - no check needed
 	}
 }
 
@@ -596,14 +596,14 @@ func consumeU32(data []byte, pos *int) uint32 {
 }
 
 // ========================================================================
-// FuzzbruteForce — Go native fuzz test
+// FuzzbruteForce - Go native fuzz test
 // ========================================================================
 
 func FuzzBruteForce(f *testing.F) {
 	// Seed corpus: a few interesting operation sequences.
 	// Each byte sequence will be decoded as: [opcode, params...]*
 
-	// Seed 1: empty input (no operations — just check empty invariants)
+	// Seed 1: empty input (no operations - just check empty invariants)
 	f.Add([]byte{})
 
 	// Seed 2: single insert at offset 0
@@ -768,7 +768,7 @@ func FuzzBruteForce(f *testing.F) {
 }
 
 // ========================================================================
-// TestbruteForce_RandomizedInvariants — deterministic stress test
+// TestbruteForce_RandomizedInvariants - deterministic stress test
 // ========================================================================
 
 func TestBruteForce_RandomizedInvariants(t *testing.T) {
@@ -938,7 +938,7 @@ func TestBruteForce_HoleInvariants(t *testing.T) {
 		t.Fatalf("MaxLoff = %d, want 10", bf.MaxLoff)
 	}
 
-	// Insert at offset 500 — should create holes [10, 500)
+	// Insert at offset 500 - should create holes [10, 500)
 	bf.Insert(500, 2000, 20)
 	checkInvariants(t, bf, "insert with holes")
 
@@ -1010,7 +1010,7 @@ func TestBruteForce_TagSplitInvariants(t *testing.T) {
 		t.Fatalf("expected 1 extent, got %d", len(bf.Extents))
 	}
 
-	// SetTag at middle of extent — should split
+	// SetTag at middle of extent - should split
 	bf.SetTag(50, 0xBEEF)
 	checkInvariants(t, bf, "SetTag(50, 0xBEEF)")
 

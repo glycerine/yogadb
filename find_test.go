@@ -422,7 +422,7 @@ func TestLockedIter_PutGetDelete(t *testing.T) {
 			t.Fatal("Get key003: should not be found after Delete")
 		}
 
-		// Scan forward from key004 — should see key005a but not key003.
+		// Scan forward from key004 - should see key005a but not key003.
 		it := rwDB.NewIter()
 		defer it.Close()
 		it.Seek("key004")

@@ -349,7 +349,7 @@ Changes:
   1. flexCursorSeekGE no longer returns a KV copy. It just positions the
      cursor; callers read fc.fce.kvs[fc.kvIdx] directly (zero-copy ref
      into the interval cache entry, which is refcounted).
-  2. flexCursorNext renamed to flexCursorAdvance — void return, just
+  2. flexCursorNext renamed to flexCursorAdvance - void return, just
      advances fc.kvIdx++ (common case: one increment, no alloc).
      Cross-interval boundary loads next anchor's cache entry.
   3. flexSpaceOnlySeekGE reads KV directly from cache, copies only once
@@ -400,7 +400,7 @@ Changes:
      cursor forward and fills up to iterPreFetchKeyCount entries. Keys are
      copied into reusable buffers; values are lazy cache references.
   3. Next() ultra-fast path: if pfPos < pfLen and HLC unchanged, serve
-     from buffer with ZERO lock acquisition — just an atomic HLC check
+     from buffer with ZERO lock acquisition - just an atomic HLC check
      + array index. 99/100 Next() calls skip the RLock entirely.
   4. Seek() fills the prefetch buffer on the fast path (empty memtables).
   5. HLC change invalidates the buffer; Prev() and releaseIterState() clear it.
@@ -423,7 +423,7 @@ Summary: YogaDB 57.27 -> 46.68 ns/key (1.2x faster; 6.8x total from baseline)
 
 Changes:
   1. In prefetchFillFlexSpaceOnly, replace reuseAppend(pe.key, kv.Key) with
-     pe.key = kv.Key — a direct reference into cache memory (GC-safe).
+     pe.key = kv.Key - a direct reference into cache memory (GC-safe).
      Same safety model as lazy values: the Go GC keeps the underlying byte
      array alive as long as pe.key references it, even after the cache
      entry is evicted from the LRU.

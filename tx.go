@@ -299,7 +299,7 @@ func (tx *readTx) DescendRange(lessOrEqual, greaterThan string, iter func(key st
 // Writes via rwDB.Put/rwDB.Delete are applied immediately to the
 // database (no buffering, no Commit needed).
 //
-// Do NOT call db.Put/db.Get/db.Delete/db.Sync inside fn — use rwDB
+// Do NOT call db.Put/db.Get/db.Delete/db.Sync inside fn - use rwDB
 // methods instead (deadlock).
 func (db *FlexDB) Update(fn func(rwDB WritableDB) error) error {
 	db.topMutRW.Lock()
@@ -318,7 +318,7 @@ func (db *FlexDB) Update(fn func(rwDB WritableDB) error) error {
 // All iterators created within fn via roDB.NewIter() or roDB.FindIt()
 // are automatically closed when fn returns.
 //
-// Do NOT call db.Get inside fn — use roDB methods instead (deadlock).
+// Do NOT call db.Get inside fn - use roDB methods instead (deadlock).
 func (db *FlexDB) View(fn func(roDB ReadOnlyDB) error) error {
 	db.topMutRW.RLock()
 	tx := readTx{txBase{db: db}}

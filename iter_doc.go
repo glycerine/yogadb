@@ -31,7 +31,7 @@
 // Instead of re-acquiring topMutRW.RLock on every Next() call, the iterator
 // snapshots the database's Hybrid Logical Clock (HLC) at seek time. On Next(),
 // a single atomic load compares the current HLC against the snapshot. If they
-// match, no mutations have occurred and the cursor remains valid — the entire
+// match, no mutations have occurred and the cursor remains valid - the entire
 // lock acquisition and merged re-seek are skipped. When mutations are detected,
 // the iterator falls back to a full re-seek. This turns the common case
 // (iteration without concurrent writes) into an atomic load instead of a
@@ -49,7 +49,7 @@
 //
 // Changed the Iter struct from embedding a full KV (with Key/Value byte slices
 // copied per entry) to holding a *KV pointer directly into the interval cache's
-// kvs[] slice. On the fast path, Next() just updates a pointer — no struct copy,
+// kvs[] slice. On the fast path, Next() just updates a pointer - no struct copy,
 // no byte slice copy. Key() and Value() read through the pointer. This eliminated
 // ~80 bytes of copying per key. (~18 ns/key to ~16 ns/key.)
 //

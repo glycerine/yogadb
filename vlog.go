@@ -1,19 +1,19 @@
 package yogadb
 
-// vlog.go — Append-only value log for large-value separation (WiscKey-style).
+// vlog.go - Append-only value log for large-value separation (WiscKey-style).
 //
 // Values larger than vlogInlineThreshold are stored in the VLOG file instead of
 // inline in FlexSpace. This reduces write amplification: large values are written
 // once to VLOG and never rewritten by FlexSpace GC, compaction, or interval rewrites.
 //
 // On-disk layout:
-//   {db_dir}/VLOG — append-only file of value entries
+//   {db_dir}/VLOG - append-only file of value entries
 //
 // Each VLOG entry (24-byte header + N-byte value):
-//   [4 bytes] hdrCRC  — CRC32C of bytes 4..24 (HLC + length + valCRC)
-//   [8 bytes] HLC timestamp (big-endian int64 — preserves sort order in byte scans)
-//   [8 bytes] value length (little-endian uint64 — supports values up to int64 max)
-//   [4 bytes] valCRC  — CRC32C of the N value bytes that follow
+//   [4 bytes] hdrCRC  - CRC32C of bytes 4..24 (HLC + length + valCRC)
+//   [8 bytes] HLC timestamp (big-endian int64 - preserves sort order in byte scans)
+//   [8 bytes] value length (little-endian uint64 - supports values up to int64 max)
+//   [4 bytes] valCRC  - CRC32C of the N value bytes that follow
 //   [N bytes] raw value bytes
 //
 // The two-CRC design allows validating the header (HLC + length) without reading
@@ -98,7 +98,7 @@ func openValueLog(path string, fs vfs.FS) (*valueLog, error) {
 }
 
 // append writes a value to the VLOG and returns a VPtr.
-// Does NOT fsync — caller must call sync() when durability is needed.
+// Does NOT fsync - caller must call sync() when durability is needed.
 // Thread-safe (serialized by mu).
 func (vl *valueLog) append(value []byte, hlc HLC) (VPtr, error) {
 	vl.mu.Lock()
@@ -190,7 +190,7 @@ func (vl *valueLog) read(vp VPtr) ([]byte, error) {
 	if storedLen != vp.Length {
 		return nil, fmt.Errorf("vlog: length mismatch at offset %d: stored %d, expected %d", vp.Offset, storedLen, vp.Length)
 	}
-	// Verify hdrCRC (covers HLC + length + valCRC — bytes 4..24).
+	// Verify hdrCRC (covers HLC + length + valCRC - bytes 4..24).
 	storedHdrCRC := binary.LittleEndian.Uint32(buf[0:4])
 	computedHdrCRC := crc32.Checksum(buf[4:24], crc32cTable)
 	if computedHdrCRC != storedHdrCRC {

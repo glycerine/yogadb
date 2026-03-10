@@ -144,7 +144,7 @@ func TestFlexDB_AscendRange(t *testing.T) {
 	populateDB(t, db, false)
 
 	db.View(func(roDB ReadOnlyDB) error {
-		// [bbb, ddd) — should include bbb, ccc but NOT ddd
+		// [bbb, ddd) - should include bbb, ccc but NOT ddd
 		var keys []string
 		roDB.AscendRange("bbb", "ddd", func(key string, value []byte) bool {
 			keys = append(keys, key)
@@ -185,7 +185,7 @@ func TestFlexDB_DescendRange(t *testing.T) {
 	populateDB(t, db, false)
 
 	db.View(func(roDB ReadOnlyDB) error {
-		// (bbb, ddd] — should include ddd, ccc but NOT bbb
+		// (bbb, ddd] - should include ddd, ccc but NOT bbb
 		var keys []string
 		roDB.DescendRange("ddd", "bbb", func(key string, value []byte) bool {
 			keys = append(keys, key)
@@ -420,7 +420,7 @@ func TestFlexDB_HLC_PutMonotonic(t *testing.T) {
 func TestFlexDB_HLC_BatchInterval(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 
-	// Batch with unique keys — single-tick interval.
+	// Batch with unique keys - single-tick interval.
 	batch := db.NewBatch()
 	batch.Set("k1", []byte("v1"))
 	batch.Set("k2", []byte("v2"))
@@ -436,7 +436,7 @@ func TestFlexDB_HLC_BatchInterval(t *testing.T) {
 		t.Fatal("expected non-zero HLC")
 	}
 
-	// Batch with a duplicate key — multi-tick interval.
+	// Batch with a duplicate key - multi-tick interval.
 	batch2 := db.NewBatch()
 	batch2.Set("x1", []byte("v1"))
 	batch2.Set("x1", []byte("v2")) // duplicate triggers new tick
@@ -837,7 +837,7 @@ func TestFlexDB_VacuumKV_Twice(t *testing.T) {
 	}
 	db.Sync()
 
-	// First vacuum — should succeed and reclaim dead space.
+	// First vacuum - should succeed and reclaim dead space.
 	stats1, err := db.VacuumKV()
 	if err != nil {
 		t.Fatalf("first VacuumKV: %v", err)
@@ -851,7 +851,7 @@ func TestFlexDB_VacuumKV_Twice(t *testing.T) {
 		mustGet(t, db, key, makeTestValue(51))
 	}
 
-	// Second vacuum — this was the bug: EOF reading poffs that
+	// Second vacuum - this was the bug: EOF reading poffs that
 	// pointed beyond the truncated file.
 	stats2, err := db.VacuumKV()
 	if err != nil {
@@ -883,7 +883,7 @@ func TestFlexDB_VacuumKV_Twice(t *testing.T) {
 }
 
 // TestFlexDB_VacuumKV_WriteAndVacuumAgain tests vacuum, then write new
-// data, then vacuum again — the exact scenario from load_yogadb that
+// data, then vacuum again - the exact scenario from load_yogadb that
 // triggered the original EOF bug.
 func TestFlexDB_VacuumKV_WriteAndVacuumAgain(t *testing.T) {
 	fs, dir := newTestFS(t)
@@ -918,7 +918,7 @@ func TestFlexDB_VacuumKV_WriteAndVacuumAgain(t *testing.T) {
 	}
 
 	// Session 3: reopen, write more data, vacuum again.
-	// This is where the bug would manifest — the first vacuum left
+	// This is where the bug would manifest - the first vacuum left
 	// the file un-truncated, so poffs from session 2's vacuum now
 	// point beyond the .vacuum file's boundary.
 	{
@@ -950,7 +950,7 @@ func TestFlexDB_VacuumKV_WriteAndVacuumAgain(t *testing.T) {
 		db.Close()
 	}
 
-	// Session 4: reopen, vacuum with no writes — should be a no-op.
+	// Session 4: reopen, vacuum with no writes - should be a no-op.
 	{
 		db := openTestDBAt(fs, t, dir, nil)
 		stats, err := db.VacuumKV()
@@ -997,7 +997,7 @@ func TestFlexDB_IteratorDeleteDuringForward(t *testing.T) {
 			}
 			it.Next()
 		}
-		// Should see a,b,c,d,e — "c" was seen before deletion, next re-seeks past "c"
+		// Should see a,b,c,d,e - "c" was seen before deletion, next re-seeks past "c"
 		expectKeys(t, "delete during forward", got, []string{"a", "b", "c", "d", "e"})
 		return nil
 	})
@@ -1120,7 +1120,7 @@ func TestFlexDB_IteratorDeleteDuringBackward(t *testing.T) {
 			}
 			it.Prev()
 		}
-		// Should see e,d,c,b,a — "c" was seen before deletion
+		// Should see e,d,c,b,a - "c" was seen before deletion
 		expectKeys(t, "delete during backward", got, []string{"e", "d", "c", "b", "a"})
 		return nil
 	})

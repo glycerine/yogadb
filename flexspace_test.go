@@ -1,6 +1,6 @@
 package yogadb
 
-// flexspace_test.go — tests for the FlexSpace implementation.
+// flexspace_test.go - tests for the FlexSpace implementation.
 // Mirrors test_flexfile.c and adds additional coverage.
 
 import (
@@ -258,7 +258,7 @@ func TestFlexspace_Handler(t *testing.T) {
 		t.Errorf("handler loff: got %d, want 0", h.Loff())
 	}
 
-	// Read through the handler — note: Read uses a local copy, so h is NOT advanced.
+	// Read through the handler - note: Read uses a local copy, so h is NOT advanced.
 	buf := make([]byte, 5)
 	n, err := h.Read(buf, 5)
 	if err != nil {
@@ -267,7 +267,7 @@ func TestFlexspace_Handler(t *testing.T) {
 	if n != 5 || string(buf) != "abcde" {
 		t.Errorf("handler Read: got %q, want %q", buf[:n], "abcde")
 	}
-	// h.Loff() still 0 — Read does not advance h, only a local copy
+	// h.Loff() still 0 - Read does not advance h, only a local copy
 	if h.Loff() != 0 {
 		t.Errorf("handler loff after Read: got %d, want 0 (Read doesn't advance)", h.Loff())
 	}
@@ -360,7 +360,7 @@ func TestFlexspace_PersistenceAfterCrash(t *testing.T) {
 	ff2 := mustOpen(t, dir, fs)
 	mustInsert(t, ff2, " plus more", uint64(len("checkpoint data")))
 	ff2.Sync() // flush log
-	// "crash" — don't close ff2 cleanly (just let it be GC'd, no Close)
+	// "crash" - don't close ff2 cleanly (just let it be GC'd, no Close)
 
 	// Phase 3: reopen. The log should be replayed.
 	ff3 := mustOpen(t, dir, fs)
@@ -748,7 +748,7 @@ func TestFlexspace_BlockRecycling(t *testing.T) {
 		}
 	}
 
-	// Write new data — should reuse blocks 0, 1, 2 instead of 3+.
+	// Write new data - should reuse blocks 0, 1, 2 instead of 3+.
 	// (With the fix, findEmptyBlock prefers recycled blocks before fromBlkid.)
 	_, err = ff.Insert(data, ff.Size(), chunkSize)
 	if err != nil {

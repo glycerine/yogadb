@@ -110,7 +110,7 @@ type Iter struct {
 
 	// HLC snapshot for fast-path version detection.
 	// If db.hlc hasn't changed since snapshotHLC, no mutations occurred
-	// and the FlexSpace cursor remains valid — use the fast path.
+	// and the FlexSpace cursor remains valid - use the fast path.
 	snapshotHLC HLC
 
 	// Reusable buffers for key/value copies to avoid allocation per Next().
@@ -135,7 +135,7 @@ type Iter struct {
 
 	// Prefetch spans: recorded during fill (under lock), served lazily.
 	// Each span references a contiguous range within a cache interval's kvs[].
-	// Fill is O(intervals), not O(keys) — just records slice boundaries.
+	// Fill is O(intervals), not O(keys) - just records slice boundaries.
 	// Per-KV access (tombstone check, pointer deref) deferred to servePrefetch.
 	pfSpans     [maxPrefetchSpans]prefetchSpan
 	pfSpanCount int // number of recorded spans
@@ -159,7 +159,7 @@ func (it *Iter) releaseIterState() {
 }
 
 // prefetchFillFlexSpaceOnly records span descriptors for upcoming KV entries
-// by walking the FlexSpace cursor forward. O(intervals) not O(keys) — just
+// by walking the FlexSpace cursor forward. O(intervals) not O(keys) - just
 // saves slice boundaries (~3 spans), no per-KV data access under the lock.
 // Per-KV work (tombstone check, pointer deref) is deferred to servePrefetch.
 // Caller must hold topMutRW.RLock().
@@ -536,7 +536,7 @@ func (db *FlexDB) flexCursorAdvance(fc *flexCursor) {
 		return
 	}
 
-	// Try next entry in current interval — the common fast path (no alloc, no function call overhead)
+	// Try next entry in current interval - the common fast path (no alloc, no function call overhead)
 	fc.kvIdx++
 	if fc.fce != nil && fc.kvIdx < fc.fce.count {
 		return // still in same interval, zero-copy
@@ -549,7 +549,7 @@ func (db *FlexDB) flexCursorAdvance(fc *flexCursor) {
 // cache entry and advances to the next anchor. Called when we know kvIdx >= count.
 // Caller must hold topMutRW.RLock().
 func (db *FlexDB) flexCursorNextInterval(fc *flexCursor) {
-	// Inline release — skip nil checks since callers ensure fce is set.
+	// Inline release - skip nil checks since callers ensure fce is set.
 	if fc.fce != nil {
 		fc.partition.releaseEntry(fc.fce)
 		fc.fce = nil
@@ -592,7 +592,7 @@ func (db *FlexDB) flexCursorNextInterval(fc *flexCursor) {
 			atomic.AddInt32(&fce.refcnt, 1)
 			// Verify entry wasn't evicted between load and refcnt bump.
 			// If evicted, anchor.fce is nil (or a new entry). Our refcnt
-			// bump on the old entry is harmless — just undo and fall back.
+			// bump on the old entry is harmless - just undo and fall back.
 			if anchor.loadFce() == fce && !fce.loading {
 				if fce.count == 0 {
 					partition.releaseEntry(fce)
@@ -608,11 +608,11 @@ func (db *FlexDB) flexCursorNextInterval(fc *flexCursor) {
 				fc.kvIdx = 0
 				return
 			}
-			// Race lost or still loading — release and use locked path.
+			// Race lost or still loading - release and use locked path.
 			atomic.AddInt32(&fce.refcnt, -1)
 		}
 
-		// Slow path: cache miss or loading — go through getEntry.
+		// Slow path: cache miss or loading - go through getEntry.
 		anchorLoff := uint64(anchor.loff + shift)
 		fce = partition.getEntry(anchor, anchorLoff, db)
 
@@ -743,7 +743,7 @@ func (db *FlexDB) flexCursorRetreat(fc *flexCursor) {
 		return
 	}
 
-	// Try previous entry in current interval — the common fast path
+	// Try previous entry in current interval - the common fast path
 	fc.kvIdx--
 	if fc.kvIdx >= 0 {
 		return // still in same interval, zero-copy
@@ -756,7 +756,7 @@ func (db *FlexDB) flexCursorRetreat(fc *flexCursor) {
 // current cache entry and retreats to the previous anchor. Called when kvIdx < 0.
 // Caller must hold topMutRW.RLock().
 func (db *FlexDB) flexCursorPrevInterval(fc *flexCursor) {
-	// Inline release — skip nil checks since callers ensure fce is set.
+	// Inline release - skip nil checks since callers ensure fce is set.
 	if fc.fce != nil {
 		fc.partition.releaseEntry(fc.fce)
 		fc.fce = nil
@@ -1063,7 +1063,7 @@ func (it *Iter) flexSpaceOnlySeekGE(target string, strict bool) (kv *KV, found b
 	it.positionFlexCursorForSeek(target, strict)
 
 	for it.fc.positioned && it.fc.fce != nil && it.fc.kvIdx < it.fc.fce.count {
-		// Read directly from cache entry — zero-copy reference
+		// Read directly from cache entry - zero-copy reference
 		kv = &it.fc.fce.kvs[it.fc.kvIdx]
 
 		// Advance cursor position for next call (inline, no dupBytes)
@@ -1297,7 +1297,7 @@ func (it *Iter) Next() {
 				}
 				span.pos = pos + 1 // skip tombstone so servePrefetch doesn't re-check
 			}
-			// Tombstone or span boundary — fall through to full loop.
+			// Tombstone or span boundary - fall through to full loop.
 			if it.servePrefetch() {
 				//it.cntServePrefetch++
 				return

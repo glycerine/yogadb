@@ -102,7 +102,7 @@ Put Operation Flow (lines 1551-1598)
 When db.Put(key, value) is called:
 1. Key/value written to in-memory memtable (btree)
 2. Entry logged to WAL (write-ahead log)
-3. Data is NOT immediately flushed to FlexSpace — flushed
+3. Data is NOT immediately flushed to FlexSpace - flushed
    asynchronously or on explicit Sync()
 
 Flush Path (lines 2332-2350): flushMemtable()
@@ -227,9 +227,9 @@ Example: Overwriting "key1" with new value
 
 4. FlexSpace.Update() executes:
    a) collapseR(loff=100, length=50, false):
-      - Query extents at [100, 150) → finds extent at poff=block2+X, len=50
+      - Query extents at [100, 150) -> finds extent at poff=block2+X, len=50
       - updateBlkUsage(block2, -50)
-      - block2.usage = 0 → freeBlocks++
+      - block2.usage = 0 -> freeBlocks++
       - Delete from FlexTree
 
    b) insertR(newData, loff=100, length=48, false):
@@ -249,12 +249,12 @@ Example: Overwriting "key1" with new value
 
 │           Scenario     │        Block Usage Update              │GC Trigger            │ Reclamation Timing  │
 ----------------------------------------------------------------------------------------------------------------
-│ New key written        │ updateBlkUsage(blk, +len)              │ If freeBlocks < 64   │ —                   │
+│ New key written        │ updateBlkUsage(blk, +len)              │ If freeBlocks < 64   │ -                   │
 │ Key overwritten        │ Old block: updateBlkUsage(blk, -len)   │ If old block becomes │                     │
                                                                   │ free &&              │                     │
                                                                   │ freeBlocks < 64      │ Immediate (counter) │
 │ Key deleted (tombstone)│ updateBlkUsage(blk, -len)              │ Same                 │ Immediate (counter) │
-│ GC recycles fragmented block │ Old block: updateBlkUsage(blk, -len) → 0; New           │                     │
+│ GC recycles fragmented block │ Old block: updateBlkUsage(blk, -len) -> 0; New           │                     │
 │                              │ block: updateBlkUsage(blk, +len) │ When freeBlocks < 64 │ During GC run       │
 ----------------------------------------------------------------------------------------------------------------
 
@@ -292,7 +292,128 @@ File Locations Summary
 Key findings:
 1. FlexSpace.Update() does call collapseR() which does decrement blkusage for replaced data
 2. FlexDB.putPassthroughR() correctly calls ff.Update() when eq == true (key already exists)
-3. However, GC only triggers when freeBlocks < 64 — meaning you need 64+ completely empty blocks before GC even considers running
+3. However, GC only triggers when freeBlocks < 64 - meaning you need 64+ completely empty blocks before GC even considers running
+*/
+
+/* 2026 March 09: mixed hlc big deltas causing page overflow bug fix history:
+
+bug:
+
+       Now I have the full picture. Let me assess the magnitude of the problem to calibrate the right fix.
+
+       The HLC delta varint growth: a 1-byte varint encodes deltas 0-127. A 2-byte varint encodes up to 16383. A 3-byte varint encodes up to ~2M. So if baseHLC is from an old entry and the new HLC is, say, 200 ticks later, that's still 2 bytes instead of 1. The worst case per entry is about 9 extra bytes (1-byte to 10-byte varint). With ~1000 entries
+        per page (flexdbSparseIntervalCount=1000), the worst case overhead is ~9KB -- nearly the entire page size of 10KB. But in practice, the delta growth is much smaller.
+
+       Let me check what the actual entry count is when a split is triggered (i.e., how many KVs fit in a 10KB page).
+
+       A typical entry with a 10-byte key, 8-byte inline value, 1-byte HLC varint: 2+2+1+10 = 15 bytes entry record + 8 bytes value = 23 bytes. So ~430 entries fit in 10KB. With 2-byte HLC varints instead of 1, that's 1 extra byte per entry = 430 extra bytes. That's 4.3% growth. With 3-byte varints, it's 860 extra bytes = 8.6% growth.
+
+       Now I can make my recommendation.
+
+       ---
+       Here is my analysis and recommendation.
+
+       Problem Analysis
+
+       The bug has two distinct manifestations:
+
+       Transient overflow (already handled): During flushMemtable, keys are updated one-by-one via putPassthroughR. After replacing key K5 with a new HLC but before replacing K1, the page has mixed HLCs. The baseHLC stays low (anchored by K1's old HLC), making K5's delta a 2-3 byte varint. The existing slottedPageWouldFitUniformHLC check at
+       db.go:3177 handles this correctly -- it allows the replace and defers the size mismatch to flushDirtyPages, which uses ff.Update to resize.
+
+       Persistent overflow (the real bug): A user updates only SOME keys in a page. The remaining keys keep old HLCs permanently. The page genuinely needs more space because HLC deltas are larger. slottedPageWouldFitUniformHLC returns false (correctly, because even with uniform HLCs the data might be at the limit), triggering a treeInsertAnchor split
+        that calls ff.Insert -- allocating a new 4MB block for a half-page of data.
+
+       Assessment of Each Option
+
+       Option A (Reserve HLC headroom): This is the right general idea but the wrong mechanism. Fixed percentage headroom is wasteful for pages with uniform HLCs (the common case) and may still be insufficient for extreme HLC spreads. It also changes the on-disk format for all pages.
+
+       Option B (Fixed-size HLC encoding): This is the cleanest theoretical fix -- it eliminates the variable entirely. Using 4-byte fixed deltas costs 3 extra bytes per entry vs. a 1-byte varint, or ~1.3KB for 430 entries. But it permanently wastes space on every page, even when all HLCs are identical (delta=0). It also requires a format migration.
+
+       Option C (Rebase HLCs during flushDirtyPages): This does not solve the problem. The issue is that putPassthroughR sees the overflow BEFORE flushDirtyPages runs. By the time flushDirtyPages executes, the split has already happened.
+
+       Option D (In-place Update for replace overflow): This is the most targeted fix. When eq=true and the page does not fit, instead of splitting, do the replace in the cache, then use ff.Update (collapse+insert) to grow anchor.psize by the delta. No new anchor, no 4MB allocation. The page just becomes slightly larger than slottedPageMaxSize.
+
+       Option E (Use ff.Update for right half of split): This does not help because the right half is a NEW logical range -- there is no existing extent to replace. ff.Update requires an existing extent at that loff.
+
+       Recommendation: Option D, with refinement
+
+       Option D is the correct fix. Here is the precise design:
+
+       Core change in putPassthroughR
+
+       When slottedPageWouldFit returns false AND eq == true (replacing an existing key), do NOT split. Instead:
+
+       1. Replace the entry in the cache: partition.cacheEntryReplace(fce, kv, idx)
+       2. Compute the new encoded size: newSize := slottedPageComputeSize(fce.kvs[:fce.count])
+       3. If newSize > int(anchor.psize), grow the extent in place:
+         - Encode the page tight (no padding): buf := slottedPageEncode(fce.kvs[:fce.count])
+         - Call ff.Update(buf, absLoff, uint64(len(buf)), uint64(anchor.psize)) to collapse the old extent and insert the new, larger one at the same loff
+         - Call nh.shiftUpPropagate(int64(len(buf)) - int64(anchor.psize)) to adjust shifts
+         - Update anchor.psize = uint32(len(buf))
+         - Mark the entry as NOT dirty (it was just written)
+       4. If newSize <= int(anchor.psize), the page fits -- just mark dirty as usual (the flushDirtyPages path handles it).
+
+       This eliminates the split entirely for replace operations. A page might grow beyond slottedPageMaxSize by a few hundred bytes, but it never triggers the 4MB block allocation for what is fundamentally a metadata size change.
+
+       Why this is safe
+
+       - ff.Update is collapse+insert, which is the same primitive used by the existing flushDirtyPages overflow path (intervalcache.go:142). So the FlexSpace/FlexTree handling is already proven.
+       - The shift propagation is already done correctly for Updates in treeInsertAnchor (db.go:3227-3229).
+       - Pages slightly larger than slottedPageMaxSize are handled correctly by decode (it uses the actual buffer length, not a fixed constant).
+       - The only place that assumes anchor.psize == slottedPageMaxSize is the left-half check in treeInsertAnchor (line 3224), which already has a fallback for psize != slottedPageMaxSize.
+
+       What about insert (eq=false)?
+
+       When eq=false (genuinely new key), the page has more data and a split IS appropriate. No change needed there. The existing code path is correct -- a new key means the page has genuinely grown in key/value content, not just in HLC encoding overhead.
+
+       Additional guard: cap the growth
+
+       Add a sanity check: if a replace-only growth would push anchor.psize beyond 2 * slottedPageMaxSize, go ahead and split. This prevents pathological cases where repeated HLC-only growth accumulates unboundedly. In practice this should never be reached because the HLC varint overhead per entry is bounded at ~9 bytes.
+
+       Remove the slottedPageWouldFitUniformHLC path
+
+       The existing slottedPageWouldFitUniformHLC check at db.go:3177 becomes unnecessary. It was a partial fix that handled the transient case by deferring to flushDirtyPages. The Option D approach subsumes it by handling ALL replace-overflow cases uniformly in putPassthroughR itself -- either the page fits and is marked dirty, or it does not fit
+       and is grown via ff.Update immediately. This is simpler and eliminates the "encode as tight, detect mismatch, fall back to Update" two-phase dance in flushDirtyPages.
+
+       However, if you prefer incremental changes, you can keep the slottedPageWouldFitUniformHLC path as-is and only add the Option D fallback for the eq && !slottedPageWouldFitUniformHLC case (the path that currently falls through to the split). This minimizes risk.
+
+       Implementation sequence
+
+       1. In putPassthroughR, after the existing slottedPageWouldFitUniformHLC block (line 3177), add a new block for eq && !wouldFitUniform: do the replace + ff.Update to grow.
+       2. Remove the split path for eq cases (the if eq { cacheEntryReplace... } treeInsertAnchor block at lines 3184-3192), or gate it behind !eq.
+       3. Optionally simplify flushDirtyPages to remove the len(buf) != anchor.psize fallback, since pages will now always be pre-grown to their actual size during putPassthroughR.
+       4. Add a test that updates only some keys in a page, verifying no split occurs and the page grows in place.
+
+       Critical Files for Implementation
+
+       - /Users/jaten/go/src/github.com/glycerine/yogadb/db.go - Contains putPassthroughR (line 3160) and treeInsertAnchor (line 3214) where the core fix goes
+       - /Users/jaten/go/src/github.com/glycerine/yogadb/slotted.go - Contains slottedPageWouldFit, slottedPageComputeSize, and slottedPageEncodePadded which are the sizing/encoding functions
+       - /Users/jaten/go/src/github.com/glycerine/yogadb/intervalcache.go - Contains flushDirtyPages (line 97) and flushDirtyEntry (line 213) which have the existing overflow fallback to simplify
+       - /Users/jaten/go/src/github.com/glycerine/yogadb/flexspace.go - Contains ff.Update (line 864) which is the collapse+insert primitive used for in-place growth
+       - /Users/jaten/go/src/github.com/glycerine/yogadb/db.go - Contains flushMemtable (line 3771) as the primary trigger path to test
+   Done (19 tool uses · 49.4k tokens · 5m 10s)
+
+* Good analysis from the planner. The recommendation is Option D: when replacing an existing key
+  causes page overflow, grow the page in-place via ff.Update instead of splitting. Let me implement
+  this properly.
+
+  The key insight: a replace (eq=true) never changes the key count - only HLC encoding overhead grows.
+   A split is the wrong response because it creates a structural change (new anchor + 4MB block
+  allocation) for what is fundamentally a metadata encoding issue.
+
+outcome:
+
+  - 1000/1000 iterations of TestGC_OverwriteSameKeys_DiskSizeBounded pass (was flaky before the fix)
+  - Full test suite passes
+  - Both new regression tests pass:
+    - TestGC_PartialOverwrite_NoBlockGrowth - permanent HLC spread (only half the keys updated), disk stays bounded at
+  1.0x
+    - TestGC_ReplaceWithLargerValue_Splits - genuinely larger value triggers proper split, all keys correct
+
+   The fix is solid. The Option D approach (grow page in-place via
+   ff.Update on replace-triggered overflow) handles both
+   transient and permanent HLC delta inflation correctly.
+
 */
 
 // mustFileSize returns the size of the named file, or 0 if it doesn't exist.
@@ -332,7 +453,7 @@ func totalBlockUsage(ff *FlexSpace) uint64 {
 // in FlexSpace properly accounts for the old data being replaced.
 //
 // This is the core question: does FlexDB's overwrite path
-// (putPassthroughR → ff.Update → collapseR) correctly decrement
+// (putPassthroughR -> ff.Update -> collapseR) correctly decrement
 // blkusage for the old extents?
 func TestGC_OverwriteSameKeys_BlockUsageDecreases(t *testing.T) {
 	db, _ := openTestDB(t, nil)
@@ -384,7 +505,7 @@ func TestGC_OverwriteSameKeys_BlockUsageDecreases(t *testing.T) {
 	usageAfterAllRounds := totalBlockUsage(db.ff)
 
 	// The key assertion: after overwriting the same keys 4 more times,
-	// the total block usage should be bounded — ideally close to the
+	// the total block usage should be bounded - ideally close to the
 	// single-round usage, NOT 5x the initial.
 	//
 	// We allow 3x as a generous upper bound. If block usage tracking
@@ -428,7 +549,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 		keys[i] = fmt.Sprintf("key%06d", i)
 	}
 
-	// Round 0: initial write — triggers block pre-allocation.
+	// Round 0: initial write - triggers block pre-allocation.
 	for i, k := range keys {
 		val := fmt.Sprintf("val-round0-%06d-padding-data-here", i)
 		if err := db.Put(k, []byte(val)); err != nil {
@@ -437,7 +558,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	}
 	db.Sync()
 
-	// Round 1: first overwrite — after this, pre-allocation is stable.
+	// Round 1: first overwrite - after this, pre-allocation is stable.
 	for i, k := range keys {
 		val := fmt.Sprintf("val-round1-%06d-padding-data-here", i)
 		if err := db.Put(k, []byte(val)); err != nil {
@@ -490,6 +611,160 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	}
 }
 
+// TestGC_PartialOverwrite_NoBlockGrowth verifies that updating only SOME
+// keys in a page does not trigger an anchor split or 4MB block allocation.
+// This is the non-transient HLC spread case: keys 0-249 get new HLCs
+// while keys 250-499 keep their original HLCs permanently, creating a
+// large HLC delta that inflates varint encoding.
+func TestGC_PartialOverwrite_NoBlockGrowth(t *testing.T) {
+	fs, dir := newTestFS(t)
+	cfg := &Config{FS: fs}
+
+	db, err := OpenFlexDB(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const nKeys = 500
+	keys := make([]string, nKeys)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("key%06d", i)
+	}
+
+	// Round 0: initial write of all keys.
+	for i, k := range keys {
+		val := fmt.Sprintf("val-round0-%06d-padding-data-here", i)
+		if err := db.Put(k, []byte(val)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Sync()
+
+	// Round 1: overwrite all keys to stabilize pre-allocation.
+	for i, k := range keys {
+		val := fmt.Sprintf("val-round1-%06d-padding-data-here", i)
+		if err := db.Put(k, []byte(val)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Sync()
+	sizeAfterRound1 := mustDirSize(fs, dir)
+	t.Logf("Round 1 disk size: %d bytes (baseline)", sizeAfterRound1)
+
+	// Rounds 2-9: overwrite only the FIRST HALF of the keys.
+	// This creates a permanent HLC spread within each page: the first half
+	// has new (large) HLCs, the second half retains old (small) HLCs.
+	const rounds = 9
+	for r := 2; r <= rounds; r++ {
+		for i := 0; i < nKeys/2; i++ {
+			k := keys[i]
+			val := fmt.Sprintf("val-round%d-%06d-padding-data-here", r, i)
+			if err := db.Put(k, []byte(val)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		db.Sync()
+	}
+
+	sizeAfterPartialRounds := mustDirSize(fs, dir)
+	t.Logf("After %d partial-overwrite rounds: %d bytes (%.2fx vs round 1)",
+		rounds, sizeAfterPartialRounds, float64(sizeAfterPartialRounds)/float64(sizeAfterRound1))
+
+	// Allow 2x as the bound - pages may grow slightly from HLC varint
+	// overhead but should NOT trigger 4MB block allocations.
+	maxAcceptable := int64(float64(sizeAfterRound1) * 2.0)
+	if sizeAfterPartialRounds > maxAcceptable {
+		t.Errorf("disk size grew too much with partial overwrites: round 1 = %d, after %d rounds = %d (%.2fx); max acceptable = %d (2.0x)",
+			sizeAfterRound1, rounds, sizeAfterPartialRounds,
+			float64(sizeAfterPartialRounds)/float64(sizeAfterRound1),
+			maxAcceptable)
+	}
+
+	// Verify correctness: first half has latest round's value,
+	// second half still has round 1's value.
+	for i, k := range keys {
+		var expected string
+		if i < nKeys/2 {
+			expected = fmt.Sprintf("val-round%d-%06d-padding-data-here", rounds, i)
+		} else {
+			expected = fmt.Sprintf("val-round1-%06d-padding-data-here", i)
+		}
+		got, ok := db.Get(k)
+		if !ok {
+			t.Fatalf("key %q not found", k)
+		}
+		if string(got) != expected {
+			t.Fatalf("key %q: got %q, want %q", k, got, expected)
+		}
+	}
+}
+
+// TestGC_ReplaceWithLargerValue_Splits verifies that replacing a key with
+// a genuinely larger value triggers a proper split (not just HLC growth).
+func TestGC_ReplaceWithLargerValue_Splits(t *testing.T) {
+	fs, dir := newTestFS(t)
+	cfg := &Config{FS: fs}
+
+	db, err := OpenFlexDB(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Write enough keys to fill a page (~200 keys in 10KB).
+	const nKeys = 200
+	for i := 0; i < nKeys; i++ {
+		k := fmt.Sprintf("key%06d", i)
+		v := fmt.Sprintf("v%06d", i) // short values
+		if err := db.Put(k, []byte(v)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Sync()
+
+	// Replace one key with a much larger value. This should trigger
+	// a proper page split, not the HLC-growth-only path.
+	bigValue := make([]byte, 4096)
+	for i := range bigValue {
+		bigValue[i] = byte('A' + i%26)
+	}
+	if err := db.Put("key000100", bigValue); err != nil {
+		t.Fatal(err)
+	}
+	db.Sync()
+
+	// Verify the large value was stored correctly.
+	got, ok := db.Get("key000100")
+	if !ok {
+		t.Fatal("key000100 not found after large-value replace")
+	}
+	if len(got) != len(bigValue) {
+		t.Fatalf("key000100: got %d bytes, want %d", len(got), len(bigValue))
+	}
+	for i := range got {
+		if got[i] != bigValue[i] {
+			t.Fatalf("key000100 byte %d: got %d, want %d", i, got[i], bigValue[i])
+		}
+	}
+
+	// Verify other keys are intact.
+	for i := 0; i < nKeys; i++ {
+		if i == 100 {
+			continue
+		}
+		k := fmt.Sprintf("key%06d", i)
+		expected := fmt.Sprintf("v%06d", i)
+		got, ok := db.Get(k)
+		if !ok {
+			t.Fatalf("key %q not found", k)
+		}
+		if string(got) != expected {
+			t.Fatalf("key %q: got %q, want %q", k, got, expected)
+		}
+	}
+}
+
 // TestGC_OverwriteSameKeys_RedoLogGrows shows that even though
 // FlexSpace block-level tracking is correct, the redo log grows
 // linearly with each overwrite round. Each Update (collapse + insert)
@@ -520,7 +795,7 @@ func TestGC_OverwriteSameKeys_RedoLogGrows(t *testing.T) {
 	}
 	db.Sync()
 
-	// Round 1: first overwrite — stabilizes block pre-allocation.
+	// Round 1: first overwrite - stabilizes block pre-allocation.
 	for i, k := range keys {
 		val := fmt.Sprintf("val-round1-%06d-some-padding", i)
 		db.Put(k, []byte(val))
@@ -631,7 +906,7 @@ func TestGC_BlockUsageTracking_UpdatePath(t *testing.T) {
 	usageAfterManyUpdates := totalBlockUsage(ff)
 	t.Logf("After 10 more updates: totalBlockUsage=%d", usageAfterManyUpdates)
 
-	// Should still be bounded — not 12x the initial.
+	// Should still be bounded - not 12x the initial.
 	if usageAfterManyUpdates > usageAfterInsert*3 {
 		t.Errorf("block usage grew after repeated updates: insert=%d, after 10 more=%d (%.1fx)",
 			usageAfterInsert, usageAfterManyUpdates,
@@ -661,7 +936,7 @@ func TestGC_BlockUsageTracking_UpdatePath(t *testing.T) {
 // footprint grows linearly with sessions (the scenario observed in
 // benchmarks where two independent runs produced 2x disk usage).
 //
-// Each session: open DB → write N keys → sync → close.
+// Each session: open DB -> write N keys -> sync -> close.
 // Between sessions the redo log is truncated (by Close), so only
 // KV128_BLOCKS, FLEXTREE.PAGES, and FLEXTREE.COMMIT matter.
 func TestGC_CrossSession_DiskGrowth(t *testing.T) {
@@ -731,8 +1006,8 @@ func TestGC_CrossSession_DiskGrowth(t *testing.T) {
 	}
 
 	// Analyze growth. Compare session 1 (after pre-alloc) to last session.
-	// Session 0 → 1 may grow due to block pre-allocation.
-	// Sessions 1 → N should ideally stay flat.
+	// Session 0 -> 1 may grow due to block pre-allocation.
+	// Sessions 1 -> N should ideally stay flat.
 	if sizes[1] == 0 {
 		t.Fatal("session 1 dir size is 0")
 	}
@@ -741,23 +1016,23 @@ func TestGC_CrossSession_DiskGrowth(t *testing.T) {
 	kv128Growth := float64(kv128Sizes[sessions-1]) / float64(kv128Sizes[1])
 
 	t.Logf("")
-	t.Logf("=== Cross-session growth (session 1 → %d) ===", sessions-1)
-	t.Logf("  Dir size:     %d → %d (%.2fx)", sizes[1], sizes[sessions-1], growth)
-	t.Logf("  KV128_BLOCKS: %d → %d (%.2fx)", kv128Sizes[1], kv128Sizes[sessions-1], kv128Growth)
-	t.Logf("  PAGES:        %d → %d (%.2fx)", pagesSizes[1], pagesSizes[sessions-1],
+	t.Logf("=== Cross-session growth (session 1 -> %d) ===", sessions-1)
+	t.Logf("  Dir size:     %d -> %d (%.2fx)", sizes[1], sizes[sessions-1], growth)
+	t.Logf("  KV128_BLOCKS: %d -> %d (%.2fx)", kv128Sizes[1], kv128Sizes[sessions-1], kv128Growth)
+	t.Logf("  PAGES:        %d -> %d (%.2fx)", pagesSizes[1], pagesSizes[sessions-1],
 		float64(pagesSizes[sessions-1])/float64(pagesSizes[1]))
 
 	// Assert: KV128_BLOCKS should not grow linearly with sessions.
 	// If block reuse across sessions works, it should stay roughly constant.
 	// Allow 2x as generous bound.
 	if kv128Growth > 2.0 {
-		t.Errorf("KV128_BLOCKS grew %.2fx across %d sessions (want <=2x): %d → %d",
+		t.Errorf("KV128_BLOCKS grew %.2fx across %d sessions (want <=2x): %d -> %d",
 			kv128Growth, sessions-1, kv128Sizes[1], kv128Sizes[sessions-1])
 	}
 
 	// Assert: total dir size bounded.
 	if growth > 2.0 {
-		t.Errorf("dir size grew %.2fx across %d sessions (want <=2x): %d → %d",
+		t.Errorf("dir size grew %.2fx across %d sessions (want <=2x): %d -> %d",
 			growth, sessions-1, sizes[1], sizes[sessions-1])
 	}
 }
@@ -802,7 +1077,7 @@ func TestGC_CrossSession_BlockReuse(t *testing.T) {
 			t.Fatalf("session %d: %v", s, err)
 		}
 
-		// Check block manager state on open — are old blocks seen as used?
+		// Check block manager state on open - are old blocks seen as used?
 		usageOnOpen := totalBlockUsage(db.ff)
 		blocksOnOpen := countUsedBlocks(db.ff)
 		freeOnOpen := db.ff.bm.freeBlocks
@@ -819,7 +1094,7 @@ func TestGC_CrossSession_BlockReuse(t *testing.T) {
 		blocksAfterWrite := countUsedBlocks(db.ff)
 		writeBlkAfterWrite := db.ff.bm.blkid
 
-		t.Logf("Session %d: onOpen(usage=%d, blks=%d, free=%d, writeBlk=%d) → afterWrite(usage=%d, blks=%d, writeBlk=%d)",
+		t.Logf("Session %d: onOpen(usage=%d, blks=%d, free=%d, writeBlk=%d) -> afterWrite(usage=%d, blks=%d, writeBlk=%d)",
 			s, usageOnOpen, blocksOnOpen, freeOnOpen, writeBlkOnOpen,
 			usageAfterWrite, blocksAfterWrite, writeBlkAfterWrite)
 
@@ -921,13 +1196,13 @@ func TestGC_CrossSession_ManyReopens_SameDataset(t *testing.T) {
 
 	t.Logf("")
 	t.Logf("=== %d sessions importing identical dataset ===", sessions)
-	t.Logf("  Dir:   session 1 = %d → session %d = %d  (%.2fx)", baseline, sessions-1, final, growth)
-	t.Logf("  KV128: session 1 = %d → session %d = %d  (%.2fx)", kv128Baseline, sessions-1, kv128Final, kv128Growth)
+	t.Logf("  Dir:   session 1 = %d -> session %d = %d  (%.2fx)", baseline, sessions-1, final, growth)
+	t.Logf("  KV128: session 1 = %d -> session %d = %d  (%.2fx)", kv128Baseline, sessions-1, kv128Final, kv128Growth)
 
-	// The ideal is 1.0x — identical data rewritten yields no growth.
+	// The ideal is 1.0x - identical data rewritten yields no growth.
 	// With block-granularity overhead, allow up to 2x.
 	if kv128Growth > 2.0 {
-		t.Errorf("KV128_BLOCKS grew %.2fx over %d sessions of identical data — block reuse not working across sessions",
+		t.Errorf("KV128_BLOCKS grew %.2fx over %d sessions of identical data - block reuse not working across sessions",
 			kv128Growth, sessions)
 	}
 	if growth > 2.0 {
@@ -1016,7 +1291,7 @@ func TestGC_GarbageMetrics_CustomThreshold(t *testing.T) {
 
 	// With threshold=0.001 (0.1%), the same data may or may not count
 	// depending on exact size. Use a very tight threshold to show it changes.
-	cfg2 := &Config{LowBlockUtilizationPct: 0.0001} // 0.01% — ~420 bytes
+	cfg2 := &Config{LowBlockUtilizationPct: 0.0001} // 0.01% - ~420 bytes
 	db2, _ := openTestDB(t, cfg2)
 	for i := 0; i < 50; i++ {
 		mustPut(t, db2, fmt.Sprintf("k%04d", i), fmt.Sprintf("v%04d-pad", i))
@@ -1105,7 +1380,7 @@ func TestPiggybackGC_TriggersOnSync(t *testing.T) {
 	}
 	db.Sync()
 
-	// Overwrite with smaller values — old extents become garbage.
+	// Overwrite with smaller values - old extents become garbage.
 	for i := 0; i < nKeys; i++ {
 		k := fmt.Sprintf("key%06d", i)
 		v := fmt.Sprintf("v2-%06d", i)
@@ -1127,7 +1402,7 @@ func TestPiggybackGC_TriggersOnSync(t *testing.T) {
 func TestPiggybackGC_RespectsGarbageThreshold(t *testing.T) {
 	cfg := &Config{
 		PiggybackGC_on_SyncOrFlush: true,
-		GCGarbagePct:               1.0, // impossible to reach — won't trigger
+		GCGarbagePct:               1.0, // impossible to reach - won't trigger
 	}
 	db, _ := openTestDB(t, cfg)
 

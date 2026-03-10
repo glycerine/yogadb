@@ -74,7 +74,7 @@ func (db *FlexDB) NewBatch() (b *Batch) {
 // caller immediately after Set returns.
 func (s *Batch) Set(key string, value []byte) (err error) {
 
-	// String keys are immutable — no copy needed.
+	// String keys are immutable - no copy needed.
 	// Value is []byte, so we must copy it.
 	s.puts = append(s.puts, &KV{
 		Key:   key,
@@ -632,6 +632,7 @@ type FlexDB struct {
 	liveKeys      int64 // total live (non-tombstone) keys = liveBigKeys + liveSmallKeys
 	liveBigKeys   int64 // keys whose values are in VLOG (HasVPtr=true)
 	liveSmallKeys int64 // keys with inline values
+
 }
 
 // keyState classifies a key's storage state for live-key counter tracking.
@@ -654,7 +655,7 @@ func kvToState(kv KV) keyState {
 	return ksLiveSmall
 }
 
-// adjustKeyCounters updates the live key counters for an old→new state transition.
+// adjustKeyCounters updates the live key counters for an old->new state transition.
 func (db *FlexDB) adjustKeyCounters(oldState, newState keyState) {
 	switch oldState {
 	case ksLiveSmall:
@@ -1980,10 +1981,8 @@ func (db *FlexDB) writeLockHeldSync() error {
 
 	wasActive := db.activeMT
 	if db.memtables[wasActive].empty {
-		//vv("FlexDB.Sync(): memtable[%v] is empty, no syncing today", wasActive)
 		return nil // nothing to flush
 	}
-	//vv("FlexDB.Sync(): memtable[%v] NOT empty, so syncing it! '%v'", wasActive, db.memtables[wasActive].memWalFD.Name())
 
 	// Switch writes to the other table.
 	newActive := 1 - wasActive
@@ -2050,7 +2049,7 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte) error {
 	// Tick the HLC for this write.
 	hlcVal := db.hlc.CreateSendOrLocalEvent()
 
-	// String keys are immutable — no defensive copy needed.
+	// String keys are immutable - no defensive copy needed.
 	// Value is []byte, so we must copy it.
 	if value != nil {
 		value = append([]byte{}, value...)
@@ -2201,7 +2200,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kv *KV, found, exact bo
 	found, exact = findSeekIter(it, smod, key)
 	if found {
 		zc := findBuildKV(it)
-		// String Key is immutable — no copy needed. Copy Value.
+		// String Key is immutable - no copy needed. Copy Value.
 		owned := KV{Vptr: zc.Vptr, Hlc: zc.Hlc}
 		owned.Key = zc.Key
 		if !zc.HasVPtr() && zc.Value != nil {
@@ -2380,7 +2379,7 @@ func (db *FlexDB) writeLockHeldDeleteRange(includeLarge bool, begKey, endKey str
 	// including large values, reinitialize instead of iterating.
 	// When !includeLarge, large-value keys survive so we can't wipe.
 	if includeLarge && db.writeLockHeldCoversAllKeys(begKey, endKey, begInclusive, endInclusive) {
-		err := db.writeLockHeldDeleteAll()
+		err := db.writeLockHeldDeleteAll() // only place called
 		return 0, true, err
 	}
 
@@ -3167,15 +3166,36 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 		replaceIdx = idx
 	}
 	if !slottedPageWouldFit(fce.kvs, fce.count, kv, replaceIdx, int(anchor.psize)) {
-		// Page full - split first, then retry on the correct half.
-		// Insert into cache first so split sees the new entry.
 		if eq {
+			// Replacing an existing key - the entry count stays the same.
+			// The overflow is from HLC varint growth (mixed old/new HLCs
+			// inflate delta encoding). Instead of splitting (which would
+			// allocate a new 4MB block for a half-page of data), grow the
+			// page in-place via ff.Update (collapse old + insert new).
 			partition.cacheEntryReplace(fce, kv, idx)
-		} else {
-			partition.cacheEntryInsert(fce, kv, idx)
+			newSize := slottedPageComputeSize(fce.kvs[:fce.count])
+			if newSize > int(anchor.psize) && newSize < 2*slottedPageMaxSize {
+				// Page genuinely grew - resize the extent in place.
+				buf := slottedPageEncode(fce.kvs[:fce.count])
+				anchorLoff := uint64(anchor.loff + nh.shift)
+				db.ff.Update(buf, anchorLoff, uint64(len(buf)), uint64(anchor.psize))
+				nh.shiftUpPropagate(int64(len(buf)) - int64(anchor.psize))
+				anchor.psize = uint32(len(buf))
+				fce.dirty = false // just written
+				fce.dirtyNode = nil
+			} else if newSize >= 2*slottedPageMaxSize {
+				// Pathological growth - fall through to split.
+				db.treeInsertAnchor(nh, partition, fce)
+				db.putPassthroughMarkDirty(nh, anchor, fce)
+			} else {
+				// Fits after replace (e.g., new value is smaller).
+				db.putPassthroughMarkDirty(nh, anchor, fce)
+			}
+			return
 		}
+		// Inserting a new key - page genuinely full. Split.
+		partition.cacheEntryInsert(fce, kv, idx)
 		db.treeInsertAnchor(nh, partition, fce)
-		// After split, fce is the left half. Mark dirty.
 		db.putPassthroughMarkDirty(nh, anchor, fce)
 		return
 	}
