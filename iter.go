@@ -1287,7 +1287,7 @@ func (it *Iter) Next() {
 			// because it contains loops) on every Next().
 			span := &it.pfSpans[it.pfSpanIdx]
 			if pos := span.pos; pos < span.end {
-				pkv := &span.kvs[pos]                                  // one cache-line access (64B KV)
+				pkv := &span.kvs[pos]                       // one cache-line access (64B KV)
 				if pkv.Vptr.Length != tombstoneVPtrLength { // not tombstone
 					span.pos = pos + 1
 					it.pKV = pkv
@@ -1518,12 +1518,13 @@ func (it *Iter) Close() {
 // Valid returns true if the iterator is positioned at a valid key.
 func (it *Iter) Valid() bool { return it.valid }
 
-// KV returns the current *KV with its value resolved (lazy-copied
-// from cache memory). The returned pointer is owned by the iterator
+// KV returns the current *KV with any inline value resolved (lazy-copied
+// from cache memory). It does not fetch large values from the VLOG.
+// The returned pointer is owned by the iterator
 // and must not be retained past the next Next()/Prev()/Seek() call.
 // Copy Key and Value if you need them to outlive the iterator step.
 func (it *Iter) KV() *KV {
-	if it.pKV == nil {
+	if it.pKV == nil || !it.valid {
 		return nil
 	}
 
