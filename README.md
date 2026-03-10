@@ -46,7 +46,7 @@ YogaDB is a Go port of the https://github.com/flexible-address-space/flexspace F
 
 Originally called FlexSpaceKV, we changed the name to YogaDB because 
 (a) yoga keeps you flexible, and (b) there were too many other 
-things with similar names[4]. Below you may see both terms; YogaDB
+things with "flex" in the name[4]. Below you may see both terms; YogaDB
 in Go is the port of FlexDB in C. FlexDB is the top layer, calling
 down into the FlexSpace, which in turn calls down to the FlexTree.
 
