@@ -70,6 +70,14 @@ func (tx *WriteTx) Get(key string) (value []byte, found bool) {
 	return tx.db.someLockHeldGet(key)
 }
 
+// GetKV is like Get but allows lazy loading of Large values;
+// they are not fetched automatically. If the user sees kv.Large(),
+// then tx.FetchLarge(kv) will return the large value.
+func (tx *WriteTx) GetKV(key string) (kv *KV, found bool) {
+	kv, found, _ = tx.Find(Exact, key)
+	return
+}
+
 // Put writes key -> value. value==nil stores a live key with nil value
 // (useful for sets); []byte{} stores a live key with zero-length value.
 // Use Delete to remove a key. Not durable until Sync is called.
@@ -257,14 +265,22 @@ type ReadOnlyTx struct{ txBase }
 
 // Get retrieves the value for key. Returns (nil, false) if not found
 // or deleted. The returned []byte is a copy, safe to retain.
-func (tx *ReadOnlyTx) Get(key string) (value []byte, found bool) {
-	return tx.db.someLockHeldGet(key)
+func (roTx *ReadOnlyTx) Get(key string) (value []byte, found bool) {
+	return roTx.db.someLockHeldGet(key)
+}
+
+// GetKV is like Get but allows lazy loading of Large values;
+// they are not fetched automatically. If the user sees kv.Large(),
+// then roTx.FetchLarge(kv) will return the large value.
+func (roTx *ReadOnlyTx) GetKV(key string) (kv *KV, found bool) {
+	kv, found, _ = roTx.Find(Exact, key)
+	return
 }
 
 // Find seeks to a key relative to the given key per smod (Exact, GTE, GT, LTE, LT)
 // and returns an owned KV copy. exact is true when the returned key equals the query.
-func (tx *ReadOnlyTx) Find(smod SearchModifier, key string) (kv *KV, found, exact bool) {
-	it := tx.newIter()
+func (roTx *ReadOnlyTx) Find(smod SearchModifier, key string) (kv *KV, found, exact bool) {
+	it := roTx.newIter()
 	found, exact = findSeekIter(it, smod, key)
 	if found {
 		kv = findBuildKV(it)
@@ -275,8 +291,8 @@ func (tx *ReadOnlyTx) Find(smod SearchModifier, key string) (kv *KV, found, exac
 
 // FindIt is like Find but also returns an iterator positioned at the result.
 // The iterator is auto-closed when the transaction ends.
-func (tx *ReadOnlyTx) FindIt(smod SearchModifier, key string) (kv *KV, found, exact bool, it *Iter) {
-	it = tx.newIter()
+func (roTx *ReadOnlyTx) FindIt(smod SearchModifier, key string) (kv *KV, found, exact bool, it *Iter) {
+	it = roTx.newIter()
 	found, exact = findSeekIter(it, smod, key)
 	if found {
 		kv = findBuildKV(it)
@@ -286,37 +302,37 @@ func (tx *ReadOnlyTx) FindIt(smod SearchModifier, key string) (kv *KV, found, ex
 
 // FetchLarge retrieves the full value for a KV. For VLOG-stored
 // values it reads from disk; for inline values it returns kv.Value directly.
-func (tx *ReadOnlyTx) FetchLarge(kv *KV) ([]byte, error) {
-	return tx.db.lockHeldFetchLarge(kv)
+func (roTx *ReadOnlyTx) FetchLarge(kv *KV) ([]byte, error) {
+	return roTx.db.lockHeldFetchLarge(kv)
 }
 
 // NewIter returns a new iterator over the database. It is
 // automatically closed when the transaction ends. It is
 // legal to Close it sooner if you want to release resources
 // early.
-func (tx *ReadOnlyTx) NewIter() *Iter {
-	return tx.newIter()
+func (roTx *ReadOnlyTx) NewIter() *Iter {
+	return roTx.newIter()
 }
 
 // Len returns the total number of live keys in the database.
 // See also LenBigSmall to get the count partitioned by
 // the size class (small inline, large in the VLOG).
-func (tx *ReadOnlyTx) Len() int64 {
-	return tx.db.liveKeys
+func (roTx *ReadOnlyTx) Len() int64 {
+	return roTx.db.liveKeys
 }
 
 // LenBigSmall returns live key counts partitioned by size
 // class. The returned count big counts the keys in VLOG,
 // while small gives the number of keys with inline values.
 // See also Len to get the total directly.
-func (tx *ReadOnlyTx) LenBigSmall() (big, small int64) {
-	return tx.db.liveBigKeys, tx.db.liveSmallKeys
+func (roTx *ReadOnlyTx) LenBigSmall() (big, small int64) {
+	return roTx.db.liveBigKeys, roTx.db.liveSmallKeys
 }
 
 // Ascend iterates keys >= pivot in ascending order until iter returns false.
 // Use pivot="" to start from the first key.
-func (tx *ReadOnlyTx) Ascend(pivot string, iter func(key string, value []byte) bool) {
-	it := tx.newIter()
+func (roTx *ReadOnlyTx) Ascend(pivot string, iter func(key string, value []byte) bool) {
+	it := roTx.newIter()
 	defer it.Close()
 	it.Seek(pivot)
 	for it.Valid() {
@@ -329,8 +345,8 @@ func (tx *ReadOnlyTx) Ascend(pivot string, iter func(key string, value []byte) b
 
 // Descend iterates keys <= pivot in descending order until iter returns false.
 // Use pivot="" to start from the last key.
-func (tx *ReadOnlyTx) Descend(pivot string, iter func(key string, value []byte) bool) {
-	it := tx.newIter()
+func (roTx *ReadOnlyTx) Descend(pivot string, iter func(key string, value []byte) bool) {
+	it := roTx.newIter()
 	defer it.Close()
 	if pivot == "" {
 		it.SeekToLast()
@@ -347,8 +363,8 @@ func (tx *ReadOnlyTx) Descend(pivot string, iter func(key string, value []byte) 
 
 // AscendRange iterates keys in [greaterOrEqual, lessThan) in ascending order.
 // Use "" for either bound to leave it open.
-func (tx *ReadOnlyTx) AscendRange(greaterOrEqual, lessThan string, iter func(key string, value []byte) bool) {
-	it := tx.newIter()
+func (roTx *ReadOnlyTx) AscendRange(greaterOrEqual, lessThan string, iter func(key string, value []byte) bool) {
+	it := roTx.newIter()
 	defer it.Close()
 	it.Seek(greaterOrEqual)
 	for it.Valid() {
@@ -364,8 +380,8 @@ func (tx *ReadOnlyTx) AscendRange(greaterOrEqual, lessThan string, iter func(key
 
 // DescendRange iterates keys in (greaterThan, lessOrEqual] in descending order.
 // Use "" for either bound to leave it open.
-func (tx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, iter func(key string, value []byte) bool) {
-	it := tx.newIter()
+func (roTx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, iter func(key string, value []byte) bool) {
+	it := roTx.newIter()
 	defer it.Close()
 	if lessOrEqual == "" {
 		it.SeekToLast()
