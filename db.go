@@ -2578,15 +2578,17 @@ func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey string, begInclusive
 	return true
 }
 
-// writeLockHeldDeleteAll reinitializes the database, discarding all data.
-// This is the fast path for DeleteRange when the range covers all keys.
-// Stops the flush worker, closes FlexSpace, truncates all data files,
-// reopens FlexSpace, and restarts the flush worker.
+// writeLockHeldDeleteAll reinitializes the database,
+// discarding all data. This is the fast path for DeleteRange
+// when the range covers all keys. We close the FlexSpace,
+// truncate all data files, and finaly reopen the FlexSpace.
 //
 // Caller must hold topMutRW.Lock().
 func (db *FlexDB) writeLockHeldDeleteAll() error {
+
 	// (1). leave any flush worker that is blocked on topMutRW
-	// alone; it can resume when we are done, and that should be fine.
+	// alone; it can resume when we are done, and that
+	// will be just fine.
 
 	// 2. Clear both memtables.
 	for i := 0; i < 2; i++ {
