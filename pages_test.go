@@ -522,7 +522,7 @@ func TestCoW_PreAllocation(t *testing.T) {
 		t.Fatalf("FLEXTREE.PAGES initial size: got %d, want %d", nodesInfo.Size(), expectedNodesSize)
 	}
 
-	// Insert data and sync several times — FLEXTREE.PAGES size should not change
+	// Insert data and sync several times - FLEXTREE.PAGES size should not change
 	// (256 slots is more than enough for a few hundred nodes)
 	for round := 0; round < 5; round++ {
 		for i := 0; i < 20; i++ {
@@ -596,7 +596,7 @@ func TestCoW_GrowNodesFile(t *testing.T) {
 		t.Fatalf("FLEXTREE.PAGES file size: got %d, want %d", info.Size(), expectedSize)
 	}
 
-	// Close and reopen — verify data survived the growth
+	// Close and reopen - verify data survived the growth
 	tree.CloseCoW()
 
 	tree2, err := OpenFlexTreeCoW(dir, fs)
@@ -644,7 +644,7 @@ func TestCoW_MetaAppendOnly(t *testing.T) {
 	tree.CloseCoW()
 	latestVersion := tree.PersistentVersion
 
-	// Reopen — should find the latest record via scan
+	// Reopen - should find the latest record via scan
 	tree2, err := OpenFlexTreeCoW(dir, fs)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
@@ -697,7 +697,7 @@ func TestCoW_MetaTornWriteRecovery(t *testing.T) {
 	f.Sync()
 	f.Close()
 
-	// Reopen — should recover to version 5 (the last uncorrupted record)
+	// Reopen - should recover to version 5 (the last uncorrupted record)
 	tree2, err := OpenFlexTreeCoW(dir, fs)
 	if err != nil {
 		t.Fatalf("reopen after corruption: %v", err)
@@ -769,7 +769,7 @@ func TestCoW_FlexSpaceCrashRecovery(t *testing.T) {
 	mustInsert(t, ff2, " plus more", ff2.Size())
 	ff2.Sync() // flush log but not tree checkpoint
 
-	// Phase 3: reopen — log should be replayed
+	// Phase 3: reopen - log should be replayed
 	ff3 := mustOpenCoW(t, dir, fs)
 	defer ff3.Close()
 	checkContent(t, ff3, "checkpoint data plus more")

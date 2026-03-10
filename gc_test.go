@@ -227,9 +227,9 @@ Example: Overwriting "key1" with new value
 
 4. FlexSpace.Update() executes:
    a) collapseR(loff=100, length=50, false):
-      - Query extents at [100, 150) → finds extent at poff=block2+X, len=50
+      - Query extents at [100, 150) -> finds extent at poff=block2+X, len=50
       - updateBlkUsage(block2, -50)
-      - block2.usage = 0 → freeBlocks++
+      - block2.usage = 0 -> freeBlocks++
       - Delete from FlexTree
 
    b) insertR(newData, loff=100, length=48, false):
@@ -254,7 +254,7 @@ Example: Overwriting "key1" with new value
                                                                   │ free &&              │                     │
                                                                   │ freeBlocks < 64      │ Immediate (counter) │
 │ Key deleted (tombstone)│ updateBlkUsage(blk, -len)              │ Same                 │ Immediate (counter) │
-│ GC recycles fragmented block │ Old block: updateBlkUsage(blk, -len) → 0; New           │                     │
+│ GC recycles fragmented block │ Old block: updateBlkUsage(blk, -len) -> 0; New           │                     │
 │                              │ block: updateBlkUsage(blk, +len) │ When freeBlocks < 64 │ During GC run       │
 ----------------------------------------------------------------------------------------------------------------
 
@@ -332,7 +332,7 @@ func totalBlockUsage(ff *FlexSpace) uint64 {
 // in FlexSpace properly accounts for the old data being replaced.
 //
 // This is the core question: does FlexDB's overwrite path
-// (putPassthroughR → ff.Update → collapseR) correctly decrement
+// (putPassthroughR -> ff.Update -> collapseR) correctly decrement
 // blkusage for the old extents?
 func TestGC_OverwriteSameKeys_BlockUsageDecreases(t *testing.T) {
 	db, _ := openTestDB(t, nil)
@@ -815,7 +815,7 @@ func TestGC_BlockUsageTracking_UpdatePath(t *testing.T) {
 // footprint grows linearly with sessions (the scenario observed in
 // benchmarks where two independent runs produced 2x disk usage).
 //
-// Each session: open DB → write N keys → sync → close.
+// Each session: open DB -> write N keys -> sync -> close.
 // Between sessions the redo log is truncated (by Close), so only
 // KV128_BLOCKS, FLEXTREE.PAGES, and FLEXTREE.COMMIT matter.
 func TestGC_CrossSession_DiskGrowth(t *testing.T) {
@@ -885,8 +885,8 @@ func TestGC_CrossSession_DiskGrowth(t *testing.T) {
 	}
 
 	// Analyze growth. Compare session 1 (after pre-alloc) to last session.
-	// Session 0 → 1 may grow due to block pre-allocation.
-	// Sessions 1 → N should ideally stay flat.
+	// Session 0 -> 1 may grow due to block pre-allocation.
+	// Sessions 1 -> N should ideally stay flat.
 	if sizes[1] == 0 {
 		t.Fatal("session 1 dir size is 0")
 	}
@@ -895,23 +895,23 @@ func TestGC_CrossSession_DiskGrowth(t *testing.T) {
 	kv128Growth := float64(kv128Sizes[sessions-1]) / float64(kv128Sizes[1])
 
 	t.Logf("")
-	t.Logf("=== Cross-session growth (session 1 → %d) ===", sessions-1)
-	t.Logf("  Dir size:     %d → %d (%.2fx)", sizes[1], sizes[sessions-1], growth)
-	t.Logf("  KV128_BLOCKS: %d → %d (%.2fx)", kv128Sizes[1], kv128Sizes[sessions-1], kv128Growth)
-	t.Logf("  PAGES:        %d → %d (%.2fx)", pagesSizes[1], pagesSizes[sessions-1],
+	t.Logf("=== Cross-session growth (session 1 -> %d) ===", sessions-1)
+	t.Logf("  Dir size:     %d -> %d (%.2fx)", sizes[1], sizes[sessions-1], growth)
+	t.Logf("  KV128_BLOCKS: %d -> %d (%.2fx)", kv128Sizes[1], kv128Sizes[sessions-1], kv128Growth)
+	t.Logf("  PAGES:        %d -> %d (%.2fx)", pagesSizes[1], pagesSizes[sessions-1],
 		float64(pagesSizes[sessions-1])/float64(pagesSizes[1]))
 
 	// Assert: KV128_BLOCKS should not grow linearly with sessions.
 	// If block reuse across sessions works, it should stay roughly constant.
 	// Allow 2x as generous bound.
 	if kv128Growth > 2.0 {
-		t.Errorf("KV128_BLOCKS grew %.2fx across %d sessions (want <=2x): %d → %d",
+		t.Errorf("KV128_BLOCKS grew %.2fx across %d sessions (want <=2x): %d -> %d",
 			kv128Growth, sessions-1, kv128Sizes[1], kv128Sizes[sessions-1])
 	}
 
 	// Assert: total dir size bounded.
 	if growth > 2.0 {
-		t.Errorf("dir size grew %.2fx across %d sessions (want <=2x): %d → %d",
+		t.Errorf("dir size grew %.2fx across %d sessions (want <=2x): %d -> %d",
 			growth, sessions-1, sizes[1], sizes[sessions-1])
 	}
 }
@@ -973,7 +973,7 @@ func TestGC_CrossSession_BlockReuse(t *testing.T) {
 		blocksAfterWrite := countUsedBlocks(db.ff)
 		writeBlkAfterWrite := db.ff.bm.blkid
 
-		t.Logf("Session %d: onOpen(usage=%d, blks=%d, free=%d, writeBlk=%d) → afterWrite(usage=%d, blks=%d, writeBlk=%d)",
+		t.Logf("Session %d: onOpen(usage=%d, blks=%d, free=%d, writeBlk=%d) -> afterWrite(usage=%d, blks=%d, writeBlk=%d)",
 			s, usageOnOpen, blocksOnOpen, freeOnOpen, writeBlkOnOpen,
 			usageAfterWrite, blocksAfterWrite, writeBlkAfterWrite)
 
@@ -1075,8 +1075,8 @@ func TestGC_CrossSession_ManyReopens_SameDataset(t *testing.T) {
 
 	t.Logf("")
 	t.Logf("=== %d sessions importing identical dataset ===", sessions)
-	t.Logf("  Dir:   session 1 = %d → session %d = %d  (%.2fx)", baseline, sessions-1, final, growth)
-	t.Logf("  KV128: session 1 = %d → session %d = %d  (%.2fx)", kv128Baseline, sessions-1, kv128Final, kv128Growth)
+	t.Logf("  Dir:   session 1 = %d -> session %d = %d  (%.2fx)", baseline, sessions-1, final, growth)
+	t.Logf("  KV128: session 1 = %d -> session %d = %d  (%.2fx)", kv128Baseline, sessions-1, kv128Final, kv128Growth)
 
 	// The ideal is 1.0x - identical data rewritten yields no growth.
 	// With block-granularity overhead, allow up to 2x.

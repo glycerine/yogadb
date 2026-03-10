@@ -1,6 +1,6 @@
 package yogadb
 
-// flexspace.go — Go port of flexspace/flexfile.c
+// flexspace.go - Go port of flexspace/flexfile.c
 // Paper: "Building an Efficient Key-Value Store in a Flexible Address Space"
 // Chen, Zhong, Wu (EuroSys 2022)
 //
@@ -157,7 +157,7 @@ func (bm *blockManager) findEmptyBlock(fromBlkid uint64, isGC bool) uint64 {
 	if !isGC {
 		bm.file.GC()
 	}
-	// Phase 1: prefer recycled blocks — search from block 0 up to fromBlkid
+	// Phase 1: prefer recycled blocks - search from block 0 up to fromBlkid
 	for i := uint64(0); i < fromBlkid; i++ {
 		if bm.blkusage[i] == 0 {
 			return i
@@ -324,7 +324,7 @@ func bmInit(bm *blockManager, tree *FlexTree) {
 // So "block-managed" means the FLEXSPACE.KV128_BLOCKS file is a pool of 4 MB blocks
 // with an append-only write cursor, a FlexTree for logical -> physical
 // mapping, and a GC that reclaims fragmented blocks. It's
-// essentially a log-structured store at the block level — writes
+// essentially a log-structured store at the block level - writes
 // always go to the current block, never overwrite in place.
 type FlexSpace struct {
 	Path          string
@@ -416,7 +416,7 @@ func (ff *FlexSpace) logRedo() {
 		}
 		op, p1, p2, p3, ok := decodeLogEntry(entryBuf)
 		if !ok {
-			break // CRC32C mismatch — stop replay
+			break // CRC32C mismatch - stop replay
 		}
 		switch op {
 		case flexOpTreeInsert:
@@ -427,7 +427,7 @@ func (ff *FlexSpace) logRedo() {
 			// GC redo: find the extent with poff==p1 (old poff), len==p3,
 			// then update its poff to p2 (new poff) in-place.
 			if gcLeaf == nil {
-				panic("flexspace: invalid GC log — no leaf nodes")
+				panic("flexspace: invalid GC log - no leaf nodes")
 			}
 		gcRedoSearch:
 			for {
@@ -455,7 +455,7 @@ func (ff *FlexSpace) logRedo() {
 		case flexOpSetTag:
 			ff.tree.SetTag(p1, uint16(p2))
 		default:
-			panic("flexspace: log corrupted — unknown op")
+			panic("flexspace: log corrupted - unknown op")
 		}
 		i++
 	}
@@ -575,7 +575,7 @@ func (ff *FlexSpace) Close() {
 	panicOn(ff.tree.SyncCoW())
 
 	// Truncate log (all changes now in checkpoint).
-	// When omitRedoLog=true, SyncCoW in Sync() already committed — skip truncate.
+	// When omitRedoLog=true, SyncCoW in Sync() already committed - skip truncate.
 	if !ff.omitRedoLog {
 		ff.logTruncate()
 	}
@@ -634,7 +634,7 @@ func (ff *FlexSpace) syncR(isGC bool) {
 	//panicOn(ff.fdKV128blocks.Sync())
 
 	if ff.omitRedoLog {
-		// No redo log — always commit tree via CoW
+		// No redo log - always commit tree via CoW
 		panicOn(ff.tree.SyncCoW())
 	} else {
 		// Original path: sync redo log, checkpoint only when log is large
@@ -889,7 +889,7 @@ func (ff *FlexSpace) Update(buf []byte, loff, length, olen uint64) (int, error) 
 // Overwrite writes buf directly to the physical location backing the extent
 // at loff, without mutating the FlexTree or writing redo log entries.
 // The extent at loff must already exist and have length == len(buf).
-// This creates zero garbage — the same physical blocks are reused in-place.
+// This creates zero garbage - the same physical blocks are reused in-place.
 func (ff *FlexSpace) Overwrite(buf []byte, loff uint64, length uint64) error {
 	if length == 0 {
 		return nil

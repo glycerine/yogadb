@@ -17,8 +17,8 @@ import (
 // Page-based Copy-on-Write persistence for FlexTree.
 //
 // On-disk layout:
-//   {dir}/FLEXTREE.COMMIT  — 80-byte binary header (the commit point)
-//   {dir}/FLEXTREE.PAGES — flat array of 1024-byte pages, one per node
+//   {dir}/FLEXTREE.COMMIT  - 80-byte binary header (the commit point)
+//   {dir}/FLEXTREE.PAGES - flat array of 1024-byte pages, one per node
 
 const (
 	cowPageSize = 1024
@@ -126,7 +126,7 @@ func scanMetaLatest(f vfs.File, fileSize int64) (*cowMeta, int64, error) {
 		}
 		m, err := decodeCowMeta(&buf)
 		if err != nil {
-			continue // bad CRC or magic — skip (torn write or unwritten slot)
+			continue // bad CRC or magic - skip (torn write or unwritten slot)
 		}
 		if best == nil || m.Version > best.Version {
 			best = m
@@ -320,7 +320,7 @@ func (t *FlexTree) growNodesFile() {
 // The FLEXTREE.COMMIT file is the commit point: written only after FLEXTREE.PAGES is synced.
 func (t *FlexTree) SyncCoW() error {
 	if !t.cowEnabled {
-		return fmt.Errorf("cow: not enabled — use OpenFlexTreeCoW")
+		return fmt.Errorf("cow: not enabled - use OpenFlexTreeCoW")
 	}
 	if t.Root.IsIllegal() {
 		return nil // empty tree, nothing to sync
@@ -334,7 +334,7 @@ func (t *FlexTree) SyncCoW() error {
 		return err
 	}
 
-	// SyncData FLEXTREE.PAGES — file size is pre-allocated and stable,
+	// SyncData FLEXTREE.PAGES - file size is pre-allocated and stable,
 	// so fdatasync only flushes data pages, not size metadata.
 	if err := t.nodeFD.SyncData(); err != nil {
 		return fmt.Errorf("cow: fdatasync FLEXTREE.PAGES: %w", err)
@@ -342,7 +342,7 @@ func (t *FlexTree) SyncCoW() error {
 
 	// Append FLEXTREE.COMMIT record. The FLEXTREE.COMMIT file is an append-only ring-
 	// buffer-in-a-file, so that a torn write never destroys a
-	// previous recent commit — on recovery we scan
+	// previous recent commit - on recovery we scan
 	// for the record with the highest version and a valid CRC.
 	rootSlot := t.NodeSlotID(t.Root)
 	meta := cowMeta{
@@ -674,7 +674,7 @@ func createFreshCoW(dirPath, metaPath, nodePath string, fs vfs.FS) (*FlexTree, e
 	t.Root = root.NodeID
 	t.LeafHead = root.NodeID
 
-	// Write initial state (uses fdatasync — sizes are already stable)
+	// Write initial state (uses fdatasync - sizes are already stable)
 	if err := t.SyncCoW(); err != nil {
 		metaFD.Close()
 		nodeFD.Close()

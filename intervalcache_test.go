@@ -69,7 +69,7 @@ isolation (no FlexDB/FlexSpace needed) by constructing cache structures directly
 | `TestIntervalCache_Calibrate` | 17 | Entries exceeding cap are evicted; access counter grants reprieve |
 | `TestIntervalCache_EvictionRefcntProtection` | 16 | All entries pinned → none evicted; mix of pinned/unpinned |
 | `TestIntervalCache_PartitionID` | 18 | Determinism, range [0,1023], edge cases (nil/empty/long keys) |
-| `TestIntervalCache_NewCache` | — | 1024 partitions, per-partition cap, initial size=0, tick=nil |
+| `TestIntervalCache_NewCache` | - | 1024 partitions, per-partition cap, initial size=0, tick=nil |
 
 ### Fuzz Tests (3 tests)
 
@@ -112,7 +112,7 @@ func checkSorted(t testing.TB, fce *intervalCacheEntry)
 
 ## Key Architectural Notes
 
-- All tests construct cache structures directly — no FlexDB/FlexSpace/disk I/O needed
+- All tests construct cache structures directly - no FlexDB/FlexSpace/disk I/O needed
 - `loadInterval()` is NOT tested here (requires FlexSpace); integration tests in `flexdb_test.go` already cover it
 - The `intervalCacheDedup` function reuses the input slice (`out := kvs[:0]`); tests account for this
 - Relevant helper functions from `db.go`: `kvLess`, `kvSizeApprox`, `kvCRC32`, `fingerprint`, `cachePartitionID`, `KV` type, `HLC` type

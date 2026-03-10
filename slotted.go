@@ -44,13 +44,13 @@ package yogadb
 //
 // Header (12 bytes):
 //   [1] magic       slottedPageMagic (0x00)
-//   [1] unsorted    uint8 — number of unsorted appended entries at end
-//   [2] count       uint16 LE — total number of KV entries
-//   [8] baseHLC     int64 BE — minimum HLC among all entries
+//   [1] unsorted    uint8 - number of unsorted appended entries at end
+//   [2] count       uint16 LE - total number of KV entries
+//   [8] baseHLC     int64 BE - minimum HLC among all entries
 //
 // Entry Records (packed forward, one per entry):
-//   [2] keyLen      uint16 LE — key length in bytes
-//   [2] valInfo     uint16 LE — value descriptor:
+//   [2] keyLen      uint16 LE - key length in bytes
+//   [2] valInfo     uint16 LE - value descriptor:
 //     0x0000       = tombstone (0 value bytes)
 //     0xFFFF       = VPtr (16 value bytes: 8B offset + 8B length)
 //     1..0xFFFE   = inline value length (valInfo - 1)
@@ -127,7 +127,7 @@ func slottedPageEncodeInto(kvs []KV, unsorted uint8, targetSize int) []byte {
 			// Empty padded page: header + CRC, zero-padded.
 			buf := make([]byte, targetSize)
 			buf[0] = slottedPageMagic
-			// count=0, unsorted=0, baseHLC=0 — all zero is fine
+			// count=0, unsorted=0, baseHLC=0 - all zero is fine
 			crcOff := targetSize - slottedPageCRCSize
 			checksum := crc32.Checksum(buf[:crcOff], crc32cTable)
 			binary.LittleEndian.PutUint32(buf[crcOff:], checksum)
@@ -167,7 +167,7 @@ func slottedPageEncodeInto(kvs []KV, unsorted uint8, targetSize int) []byte {
 	totalSize := contentSize
 	if targetSize > 0 {
 		if contentSize > targetSize {
-			// Content exceeds target — can happen transiently during flush
+			// Content exceeds target - can happen transiently during flush
 			// when HLC deltas are mixed (some entries updated, others not).
 			// Encode tight (no padding); caller must handle the size mismatch.
 			targetSize = 0

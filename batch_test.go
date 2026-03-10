@@ -136,7 +136,7 @@ func Test630_FlexDB_BatchMany(t *testing.T) {
 // causing data loss.
 //
 // This was a pre-existing bug that affects db.Put(key, []byte{})
-// too — not just Batch. Any key-as-set-member pattern
+// too - not just Batch. Any key-as-set-member pattern
 // (storing keys with empty values, as Pebble benchmarks commonly do)
 // would lose data after a memtable flush.
 //

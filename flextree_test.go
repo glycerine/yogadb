@@ -186,7 +186,7 @@ func checkFlexTreeContiguity(t testing.TB, ft *FlexTree, opDesc string) {
 			opDesc, totalExtentLen, ft.MaxLoff)
 	}
 
-	// INV-FT-4: Full PQuery coverage — every loff maps to a valid poff.
+	// INV-FT-4: Full PQuery coverage - every loff maps to a valid poff.
 	// (Spot-check: test 1024 evenly-spaced positions plus boundaries)
 	step := ft.MaxLoff / 1024
 	if step == 0 {

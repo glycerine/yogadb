@@ -317,7 +317,7 @@ func (p *intervalCachePartition) getEntry(anchor *dbAnchor, anchorLoff uint64, d
 // getEntryUnsorted returns the cache entry only if already loaded,
 // OR forces a load if the unsorted quota is exceeded.
 func (p *intervalCachePartition) getEntryUnsorted(anchor *dbAnchor, anchorLoff uint64, db *FlexDB) *intervalCacheEntry {
-	// Atomic load — no lock needed just to check if fce is populated.
+	// Atomic load - no lock needed just to check if fce is populated.
 	fce := anchor.loadFce()
 	if fce != nil || anchor.unsorted >= flexdbUnsortedWriteQuota || anchor.psize >= flexdbSparseIntervalSize {
 		return p.getEntry(anchor, anchorLoff, db)

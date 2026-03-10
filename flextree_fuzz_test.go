@@ -114,7 +114,7 @@ After each operation performed on BOTH FlexTree and bruteForce:
   FlexTree.GetMaxLoff() == bruteForce.GetMaxLoff()
   FlexTree.Query(loff, len) == bruteForce.Query(loff, len)  for sampled ranges
 ```
-This is the ultimate correctness check — the FlexTree matches its oracle.
+This is the ultimate correctness check - the FlexTree matches its oracle.
 
 ### Part 4: Fuzz test structure
 
@@ -171,23 +171,23 @@ go test -count=1 ./...
 */
 
 /*
- flextree.go — Performance counters and allExtents()
+ flextree.go - Performance counters and allExtents()
 
   1. Added 3 unexported counter fields to FlexTree struct:
-    - nodesVisited — incremented in findLeafNode() for each internal node descended
-    - splitCount — incremented in splitLeafNode() and splitInternalNode()
-    - shiftPropNodes — incremented in shiftUpPropagate() for each internal node updated
+    - nodesVisited - incremented in findLeafNode() for each internal node descended
+    - splitCount - incremented in splitLeafNode() and splitInternalNode()
+    - shiftPropNodes - incremented in shiftUpPropagate() for each internal node updated
 
   2. Added methods: resetOpCounters() and opCounters() to reset/read counters
 
-  3. Added allExtents() — walks the leaf linked list via PosGet(0) +
+  3. Added allExtents() - walks the leaf linked list via PosGet(0) +
      ForwardExtent(), returning []bruteForceExtent with effective (global) Loff
      values for comparison with bruteForce
 
   4. Instrumented public methods (Insert, InsertWTag, Delete, PDelete, SetTag)
      to call resetOpCounters() before operation
 
-  flextree_fuzz_test.go (NEW) — 5 tests + 1 fuzz test
+  flextree_fuzz_test.go (NEW) - 5 tests + 1 fuzz test
 
   ┌─────────────────────────────────────┬───────────────────────────────────────────────┐
   │                Test                 │                What It Checks                 │
@@ -541,7 +541,7 @@ func checkFlexTreeInvariants(t testing.TB, ft *FlexTree, opDesc string) {
 }
 
 // ========================================================================
-// FuzzFlexTree — Go native fuzz test
+// FuzzFlexTree - Go native fuzz test
 // ========================================================================
 
 func FuzzFlexTree(f *testing.F) {
@@ -725,7 +725,7 @@ func FuzzFlexTree(f *testing.F) {
 }
 
 // ========================================================================
-// TestFlexTree_RandomizedInvariants — deterministic stress test
+// TestFlexTree_RandomizedInvariants - deterministic stress test
 // ========================================================================
 
 func TestFlexTree_RandomizedInvariants(t *testing.T) {
@@ -894,7 +894,7 @@ func TestFlexTree_RandomizedInvariants(t *testing.T) {
 }
 
 // ========================================================================
-// TestFlexTree_LeafLinkedListBasic — targeted leaf linked list test
+// TestFlexTree_LeafLinkedListBasic - targeted leaf linked list test
 // ========================================================================
 
 func TestFlexTree_LeafLinkedListBasic(t *testing.T) {
@@ -925,7 +925,7 @@ func TestFlexTree_LeafLinkedListBasic(t *testing.T) {
 }
 
 // ========================================================================
-// TestFlexTree_OracleAgreementFocused — intensive oracle comparison
+// TestFlexTree_OracleAgreementFocused - intensive oracle comparison
 // ========================================================================
 
 func TestFlexTree_OracleAgreementFocused(t *testing.T) {
@@ -977,7 +977,7 @@ func TestFlexTree_OracleAgreementFocused(t *testing.T) {
 }
 
 // ========================================================================
-// TestFlexTree_TreeHeightBound — verify height grows logarithmically
+// TestFlexTree_TreeHeightBound - verify height grows logarithmically
 // ========================================================================
 
 func TestFlexTree_TreeHeightBound(t *testing.T) {

@@ -119,7 +119,7 @@ func (id NodeID) Index() int32 {
 // use arrays. This means a node's size
 // is known at compile time, and an entire
 // slice of nodes will be perfectly contiguous
-// in memory—just like a block of memory
+// in memory-just like a block of memory
 // malloc'd in C.
 
 // CommonNode is embedded in both LeafNode and InternalNode.

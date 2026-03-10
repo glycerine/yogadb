@@ -99,7 +99,7 @@ func TestSlottedPage_RoundTrip_SameHLC(t *testing.T) {
 	kvs := make([]KV, 100)
 	for i := range kvs {
 		kvs[i] = KV{
-			Key: fmt.Sprintf("key%04d", i),
+			Key:   fmt.Sprintf("key%04d", i),
 			Value: []byte(fmt.Sprintf("val%04d", i)),
 			Hlc:   42,
 		}
@@ -129,7 +129,7 @@ func TestSlottedPage_RoundTrip_Large(t *testing.T) {
 	kvs := make([]KV, n)
 	for i := range kvs {
 		kvs[i] = KV{
-			Key: fmt.Sprintf("key%06d", i),
+			Key:   fmt.Sprintf("key%06d", i),
 			Value: []byte(fmt.Sprintf("v%06d-padding", i)),
 			Hlc:   HLC(1000 + i),
 		}
@@ -216,7 +216,7 @@ func TestSlottedPage_IsSlotted(t *testing.T) {
 		kv := KV{Key: string(make([]byte, keyLen)), Value: []byte("v"), Hlc: 1}
 		enc := kv128Encode(nil, kv)
 		if enc[0] == 0x00 {
-			t.Fatalf("kv128 with keyLen=%d starts with 0x00 — ambiguous!", keyLen)
+			t.Fatalf("kv128 with keyLen=%d starts with 0x00 - ambiguous!", keyLen)
 		}
 	}
 }
@@ -499,7 +499,7 @@ func TestSlottedPage_DumpWithVLog_BadVPtr(t *testing.T) {
 	fs, dir := newTestFS(t)
 	vlogPath := filepath.Join(dir, "LARGE.VLOG")
 
-	// Create an empty VLOG — any read will fail.
+	// Create an empty VLOG - any read will fail.
 	vlog, err := openValueLog(vlogPath, fs)
 	if err != nil {
 		t.Fatal(err)

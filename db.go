@@ -655,7 +655,7 @@ func kvToState(kv KV) keyState {
 	return ksLiveSmall
 }
 
-// adjustKeyCounters updates the live key counters for an old→new state transition.
+// adjustKeyCounters updates the live key counters for an old->new state transition.
 func (db *FlexDB) adjustKeyCounters(oldState, newState keyState) {
 	switch oldState {
 	case ksLiveSmall:

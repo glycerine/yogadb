@@ -24,7 +24,7 @@ This tree has no dedicated tests. The goal is to:
 
 ## Bug Fixes (in `sparseindextree.go`)
 
-### Fix 1: `treeNodeHandlerNextAnchor` — rightmost walk-up never updates `node`
+### Fix 1: `treeNodeHandlerNextAnchor` - rightmost walk-up never updates `node`
 
 **Location:** Lines 271-284
 
@@ -855,16 +855,16 @@ func TestSparseIndexTree_FindPosLeafLE(t *testing.T) {
 		key    string
 		expect int
 	}{
-		{"", 0},       // exact match
-		{"aaa", 0},    // between "" and bbb
-		{"bbb", 1},    // exact match
-		{"ccc", 1},    // between bbb and ddd
-		{"ddd", 2},    // exact match
-		{"eee", 2},    // between ddd and fff
-		{"fff", 3},    // exact match
-		{"zzz", 3},    // after all
-		{"aaaa", 0},   // before bbb
-		{"\x00", 0},   // before bbb (but after "")
+		{"", 0},     // exact match
+		{"aaa", 0},  // between "" and bbb
+		{"bbb", 1},  // exact match
+		{"ccc", 1},  // between bbb and ddd
+		{"ddd", 2},  // exact match
+		{"eee", 2},  // between ddd and fff
+		{"fff", 3},  // exact match
+		{"zzz", 3},  // after all
+		{"aaaa", 0}, // before bbb
+		{"\x00", 0}, // before bbb (but after "")
 	}
 	for _, tc := range tests {
 		got := memSparseIndexTreeFindPosLeafLE(node, tc.key)
@@ -1134,7 +1134,7 @@ func TestSparseIndexTree_HintedSearchRightmostFixed(t *testing.T) {
 	var nh memSparseIndexTreeHandler
 	tree.findAnchorPos(testKeyFromInt(n), &nh)
 
-	// Now search for a key in the left half — this exercises the rightmost walk-up
+	// Now search for a key in the left half - this exercises the rightmost walk-up
 	tree.treeNodeHandlerNextAnchor(&nh, testKeyFromInt(1))
 
 	var nhCold memSparseIndexTreeHandler
