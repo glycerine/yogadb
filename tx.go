@@ -3,8 +3,14 @@ package yogadb
 // ReadOnlyDB provides read-only access to the database within a View
 // transaction. Methods must not be used after the callback returns.
 // ReadOnlyDB is implemented by ReadOnlyTx.
+//
+// To avoid indirect call overhead, this interface is
+// not actually used in the View API.
+// It is nice for documention purposes though; to get an
+// overview of the available methods.
 type ReadOnlyDB interface {
 	Get(key string) ([]byte, bool)
+	GetKV(key string) (kv *KV, found bool)
 	Find(smod SearchModifier, key string) (kv *KV, found, exact bool)
 	FindIt(smod SearchModifier, key string) (kv *KV, found, exact bool, it *Iter)
 	FetchLarge(kv *KV) ([]byte, error)
@@ -24,6 +30,11 @@ type ReadOnlyDB interface {
 // is no point in waiting to apply each action, and "reading
 // your own writes" is often desired/expected/required.
 // WritableDB is implemented by WriteTx.
+//
+// To avoid indirect call overhead, this interface is
+// not actually used in the Update API.
+// It is nice for documention purposes though; to get an
+// overview of the available methods.
 type WritableDB interface {
 	ReadOnlyDB
 	Put(key string, value []byte) error
@@ -58,11 +69,17 @@ func (tx *txBase) closeAll() {
 	tx.iters = tx.iters[:0]
 }
 
-// ====================== WriteTx (implements WritableDB) ======================
+// ========== WriteTx (implements WritableDB) ==========
+
+// WriteTx extends ReadTx with mutation methods. Passed to
+// Update transaction callbacks. Writes are applied immediately
+// to the database (no buffering). Since there is only ever
+// a single writer at a time, and no concurrent readers, there
+// is no point in waiting to apply each action, and "reading
+// your own writes" is often desired/expected/required.
+type WriteTx struct{ txBase }
 
 var _ WritableDB = (*WriteTx)(nil)
-
-type WriteTx struct{ txBase }
 
 // Get retrieves the value for key. Returns (nil, false) if not found
 // or deleted. The returned []byte is a copy, safe to retain.
@@ -73,6 +90,7 @@ func (tx *WriteTx) Get(key string) (value []byte, found bool) {
 // GetKV is like Get but allows lazy loading of Large values;
 // they are not fetched automatically. If the user sees kv.Large(),
 // then tx.FetchLarge(kv) will return the large value.
+// GetKV is equivalent to tx.Find(Exact, key).
 func (tx *WriteTx) GetKV(key string) (kv *KV, found bool) {
 	kv, found, _ = tx.Find(Exact, key)
 	return
@@ -272,6 +290,8 @@ func (tx *WriteTx) DescendRange(lessOrEqual, greaterThan string, iter func(key s
 
 var _ ReadOnlyDB = (*ReadOnlyTx)(nil)
 
+// ReadOnlyDTx provides read-only access to the database within a View
+// transaction. Methods must not be used after the callback returns.
 type ReadOnlyTx struct{ txBase }
 
 // Get retrieves the value for key. Returns (nil, false) if not found

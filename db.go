@@ -2265,6 +2265,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kv *KV, found, exact bo
 // GetKV is like Get but allows lazy loading of Large values;
 // they are not fetched automatically. If the user sees kv.Large(),
 // then db.FetchLarge(kv) will return the large value.
+// GetKV is equivalent to db.Find(Exact, key).
 func (db *FlexDB) GetKV(key string) (kv *KV, found bool) {
 	kv, found, _ = db.Find(Exact, key)
 	return
