@@ -78,9 +78,9 @@ const (
 	// SLOTTED_PAGE_KB is the target page size for slotted page intervals.
 	// Tune this for different workloads. Larger pages amortize overhead
 	// better but increase rewrite cost.
-	SLOTTED_PAGE_KB = 4 // 10:5.214 8:5.84 12:7.874 // up from 2 to 10 seems to help. 10: (9.984, 10.01, 9.817 ns/key); 2: (23.72 ns/key); 20:14.84 128: 4ns/key sequential scan, nice. 8: 5.347 ns/key. 4: very fast insert. 7.6 ns/key full scan. 32:4.473 ns/key. choice for now: keep at 4 for a litle balance between insert and scan through.
+	SLOTTED_PAGE_KB = 4 // 10:5.214 8:5.84 12:7.874 // up from 2 to 10 seems to help scans alot. 10: (9.984, 10.01, 9.817 ns/key); 2: (23.72 ns/key); 20:14.84 128: 4ns/key sequential scan, nice. 8: 5.347 ns/key. 4: very fast insert. 7.6 ns/key full scan. 32:4.473 ns/key. choice for now: keep at 4 for a litle balance between insert and scan through. but 64:4.168 ns/key, but random rw slows 2x.
 
-	slottedPageMaxSize = SLOTTED_PAGE_KB * 1024 // 65536 bytes
+	slottedPageMaxSize = SLOTTED_PAGE_KB * 1024 // e.g. 65536 bytes if we used 64 for SLOTTED_PAGE_KB
 
 	// MAX_KEY_BYTES is the maximum key size in bytes that a slotted page
 	// can hold. Derived from SLOTTED_PAGE_KB to ensure at least one key

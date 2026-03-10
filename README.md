@@ -218,7 +218,7 @@ by C. Chen, W. Zhong, X. Wu, EuroSys ’22, April 5–8, 2022, RENNES, France.
 
 In his Recap slide #56, Dr. Chen says,
 
->> "FlexDB manages sorted data without using extra persistent indirections."
+> "FlexDB manages sorted data without using extra persistent indirections."
 
 They map keys to physical locations on disk without 
 maintaining a massive, constantly updating on-disk index.

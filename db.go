@@ -2252,7 +2252,7 @@ func (db *FlexDB) Get(key string) ([]byte, bool) {
 	// doFlush():
 	//   2247:  db.activeMT = 1 - db.activeMT   // swap (under mtMu)
 	//   2250:  db.mtMu.Unlock()
-	//          // ── WINDOW: inactive has data, FlexSpace doesn't yet ──
+	//          // -- WINDOW: inactive has data, FlexSpace doesn't yet --
 	// 	2258:  db.ffMu.Lock()
 	// 	2259:  db.flushMemtable(inactive)        // writes to FlexSpace
 	//          ...
