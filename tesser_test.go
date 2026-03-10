@@ -9,6 +9,15 @@ import (
 	"github.com/glycerine/vfs"
 )
 
+// The reference to tesseracts is from
+// A Wrinkle in Time (Madeleine L'Engle, 1962),
+// where things from one world are injected into another world.
+
+// These functions are much slower than, and mostly obsoleted by, the vfs.FS
+// MountReadOnlyRealDir method that we added to the glycerine/vfs
+// package. They are not fully obselete--copying stuff in
+// manually can be useful, but they are not much used at the moment.
+
 // CopyToMemFS copies a file (or recursively a directory) from the real FS into a vfs.MemFS.
 func CopyToMemFS(memDestFS vfs.FS, realSrcPath, memDestPath string) error {
 	return filepath.Walk(realSrcPath, func(path string, info os.FileInfo, err error) error {

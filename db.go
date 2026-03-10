@@ -2585,15 +2585,8 @@ func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey string, begInclusive
 //
 // Caller must hold topMutRW.Lock().
 func (db *FlexDB) writeLockHeldDeleteAll() error {
-	// 1. Stop flush worker.
-	db.flushHalt.RequestStop()
-
-	// Temporarily drop the lock so the flush worker (which also needs
-	// topMutRW) can exit if it's blocked waiting for it.
-	db.topMutRW.Unlock()
-	<-db.flushHalt.Done.Chan
-
-	db.topMutRW.Lock()
+	// (1). leave any flush worker that is blocked on topMutRW
+	// alone; it can resume when we are done, and that should be fine.
 
 	// 2. Clear both memtables.
 	for i := 0; i < 2; i++ {
@@ -2664,10 +2657,7 @@ func (db *FlexDB) writeLockHeldDeleteAll() error {
 	ts2 := uint64(time.Now().UnixNano())
 	db.memtables[1].logTruncateWithVersion(ts2, db.ff.tree.PersistentVersion)
 
-	// 9. Restart flush worker.
-	db.flushHalt = idem.NewHalterNamed(fmt.Sprintf("flushWorker-after-writeLockHeldDeleteAll"))
-	db.flushTrigger = make(chan struct{}, 1)
-	go db.flushWorker()
+	// 9. (no longer need to: Restart flush worker; we never killed it).
 
 	return nil
 }

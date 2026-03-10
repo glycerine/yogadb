@@ -47,7 +47,8 @@ YogaDB is a Go port of the https://github.com/flexible-address-space/flexspace F
 Originally called FlexSpaceKV, we changed the name to YogaDB because 
 (a) yoga keeps you flexible, and (b) there were too many other 
 things with "flex" in the name[4]. Below you may see both terms; YogaDB
-in Go is the port of FlexDB in C. FlexDB is the top layer, calling
+in Go is the port of FlexDB in C. In the architecture, in both
+cases, the name FlexDB refers to the top layer. FlexDB calls 
 down into the FlexSpace, which in turn calls down to the FlexTree.
 
 <img width="1230" height="373" alt="image" src="https://github.com/user-attachments/assets/9519abbb-b1fe-4c82-9064-859591b0d341" />
@@ -418,10 +419,10 @@ Go project as a whole its own distinct name (YogaDB).
 The architecture is fundamentally the same, although
 the Go version has added features above and beyond
 the C. The slotted page design supporting updates in
-place, the hybrid logical clock timestamps give
-each pair a last written timestamp, the iterator
-design, and the transaction designs are original and specific
-to the Go project.
+place; the hybrid logical clock timestamps to give
+each pair a last written timestamp; the iterator
+design; and the transaction design: these are original
+and specific to the Go project.
 
 ~~~
 
@@ -434,7 +435,7 @@ FlexDB (kv store)               <- db.go
 
 ### (bottom) Layer 1: FlexTree (`flextree.h/.c` -> `flextree.go`)
 
-A B-tree that maps **logical offsets** (loff) to **physical offsets** (poff). Each entry is an **Extent**. Gentle reader, this is a metaphor, inspired by the filesystem extent idea. It is not actually referring to actual filesystem extents(!) Insertions shift all subsequent logical offsets, so the tree supports true insert-range semantics (not just overwrite).
+A B-tree that maps **logical offsets** (loff) to **physical offsets** (poff). Each entry is an **Extent**. Gentle reader, this is largely a metaphor, inspired by the filesystem extent idea. It is not actually referring to actual filesystem extents. Sublimely, however, the physical offset, the poff,  _is actually_ pointing to **an actual file/offset on disk**. Insertions shift all subsequent logical offsets, so the tree supports true insert-range semantics (not just overwrite).
 
 **Key insight:** Each internal node child carries a `shift` accumulator. When data is inserted at a logical offset, only the path from root to that leaf is updated; other subtrees lazily absorb the shift when traversed. This gives ~O(log n) insert cost and write amplification near 1.
 
