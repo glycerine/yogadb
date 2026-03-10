@@ -27,7 +27,7 @@ type WritableDB interface {
 	Delete(key string) error
 	DeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error)
 	Clear(includeLarge bool) (allGone bool, err error)
-	Merge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error
+	Merge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool, doDelete bool)) error
 	Sync() error
 }
 
@@ -61,22 +61,31 @@ var _ WritableDB = (*WriteTx)(nil)
 
 type WriteTx struct{ txBase }
 
+// Get retrieves the value for key. Returns (nil, false) if not found
+// or deleted. The returned []byte is a copy, safe to retain.
 func (tx *WriteTx) Get(key string) ([]byte, bool) {
 	return tx.db.someLockHeldGet(key)
 }
 
+// Put writes key -> value. value==nil stores a live key with nil value
+// (useful for sets); []byte{} stores a live key with zero-length value.
+// Use Delete to remove a key. Not durable until Sync is called.
 func (tx *WriteTx) Put(key string, value []byte) error {
-	return tx.db.writeLockHeldPut(key, value)
+	return tx.db.writeLockHeldPut(key, value, false)
 }
 
+// Delete removes key from the store.
 func (tx *WriteTx) Delete(key string) error {
-	return tx.db.writeLockHeldPut(key, nil)
+	return tx.db.writeLockHeldPut(key, nil, true)
 }
 
+// Sync flushes all in-memory data to disk and fsyncs.
 func (tx *WriteTx) Sync() error {
 	return tx.db.writeLockHeldSync()
 }
 
+// Find seeks to a key relative to the given key per smod (Exact, GTE, GT, LTE, LT)
+// and returns an owned KV copy. exact is true when the returned key equals the query.
 func (tx *WriteTx) Find(smod SearchModifier, key string) (kv *KV, found, exact bool) {
 	it := tx.newIter()
 	found, exact = findSeekIter(it, smod, key)
@@ -87,6 +96,8 @@ func (tx *WriteTx) Find(smod SearchModifier, key string) (kv *KV, found, exact b
 	return
 }
 
+// FindIt is like Find but also returns an iterator positioned at the result.
+// The iterator is auto-closed when the transaction ends.
 func (tx *WriteTx) FindIt(smod SearchModifier, key string) (kv *KV, found, exact bool, it *Iter) {
 	it = tx.newIter()
 	found, exact = findSeekIter(it, smod, key)
@@ -96,34 +107,77 @@ func (tx *WriteTx) FindIt(smod SearchModifier, key string) (kv *KV, found, exact
 	return
 }
 
+// FetchLarge retrieves the full value for a KV. For VLOG-stored
+// values it reads from disk; for inline values it returns kv.Value directly.
 func (tx *WriteTx) FetchLarge(kv *KV) ([]byte, error) {
 	return tx.db.lockHeldFetchLarge(kv)
 }
 
+// NewIter returns a new iterator over the database. It is
+// automatically closed when the transaction ends. It is
+// legal to Close it sooner if you want to release resources
+// early.
 func (tx *WriteTx) NewIter() *Iter {
 	return tx.newIter()
 }
 
+// Len returns the total number of live keys in the database.
 func (tx *WriteTx) Len() int64 {
 	return tx.db.liveKeys
 }
 
+// LenBigSmall returns live key counts partitioned by storage (VLOG vs inline).
 func (tx *WriteTx) LenBigSmall() (big, small int64) {
 	return tx.db.liveBigKeys, tx.db.liveSmallKeys
 }
 
+// DeleteRange deletes keys in the range [begKey, endKey] with configurable
+// inclusivity. When includeLarge is false, VLOG-stored keys are skipped.
+// If allGone is true, the entire database was reinitialized and all
+// previously obtained iterators and KV references are invalidated.
 func (tx *WriteTx) DeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
 	return tx.db.writeLockHeldDeleteRange(includeLarge, begKey, endKey, begInclusive, endInclusive)
 }
 
+// Clear deletes all keys. When includeLarge is false, only inline-value
+// keys are deleted; VLOG-stored keys survive. When allGone is true,
+// the database was reinitialized and all previously obtained iterators
+// and KV references are invalidated.
 func (tx *WriteTx) Clear(includeLarge bool) (allGone bool, err error) {
 	return tx.db.writeLockHeldClear(includeLarge)
 }
 
-func (tx *WriteTx) Merge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error {
+// Merge performs an atomic read-modify-write on key. fn is always
+// called: when the key exists, oldVal is its current value and
+// exists=true; when the key is absent or deleted, oldVal=nil and
+// exists=false (allowing conditional creation). Return write=false
+// to skip the write, or doDelete=true to delete the key.
+//
+// This mirrors C's flexdb_merge: it looks up the old value across all
+// layers (active memtable, inactive memtable, FlexSpace), applies the
+// user function, and writes the result atomically.
+//
+// Q: When should the callback return doWrite=false, doDelete=false?
+// A: This means "do nothing." The main scenarios:
+//
+//  1. Conditional creation: The callback inspects exists and decides
+//     not to create the key. E.g., "only increment if the key
+//     already exists" — if exists=false, return a bare return (all zeros = no-op).
+//
+//  2. Conditional update: The callback inspects the old value and
+//     decides no change is needed. E.g., "set to X only if current
+//     value isn't already X."
+//
+//  3. Read-only peek: The callback just wants to see the current
+//     value (though Get is simpler for that).
+//
+// .
+func (tx *WriteTx) Merge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool, doDelete bool)) error {
 	return tx.db.writeLockHeldMerge(key, fn)
 }
 
+// Ascend iterates keys >= pivot in ascending order until iter returns false.
+// Use pivot="" to start from the first key.
 func (tx *WriteTx) Ascend(pivot string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
@@ -136,6 +190,8 @@ func (tx *WriteTx) Ascend(pivot string, iter func(key string, value []byte) bool
 	}
 }
 
+// Descend iterates keys <= pivot in descending order until iter returns false.
+// Use pivot="" to start from the last key.
 func (tx *WriteTx) Descend(pivot string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
@@ -152,6 +208,8 @@ func (tx *WriteTx) Descend(pivot string, iter func(key string, value []byte) boo
 	}
 }
 
+// AscendRange iterates keys in [greaterOrEqual, lessThan) in ascending order.
+// Use "" for either bound to leave it open.
 func (tx *WriteTx) AscendRange(greaterOrEqual, lessThan string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
@@ -167,6 +225,8 @@ func (tx *WriteTx) AscendRange(greaterOrEqual, lessThan string, iter func(key st
 	}
 }
 
+// DescendRange iterates keys in (greaterThan, lessOrEqual] in descending order.
+// Use "" for either bound to leave it open.
 func (tx *WriteTx) DescendRange(lessOrEqual, greaterThan string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
@@ -192,10 +252,14 @@ var _ ReadOnlyDB = (*ReadOnlyTx)(nil)
 
 type ReadOnlyTx struct{ txBase }
 
+// Get retrieves the value for key. Returns (nil, false) if not found
+// or deleted. The returned []byte is a copy, safe to retain.
 func (tx *ReadOnlyTx) Get(key string) ([]byte, bool) {
 	return tx.db.someLockHeldGet(key)
 }
 
+// Find seeks to a key relative to the given key per smod (Exact, GTE, GT, LTE, LT)
+// and returns an owned KV copy. exact is true when the returned key equals the query.
 func (tx *ReadOnlyTx) Find(smod SearchModifier, key string) (kv *KV, found, exact bool) {
 	it := tx.newIter()
 	found, exact = findSeekIter(it, smod, key)
@@ -206,6 +270,8 @@ func (tx *ReadOnlyTx) Find(smod SearchModifier, key string) (kv *KV, found, exac
 	return
 }
 
+// FindIt is like Find but also returns an iterator positioned at the result.
+// The iterator is auto-closed when the transaction ends.
 func (tx *ReadOnlyTx) FindIt(smod SearchModifier, key string) (kv *KV, found, exact bool, it *Iter) {
 	it = tx.newIter()
 	found, exact = findSeekIter(it, smod, key)
@@ -215,22 +281,37 @@ func (tx *ReadOnlyTx) FindIt(smod SearchModifier, key string) (kv *KV, found, ex
 	return
 }
 
+// FetchLarge retrieves the full value for a KV. For VLOG-stored
+// values it reads from disk; for inline values it returns kv.Value directly.
 func (tx *ReadOnlyTx) FetchLarge(kv *KV) ([]byte, error) {
 	return tx.db.lockHeldFetchLarge(kv)
 }
 
+// NewIter returns a new iterator over the database. It is
+// automatically closed when the transaction ends. It is
+// legal to Close it sooner if you want to release resources
+// early.
 func (tx *ReadOnlyTx) NewIter() *Iter {
 	return tx.newIter()
 }
 
+// Len returns the total number of live keys in the database.
+// See also LenBigSmall to get the count partitioned by
+// the size class (small inline, large in the VLOG).
 func (tx *ReadOnlyTx) Len() int64 {
 	return tx.db.liveKeys
 }
 
+// LenBigSmall returns live key counts partitioned by size
+// class. The returned count big counts the keys in VLOG,
+// while small gives the number of keys with inline values.
+// See also Len to get the total directly.
 func (tx *ReadOnlyTx) LenBigSmall() (big, small int64) {
 	return tx.db.liveBigKeys, tx.db.liveSmallKeys
 }
 
+// Ascend iterates keys >= pivot in ascending order until iter returns false.
+// Use pivot="" to start from the first key.
 func (tx *ReadOnlyTx) Ascend(pivot string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
@@ -243,6 +324,8 @@ func (tx *ReadOnlyTx) Ascend(pivot string, iter func(key string, value []byte) b
 	}
 }
 
+// Descend iterates keys <= pivot in descending order until iter returns false.
+// Use pivot="" to start from the last key.
 func (tx *ReadOnlyTx) Descend(pivot string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
@@ -259,6 +342,8 @@ func (tx *ReadOnlyTx) Descend(pivot string, iter func(key string, value []byte) 
 	}
 }
 
+// AscendRange iterates keys in [greaterOrEqual, lessThan) in ascending order.
+// Use "" for either bound to leave it open.
 func (tx *ReadOnlyTx) AscendRange(greaterOrEqual, lessThan string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()
@@ -274,6 +359,8 @@ func (tx *ReadOnlyTx) AscendRange(greaterOrEqual, lessThan string, iter func(key
 	}
 }
 
+// DescendRange iterates keys in (greaterThan, lessOrEqual] in descending order.
+// Use "" for either bound to leave it open.
 func (tx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, iter func(key string, value []byte) bool) {
 	it := tx.newIter()
 	defer it.Close()

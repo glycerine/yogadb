@@ -96,8 +96,9 @@ const (
 	slottedPageCRCSize    = 4
 
 	// valInfo sentinels
-	slottedValInfoTombstone = 0x0000
-	slottedValInfoVPtr      = 0xFFFF
+	slottedValInfoNilValue  = 0x0000 // live key, nil value
+	slottedValInfoTombstone = 0xFFFE // deletion marker
+	slottedValInfoVPtr      = 0xFFFF // value in VLOG
 )
 
 // slottedPageEncode encodes a sorted slice of KVs into a slotted page.
@@ -319,7 +320,10 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 		vl := slottedValInfoToLen(entries[i].valInfo)
 		valStart := valEnd - vl
 		if entries[i].valInfo == slottedValInfoTombstone {
-			// tombstone: no value bytes, Value stays nil
+			// tombstone: mark with sentinel, Value stays nil
+			kvs[i].Vptr.Length = tombstoneVPtrLength
+		} else if entries[i].valInfo == slottedValInfoNilValue {
+			// live key, nil value: Value stays nil, Vptr stays zero
 		} else if entries[i].valInfo == slottedValInfoVPtr {
 			kvs[i].Vptr = decodeVPtr(src[valStart:valEnd])
 		} else {
@@ -345,7 +349,10 @@ func slottedValInfo(kv KV) uint16 {
 	if kv.HasVPtr() {
 		return slottedValInfoVPtr
 	}
-	return uint16(len(kv.Value) + 1)
+	if kv.Value == nil {
+		return slottedValInfoNilValue
+	}
+	return uint16(len(kv.Value) + 2)
 }
 
 // slottedValBytes returns the number of value bytes stored for a KV.
@@ -404,13 +411,13 @@ func slottedPageFirstKey(src []byte) (string, bool) {
 
 // slottedValInfoToLen returns the number of value bytes for a valInfo.
 func slottedValInfoToLen(vi uint16) int {
-	if vi == slottedValInfoTombstone {
+	if vi == slottedValInfoNilValue || vi == slottedValInfoTombstone {
 		return 0
 	}
 	if vi == slottedValInfoVPtr {
 		return vptrSize
 	}
-	return int(vi - 1)
+	return int(vi - 2)
 }
 
 // slottedPageUnsorted returns the unsorted count from a slotted page header.
@@ -618,6 +625,8 @@ func slottedPageDumpImpl(src []byte, vlog *valueLog) string {
 
 		var valDesc string
 		switch {
+		case e.valInfo == slottedValInfoNilValue:
+			valDesc = "nil-value"
 		case e.valInfo == slottedValInfoTombstone:
 			valDesc = "tombstone"
 		case e.valInfo == slottedValInfoVPtr:

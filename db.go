@@ -83,6 +83,14 @@ func (s *Batch) Set(key string, value []byte) (err error) {
 	return nil
 }
 
+// Delete marks key for deletion in this batch.
+func (s *Batch) Delete(key string) {
+	s.puts = append(s.puts, &KV{
+		Key:  key,
+		Vptr: VPtr{Length: tombstoneVPtrLength},
+	})
+}
+
 // Commit flushes the batch atomically all the way to disk
 // but does not fsync unless set doFsync true.
 //
@@ -276,12 +284,11 @@ func (s *Batch) Close() {
 
 // ====================== KV type ======================
 
-// KV is a key-value pair. Value==nil && Vptr.Length == 0
-// means tombstone (deletion marker).
+// KV is a key-value pair. Tombstones are marked by Vptr.Length == tombstoneVPtrLength (1).
+// A nil Value with Vptr.Length == 0 is a live key with nil value (set member).
 //
-// When Vptr.Length > 0, the value is stored in the VLOG file and Vptr
-// contains the location; Value holds the resolved bytes (or nil if not yet loaded).
-// Use kv.HasVPtr() to test whether the value is in the VLOG.
+// When Vptr.Length > tombstoneVPtrLength, the value is stored in the VLOG file
+// and Vptr contains the location. Use kv.HasVPtr() to test this.
 //
 // KV is currently 64 bytes, a cache line on most systems. Be very wary of
 // making it any bigger, as this could really slow things down.
@@ -299,13 +306,13 @@ func (s *Batch) Close() {
 type KV struct {
 	Key   string
 	Value []byte
-	Vptr  VPtr // valid when Vptr.Length > 0 (value lives in VLOG)
+	Vptr  VPtr // Length==1: tombstone; Length>1: VLOG pointer; Length==0: inline/nil
 	Hlc   HLC  // hybrid logical clock timestamp. LSN like per mini batch, but has big gaps.
 }
 
 // HasVPtr returns true if the value is stored in the VLOG file.
-// Equivalent to kv.Vptr.Length > 0.
-func (kv *KV) HasVPtr() bool { return kv.Vptr.Length > 0 }
+// Real VLOG entries always have Length > tombstoneVPtrLength.
+func (kv *KV) HasVPtr() bool { return kv.Vptr.Length > tombstoneVPtrLength }
 
 func (z *KV) String() (r string) {
 	r = "&KV{\n"
@@ -331,16 +338,16 @@ func kvLess(a, b KV) bool { return a.Key < b.Key }
 func kvSizeApprox(kv *KV) int { return 24 + len(kv.Key) + len(kv.Value) }
 
 // isTombstone returns true if this KV is a deletion marker.
-// A tombstone has nil Value and no VLOG pointer.
+// A tombstone is marked by the sentinel VPtr.Length == tombstoneVPtrLength (1).
 func (kv *KV) isTombstone() bool {
-	return kv.Value == nil && kv.Vptr.Length == 0
+	return kv.Vptr.Length == tombstoneVPtrLength
 }
 
 // Large returns true if this KV's value is stored in the VLOG
 // (too large for inline storage). Use db.FetchLarge(kv) to
 // retrieve the value bytes.
 func (kv *KV) Large() bool {
-	return kv.Vptr.Length > 0
+	return kv.Vptr.Length > tombstoneVPtrLength
 }
 
 // ====================== KV128 encoding ======================
@@ -348,25 +355,34 @@ func (kv *KV) Large() bool {
 // Standard LEB128 (same as Go's encoding/binary.PutUvarint).
 //
 // rawVlen encoding:
-//   rawVlen == 0                -> tombstone (Value = nil), no value bytes follow
-//   rawVlen == rawVlenVPtr      -> VLOG pointer: 16 bytes follow (8-byte offset + 8-byte length)
-//   rawVlen == len(V) + 1       -> inline value of length len(V), followed by len(V) bytes
+//   rawVlen == 0                   -> live key, nil value (0 value bytes follow)
+//   rawVlen == rawVlenTombstone    -> tombstone (0 value bytes follow)
+//   rawVlen == rawVlenVPtr         -> VLOG pointer: 16 bytes follow (8-byte offset + 8-byte length)
+//   rawVlen == len(V) + 2          -> inline value of length len(V), followed by len(V) bytes
 //
-// The rawVlenVPtr sentinel (max uint64) can never collide with a real inline value
-// since that would require a value of length ~2^64 - 2.
+// The two high sentinels (rawVlenVPtr, rawVlenTombstone) can never collide with
+// a real inline value since that would require a value of length ~2^64 - 3.
 
-const rawVlenVPtr = ^uint64(0) // 0xFFFF FFFF FFFF FFFF - sentinel for VLOG pointer
+const rawVlenVPtr = ^uint64(0)      // 0xFFFF FFFF FFFF FFFF - sentinel for VLOG pointer
+const rawVlenTombstone = ^uint64(1) // 0xFFFF FFFF FFFF FFFE - sentinel for tombstone
+
+// tombstoneVPtrLength is the sentinel value stored in VPtr.Length
+// to mark a KV as a tombstone. Real VLOG entries always have
+// Length > vlogInlineThreshold (64), so 1 is safe.
+const tombstoneVPtrLength uint64 = 1
 
 func kv128Encode(buf []byte, kv KV) []byte {
 	recordStart := len(buf)
 	var hdr [20]byte
 	n := binary.PutUvarint(hdr[:], uint64(len(kv.Key)))
 	if kv.isTombstone() {
-		n += binary.PutUvarint(hdr[n:], 0) // tombstone
+		n += binary.PutUvarint(hdr[n:], rawVlenTombstone) // tombstone sentinel
 	} else if kv.HasVPtr() {
 		n += binary.PutUvarint(hdr[n:], rawVlenVPtr) // VLOG pointer sentinel
+	} else if kv.Value == nil {
+		n += binary.PutUvarint(hdr[n:], 0) // live nil value
 	} else {
-		n += binary.PutUvarint(hdr[n:], uint64(len(kv.Value)+1)) // inline: len+1
+		n += binary.PutUvarint(hdr[n:], uint64(len(kv.Value)+2)) // inline: len+2
 	}
 	buf = append(buf, hdr[:n]...)
 	buf = append(buf, kv.Key...)
@@ -390,12 +406,15 @@ func kv128Encode(buf []byte, kv KV) []byte {
 
 func kv128EncodedSize(kv KV) int {
 	if kv.isTombstone() {
-		return varintSize(uint64(len(kv.Key))) + 1 + len(kv.Key) + 8 + 4
+		return varintSize(uint64(len(kv.Key))) + varintSize(rawVlenTombstone) + len(kv.Key) + 8 + 4
 	}
 	if kv.HasVPtr() {
 		return varintSize(uint64(len(kv.Key))) + varintSize(rawVlenVPtr) + len(kv.Key) + vptrSize + 8 + 4
 	}
-	return varintSize(uint64(len(kv.Key))) + varintSize(uint64(len(kv.Value)+1)) + len(kv.Key) + len(kv.Value) + 8 + 4
+	if kv.Value == nil {
+		return varintSize(uint64(len(kv.Key))) + 1 + len(kv.Key) + 8 + 4 // rawVlen=0 is 1 byte
+	}
+	return varintSize(uint64(len(kv.Key))) + varintSize(uint64(len(kv.Value)+2)) + len(kv.Key) + len(kv.Value) + 8 + 4
 }
 
 func kv128Decode(src []byte) (kv KV, n int, ok bool) {
@@ -408,8 +427,22 @@ func kv128Decode(src []byte) (kv KV, n int, ok bool) {
 		return
 	}
 	hdr := kn + vn
-	if rawVlen == 0 {
+	if rawVlen == rawVlenTombstone {
 		// tombstone
+		total := hdr + int(klen) + 8
+		if len(src) < total+4 {
+			return
+		}
+		if crc32.Checksum(src[:total], crc32cTable) != binary.LittleEndian.Uint32(src[total:total+4]) {
+			return
+		}
+		kv.Key = string(src[hdr : hdr+int(klen)])
+		kv.Vptr.Length = tombstoneVPtrLength
+		kv.Hlc = HLC(binary.BigEndian.Uint64(src[total-8 : total]))
+		return kv, total + 4, true
+	}
+	if rawVlen == 0 {
+		// live key, nil value
 		total := hdr + int(klen) + 8
 		if len(src) < total+4 {
 			return
@@ -435,7 +468,7 @@ func kv128Decode(src []byte) (kv KV, n int, ok bool) {
 		kv.Hlc = HLC(binary.BigEndian.Uint64(src[total-8 : total]))
 		return kv, total + 4, true
 	}
-	vlen := int(rawVlen - 1)
+	vlen := int(rawVlen - 2)
 	total := hdr + int(klen) + vlen + 8
 	if len(src) < total+4 {
 		return
@@ -461,13 +494,13 @@ func kv128SizePrefix(src []byte) (int, bool) {
 	if vn <= 0 {
 		return 0, false
 	}
-	if rawVlen == 0 {
+	if rawVlen == rawVlenTombstone || rawVlen == 0 {
 		return kn + vn + int(klen) + 8 + 4, true
 	}
 	if rawVlen == rawVlenVPtr {
 		return kn + vn + int(klen) + vptrSize + 8 + 4, true
 	}
-	return kn + vn + int(klen) + int(rawVlen-1) + 8 + 4, true
+	return kn + vn + int(klen) + int(rawVlen-2) + 8 + 4, true
 }
 
 func varintSize(v uint64) int {
@@ -2039,10 +2072,14 @@ func (db *FlexDB) writeLockHeldSync() error {
 func (db *FlexDB) Put(key string, value []byte) error {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
-	return db.writeLockHeldPut(key, value)
+	return db.writeLockHeldPut(key, value, false)
 }
 
-func (db *FlexDB) writeLockHeldPut(key string, value []byte) error {
+func (db *FlexDB) writeLockHeldPut(key string, value []byte, doDelete bool) error {
+
+	if doDelete && len(value) > 0 {
+		return fmt.Errorf("flexdb: cannot supply a value and also delete it")
+	}
 
 	if len(key)+16 >= MaxKeySize {
 		return fmt.Errorf("flexdb: key too large (max %d bytes)", MaxKeySize-16)
@@ -2064,6 +2101,9 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte) error {
 
 	// Build the KV for the memtable. Large values go to VLOG.
 	kv := KV{Key: key, Value: value, Hlc: hlcVal}
+	if doDelete {
+		kv.Vptr.Length = tombstoneVPtrLength
+	}
 
 	if db.vlog != nil && value != nil && len(value) > vlogInlineThreshold {
 		// Write value to VLOG and fsync before WAL references it.
@@ -2236,6 +2276,9 @@ func (db *FlexDB) Get(key string) ([]byte, bool) {
 			if err != nil {
 				return nil, false
 			}
+			if val == nil {
+				return nil, true // live key, nil value
+			}
 			out := make([]byte, len(val))
 			copy(out, val)
 			return out, true
@@ -2280,6 +2323,9 @@ func (db *FlexDB) Get(key string) ([]byte, bool) {
 			if err != nil {
 				return nil, false
 			}
+			if val == nil {
+				return nil, true // live key, nil value
+			}
 			out := make([]byte, len(val))
 			copy(out, val)
 			return out, true // not val!
@@ -2306,6 +2352,9 @@ func (db *FlexDB) someLockHeldGet(key string) ([]byte, bool) {
 			if err != nil {
 				return nil, false
 			}
+			if val == nil {
+				return nil, true // live key, nil value
+			}
 			out := make([]byte, len(val))
 			copy(out, val)
 			return out, true
@@ -2324,6 +2373,9 @@ func (db *FlexDB) someLockHeldGet(key string) ([]byte, bool) {
 			if err != nil {
 				return nil, false
 			}
+			if val == nil {
+				return nil, true // live key, nil value
+			}
 			out := make([]byte, len(val))
 			copy(out, val)
 			return out, true
@@ -2337,9 +2389,9 @@ func (db *FlexDB) someLockHeldGet(key string) ([]byte, bool) {
 
 // Delete removes key from the store.
 func (db *FlexDB) Delete(key string) error {
-	// Put already does locking.
-
-	return db.Put(key, nil) // tombstone
+	db.topMutRW.Lock()
+	defer db.topMutRW.Unlock()
+	return db.writeLockHeldPut(key, nil, true)
 }
 
 // DeleteRange deletes all keys in the range [begKey, endKey] with
@@ -2415,7 +2467,7 @@ func (db *FlexDB) writeLockHeldDeleteRange(includeLarge bool, begKey, endKey str
 			return true
 		})
 		for _, key := range keys {
-			if err := db.writeLockHeldPut(key, nil); err != nil {
+			if err := db.writeLockHeldPut(key, nil, true); err != nil {
 				return n, false, err
 			}
 			n++
@@ -2471,7 +2523,7 @@ func (db *FlexDB) writeLockHeldClear(includeLarge bool) (allGone bool, err error
 			return true
 		})
 		for _, key := range keys {
-			if err := db.writeLockHeldPut(key, nil); err != nil {
+			if err := db.writeLockHeldPut(key, nil, true); err != nil {
 				return false, err
 			}
 		}
@@ -2785,7 +2837,7 @@ func (db *FlexDB) deleteRangeFlexSpace(begKey, endKey string, begInclusive, endI
 
 				// Write tombstone. Track activeMT to detect flush.
 				prevActive := db.activeMT
-				if err := db.writeLockHeldPut(kv.Key, nil); err != nil {
+				if err := db.writeLockHeldPut(kv.Key, nil, true); err != nil {
 					return n, err
 				}
 				n++
@@ -2893,7 +2945,7 @@ func (db *FlexDB) deleteRangeFlexSpaceClearSmall() (int64, error) {
 				}
 
 				prevActive := db.activeMT
-				if err := db.writeLockHeldPut(kv.Key, nil); err != nil {
+				if err := db.writeLockHeldPut(kv.Key, nil, true); err != nil {
 					return n, err
 				}
 				n++
@@ -2975,16 +3027,32 @@ func deleteRangeDedup(kvs []KV) []KV {
 	return out
 }
 
-// Merge performs an atomic read-modify-write on key.
-// The merge function fn receives the old value (nil if not found) and
-// whether the key existed. It returns the new value to write and whether
-// to perform the write. If write is false, the merge is a no-op.
-// If newVal is nil and write is true, a tombstone (delete) is written.
+// Merge performs an atomic read-modify-write on key. fn is always
+// called: when the key exists, oldVal is its current value and
+// exists=true; when the key is absent or deleted, oldVal=nil and
+// exists=false (allowing conditional creation). Return write=false
+// to skip the write, or doDelete=true to delete the key.
 //
 // This mirrors C's flexdb_merge: it looks up the old value across all
 // layers (active memtable, inactive memtable, FlexSpace), applies the
 // user function, and writes the result atomically.
-func (db *FlexDB) Merge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error {
+//
+// Q: When should the callback return doWrite=false, doDelete=false?
+// A: This means "do nothing." The main scenarios:
+//
+//  1. Conditional creation: The callback inspects exists and decides
+//     not to create the key. E.g., "only increment if the key
+//     already exists" — if exists=false, return a bare return (all zeros = no-op).
+//
+//  2. Conditional update: The callback inspects the old value and
+//     decides no change is needed. E.g., "set to X only if current
+//     value isn't already X."
+//
+//  3. Read-only peek: The callback just wants to see the current
+//     value (though Get is simpler for that).
+//
+// .
+func (db *FlexDB) Merge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool, doDelete bool)) error {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 	return db.writeLockHeldMerge(key, fn)
@@ -2992,7 +3060,7 @@ func (db *FlexDB) Merge(key string, fn func(oldVal []byte, exists bool) (newVal 
 
 // writeLockHeldMerge is the lock-held body of Merge.
 // Caller must hold topMutRW.Lock().
-func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool)) error {
+func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool, doDelete bool)) error {
 	if len(key)+16 >= MaxKeySize {
 		return fmt.Errorf("flexdb: key too large for merge (max %d bytes)", MaxKeySize)
 	}
@@ -3042,9 +3110,16 @@ func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists b
 	}
 
 	// Apply user merge function.
-	newVal, write := fn(oldVal, exists)
-	if !write {
+	newVal, write, doDelete := fn(oldVal, exists)
+	if write && doDelete {
+		return fmt.Errorf("flexdb: Merge callback returned both doWrite=true and doDelete=true; these are mutually exclusive")
+	}
+	if !write && !doDelete {
 		return nil
+	}
+
+	if doDelete {
+		return db.writeLockHeldPut(key, nil, true)
 	}
 
 	// Validate size (only key limit applies when VLOG is enabled).
@@ -3052,8 +3127,7 @@ func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists b
 		return fmt.Errorf("flexdb: merged KV too large (max %d bytes)", MaxKeySize)
 	}
 
-	// Write result via Put.
-	return db.writeLockHeldPut(key, newVal)
+	return db.writeLockHeldPut(key, newVal, false)
 }
 
 // ====================== Passthrough operations ======================
@@ -3080,6 +3154,9 @@ func (db *FlexDB) getPassthrough(key string) ([]byte, bool) {
 	val, err := db.resolveVPtr(kv)
 	if err != nil {
 		return nil, false
+	}
+	if val == nil {
+		return nil, true // live key, nil value
 	}
 	out := make([]byte, len(val))
 	copy(out, val)
