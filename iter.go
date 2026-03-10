@@ -1583,7 +1583,7 @@ func (it *Iter) Vin() (val []byte) {
 // Vel is a mnemonic for the returns: value, empty, large.
 //
 // Plus it's fun to say with your best Young Frankenstein
-// style faux German accept (Gene Wilder, Mel Brooks 1974)
+// style faux German accent (Gene Wilder, Mel Brooks 1974)
 //
 // "Vel, vel, vel... vhat have ve here? A large value??"
 func (it *Iter) Vel() (val []byte, empty, large bool) {
