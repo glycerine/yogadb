@@ -411,8 +411,17 @@ A1:
 
 Note that these three layers are the same in the Go version
 and the C version. The C/paper calls the top layer FlexDB.
-For the Go version, we call the top layer YogaDB (the 
-main/top-level file is db.go).
+For ease of comprehension and better continuity, we keep 
+the name FlexDB for the top level Go data struct in db.go.
+To make the Go versus C distinction clear, we gave the
+Go project as a whole its own distinct name (YogaDB).
+The architecture is fundamentally the same, although
+the Go version has added features above and beyond
+the C. The slotted page design supporting updates in
+place, the hybrid logical clock timestamps give
+each pair a last written timestamp, the iterator
+design, and the transaction designs are original and specific
+to the Go project.
 
 ~~~
 
