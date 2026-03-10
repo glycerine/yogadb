@@ -1967,14 +1967,21 @@ func (db *FlexDB) maybePiggybackGC() {
 	}
 	live, garbage, _, _ := db.ff.garbageMetrics(db.cfg.LowBlockUtilizationPct)
 	total := live + garbage
-	if total == 0 || float64(garbage)/float64(total) < threshold {
+	if total == 0 {
+		return // avoid divide by zero
+	}
+	frac := float64(garbage) / float64(total)
+	if frac < threshold {
+		//vv("piggyback GC skipped: frac = %0.2f < thresh = %0.2f", frac, threshold)
 		return
 	}
+	//vv("piggyback GC starting: frac = %0.2f", frac)
 	start := time.Now()
 	db.ff.GC()
 	db.piggyGCStats.LastGCTime = time.Now()
 	db.piggyGCStats.LastGCDuration = time.Since(start)
 	db.piggyGCStats.TotalGCRuns++
+	//vv("piggyback GC done in %v. db.piggyGCStats.TotalGCRuns=%v", db.piggyGCStats.LastGCDuration, db.piggyGCStats.TotalGCRuns)
 }
 
 func (db *FlexDB) writeLockHeldSync() error {

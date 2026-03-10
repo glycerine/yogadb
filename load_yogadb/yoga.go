@@ -18,7 +18,8 @@ func main() {
 
 	cfg := &yogadb.Config{
 		//OmitFlexSpaceOpsRedoLog: true,
-		OmitMemWalFsync: true,
+		OmitMemWalFsync:            true,
+		PiggybackGC_on_SyncOrFlush: true,
 	}
 	db, err := yogadb.OpenFlexDB(dbPath, cfg)
 	fmt.Fprintf(os.Stderr, "using REDO.LOG: %v\n", !cfg.OmitFlexSpaceOpsRedoLog)
