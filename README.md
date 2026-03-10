@@ -52,12 +52,11 @@ cases, the name FlexDB refers to the top layer. FlexDB calls
 down into the FlexSpace, which in turn calls down to the FlexTree.
 
 Personally I find it charming that a "back to basics" approach
-is competitive with the latest baroque "fractured", "splintered"[2], 
+is competitive with the latest "fractured", "splintered"[2], 
 or "turtled" approaches[3] that the $\beta^{\epsilon}$-tree 
 folks have been pursuing. These could be worth reviewing,
-but to my thinking are overly baroque. Lets not forget to
-mention their lack of buildable/usable code either (C/C++ is
-the enemy of re-usable code after all... there, I said it!)
+but to my thinking are overly baroque (and difficult to build;
+their C/C++ dependencies are a nightmare).
 
 <img width="1230" height="373" alt="image" src="https://github.com/user-attachments/assets/9519abbb-b1fe-4c82-9064-859591b0d341" />
 
