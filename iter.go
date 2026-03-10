@@ -1541,6 +1541,23 @@ func (it *Iter) KV() *KV {
 	return it.pKV
 }
 
+// GetAnySize returns values large or small, if available.
+func (it *Iter) GetAnySize() (key string, val []byte, found bool, err error) {
+	if !it.valid || it.pKV == nil {
+		return
+	}
+	if !it.valueResolved && it.pKV.Value != nil {
+		it.valBuf = reuseAppend(it.valBuf, it.pKV.Value)
+		it.pKV.Value = it.valBuf
+		it.valueResolved = true
+	}
+	val = it.pKV.Value
+	if it.pKV.HasVPtr() {
+		val, err = it.FetchV()
+	}
+	return
+}
+
 // Key returns the current key. On the fast path this is a direct pointer
 // into cache memory (zero-copy). Call dupBytes(it.Key) if you need to
 // keep a copy beyond the next Next()/Prev() call.
