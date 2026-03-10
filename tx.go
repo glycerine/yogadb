@@ -2,6 +2,7 @@ package yogadb
 
 // ReadOnlyDB provides read-only access to the database within a View
 // transaction. Methods must not be used after the callback returns.
+// ReadOnlyDB is implemented by ReadOnlyTx.
 type ReadOnlyDB interface {
 	Get(key string) ([]byte, bool)
 	Find(smod SearchModifier, key string) (kv *KV, found, exact bool)
@@ -20,7 +21,9 @@ type ReadOnlyDB interface {
 // Update transaction callbacks. Writes are applied immediately
 // to the database (no buffering). Since there is only ever
 // a single writer at a time, and no concurrent readers, there
-// is no point in waiting to apply each action.
+// is no point in waiting to apply each action, and "reading
+// your own writes" is often desired/expected/required.
+// WritableDB is implemented by WriteTx.
 type WritableDB interface {
 	ReadOnlyDB
 	Put(key string, value []byte) error
