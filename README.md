@@ -35,10 +35,10 @@ Here YogaDB is 2x faster than Pebble and 20x faster than BoltDB at random writes
 ~~~
 Pebble      114.9 iter_ns/key
 Bolt         16.7 iter_ns/key
-YogaDB       12.6 iter_ns/key
+YogaDB        7.6 iter_ns/key
 ~~~
 
-YogaDB is on par with BoltDB for read performance, and 10x faster than Pebble.
+YogaDB is about 2x faster than BoltDB for full-table-scan read performance, and 15x faster than Pebble.
 
 # what is YogaDB?
 
