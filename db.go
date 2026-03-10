@@ -579,8 +579,7 @@ type Config struct {
 	// calls SyncCoW() on every Sync(). This eliminates ~0.86x write
 	// amplification from the redo log at the cost of slightly more CoW
 	// tree page writes. The net effect is lower total write amp (~3.2x
-	// vs ~4.1x). Requires useCoW=true (which is always the case now).
-	// Safe either way.
+	// vs ~4.1x).
 	OmitFlexSpaceOpsRedoLog bool
 
 	// LowBlockUtilizationPct sets the threshold (0.0–1.0) for counting
