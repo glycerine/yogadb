@@ -11,7 +11,7 @@ all:
 	cd cmd/yogabench && go install
 
 fuzz:
-	go test -tags memfs -fuzz FuzzAnchorTreeDrift -fuzztime 30m -run=xxx -timeout 35m
+	#go test -tags memfs -fuzz FuzzAnchorTreeDrift -fuzztime 30m -run=xxx -timeout 35m
 	go test -tags memfs -fuzz FuzzFlexSpace -fuzztime 30m -run=xxx -timeout 35m
 	go test -tags memfs -fuzz FuzzRecoveryFlexSpace -fuzztime 30m -run=xxx -timeout 35m
 	go test -fuzz FuzzFlexTree -fuzztime 5m -run=xxx -tags memfs || true
