@@ -6,6 +6,7 @@ all:
 	cd cmd/yload && go install
 	cd cmd/yview && go install
 	cd cmd/yvac && go install
+	cd cmd/ydiff && go install
 	cd load_yogadb && go install
 	cd cmd/yogabench && go install
 
