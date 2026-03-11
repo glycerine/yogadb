@@ -1078,7 +1078,7 @@ func TestFlexspace_BlkUsageInvariant_MultiBlockFill(t *testing.T) {
 	}
 	verifyBlkUsageInvariant(t, ff)
 
-	// Insert new data — should reuse freed space
+	// Insert new data - should reuse freed space
 	_, err := ff.Insert(data, ff.Size(), chunkSize)
 	if err != nil {
 		t.Fatalf("Insert after collapse: %v", err)

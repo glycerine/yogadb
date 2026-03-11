@@ -2359,13 +2359,13 @@ func TestLen(t *testing.T) {
 func TestFlexDB_NilValuePreservation(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 
-	// Put with nil value — should store a live key, NOT delete
+	// Put with nil value - should store a live key, NOT delete
 	err := db.Put("setkey", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Get should return (nil, true) — found, with nil value
+	// Get should return (nil, true) - found, with nil value
 	val, found := db.Get("setkey")
 	if !found {
 		t.Fatal("nil-value key should be found")

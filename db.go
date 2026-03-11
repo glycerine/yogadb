@@ -3072,7 +3072,7 @@ func deleteRangeDedup(kvs []KV) []KV {
 //
 //  1. Conditional creation: The callback inspects exists and decides
 //     not to create the key. E.g., "only increment if the key
-//     already exists" — if exists=false, return a bare return (all zeros = no-op).
+//     already exists" - if exists=false, return a bare return (all zeros = no-op).
 //
 //  2. Conditional update: The callback inspects the old value and
 //     decides no change is needed. E.g., "set to X only if current
