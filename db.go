@@ -180,7 +180,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		if len(largeValues) > 0 {
 			// Batch write + single fsync - ensures all values are durable
 			// before any WAL entry references them.
-			ptrs, err := db.vlog.appendBatchAndSync(largeValues, largeHLCs)
+			ptrs, err := db.vlog.appendBatchAndSync(largeValues, largeHLCs, db.cfg.OmitMemWalFsync)
 			if err != nil {
 				return HLCInterval{}, nil, fmt.Errorf("flexdb: vlog batch append: %w", err)
 			}
@@ -592,7 +592,8 @@ type Config struct {
 	// This is useful for batch loading a lot of data quickly, and then doing
 	// one fsync at the end for durability. The proviso of course is that
 	// if your process crashes you have no intermediate state and have to
-	// start again at the beginning; which may be fine.
+	// start again at the beginning; which may be fine. True also disables
+	// the LARGE.VLOG fsyncs until db.Sync() is called.
 	OmitMemWalFsync bool
 
 	// PiggybackGC_on_SyncOrFlush enables automatic GC at the end of
@@ -2047,6 +2048,19 @@ func (db *FlexDB) writeLockHeldSync() error {
 	db.maybePiggybackGC()
 	db.verifyAnchorTags()
 
+	// notice that typically we do not sync the db.vlog here;
+	// it has already been synced on each large value
+	// Put() or Batch.Commit(), so that the VPtr in
+	// the MEMWAL will point to something durable...
+	// but this has a pretty big (slow) cost for
+	// individual Puts. But, db.cfg.OmitMemWalFsync true
+	// means we did not actually do the sync in
+	// the Put/Batch Put of vlog.appendAndSync, so we
+	// have to do it now.
+	if db.cfg.OmitMemWalFsync {
+		db.vlog.sync()
+	}
+
 	// Sync the parent directory so new/renamed files are durable.
 	if err := syncDir(db.vfs, db.Path); err != nil {
 		return fmt.Errorf("flexdb: sync dir: %w", err)
@@ -2115,7 +2129,7 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, doDelete bool) erro
 	if db.vlog != nil && value != nil && len(value) > vlogInlineThreshold {
 		// Write value to VLOG and fsync before WAL references it.
 		// This ensures the VLOG entry is durable before the WAL VPtr.
-		vp, err := db.vlog.appendAndSync(value, hlcVal)
+		vp, err := db.vlog.appendAndSync(value, hlcVal, db.cfg.OmitMemWalFsync)
 		if err != nil {
 			return fmt.Errorf("flexdb: vlog append: %w", err)
 		}

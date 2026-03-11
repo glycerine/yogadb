@@ -1542,7 +1542,7 @@ func Test_GC1K_write_1k_keys_with_large_values(t *testing.T) {
 	vv("met = %v", met)
 
 	if met.BlocksInUse > 1 { // was 5 !?!
-		panicf("for 1000 33 bytes keys, should only have 1 4MB block in use, not %v", met.BlocksInUse)
+		t.Fatalf("for 1000 33 bytes keys, should only have 1 4MB block in use, not %v", met.BlocksInUse)
 	}
 	//met.BlocksWithLowUtilization was 5
 
@@ -1689,3 +1689,42 @@ ok  	github.com/glycerine/yogadb	0.035s
 
 Compilation finished at Wed Mar 11 04:48:19
 */
+
+// same test above but as a batch: our perf was getting
+// destroyed b/c every single VLOG Put is fsyncing
+// in vlog.go appendAndSync()
+
+func Test_GC_batch1K_write_1k_batch_large_values(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+
+	var seed [32]byte
+	rng := newPRNG(seed)
+
+	const nKeys = 1000
+	keys := make([]string, nKeys)
+	vals := make([]string, nKeys)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("usertable/user%v", rng.unlockedStringOfDigits(19))
+
+		v := make([]byte, 1050)
+		rng.cha8.Read(v)
+		vals[i] = string(v)
+	}
+
+	batch := db.NewBatch()
+
+	// Round 0: initial write of all keys.
+	for i, k := range keys {
+		//mustPut(t, db, k, vals[i])
+		panicOn(batch.Set(k, []byte(vals[i])))
+	}
+	batch.Commit(false)
+	db.Sync()
+
+	met := db.SessionMetrics()
+	vv("met = %v", met)
+
+	if met.BlocksInUse > 1 { // was 5 !?!
+		t.Fatalf("for 1000 33 bytes keys, should only have 1 4MB block in use, not %v", met.BlocksInUse)
+	}
+}

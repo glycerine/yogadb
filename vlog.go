@@ -141,22 +141,24 @@ func (vl *valueLog) appendLocked(value []byte, hlc HLC) (VPtr, error) {
 
 // appendAndSync writes a value to the VLOG, fsyncs, and returns a VPtr.
 // This ensures the value is durable before the caller writes the VPtr to WAL.
-func (vl *valueLog) appendAndSync(value []byte, hlc HLC) (VPtr, error) {
+func (vl *valueLog) appendAndSync(value []byte, hlc HLC, skipSync bool) (VPtr, error) {
 	vl.mu.Lock()
 	defer vl.mu.Unlock()
 	vp, err := vl.appendLocked(value, hlc)
 	if err != nil {
 		return vp, err
 	}
-	if err := vl.fd.Sync(); err != nil {
-		return vp, fmt.Errorf("vlog: sync: %w", err)
+	if !skipSync {
+		if err := vl.fd.Sync(); err != nil {
+			return vp, fmt.Errorf("vlog: sync: %w", err)
+		}
 	}
 	return vp, nil
 }
 
 // appendBatchAndSync writes multiple values to the VLOG with a single fsync.
 // Returns one VPtr per value. Thread-safe.
-func (vl *valueLog) appendBatchAndSync(values [][]byte, hlcs []HLC) ([]VPtr, error) {
+func (vl *valueLog) appendBatchAndSync(values [][]byte, hlcs []HLC, skipSync bool) ([]VPtr, error) {
 	vl.mu.Lock()
 	defer vl.mu.Unlock()
 
@@ -168,8 +170,10 @@ func (vl *valueLog) appendBatchAndSync(values [][]byte, hlcs []HLC) ([]VPtr, err
 		}
 		ptrs[i] = vp
 	}
-	if err := vl.fd.Sync(); err != nil {
-		return nil, fmt.Errorf("vlog: batch sync: %w", err)
+	if !skipSync {
+		if err := vl.fd.Sync(); err != nil {
+			return nil, fmt.Errorf("vlog: batch sync: %w", err)
+		}
 	}
 	return ptrs, nil
 }
