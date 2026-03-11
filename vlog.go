@@ -331,6 +331,14 @@ func (vl *valueLog) read(vp VPtr) ([]byte, error) {
 	}
 
 	value := buf[vlogEntryHeaderSize:]
+
+	// Verify blake3 checksum of value bytes matches stored blake3.
+	storedB3 := buf[24:56]
+	computedB3 := blake3checksum32(value)
+	if !equal32(storedB3, computedB3) {
+		return nil, fmt.Errorf("vlog: blake3 mismatch at offset %d", vp.Offset)
+	}
+
 	return value, nil
 }
 

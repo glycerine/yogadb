@@ -1013,6 +1013,48 @@ func TestFlexDB_CheckIntegrity_Clean(t *testing.T) {
 	}
 }
 
+// TestFlexDB_CheckIntegrity_VLOGBlake3 verifies that CheckIntegrity validates
+// blake3 checksums of VLOG entries for keys with large values.
+func TestFlexDB_CheckIntegrity_VLOGBlake3(t *testing.T) {
+	fs, dir := newTestFS(t)
+	db := openTestDBAt(fs, t, dir, nil)
+
+	// Write keys with large values (above vlogInlineThreshold) so they go to VLOG.
+	for i := 0; i < 50; i++ {
+		key := fmt.Sprintf("vlog_b3_%04d", i)
+		mustPut(t, db, key, makeTestValue(200+i))
+	}
+	db.Sync()
+	mustCheckIntegrity(t, db)
+
+	// Overwrite half with same values (dedup) and half with new values.
+	for i := 0; i < 25; i++ {
+		key := fmt.Sprintf("vlog_b3_%04d", i)
+		mustPut(t, db, key, makeTestValue(200+i)) // same value, dedup
+	}
+	for i := 25; i < 50; i++ {
+		key := fmt.Sprintf("vlog_b3_%04d", i)
+		mustPut(t, db, key, makeTestValue(300+i)) // different value
+	}
+	db.Sync()
+	mustCheckIntegrity(t, db)
+
+	// Close, reopen, verify integrity and data.
+	db.Close()
+	db2 := openTestDBAt(fs, t, dir, nil)
+	defer db2.Close()
+	mustCheckIntegrity(t, db2)
+
+	for i := 0; i < 25; i++ {
+		key := fmt.Sprintf("vlog_b3_%04d", i)
+		mustGet(t, db2, key, makeTestValue(200+i))
+	}
+	for i := 25; i < 50; i++ {
+		key := fmt.Sprintf("vlog_b3_%04d", i)
+		mustGet(t, db2, key, makeTestValue(300+i))
+	}
+}
+
 // TestFlexDB_CheckIntegrity_AfterVacuumAndReopen exercises the integrity
 // checker through a full cycle: populate -> vacuum -> reopen -> verify.
 func TestFlexDB_CheckIntegrity_AfterVacuumAndReopen(t *testing.T) {

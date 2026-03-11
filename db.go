@@ -1854,6 +1854,8 @@ func (e IntegrityError) Error() string {
 //  5. Sparse index: every anchor interval is readable and kv128-decodable
 //  6. Sorted keys: keys within each decoded interval are in sorted order
 //  7. Anchor coverage: anchor loff+psize spans tile the FlexSpace without gaps/overlaps
+//  8. VLOG blake3: for every KV with a VPtr, read the VLOG entry and verify
+//     hdrCRC, valCRC, and blake3 checksum of value bytes
 //
 // Returns nil if no errors found.
 func (db *FlexDB) CheckIntegrity() []IntegrityError {
@@ -2005,6 +2007,29 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 	totalAnchorBytes := uint64(0)
 	prevAnchorEndLoff := uint64(0)
 	ffSize := ff.Size()
+	vlogChecked := 0
+
+	// checkVlogBlake3 verifies a single KV's VLOG entry if it has a VPtr.
+	checkVlogBlake3 := func(kv *KV, anchorIdx int, anchorKey string) {
+		if !kv.HasVPtr() {
+			return
+		}
+		if db.vlog == nil {
+			addErr("vlog_blake3",
+				fmt.Sprintf("anchor %d (key=%q): KV %q has VPtr but no VLOG file",
+					anchorIdx, anchorKey, kv.Key), false)
+			return
+		}
+		// read() verifies hdrCRC, valCRC, and blake3 of the value bytes.
+		_, err := db.vlog.read(kv.Vptr)
+		if err != nil {
+			addErr("vlog_blake3",
+				fmt.Sprintf("anchor %d (key=%q): KV %q VPtr{Off=%d,Len=%d}: %v",
+					anchorIdx, anchorKey, kv.Key, kv.Vptr.Offset, kv.Vptr.Length, err), false)
+			return
+		}
+		vlogChecked++
+	}
 
 	for snode := db.tree.leafHead; snode != nil; snode = snode.next {
 		var nh memSparseIndexTreeHandler
@@ -2067,15 +2092,16 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 						fmt.Sprintf("anchor %d (key=%q): slottedPageDecode failed: %v",
 							anchorCount, anchor.key, decErr), false)
 				} else {
-					for _, kv := range kvs {
+					for ki := range kvs {
 						kvCount++
-						if hasPrev && kv.Key < prevKey {
+						if hasPrev && kvs[ki].Key < prevKey {
 							addErr("key_order",
 								fmt.Sprintf("anchor %d (key=%q): key %q < prev key %q at position %d",
-									anchorCount, anchor.key, kv.Key, prevKey, kvCount), false)
+									anchorCount, anchor.key, kvs[ki].Key, prevKey, kvCount), false)
 						}
-						prevKey = kv.Key
+						prevKey = kvs[ki].Key
 						hasPrev = true
+						checkVlogBlake3(&kvs[ki], anchorCount, anchor.key)
 					}
 					src = src[consumed:]
 				}
@@ -2093,6 +2119,7 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 				kvCount++
 				prevKey = kv.Key
 				hasPrev = true
+				checkVlogBlake3(&kv, anchorCount, anchor.key)
 				src = src[sz:]
 			}
 
