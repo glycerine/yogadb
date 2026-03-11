@@ -621,6 +621,7 @@ func (ff *FlexSpace) truncateTrailingBlocks() {
 		return // nothing to truncate
 	}
 	ff.fdKV128blocks.Truncate(newSize)
+	vv("did ff.fdKV128blocks.Truncate(newSize = %v)", newSize)
 }
 
 var debugTruncate = false

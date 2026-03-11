@@ -1511,7 +1511,10 @@ func TestPiggybackGC_ReclaimsSpace(t *testing.T) {
 // and associate values of 1050 bytes should not balloon our
 // total overall KV_BLOCKS to 5 blocks and 18-20MB
 // when this is 33000 bytes of key material. we do not
-// want 18x write amplification.
+// want 18x write amplification. but we see it under
+// real darwin AFPS, not under our -tags memfs vfs; so
+// maybe our Truncate or Preallocate implementation is
+// not being faithful? or maybe something else entirely.
 func Test_GC1K_write_1k_keys_with_large_values(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 
@@ -1537,6 +1540,12 @@ func Test_GC1K_write_1k_keys_with_large_values(t *testing.T) {
 
 	met := db.SessionMetrics()
 	vv("met = %v", met)
+
+	if met.BlocksInUse > 1 { // was 5 !?!
+		panicf("for 1000 33 bytes keys, should only have 1 4MB block in use, not %v", met.BlocksInUse)
+	}
+	//met.BlocksWithLowUtilization was 5
+
 	/*
 	   usageAfterRound0 := totalBlockUsage(db.ff)
 	   blocksAfterRound0 := countUsedBlocks(db.ff)
@@ -1597,3 +1606,86 @@ func Test_GC1K_write_1k_keys_with_large_values(t *testing.T) {
 	   	}
 	*/
 }
+
+/* without memfs, we see the 5 blocks in use
+
+Compilation started at Wed Mar 11 04:45:48
+
+go test -v -run GC1K
+=== RUN   Test_GC1K_write_1k_keys_with_large_values
+
+gc_test.go:1539 [goID 9] 2026-03-11 07:46:15.100007000 +0000 UTC met = Metrics{
+      (just this) Session: true
+        KV128 BytesWritten: 196608
+       MemWAL BytesWritten: 72140
+      REDOLog BytesWritten: 1452
+FlexTreePages BytesWritten: 1152
+   LARGE.VLOG BytesWritten: 1074000
+      Logical BytesWritten: 1083000
+        Total BytesWritten: 1345352
+                 WriteAmp: 1.242
+
+   -------- lifetime totals over all sessions  --------
+    TotalLogical BytesWrit: 1083000
+   TotalPhysical BytesWrit: 1345352
+       CumulativeWriteAmp: 1.242
+
+   -------- free space / block utilization --------
+            TotalLiveBytes: 98304 (0.09 MB)
+    TotalFreeBytesInBlocks: 20873216 (19.91 MB)
+      FLEXSPACE_BLOCK_SIZE: 4.00 MB
+               BlocksInUse: 5  (20.00 MB)
+  BlocksWithLowUtilization: 5
+
+   -------- based on parameters used --------
+    LowBlockUtilizationPct: 50.0 %
+}
+
+--- PASS: Test_GC1K_write_1k_keys_with_large_values (22.77s)
+PASS
+ok  	github.com/glycerine/yogadb	22.793s
+
+Compilation finished at Wed Mar 11 04:46:15
+*/
+
+/* versus with memfs, only 1 block used!
+
+-*- mode: compilation; default-directory: "~/go/src/github.com/glycerine/yogadb/" -*-
+Compilation started at Wed Mar 11 04:48:15
+
+go test -v -run GC1K -tags memfs
+=== RUN   Test_GC1K_write_1k_keys_with_large_values
+
+gc_test.go:1539 [goID 9] 2026-03-11 07:48:19.334389000 +0000 UTC met = Metrics{
+      (just this) Session: true
+        KV128 BytesWritten: 221184    // note the difference more here. 196608 above
+       MemWAL BytesWritten: 72060     // slightly less here. 72140 above. 80 bytes diff
+      REDOLog BytesWritten: 1632      // above 1452
+FlexTreePages BytesWritten: 1152      // same
+   LARGE.VLOG BytesWritten: 1074000   // same
+      Logical BytesWritten: 1083000   // same
+        Total BytesWritten: 1370028   // above 1345352
+                 WriteAmp: 1.265      // above 1.242
+
+   -------- lifetime totals over all sessions  --------
+    TotalLogical BytesWrit: 1083000   // same
+   TotalPhysical BytesWrit: 1370028   // above 1345352, slightly less.
+       CumulativeWriteAmp: 1.265
+
+   -------- free space / block utilization --------
+            TotalLiveBytes: 110592 (0.11 MB)
+    TotalFreeBytesInBlocks: 4083712 (3.89 MB)
+      FLEXSPACE_BLOCK_SIZE: 4.00 MB
+               BlocksInUse: 1  (4.00 MB)
+  BlocksWithLowUtilization: 1
+
+   -------- based on parameters used --------
+    LowBlockUtilizationPct: 50.0 %
+}
+
+--- PASS: Test_GC1K_write_1k_keys_with_large_values (0.01s)
+PASS
+ok  	github.com/glycerine/yogadb	0.035s
+
+Compilation finished at Wed Mar 11 04:48:19
+*/
