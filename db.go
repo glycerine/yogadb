@@ -165,29 +165,29 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 
 	// Write large values to VLOG with a single batch fsync. The WAL then
 	// stores VPtrs (not full values), so large values are written exactly once.
+	// Blake3 dedup: if the old VLOG entry has the same checksum, reuse the
+	// old VPtr and skip the write. See "HLC STALENESS IN VLOG HEADERS" in vlog.go.
 	if db.vlog != nil {
 		// Collect large values for batch append.
 		var largeIndices []int
 		var largeValues [][]byte
 		var largeHLCs []HLC
+		var oldVPs []VPtr
 		for i, kv := range s.puts {
 			if kv.Value != nil && len(kv.Value) > vlogInlineThreshold {
 				largeIndices = append(largeIndices, i)
 				largeValues = append(largeValues, kv.Value)
 				largeHLCs = append(largeHLCs, kv.Hlc)
+				oldVPs = append(oldVPs, db.lookupOldVPtr(kv.Key))
 			}
 		}
 		if len(largeValues) > 0 {
-			// Batch write + single fsync - ensures all values are durable
-			// before any WAL entry references them.
-			ptrs, err := db.vlog.appendBatchAndSync(largeValues, largeHLCs, db.cfg.OmitMemWalFsync)
+			// Batch write + single fsync with blake3 dedup.
+			ptrs, _, err := db.vlog.appendBatchDedupAndSync(largeValues, largeHLCs, oldVPs, db.cfg.OmitMemWalFsync)
 			if err != nil {
 				return HLCInterval{}, nil, fmt.Errorf("flexdb: vlog batch append: %w", err)
 			}
 			for j, idx := range largeIndices {
-				// was:
-				//s.puts[idx] = &KV{Key: s.puts[idx].Key, Vptr: ptrs[j], HasVPtr: true, Hlc: s.puts[idx].Hlc}
-				// one less allocation &KV{} allocation:
 				e := s.puts[idx]
 				// Key stays same.
 				e.Value = nil
@@ -727,6 +727,40 @@ func (db *FlexDB) writeLockHeldKeyState(key string) keyState {
 		return ksNotExists
 	}
 	return kvToState(kv)
+}
+
+// lookupOldVPtr searches for an existing VPtr for the given key.
+// Checks the active memtable, inactive memtable, and FlexSpace (in that order).
+// Returns a zero VPtr if the key doesn't exist or doesn't have a VLOG value.
+// Used by the VLOG dedup path to avoid writing duplicate large values.
+// Caller must hold topMutRW.Lock().
+func (db *FlexDB) lookupOldVPtr(key string) VPtr {
+	// Check active memtable first (most likely hit for repeated overwrites).
+	if kv, ok := db.memtables[db.activeMT].get(key); ok {
+		if kv.HasVPtr() {
+			return kv.Vptr
+		}
+		return VPtr{}
+	}
+	// Check inactive memtable.
+	inactive := 1 - db.activeMT
+	if !db.memtables[inactive].empty {
+		if kv, ok := db.memtables[inactive].get(key); ok {
+			if kv.HasVPtr() {
+				return kv.Vptr
+			}
+			return VPtr{}
+		}
+	}
+	// Check FlexSpace (loads interval cache if needed).
+	if db.ff.Size() == 0 {
+		return VPtr{}
+	}
+	kv, ok := db.getPassthroughKV(key)
+	if ok && kv.HasVPtr() {
+		return kv.Vptr
+	}
+	return VPtr{}
 }
 
 // Len returns the total number of live (non-tombstone) keys in the database.
@@ -2224,9 +2258,12 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, doDelete bool) erro
 	}
 
 	if db.vlog != nil && value != nil && len(value) > vlogInlineThreshold {
-		// Write value to VLOG and fsync before WAL references it.
-		// This ensures the VLOG entry is durable before the WAL VPtr.
-		vp, err := db.vlog.appendAndSync(value, hlcVal, db.cfg.OmitMemWalFsync)
+		// Look up old VPtr for blake3 dedup. Check memtables first (cheap),
+		// then FlexSpace (loads interval cache). If the old value has the
+		// same blake3 checksum, we reuse the old VPtr and skip the VLOG write.
+		// See "HLC STALENESS IN VLOG HEADERS" in vlog.go.
+		oldVP := db.lookupOldVPtr(key)
+		vp, _, err := db.vlog.appendDedupAndSync(value, hlcVal, oldVP, db.cfg.OmitMemWalFsync)
 		if err != nil {
 			return fmt.Errorf("flexdb: vlog append: %w", err)
 		}
