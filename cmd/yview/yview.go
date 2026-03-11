@@ -6,6 +6,8 @@ import (
 	"os"
 	"time"
 
+	cristalbase64 "github.com/cristalhq/base64"
+	"github.com/glycerine/blake3"
 	"github.com/glycerine/yogadb"
 )
 
@@ -78,7 +80,8 @@ func (c *YviewConfig) justShowAll(db *yogadb.FlexDB, dbPath string) {
 			}
 			buf = append(buf, key...)
 			if c.KeysOnly {
-				buf = append(buf, []byte(fmt.Sprintf(" => val len %v", len(value)))...)
+				b3 := blake3OfBytes(value)
+				buf = append(buf, []byte(fmt.Sprintf(" => val len %v b3: %v", len(value), b3))...)
 			} else {
 				if len(value) > 0 {
 					buf = append(buf, colonarrow...)
@@ -97,4 +100,11 @@ func (c *YviewConfig) justShowAll(db *yogadb.FlexDB, dbPath string) {
 	}
 	os.Stdout.Sync()
 	fmt.Fprintf(os.Stderr, "YogaDB saw %v key-value pair(s) in database '%v'.\n", saw, dbPath)
+}
+
+func blake3OfBytes(by []byte) string {
+	h := blake3.New(64, nil)
+	h.Write(by)
+	sum := h.Sum(nil)
+	return "blake3.33B-" + cristalbase64.URLEncoding.EncodeToString(sum[:33])
 }
