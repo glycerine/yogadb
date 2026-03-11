@@ -349,3 +349,156 @@ func TestFlexDB_VLOG_VacuumBasic(t *testing.T) {
 		mustGet(t, db2, key, makeTestValue(200+i))
 	}
 }
+
+// TestFlexDB_VLOG_DedupSameValue verifies that overwriting keys with the
+// same large value does NOT grow the VLOG. The blake3 checksum in the VLOG
+// header is used to detect identical values and skip the write.
+func TestFlexDB_VLOG_DedupSameValue(t *testing.T) {
+	fs, dir := newTestFS(t)
+	db := openTestDBAt(fs, t, dir, nil)
+
+	// Write 50 keys with large values (> vlogInlineThreshold).
+	numKeys := 50
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("dedup_%04d", i)
+		mustPut(t, db, key, makeTestValue(200+i))
+	}
+	db.Sync()
+	sizeAfterFirstWrite := db.vlog.size()
+	t.Logf("VLOG size after first write: %d", sizeAfterFirstWrite)
+
+	// Record HLCs from the first write.
+	hlcAfterFirst := make([]HLC, numKeys)
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("dedup_%04d", i)
+		kv, ok := db.GetKV(key)
+		if !ok {
+			t.Fatalf("GetKV(%q) not found after first write", key)
+		}
+		hlcAfterFirst[i] = kv.Hlc
+	}
+
+	// Overwrite ALL keys with the SAME values. The VLOG should NOT grow
+	// because blake3 dedup detects that each value is unchanged.
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("dedup_%04d", i)
+		mustPut(t, db, key, makeTestValue(200+i))
+	}
+	db.Sync()
+	sizeAfterSecondWrite := db.vlog.size()
+	t.Logf("VLOG size after second write (same values): %d", sizeAfterSecondWrite)
+
+	if sizeAfterSecondWrite != sizeAfterFirstWrite {
+		t.Fatalf("VLOG grew from %d to %d on identical overwrite; dedup failed",
+			sizeAfterFirstWrite, sizeAfterSecondWrite)
+	}
+
+	// Verify all values are correct AND that the HLC has advanced.
+	// Even though the VLOG entry is reused, the KV's authoritative HLC
+	// (stored in KV128_BLOCKS / memtable) must reflect the latest write.
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("dedup_%04d", i)
+		mustGet(t, db, key, makeTestValue(200+i))
+		kv, ok := db.GetKV(key)
+		if !ok {
+			t.Fatalf("GetKV(%q) not found after dedup overwrite", key)
+		}
+		if kv.Hlc <= hlcAfterFirst[i] {
+			t.Fatalf("key %q: HLC did not advance after dedup overwrite: first=%d, second=%d",
+				key, hlcAfterFirst[i], kv.Hlc)
+		}
+	}
+
+	// Now overwrite with DIFFERENT values — VLOG should grow.
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("dedup_%04d", i)
+		mustPut(t, db, key, makeTestValue(300+i))
+	}
+	db.Sync()
+	sizeAfterThirdWrite := db.vlog.size()
+	t.Logf("VLOG size after third write (different values): %d", sizeAfterThirdWrite)
+
+	if sizeAfterThirdWrite <= sizeAfterSecondWrite {
+		t.Fatalf("VLOG did not grow on changed values: before %d, after %d",
+			sizeAfterSecondWrite, sizeAfterThirdWrite)
+	}
+
+	// Verify updated values.
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("dedup_%04d", i)
+		mustGet(t, db, key, makeTestValue(300+i))
+	}
+
+	db.Close()
+
+	// Reopen and verify persistence.
+	db2 := openTestDBAt(fs, t, dir, nil)
+	defer db2.Close()
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("dedup_%04d", i)
+		mustGet(t, db2, key, makeTestValue(300+i))
+	}
+}
+
+// TestFlexDB_VLOG_DedupBatch verifies that batch writes also skip VLOG
+// entries for unchanged large values via blake3 dedup.
+func TestFlexDB_VLOG_DedupBatch(t *testing.T) {
+	fs, dir := newTestFS(t)
+	db := openTestDBAt(fs, t, dir, nil)
+
+	numKeys := 30
+
+	// First batch write.
+	batch := db.NewBatch()
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("bdedup_%04d", i)
+		batch.Set(key, []byte(makeTestValue(150+i)))
+	}
+	batch.Commit(false)
+	db.Sync()
+	sizeAfterFirst := db.vlog.size()
+	t.Logf("VLOG size after first batch: %d", sizeAfterFirst)
+
+	// Record HLCs from the first batch.
+	hlcAfterFirst := make([]HLC, numKeys)
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("bdedup_%04d", i)
+		kv, ok := db.GetKV(key)
+		if !ok {
+			t.Fatalf("GetKV(%q) not found after first batch", key)
+		}
+		hlcAfterFirst[i] = kv.Hlc
+	}
+
+	// Second batch with identical values.
+	batch2 := db.NewBatch()
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("bdedup_%04d", i)
+		batch2.Set(key, []byte(makeTestValue(150+i)))
+	}
+	batch2.Commit(false)
+	db.Sync()
+	sizeAfterSecond := db.vlog.size()
+	t.Logf("VLOG size after second batch (same values): %d", sizeAfterSecond)
+
+	if sizeAfterSecond != sizeAfterFirst {
+		t.Fatalf("VLOG grew from %d to %d on identical batch overwrite; dedup failed",
+			sizeAfterFirst, sizeAfterSecond)
+	}
+
+	// Verify all values are correct AND HLCs advanced despite dedup.
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("bdedup_%04d", i)
+		mustGet(t, db, key, makeTestValue(150+i))
+		kv, ok := db.GetKV(key)
+		if !ok {
+			t.Fatalf("GetKV(%q) not found after dedup batch", key)
+		}
+		if kv.Hlc <= hlcAfterFirst[i] {
+			t.Fatalf("key %q: HLC did not advance after dedup batch: first=%d, second=%d",
+				key, hlcAfterFirst[i], kv.Hlc)
+		}
+	}
+
+	db.Close()
+}
