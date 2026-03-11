@@ -9,9 +9,12 @@ all:
 	cd cmd/yogabench && go install
 
 fuzz:
-	go test -fuzz FuzzFlexTree -fuzztime 5m -run=xxx || true
-	go test -fuzz FuzzBruteForce -fuzztime 5m -run=xxx || true
-	go test -fuzz FuzzIntervalCache_Dedup -fuzztime 5m -run=xxx || true
-	go test -fuzz FuzzIntervalCache_FindKey -fuzztime 5m -run=xxx || true
-	go test -fuzz FuzzIntervalCache_Mutations -fuzztime 5m -run=xxx || true
-	go test -fuzz FuzzSparseIndexTree -fuzztime 5m -run=xxx || true
+	go test -tags memfs -fuzz '^FuzzFlexSpace$' -fuzztime 30m -run='^$' -timeout 35m
+	go test -tags memfs -fuzz '^FuzzFlexSpaceRecovery$' -fuzztime 30m -run='^$' -timeout 35m
+	go test -fuzz FuzzFlexTree -fuzztime 5m -run=xxx -tags memfs || true
+	go test -fuzz FuzzBruteForce -fuzztime 5m -run=xxx -tags memfs || true
+	go test -fuzz FuzzIntervalCache_Dedup -fuzztime 5m -run=xxx -tags memfs || true
+	go test -fuzz FuzzIntervalCache_FindKey -fuzztime 5m -run=xxx -tags memfs || true
+	go test -fuzz FuzzIntervalCache_Mutations -fuzztime 5m -run=xxx -tags memfs || true
+	go test -fuzz FuzzSparseIndexTree -fuzztime 5m -run=xxx -tags memfs || true
+	go test -fuzz '^FuzzFlexSpace$' -fuzztime 5m -run='^$' -tags memfs  || true
