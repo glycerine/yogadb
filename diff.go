@@ -3,6 +3,7 @@ package yogadb
 import (
 	"bytes"
 	"fmt"
+	"time"
 )
 
 func FirstDiff(dbA, dbB *FlexDB) string {
@@ -82,6 +83,11 @@ func FirstDiff(dbA, dbB *FlexDB) string {
 			cmp := bytes.Compare(va, vb)
 			if cmp != 0 {
 				return fmt.Sprintf("value diff at i=%v, keyA==keyB:'%v' but va=\n%v\n vb=\n%v\n", i, ka, string(va), string(vb))
+			}
+			hlcA := itA.Hlc()
+			hlcB := itB.Hlc()
+			if hlcA != hlcB {
+				return fmt.Sprintf("hlc diff at i=%v, keys agree:'%v' and values agree, but hlcA='%v' (%v); while hlcB='%v' (%v)", i, ka, hlcA, nice(time.Unix(0, int64(hlcA))), hlcB, nice(time.Unix(0, int64(hlcB))))
 			}
 		}
 		itA.Next()
