@@ -1096,7 +1096,7 @@ func (z *Metrics) String() (r string) {
 	r += fmt.Sprintf("   TotalPhysical BytesWrit: %v\n", formatInt64Under(z.totalPhysicalBytesWrit))
 	r += fmt.Sprintf("       CumulativeWriteAmp: %0.3f\n", z.CumulativeWriteAmp)
 	r += fmt.Sprintf("\n   --- free space / block utilization in FLEXSPACE.KV128_BLOCKS ---  \n")
-	r += fmt.Sprintf("            KVBlocksTotalLiveBytes: %v (%0.2f MB)\n", formatInt64Under(z.KVBlocksTotalLiveBytes), float64(z.KVBlocksTotalLiveBytes)/(1<<20))
+	r += fmt.Sprintf("    KVBlocksTotalLiveBytes: %v (%0.2f MB)\n", formatInt64Under(z.KVBlocksTotalLiveBytes), float64(z.KVBlocksTotalLiveBytes)/(1<<20))
 	r += fmt.Sprintf("    TotalFreeBytesInBlocks: %v (%0.2f MB)\n", formatInt64Under(z.TotalFreeBytesInBlocks), float64(z.TotalFreeBytesInBlocks)/(1<<20))
 	r += fmt.Sprintf("      FLEXSPACE_BLOCK_SIZE: %0.2f MB\n", float64(FLEXSPACE_BLOCK_SIZE)/(1<<20))
 	r += fmt.Sprintf("               BlocksInUse: %v  (%0.2f MB)\n", formatInt64Under(z.BlocksInUse), float64(z.BlocksInUse*FLEXSPACE_BLOCK_SIZE)/(1<<20))
@@ -1110,8 +1110,8 @@ func (z *Metrics) String() (r string) {
 	}
 	r += fmt.Sprintf("\n   -------- on disk big files summary --------  \n")
 
-	r += fmt.Sprintf(" FLEXSPACE.KV128_BLOCKS: %v (%0.3f MB)\n", formatInt64Under(z.KVBlocksOnDiskFootprintBytes), float64(z.KVBlocksOnDiskFootprintBytes)/(1<<20))
-	r += fmt.Sprintf("             LARGE.VLOG: %v (%0.3f MB)\n", formatInt64Under(z.VlogOnDiskFootprintBytes), float64(z.VlogOnDiskFootprintBytes)/(1<<20))
+	r += fmt.Sprintf(" FLEXSPACE.KV128_BLOCKS: %7.3f MB (%15s bytes)\n", float64(z.KVBlocksOnDiskFootprintBytes)/(1<<20), formatInt64Under(z.KVBlocksOnDiskFootprintBytes))
+	r += fmt.Sprintf("             LARGE.VLOG: %7.3f MB (%15s bytes)\n", float64(z.VlogOnDiskFootprintBytes)/(1<<20), formatInt64Under(z.VlogOnDiskFootprintBytes))
 
 	r += "}\n"
 	return
