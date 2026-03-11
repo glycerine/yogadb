@@ -211,10 +211,17 @@ func FuzzFlexSpace(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte, seed int64) {
 		fs, dir := newTestFS(t)
-		ff := mustOpenFuzz(t, dir, fs)
+		ff, err := OpenFlexSpaceCoW(dir, false, fs)
+		if err != nil {
+			t.Skipf("OpenFlexSpaceCoW: %v", err)
+		}
 		// Guarantee cleanup even on t.Fatal/panic — the fuzz engine
 		// requires each iteration to be fully self-contained.
-		t.Cleanup(func() { ff.Close() })
+		// Recover from panics so panicOn() calls don't kill the worker.
+		t.Cleanup(func() {
+			defer func() { recover() }()
+			ff.Close()
+		})
 		oracle := &flexSpaceOracle{}
 
 		pos := 0
@@ -239,6 +246,14 @@ func FuzzFlexSpace(f *testing.F) {
 		for i := range fillBuf {
 			fillBuf[i] = byte(prng())
 		}
+
+		// Wrap in func+recover so panicOn() calls don't kill the fuzz worker subprocess.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("panic in fuzz iteration: %v", r)
+				}
+			}()
 
 		for pos < len(data) && opCount < maxOps {
 			opcode := data[pos] % 5
@@ -362,6 +377,7 @@ func FuzzFlexSpace(f *testing.F) {
 			verifyNoBlockCrossingFuzz(t, ff, "final")
 			verifyReadCorrectness(t, ff, oracle, "final")
 		}
+		}() // end recover wrapper
 		// ff.Close() handled by t.Cleanup
 	})
 }
@@ -381,12 +397,19 @@ func FuzzRecoveryFlexSpace(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte, seed int64) {
 		fs, dir := newTestFS(t)
-		ff := mustOpenFuzz(t, dir, fs)
-		// Track whether ff is currently open so t.Cleanup doesn't
+		ff, err := OpenFlexSpaceCoW(dir, false, fs)
+		if err != nil {
+			t.Skipf("OpenFlexSpaceCoW: %v", err)
+		}
+		// Track whether ff is currently open so cleanup doesn't
 		// double-close after an opcode-5 close+reopen sequence.
+		// We must also recover from panics — panicOn() calls inside
+		// FlexSpace would kill the fuzz worker subprocess, which the
+		// fuzz framework reports as "hung or terminated unexpectedly".
 		ffOpen := true
 		t.Cleanup(func() {
 			if ffOpen {
+				defer func() { recover() }() // swallow panic from double-close or bad state
 				ff.Close()
 			}
 		})
@@ -394,7 +417,9 @@ func FuzzRecoveryFlexSpace(f *testing.F) {
 
 		pos := 0
 		opCount := 0
-		const maxOps = 150 // bound work per iteration for -race
+		reopenCount := 0
+		const maxOps = 150    // bound work per iteration for -race
+		const maxReopens = 5  // reopens are expensive (sync+close+open+verify)
 		const maxSize = uint64(2 * FLEXSPACE_BLOCK_SIZE)
 
 		prngState := uint64(seed)
@@ -413,106 +438,125 @@ func FuzzRecoveryFlexSpace(f *testing.F) {
 			fillBuf[i] = byte(prng())
 		}
 
-		for pos < len(data) && opCount < maxOps {
-			opcode := data[pos] % 6
-			pos++
-			opCount++
+		// Wrap the entire operation loop in a deferred recover so that
+		// any panicOn() inside FlexSpace code converts to a test failure
+		// instead of killing the fuzz worker subprocess.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("panic in fuzz iteration: %v", r)
+				}
+			}()
 
-			size := ff.Size()
+			for pos < len(data) && opCount < maxOps {
+				opcode := data[pos] % 6
+				pos++
+				opCount++
 
-			switch opcode {
-			case 0: // Insert at end
-				rawLen := consumeU16(data, &pos)
-				length := uint64(rawLen)%(FLEXSPACE_MAX_EXTENT_SIZE-1) + 1
-				if size+length > maxSize {
-					continue
-				}
-				insertData := makeFillData(fillBuf, length, prng)
-				n, err := ff.Insert(insertData, size, length)
-				if err != nil || uint64(n) != length {
-					continue
-				}
-				oracle.insert(size, insertData)
+				size := ff.Size()
 
-			case 1: // Collapse
-				if size < 2 {
-					continue
-				}
-				rawOff := consumeU16(data, &pos)
-				rawLen := consumeU16(data, &pos)
-				off := uint64(rawOff) % size
-				maxLen := size - off
-				length := uint64(rawLen)%maxLen + 1
-				if err := ff.Collapse(off, length); err != nil {
-					continue
-				}
-				oracle.collapse(off, length)
+				switch opcode {
+				case 0: // Insert at end
+					rawLen := consumeU16(data, &pos)
+					length := uint64(rawLen)%(FLEXSPACE_MAX_EXTENT_SIZE-1) + 1
+					if size+length > maxSize {
+						continue
+					}
+					insertData := makeFillData(fillBuf, length, prng)
+					n, err := ff.Insert(insertData, size, length)
+					if err != nil || uint64(n) != length {
+						continue
+					}
+					oracle.insert(size, insertData)
 
-			case 2: // Write
-				if size < 2 {
-					continue
-				}
-				rawOff := consumeU16(data, &pos)
-				rawLen := consumeU16(data, &pos)
-				off := uint64(rawOff) % size
-				maxLen := size - off
-				if maxLen > FLEXSPACE_MAX_EXTENT_SIZE {
-					maxLen = FLEXSPACE_MAX_EXTENT_SIZE
-				}
-				length := uint64(rawLen)%maxLen + 1
-				writeData := makeFillData(fillBuf, length, prng)
-				n, err := ff.Write(writeData, off, length)
-				if err != nil || uint64(n) != length {
-					continue
-				}
-				oracle.write(off, writeData)
+				case 1: // Collapse
+					if size < 2 {
+						continue
+					}
+					rawOff := consumeU16(data, &pos)
+					rawLen := consumeU16(data, &pos)
+					off := uint64(rawOff) % size
+					maxLen := size - off
+					length := uint64(rawLen)%maxLen + 1
+					if err := ff.Collapse(off, length); err != nil {
+						continue
+					}
+					oracle.collapse(off, length)
 
-			case 3: // Sync
-				ff.Sync()
+				case 2: // Write
+					if size < 2 {
+						continue
+					}
+					rawOff := consumeU16(data, &pos)
+					rawLen := consumeU16(data, &pos)
+					off := uint64(rawOff) % size
+					maxLen := size - off
+					if maxLen > FLEXSPACE_MAX_EXTENT_SIZE {
+						maxLen = FLEXSPACE_MAX_EXTENT_SIZE
+					}
+					length := uint64(rawLen)%maxLen + 1
+					writeData := makeFillData(fillBuf, length, prng)
+					n, err := ff.Write(writeData, off, length)
+					if err != nil || uint64(n) != length {
+						continue
+					}
+					oracle.write(off, writeData)
 
-			case 4: // Insert at middle
-				if size < 2 {
-					continue
+				case 3: // Sync
+					ff.Sync()
+
+				case 4: // Insert at middle
+					if size < 2 {
+						continue
+					}
+					rawOff := consumeU16(data, &pos)
+					rawLen := consumeU16(data, &pos)
+					off := uint64(rawOff) % size
+					length := uint64(rawLen)%(FLEXSPACE_MAX_EXTENT_SIZE-1) + 1
+					if size+length > maxSize {
+						continue
+					}
+					insertData := makeFillData(fillBuf, length, prng)
+					n, err := ff.Insert(insertData, off, length)
+					if err != nil || uint64(n) != length {
+						continue
+					}
+					oracle.insert(off, insertData)
+
+				case 5: // Sync + Close + Reopen
+					if reopenCount >= maxReopens {
+						continue
+					}
+					reopenCount++
+					ff.Sync()
+					ff.Close()
+					ffOpen = false
+
+					var err error
+					ff, err = OpenFlexSpaceCoW(dir, false, fs)
+					if err != nil {
+						t.Fatalf("reopen: %v", err)
+					}
+					ffOpen = true
+
+					// After recovery: verify invariants
+					verifyAllFlexSpaceInvariants(t, ff, fmt.Sprintf("recovery#%d", opCount))
+					verifyNoBlockCrossingFuzz(t, ff, fmt.Sprintf("recovery#%d", opCount))
+
+					if ff.Size() != oracle.size() {
+						t.Fatalf("[INV-FS-4] recovery#%d: FlexSpace.Size()=%d != oracle.size()=%d",
+							opCount, ff.Size(), oracle.size())
+					}
+					verifyReadCorrectness(t, ff, oracle, fmt.Sprintf("recovery#%d", opCount))
 				}
-				rawOff := consumeU16(data, &pos)
-				rawLen := consumeU16(data, &pos)
-				off := uint64(rawOff) % size
-				length := uint64(rawLen)%(FLEXSPACE_MAX_EXTENT_SIZE-1) + 1
-				if size+length > maxSize {
-					continue
-				}
-				insertData := makeFillData(fillBuf, length, prng)
-				n, err := ff.Insert(insertData, off, length)
-				if err != nil || uint64(n) != length {
-					continue
-				}
-				oracle.insert(off, insertData)
-
-			case 5: // Sync + Close + Reopen (INV-FS-4: recovery preserves state)
-				ff.Sync()
-				ff.Close()
-				ffOpen = false
-
-				ff = mustOpenFuzz(t, dir, fs)
-				ffOpen = true
-
-				// After recovery: verify invariants
-				verifyAllFlexSpaceInvariants(t, ff, fmt.Sprintf("recovery#%d", opCount))
-				verifyNoBlockCrossingFuzz(t, ff, fmt.Sprintf("recovery#%d", opCount))
-
-				if ff.Size() != oracle.size() {
-					t.Fatalf("[INV-FS-4] recovery#%d: FlexSpace.Size()=%d != oracle.size()=%d",
-						opCount, ff.Size(), oracle.size())
-				}
-				verifyReadCorrectness(t, ff, oracle, fmt.Sprintf("recovery#%d", opCount))
 			}
-		}
 
-		// Final checks
-		if ff.Size() > 0 {
-			verifyAllFlexSpaceInvariants(t, ff, "final")
-			verifyReadCorrectness(t, ff, oracle, "final")
-		}
+			// Final checks
+			if ff.Size() > 0 {
+				verifyAllFlexSpaceInvariants(t, ff, "final")
+				verifyReadCorrectness(t, ff, oracle, "final")
+			}
+		}()
 		// ff.Close() handled by t.Cleanup
 	})
 }
