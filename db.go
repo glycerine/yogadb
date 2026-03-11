@@ -1013,7 +1013,7 @@ func (db *FlexDB) Close() *Metrics {
 	// closing file descriptors. This solves the chicken-and-egg
 	// problem: accurate cumulative write amplification is only
 	// knowable after the final sync, but the DB is closing.
-	m := db.finalMetrics()
+	m := db.writeLockHeldFinalMetrics()
 
 	db.memtables[0].memWalFD.Close()
 	db.memtables[1].memWalFD.Close()
@@ -1023,6 +1023,7 @@ func (db *FlexDB) Close() *Metrics {
 // Metrics holds byte-level write counters for computing write amplification.
 type Metrics struct {
 	Session                   bool
+	LiveKeyCount              int64
 	KV128BytesWritten         int64 // FlexSpace FLEXSPACE.KV128_BLOCKS file
 	MemWALBytesWritten        int64 // FlexDB WAL (FLEXDB.MEMWAL1 + FLEXDB.MEMWAL2)
 	REDOLogBytesWritten       int64 // FLEXSPACE.REDO.LOG
@@ -1073,6 +1074,7 @@ type Metrics struct {
 func (z *Metrics) String() (r string) {
 	r = "Metrics{\n"
 	r += fmt.Sprintf("      (just this) Session: %v\n", z.Session)
+	r += fmt.Sprintf("              LiveKeyCount: %v\n", z.LiveKeyCount)
 	r += fmt.Sprintf("        KV128 BytesWritten: %v\n", z.KV128BytesWritten)
 	r += fmt.Sprintf("       MemWAL BytesWritten: %v\n", z.MemWALBytesWritten)
 	r += fmt.Sprintf("      REDOLog BytesWritten: %v\n", z.REDOLogBytesWritten)
@@ -1111,6 +1113,7 @@ func (db *FlexDB) SessionMetrics() *Metrics {
 }
 func (db *FlexDB) writeLockHeldSessionMetrics() *Metrics {
 	m := &Metrics{
+		LiveKeyCount:              db.liveKeys,
 		Session:                   true,
 		KV128BytesWritten:         atomic.LoadInt64(&db.ff.KV128BytesWritten),
 		MemWALBytesWritten:        atomic.LoadInt64(&db.MemWALBytesWritten),
@@ -1182,10 +1185,11 @@ func (db *FlexDB) persistCounters() {
 // finalMetrics builds a Metrics snapshot after the final sync in Close().
 // At this point all session counters are final and the cumulative totals
 // have been persisted, so the write amplification numbers are accurate.
-func (db *FlexDB) finalMetrics() *Metrics {
+func (db *FlexDB) writeLockHeldFinalMetrics() *Metrics {
 
 	m := &Metrics{
 		Session:                   true,
+		LiveKeyCount:              db.liveKeys,
 		KV128BytesWritten:         atomic.LoadInt64(&db.ff.KV128BytesWritten),
 		MemWALBytesWritten:        atomic.LoadInt64(&db.MemWALBytesWritten),
 		REDOLogBytesWritten:       atomic.LoadInt64(&db.ff.REDOLogBytesWritten),
@@ -3832,6 +3836,10 @@ func (db *FlexDB) flushWorker() {
 func (db *FlexDB) doFlush() {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
+
+	defer func() {
+		vv("end of doFlush: sessionMetrics() = '%v'", db.writeLockHeldSessionMetrics())
+	}()
 
 	wasActive := db.activeMT
 	if db.memtables[wasActive].empty {
