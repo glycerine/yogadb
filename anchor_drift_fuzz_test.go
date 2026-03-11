@@ -37,163 +37,177 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		fs := vfs.NewMem()
 		dir := "fuzz_anchor_drift"
-		panicOn(fs.MkdirAll(dir, 0755))
+		if err := fs.MkdirAll(dir, 0755); err != nil {
+			return
+		}
 
 		db := openFuzzDB(fs, dir)
 		if db == nil {
 			return
 		}
+		defer func() {
+			// Always close DB to avoid leaking goroutines.
+			db.Close()
+		}()
 
 		// Track what keys we've inserted and their expected values,
 		// so we can verify correctness after reopen.
 		kv := make(map[string]string) // key -> value
 		synced := false
 
-		i := 0
-		for i < len(data) {
-			op := data[i] % 7
-			i++
+		// Wrap in func+recover so panicOn() calls don't kill the fuzz worker subprocess.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("panic in fuzz iteration: %v", r)
+				}
+			}()
 
-			switch op {
-			case 0: // Put with key index and value size from fuzz data
-				if i+4 > len(data) {
-					return
-				}
-				keyIdx := int(binary.BigEndian.Uint16(data[i : i+2]))
-				valSize := int(data[i+2])
-				valSeed := int(data[i+3])
-				i += 4
+			i := 0
+			for i < len(data) {
+				op := data[i] % 7
+				i++
 
-				keyIdx = keyIdx % 500 // cap key space
-				if valSize < 5 {
-					valSize = 5
-				}
-				if valSize > 55 { // keep values inline (< 64)
-					valSize = 55
-				}
-
-				key := fmt.Sprintf("k%04d", keyIdx)
-				val := makeFuzzValue(valSize, valSeed)
-				err := db.Put(key, []byte(val))
-				if err != nil {
-					t.Fatalf("Put(%q): %v", key, err)
-				}
-				kv[key] = val
-				synced = false
-
-			case 1: // Delete
-				if i+2 > len(data) || len(kv) == 0 {
-					continue
-				}
-				keyIdx := int(binary.BigEndian.Uint16(data[i : i+2]))
-				i += 2
-				keyIdx = keyIdx % 500
-				key := fmt.Sprintf("k%04d", keyIdx)
-				if _, exists := kv[key]; exists {
-					err := db.Delete(key)
-					if err != nil {
-						t.Fatalf("Delete(%q): %v", key, err)
+				switch op {
+				case 0: // Put with key index and value size from fuzz data
+					if i+4 > len(data) {
+						return
 					}
-					delete(kv, key)
+					keyIdx := int(binary.BigEndian.Uint16(data[i : i+2]))
+					valSize := int(data[i+2])
+					valSeed := int(data[i+3])
+					i += 4
+
+					keyIdx = keyIdx % 500 // cap key space
+					if valSize < 5 {
+						valSize = 5
+					}
+					if valSize > 55 { // keep values inline (< 64)
+						valSize = 55
+					}
+
+					key := fmt.Sprintf("k%04d", keyIdx)
+					val := makeFuzzValue(valSize, valSeed)
+					err := db.Put(key, []byte(val))
+					if err != nil {
+						t.Fatalf("Put(%q): %v", key, err)
+					}
+					kv[key] = val
 					synced = false
-				}
 
-			case 2: // Put batch - insert several sequential keys
-				if i+2 > len(data) {
-					continue
-				}
-				startIdx := int(data[i]) * 2
-				count := int(data[i+1])%20 + 1
-				i += 2
-				for j := 0; j < count; j++ {
-					key := fmt.Sprintf("k%04d", (startIdx+j)%500)
-					val := makeFuzzValue(30, startIdx+j)
-					err := db.Put(key, []byte(val))
-					if err != nil {
-						t.Fatalf("Put(%q): %v", key, err)
+				case 1: // Delete
+					if i+2 > len(data) || len(kv) == 0 {
+						continue
 					}
-					kv[key] = val
-				}
-				synced = false
-
-			case 3: // Overwrite existing keys with different-sized values
-				if i+2 > len(data) || len(kv) == 0 {
-					continue
-				}
-				newSize := int(data[i])%50 + 5
-				count := int(data[i+1])%10 + 1
-				i += 2
-				j := 0
-				for key := range kv {
-					if j >= count {
-						break
+					keyIdx := int(binary.BigEndian.Uint16(data[i : i+2]))
+					i += 2
+					keyIdx = keyIdx % 500
+					key := fmt.Sprintf("k%04d", keyIdx)
+					if _, exists := kv[key]; exists {
+						err := db.Delete(key)
+						if err != nil {
+							t.Fatalf("Delete(%q): %v", key, err)
+						}
+						delete(kv, key)
+						synced = false
 					}
-					val := makeFuzzValue(newSize, j+newSize)
-					err := db.Put(key, []byte(val))
-					if err != nil {
-						t.Fatalf("Put(%q): %v", key, err)
+
+				case 2: // Put batch - insert several sequential keys
+					if i+2 > len(data) {
+						continue
 					}
-					kv[key] = val
-					j++
-				}
-				synced = false
+					startIdx := int(data[i]) * 2
+					count := int(data[i+1])%20 + 1
+					i += 2
+					for j := 0; j < count; j++ {
+						key := fmt.Sprintf("k%04d", (startIdx+j)%500)
+						val := makeFuzzValue(30, startIdx+j)
+						err := db.Put(key, []byte(val))
+						if err != nil {
+							t.Fatalf("Put(%q): %v", key, err)
+						}
+						kv[key] = val
+					}
+					synced = false
 
-			case 4: // Sync - triggers flushDirtyPages (the original bug site)
-				if len(kv) == 0 {
-					continue
-				}
-				db.Sync()
-				synced = true
-				// verifyAnchorTags is called inside Sync, so if we get
-				// here without panic, the anchor tree is in sync.
+				case 3: // Overwrite existing keys with different-sized values
+					if i+2 > len(data) || len(kv) == 0 {
+						continue
+					}
+					newSize := int(data[i])%50 + 5
+					count := int(data[i+1])%10 + 1
+					i += 2
+					j := 0
+					for key := range kv {
+						if j >= count {
+							break
+						}
+						val := makeFuzzValue(newSize, j+newSize)
+						err := db.Put(key, []byte(val))
+						if err != nil {
+							t.Fatalf("Put(%q): %v", key, err)
+						}
+						kv[key] = val
+						j++
+					}
+					synced = false
 
-			case 5: // VacuumKV - creates tight pages, rebuilds FlexTree
-				if !synced || len(kv) == 0 {
-					continue
-				}
-				_, err := db.VacuumKV()
-				if err != nil {
-					t.Fatalf("VacuumKV: %v", err)
-				}
-
-			case 6: // Close + Reopen - tests recovery path
-				if len(kv) == 0 {
-					continue
-				}
-				if !synced {
+				case 4: // Sync - triggers flushDirtyPages (the original bug site)
+					if len(kv) == 0 {
+						continue
+					}
 					db.Sync()
 					synced = true
-				}
-				db.Close()
-				db = openFuzzDB(fs, dir)
-				if db == nil {
-					t.Fatal("reopen failed")
-				}
-				// Verify all synced keys survived recovery.
-				for key, wantVal := range kv {
-					gotVal, ok := db.Get(key)
-					if !ok {
-						t.Fatalf("after reopen: Get(%q) not found", key)
-					}
-					if string(gotVal) != wantVal {
-						t.Fatalf("after reopen: Get(%q) = %q, want %q", key, gotVal, wantVal)
-					}
-				}
-			}
-		}
+					// verifyAnchorTags is called inside Sync, so if we get
+					// here without panic, the anchor tree is in sync.
 
-		// Final sync + integrity check.
-		if len(kv) > 0 {
-			db.Sync()
-			errs := db.CheckIntegrity()
-			if len(errs) > 0 {
-				for _, e := range errs {
-					t.Errorf("integrity: %v", e)
+				case 5: // VacuumKV - creates tight pages, rebuilds FlexTree
+					if !synced || len(kv) == 0 {
+						continue
+					}
+					_, err := db.VacuumKV()
+					if err != nil {
+						t.Fatalf("VacuumKV: %v", err)
+					}
+
+				case 6: // Close + Reopen - tests recovery path
+					if len(kv) == 0 {
+						continue
+					}
+					if !synced {
+						db.Sync()
+						synced = true
+					}
+					db.Close()
+					db = openFuzzDB(fs, dir)
+					if db == nil {
+						t.Fatal("reopen failed")
+					}
+					// Verify all synced keys survived recovery.
+					for key, wantVal := range kv {
+						gotVal, ok := db.Get(key)
+						if !ok {
+							t.Fatalf("after reopen: Get(%q) not found", key)
+						}
+						if string(gotVal) != wantVal {
+							t.Fatalf("after reopen: Get(%q) = %q, want %q", key, gotVal, wantVal)
+						}
+					}
 				}
-				t.Fatalf("CheckIntegrity found %d errors", len(errs))
 			}
-		}
-		db.Close()
+
+			// Final sync + integrity check.
+			if len(kv) > 0 {
+				db.Sync()
+				errs := db.CheckIntegrity()
+				if len(errs) > 0 {
+					for _, e := range errs {
+						t.Errorf("integrity: %v", e)
+					}
+					t.Fatalf("CheckIntegrity found %d errors", len(errs))
+				}
+			}
+		}() // end recover wrapper
 	})
 }
 
