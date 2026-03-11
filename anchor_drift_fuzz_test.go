@@ -98,7 +98,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					synced = false
 				}
 
-			case 2: // Put batch — insert several sequential keys
+			case 2: // Put batch - insert several sequential keys
 				if i+2 > len(data) {
 					continue
 				}
@@ -138,7 +138,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 				}
 				synced = false
 
-			case 4: // Sync — triggers flushDirtyPages (the original bug site)
+			case 4: // Sync - triggers flushDirtyPages (the original bug site)
 				if len(kv) == 0 {
 					continue
 				}
@@ -147,7 +147,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 				// verifyAnchorTags is called inside Sync, so if we get
 				// here without panic, the anchor tree is in sync.
 
-			case 5: // VacuumKV — creates tight pages, rebuilds FlexTree
+			case 5: // VacuumKV - creates tight pages, rebuilds FlexTree
 				if !synced || len(kv) == 0 {
 					continue
 				}
@@ -156,7 +156,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					t.Fatalf("VacuumKV: %v", err)
 				}
 
-			case 6: // Close + Reopen — tests recovery path
+			case 6: // Close + Reopen - tests recovery path
 				if len(kv) == 0 {
 					continue
 				}

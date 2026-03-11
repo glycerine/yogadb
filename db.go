@@ -1543,7 +1543,9 @@ func (z *VacuumKVStats) String() (r string) {
 // VacuumKV does a one-time compaction of already-bloated databases. Algorithm:
 // 1. Flush memtables, acquire exclusive locks
 // 1b. Compact slotted page padding: decode each page, compute tight size,
-//     Collapse the zero-padding in reverse loff order
+//
+//	Collapse the zero-padding in reverse loff order
+//
 // 2. Walk FlexTree leaf linked list, read/rewrite all live extents sequentially to a .vacuum file
 // 3. Close old fd, rename .vacuum -> FLEXSPACE.KV128_BLOCKS, reopen
 // 4. Rebuild block manager, checkpoint FlexTree
@@ -1748,7 +1750,7 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 		lastDataBlk := writeOffset >> FLEXSPACE_BLOCK_BITS
 		blkOff := writeOffset & (FLEXSPACE_BLOCK_SIZE - 1)
 		if blkOff > 0 {
-			// Partially filled block — continue writing here.
+			// Partially filled block - continue writing here.
 			ff.bm.blkid = lastDataBlk
 			ff.bm.blkoff = blkOff
 
@@ -3366,7 +3368,7 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 
 	// Check if the new KV would fit. For pages smaller than slottedPageMaxSize
 	// (e.g. tight pages from initial flush or post-vacuum), use the full
-	// slottedPageMaxSize as the capacity — the page will be grown on flush.
+	// slottedPageMaxSize as the capacity - the page will be grown on flush.
 	replaceIdx := -1
 	if eq {
 		replaceIdx = idx
@@ -3778,7 +3780,7 @@ func (db *FlexDB) rebuildAnchorsFromTags() {
 		lastAnchorLoff = ai.loff
 	}
 
-	// Set last anchor's psize — the tail fragment from lastAnchorLoff to ffSize.
+	// Set last anchor's psize - the tail fragment from lastAnchorLoff to ffSize.
 	// It is inherently variable-sized and may exceed slottedPageMaxSize; that's normal.
 	if nh.node != nil && nh.idx < nh.node.count {
 		last := nh.node.anchors[nh.idx]

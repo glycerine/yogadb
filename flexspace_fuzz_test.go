@@ -215,7 +215,7 @@ func FuzzFlexSpace(f *testing.F) {
 		if err != nil {
 			t.Skipf("OpenFlexSpaceCoW: %v", err)
 		}
-		// Guarantee cleanup even on t.Fatal/panic — the fuzz engine
+		// Guarantee cleanup even on t.Fatal/panic - the fuzz engine
 		// requires each iteration to be fully self-contained.
 		// Recover from panics so panicOn() calls don't kill the worker.
 		t.Cleanup(func() {
@@ -255,128 +255,128 @@ func FuzzFlexSpace(f *testing.F) {
 				}
 			}()
 
-		for pos < len(data) && opCount < maxOps {
-			opcode := data[pos] % 5
-			pos++
-			opCount++
+			for pos < len(data) && opCount < maxOps {
+				opcode := data[pos] % 5
+				pos++
+				opCount++
 
-			size := ff.Size()
-			var opDesc string
+				size := ff.Size()
+				var opDesc string
 
-			switch opcode {
-			case 0: // Insert at end
-				rawLen := consumeU16(data, &pos)
-				length := uint64(rawLen)%(FLEXSPACE_MAX_EXTENT_SIZE-1) + 1
-				if size+length > maxSize {
-					continue
-				}
-				// Use deterministic data from fillBuf
-				insertData := makeFillData(fillBuf, length, prng)
-				opDesc = fmt.Sprintf("Insert(end, %d)", length)
+				switch opcode {
+				case 0: // Insert at end
+					rawLen := consumeU16(data, &pos)
+					length := uint64(rawLen)%(FLEXSPACE_MAX_EXTENT_SIZE-1) + 1
+					if size+length > maxSize {
+						continue
+					}
+					// Use deterministic data from fillBuf
+					insertData := makeFillData(fillBuf, length, prng)
+					opDesc = fmt.Sprintf("Insert(end, %d)", length)
 
-				n, err := ff.Insert(insertData, size, length)
-				if err != nil {
-					t.Fatalf("%s: %v", opDesc, err)
-				}
-				if uint64(n) != length {
-					t.Fatalf("%s: wrote %d, want %d", opDesc, n, length)
-				}
-				oracle.insert(size, insertData)
+					n, err := ff.Insert(insertData, size, length)
+					if err != nil {
+						t.Fatalf("%s: %v", opDesc, err)
+					}
+					if uint64(n) != length {
+						t.Fatalf("%s: wrote %d, want %d", opDesc, n, length)
+					}
+					oracle.insert(size, insertData)
 
-			case 1: // Collapse
-				if size < 2 {
-					continue
-				}
-				rawOff := consumeU16(data, &pos)
-				rawLen := consumeU16(data, &pos)
-				off := uint64(rawOff) % size
-				maxLen := size - off
-				length := uint64(rawLen)%maxLen + 1
-				opDesc = fmt.Sprintf("Collapse(%d, %d)", off, length)
+				case 1: // Collapse
+					if size < 2 {
+						continue
+					}
+					rawOff := consumeU16(data, &pos)
+					rawLen := consumeU16(data, &pos)
+					off := uint64(rawOff) % size
+					maxLen := size - off
+					length := uint64(rawLen)%maxLen + 1
+					opDesc = fmt.Sprintf("Collapse(%d, %d)", off, length)
 
-				if err := ff.Collapse(off, length); err != nil {
-					t.Fatalf("%s: %v", opDesc, err)
-				}
-				oracle.collapse(off, length)
+					if err := ff.Collapse(off, length); err != nil {
+						t.Fatalf("%s: %v", opDesc, err)
+					}
+					oracle.collapse(off, length)
 
-			case 2: // Write (overwrite within existing region)
-				if size < 2 {
-					continue
-				}
-				rawOff := consumeU16(data, &pos)
-				rawLen := consumeU16(data, &pos)
-				off := uint64(rawOff) % size
-				maxLen := size - off
-				if maxLen > FLEXSPACE_MAX_EXTENT_SIZE {
-					maxLen = FLEXSPACE_MAX_EXTENT_SIZE
-				}
-				length := uint64(rawLen)%maxLen + 1
-				writeData := makeFillData(fillBuf, length, prng)
-				opDesc = fmt.Sprintf("Write(%d, %d)", off, length)
+				case 2: // Write (overwrite within existing region)
+					if size < 2 {
+						continue
+					}
+					rawOff := consumeU16(data, &pos)
+					rawLen := consumeU16(data, &pos)
+					off := uint64(rawOff) % size
+					maxLen := size - off
+					if maxLen > FLEXSPACE_MAX_EXTENT_SIZE {
+						maxLen = FLEXSPACE_MAX_EXTENT_SIZE
+					}
+					length := uint64(rawLen)%maxLen + 1
+					writeData := makeFillData(fillBuf, length, prng)
+					opDesc = fmt.Sprintf("Write(%d, %d)", off, length)
 
-				n, err := ff.Write(writeData, off, length)
-				if err != nil {
-					t.Fatalf("%s: %v", opDesc, err)
-				}
-				if uint64(n) != length {
-					t.Fatalf("%s: wrote %d, want %d", opDesc, n, length)
-				}
-				oracle.write(off, writeData)
+					n, err := ff.Write(writeData, off, length)
+					if err != nil {
+						t.Fatalf("%s: %v", opDesc, err)
+					}
+					if uint64(n) != length {
+						t.Fatalf("%s: wrote %d, want %d", opDesc, n, length)
+					}
+					oracle.write(off, writeData)
 
-			case 3: // Sync
-				opDesc = "Sync"
-				ff.Sync()
+				case 3: // Sync
+					opDesc = "Sync"
+					ff.Sync()
 
-			case 4: // Insert at middle (true insert-range)
-				if size < 2 {
-					continue
-				}
-				rawOff := consumeU16(data, &pos)
-				rawLen := consumeU16(data, &pos)
-				off := uint64(rawOff) % size
-				length := uint64(rawLen)%(FLEXSPACE_MAX_EXTENT_SIZE-1) + 1
-				if size+length > maxSize {
-					continue
-				}
-				insertData := makeFillData(fillBuf, length, prng)
-				opDesc = fmt.Sprintf("Insert(%d, %d)", off, length)
+				case 4: // Insert at middle (true insert-range)
+					if size < 2 {
+						continue
+					}
+					rawOff := consumeU16(data, &pos)
+					rawLen := consumeU16(data, &pos)
+					off := uint64(rawOff) % size
+					length := uint64(rawLen)%(FLEXSPACE_MAX_EXTENT_SIZE-1) + 1
+					if size+length > maxSize {
+						continue
+					}
+					insertData := makeFillData(fillBuf, length, prng)
+					opDesc = fmt.Sprintf("Insert(%d, %d)", off, length)
 
-				n, err := ff.Insert(insertData, off, length)
-				if err != nil {
-					t.Fatalf("%s: %v", opDesc, err)
+					n, err := ff.Insert(insertData, off, length)
+					if err != nil {
+						t.Fatalf("%s: %v", opDesc, err)
+					}
+					if uint64(n) != length {
+						t.Fatalf("%s: wrote %d, want %d", opDesc, n, length)
+					}
+					oracle.insert(off, insertData)
 				}
-				if uint64(n) != length {
-					t.Fatalf("%s: wrote %d, want %d", opDesc, n, length)
+
+				if opDesc == "" {
+					opDesc = fmt.Sprintf("op#%d", opCount)
 				}
-				oracle.insert(off, insertData)
+
+				// Quick size check every op
+				if ff.Size() != oracle.size() {
+					t.Fatalf("[INV-FS-5] %s: FlexSpace.Size()=%d != oracle.size()=%d",
+						opDesc, ff.Size(), oracle.size())
+				}
+
+				// Full invariant check periodically
+				if opCount%checkInterval == 0 {
+					verifyAllFlexSpaceInvariants(t, ff, opDesc)
+					verifyNoBlockCrossingFuzz(t, ff, opDesc)
+
+					// INV-FS-5: spot-check read correctness
+					verifyReadCorrectness(t, ff, oracle, opDesc)
+				}
 			}
 
-			if opDesc == "" {
-				opDesc = fmt.Sprintf("op#%d", opCount)
+			// Final comprehensive checks
+			if ff.Size() > 0 {
+				verifyAllFlexSpaceInvariants(t, ff, "final")
+				verifyNoBlockCrossingFuzz(t, ff, "final")
+				verifyReadCorrectness(t, ff, oracle, "final")
 			}
-
-			// Quick size check every op
-			if ff.Size() != oracle.size() {
-				t.Fatalf("[INV-FS-5] %s: FlexSpace.Size()=%d != oracle.size()=%d",
-					opDesc, ff.Size(), oracle.size())
-			}
-
-			// Full invariant check periodically
-			if opCount%checkInterval == 0 {
-				verifyAllFlexSpaceInvariants(t, ff, opDesc)
-				verifyNoBlockCrossingFuzz(t, ff, opDesc)
-
-				// INV-FS-5: spot-check read correctness
-				verifyReadCorrectness(t, ff, oracle, opDesc)
-			}
-		}
-
-		// Final comprehensive checks
-		if ff.Size() > 0 {
-			verifyAllFlexSpaceInvariants(t, ff, "final")
-			verifyNoBlockCrossingFuzz(t, ff, "final")
-			verifyReadCorrectness(t, ff, oracle, "final")
-		}
 		}() // end recover wrapper
 		// ff.Close() handled by t.Cleanup
 	})
@@ -403,7 +403,7 @@ func FuzzRecoveryFlexSpace(f *testing.F) {
 		}
 		// Track whether ff is currently open so cleanup doesn't
 		// double-close after an opcode-5 close+reopen sequence.
-		// We must also recover from panics — panicOn() calls inside
+		// We must also recover from panics - panicOn() calls inside
 		// FlexSpace would kill the fuzz worker subprocess, which the
 		// fuzz framework reports as "hung or terminated unexpectedly".
 		ffOpen := true
@@ -418,8 +418,8 @@ func FuzzRecoveryFlexSpace(f *testing.F) {
 		pos := 0
 		opCount := 0
 		reopenCount := 0
-		const maxOps = 150    // bound work per iteration for -race
-		const maxReopens = 5  // reopens are expensive (sync+close+open+verify)
+		const maxOps = 150   // bound work per iteration for -race
+		const maxReopens = 5 // reopens are expensive (sync+close+open+verify)
 		const maxSize = uint64(2 * FLEXSPACE_BLOCK_SIZE)
 
 		prngState := uint64(seed)
