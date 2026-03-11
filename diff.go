@@ -7,6 +7,20 @@ import (
 
 func FirstDiff(dbA, dbB *FlexDB) string {
 
+	if dbA == nil {
+		panic("cannot diff nil database A")
+	}
+	if dbB == nil {
+		panic("cannot diff nil database B")
+	}
+
+	if dbA == dbB {
+		return ""
+	}
+	if dbA.Path == dbB.Path {
+		return ""
+	}
+
 	nA := dbA.Len()
 	nB := dbB.Len()
 	smaller := min(nA, nB)
