@@ -3693,59 +3693,65 @@ func (db *FlexDB) recovery() {
 		last := nh.node.anchors[nh.idx]
 		lastPsize := uint32(ffSize - lastAnchorLoff)
 		last.psize = lastPsize
-		if lastPsize > uint32(slottedPageMaxSize) {
-			alwaysPrintf("RECOVERY WARNING: last anchor psize=%d > slottedPageMaxSize=%d (ffSize=%d lastAnchorLoff=%d nAnchors=%d)",
-				lastPsize, slottedPageMaxSize, ffSize, lastAnchorLoff, len(anchors))
-			// Dump the last few anchors to see where the gap is.
-			start := 0
-			if len(anchors) > 5 {
-				start = len(anchors) - 5
-			}
-			for j := start; j < len(anchors); j++ {
-				alwaysPrintf("  anchor[%d]: loff=%d key=%q unsorted=%d", j, anchors[j].loff, anchors[j].key, anchors[j].unsorted)
-			}
-			// Walk extents around lastAnchorLoff to see what tags exist.
-			alwaysPrintf("  extents near lastAnchorLoff=%d:", lastAnchorLoff)
-			scanFh := db.ff.GetHandler(lastAnchorLoff)
-			for k := 0; k < 10 && scanFh.Valid() && scanFh.Loff() < ffSize; k++ {
-				stag, serr := scanFh.GetTag()
-				sLoff := scanFh.Loff()
-				alwaysPrintf("    extent loff=%d tag=%d isAnchor=%v err=%v", sLoff, stag, serr == nil && flexdbTagIsAnchor(stag), serr)
-				scanFh.ForwardExtent()
-			}
-			/*
-			   The warning is not error an it's benign. Here's what's happening:
 
-			   The last anchor in the sparse index covers everything from lastAnchorLoff (46759936)
-			   to the end of the flexspace (ffSize = 46764070). That span is 4134 bytes,
-			   which is 38 bytes over the 4096-byte target page size.
-
-			   This is expected and harmless because:
-
-			   1. The last anchor is a fragment tail it holds whatever KV pairs remain
-			   after the last full-sized page. It's not required to be exactly slottedPageMaxSize.
-
-			   2. All reads use anchor.psize (line 3022-3021 the buffer is allocated
-			   to the actual size, not the constant. So 4134 bytes is read and
-			   decoded correctly.
-
-			   3. The decode path handles sizes variable slottedPageDecode works
-			   on the actual buffer length, not a hardcoded constant.
-
-			   4. The in-place replace path already allows oversized pages (line 3300):
-			   pages can grow up to 2*slottedPageMaxSize from replace operations before
-			   triggering a split.
-
-			   The 38-byte overshoot likely comes from a few extra KV entries landing
-			   after the last anchor placed was normal for the tail of the dataset.
-			   The warning was added as a diagnostic during development but isn't
-			   indicating corruption or a bug.
-
-			   If the warning is noisy, you could suppress it for the last anchor
-			   specifically (since the tail page is inherently variable-sized), or
-			   increase the threshold to only warn above e.g. 2*slottedPageMaxSize.
-			*/
-		}
+		// The last anchor's psize is the tail fragment from lastAnchorLoff to ffSize.
+		// It is inherently variable-sized and routinely exceeds slottedPageMaxSize.
+		// this is normal, not an error. All reads use anchor.psize directly.
+		//vv("last anchor psize=%d (slottedPageMaxSize=%d, ffSize=%d lastAnchorLoff=%d nAnchors=%d)",
+		//	lastPsize, slottedPageMaxSize, ffSize, lastAnchorLoff, len(anchors))
+		//
+		// // earlier, bigger diagnostics:
+		// if lastPsize > uint32(slottedPageMaxSize) {
+		// 	alwaysPrintf("RECOVERY WARNING: last anchor psize=%d > slottedPageMaxSize=%d (ffSize=%d lastAnchorLoff=%d nAnchors=%d)",
+		// 		lastPsize, slottedPageMaxSize, ffSize, lastAnchorLoff, len(anchors))
+		// 	// Dump the last few anchors to see where the gap is.
+		// 	start := 0
+		// 	if len(anchors) > 5 {
+		// 		start = len(anchors) - 5
+		// 	}
+		// 	for j := start; j < len(anchors); j++ {
+		// 		alwaysPrintf("  anchor[%d]: loff=%d key=%q unsorted=%d", j, anchors[j].loff, anchors[j].key, anchors[j].unsorted)
+		// 	}
+		// 	// Walk extents around lastAnchorLoff to see what tags exist.
+		// 	alwaysPrintf("  extents near lastAnchorLoff=%d:", lastAnchorLoff)
+		// 	scanFh := db.ff.GetHandler(lastAnchorLoff)
+		// 	for k := 0; k < 10 && scanFh.Valid() && scanFh.Loff() < ffSize; k++ {
+		// 		stag, serr := scanFh.GetTag()
+		// 		sLoff := scanFh.Loff()
+		// 		alwaysPrintf("    extent loff=%d tag=%d isAnchor=%v err=%v", sLoff, stag, serr == nil && flexdbTagIsAnchor(stag), serr)
+		// 		scanFh.ForwardExtent()
+		// 	}
+		// 	// The warning is not error an it's benign. Here's what's happening:
+		//
+		// 	// The last anchor in the sparse index covers everything from lastAnchorLoff (46759936)
+		// 	// to the end of the flexspace (ffSize = 46764070). That span is 4134 bytes,
+		// 	// which is 38 bytes over the 4096-byte target page size.
+		//
+		// 	// This is expected and harmless because:
+		//
+		// 	// 1. The last anchor is a fragment tail it holds whatever KV pairs remain
+		// 	// after the last full-sized page. It's not required to be exactly slottedPageMaxSize.
+		//
+		// 	// 2. All reads use anchor.psize (line 3022-3021 the buffer is allocated
+		// 	// to the actual size, not the constant. So 4134 bytes is read and
+		// 	// decoded correctly.
+		//
+		// 	// 3. The decode path handles sizes variable slottedPageDecode works
+		// 	// on the actual buffer length, not a hardcoded constant.
+		//
+		// 	// 4. The in-place replace path already allows oversized pages (line 3300):
+		// 	// pages can grow up to 2*slottedPageMaxSize from replace operations before
+		// 	// triggering a split.
+		//
+		// 	// The 38-byte overshoot likely comes from a few extra KV entries landing
+		// 	// after the last anchor placed was normal for the tail of the dataset.
+		// 	// The warning was added as a diagnostic during development but isn't
+		// 	// indicating corruption or a bug.
+		//
+		// 	// If the warning is noisy, you could suppress it for the last anchor
+		// 	// specifically (since the tail page is inherently variable-sized), or
+		// 	// increase the threshold to only warn above e.g. 2*slottedPageMaxSize.
+		// }
 	}
 
 	// Replay WAL logs (replay older timestamp first)
