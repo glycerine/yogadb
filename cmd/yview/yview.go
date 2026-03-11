@@ -17,11 +17,13 @@ var colonarrow = []byte(" ::: ")
 const cmd = "yview"
 
 type YviewConfig struct {
-	KeysOnly bool
+	KeysOnly  bool
+	StatsOnly bool
 }
 
 func (c *YviewConfig) SetFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&c.KeysOnly, "keys", false, "show keys only")
+	fs.BoolVar(&c.StatsOnly, "stats", false, "show stats only")
 }
 func (c *YviewConfig) FinishConfig(fs *flag.FlagSet) (err error) {
 	return nil
@@ -53,6 +55,12 @@ func main() {
 	db, err := yogadb.OpenFlexDB(dbPath, cfg)
 	panicOn(err)
 
+	if cmdCfg.StatsOnly {
+		metrics := db.Close()
+		fmt.Printf("closing metrics= \n%v\n", metrics)
+		return
+	}
+
 	t0 := time.Now()
 
 	// skip db.Close to avoid stalling on fsyncing the files again.
@@ -68,9 +76,12 @@ func main() {
 
 func (c *YviewConfig) justShowAll(db *yogadb.FlexDB, dbPath string) {
 	saw := 0
+	var keyb, valb int64
 	buf := make([]byte, 0, 4<<20)
 	db.View(func(roDB *yogadb.ReadOnlyTx) error {
 		roDB.Ascend("", func(key string, value []byte) bool {
+			keyb += int64(len(key))
+			valb += int64(len(value))
 			need := 2 + len(key) + len(value)
 			if len(buf)+need <= cap(buf) {
 				// fine. write below.
@@ -99,7 +110,7 @@ func (c *YviewConfig) justShowAll(db *yogadb.FlexDB, dbPath string) {
 		os.Stdout.Write(buf)
 	}
 	os.Stdout.Sync()
-	fmt.Fprintf(os.Stderr, "YogaDB saw %v key-value pair(s) in database '%v'.\n", saw, dbPath)
+	fmt.Fprintf(os.Stderr, "YogaDB saw %v key-value pair(s) in database '%v'. key bytes: %v; value bytes: %v; total key+value bytes: %v\n", saw, dbPath, keyb, valb, keyb+valb)
 }
 
 func blake3OfBytes(by []byte) string {
