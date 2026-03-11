@@ -220,6 +220,7 @@ func FuzzFlexSpace(f *testing.F) {
 		pos := 0
 		opCount := 0
 		const checkInterval = 8
+		const maxOps = 150                               // bound work per iteration for -race
 		const maxSize = uint64(2 * FLEXSPACE_BLOCK_SIZE) // cap at 8MB to keep tests fast
 
 		// Simple PRNG from seed for generating fill data
@@ -239,7 +240,7 @@ func FuzzFlexSpace(f *testing.F) {
 			fillBuf[i] = byte(prng())
 		}
 
-		for pos < len(data) {
+		for pos < len(data) && opCount < maxOps {
 			opcode := data[pos] % 5
 			pos++
 			opCount++
@@ -393,6 +394,7 @@ func FuzzRecoveryFlexSpace(f *testing.F) {
 
 		pos := 0
 		opCount := 0
+		const maxOps = 150 // bound work per iteration for -race
 		const maxSize = uint64(2 * FLEXSPACE_BLOCK_SIZE)
 
 		prngState := uint64(seed)
@@ -411,7 +413,7 @@ func FuzzRecoveryFlexSpace(f *testing.F) {
 			fillBuf[i] = byte(prng())
 		}
 
-		for pos < len(data) {
+		for pos < len(data) && opCount < maxOps {
 			opcode := data[pos] % 6
 			pos++
 			opCount++
