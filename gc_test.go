@@ -1506,3 +1506,94 @@ func TestPiggybackGC_ReclaimsSpace(t *testing.T) {
 		}
 	}
 }
+
+// writing 1000 keys of 33 bytes with a common 10 byte prefix
+// and associate values of 1050 bytes should not balloon our
+// total overall KV_BLOCKS to 5 blocks and 18-20MB
+// when this is 33000 bytes of key material. we do not
+// want 18x write amplification.
+func Test_GC1K_write_1k_keys_with_large_values(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+
+	var seed [32]byte
+	rng := newPRNG(seed)
+
+	const nKeys = 1000
+	keys := make([]string, nKeys)
+	vals := make([]string, nKeys)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("usertable/user%v", rng.unlockedStringOfDigits(19))
+
+		v := make([]byte, 1050)
+		rng.cha8.Read(v)
+		vals[i] = string(v)
+	}
+
+	// Round 0: initial write of all keys.
+	for i, k := range keys {
+		mustPut(t, db, k, vals[i])
+	}
+	db.Sync()
+
+	met := db.SessionMetrics()
+	vv("met = %v", met)
+	/*
+	   usageAfterRound0 := totalBlockUsage(db.ff)
+	   blocksAfterRound0 := countUsedBlocks(db.ff)
+	   flexSizeAfterRound0 := db.ff.Size()
+
+	   t.Logf("Round 0: totalBlockUsage=%d, usedBlocks=%d, flexSize=%d",
+
+	   	usageAfterRound0, blocksAfterRound0, flexSizeAfterRound0)
+
+	   	if usageAfterRound0 == 0 {
+	   		t.Fatal("expected non-zero block usage after initial write")
+	   	}
+
+	   // Rounds 1-4: overwrite every key with the same-length value.
+	   // If GC/block tracking works, total block usage should NOT grow
+	   // linearly with each round.
+	   const rounds = 4
+
+	   	for r := 1; r <= rounds; r++ {
+	   		for i, k := range keys {
+	   			newVal := fmt.Sprintf("value-round%d-%06d-padding-to-make-it-bigger", r, i)
+	   			mustPut(t, db, k, newVal)
+	   		}
+	   		db.Sync()
+
+	   		usage := totalBlockUsage(db.ff)
+	   		blocks := countUsedBlocks(db.ff)
+	   		flexSize := db.ff.Size()
+
+	   		t.Logf("Round %d: totalBlockUsage=%d, usedBlocks=%d, flexSize=%d",
+	   			r, usage, blocks, flexSize)
+	   	}
+
+	   usageAfterAllRounds := totalBlockUsage(db.ff)
+
+	   // The key assertion: after overwriting the same keys 4 more times,
+	   // the total block usage should be bounded - ideally close to the
+	   // single-round usage, NOT 5x the initial.
+	   //
+	   // We allow 3x as a generous upper bound. If block usage tracking
+	   // is working correctly on overwrites, the old data's blocks get
+	   // decremented and new data goes into (possibly the same or new)
+	   // blocks. The total should stay roughly constant.
+	   maxAcceptable := usageAfterRound0 * 3
+
+	   	if usageAfterAllRounds > maxAcceptable {
+	   		t.Errorf("block usage grew too much: after round 0 = %d, after %d rounds = %d (%.1fx); max acceptable = %d (3x)",
+	   			usageAfterRound0, rounds, usageAfterAllRounds,
+	   			float64(usageAfterAllRounds)/float64(usageAfterRound0),
+	   			maxAcceptable)
+	   	}
+
+	   // Also verify correctness: all keys should have the final round's values.
+
+	   	for i, k := range keys {
+	   		expected := fmt.Sprintf("value-round%d-%06d-padding-to-make-it-bigger", rounds, i)
+	   		mustGet(t, db, k, expected)
+	   	}
+	*/
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	mathrand2 "math/rand/v2"
+	"strings"
 	"sync"
 
 	cristalbase64 "github.com/cristalhq/base64"
@@ -264,4 +265,29 @@ func (rng *prng) Rand15B() string {
 	var by [15]byte // 16 and 17 get == signs. yuck.
 	rng.cha8.Read(by[:])
 	return cristalbase64.URLEncoding.EncodeToString(by[:])
+}
+
+func (rng *prng) unlockedStringOfDigits(n int) (s string) {
+	//rng.mut.Lock()
+	//defer rng.mut.Unlock()
+
+	var sb strings.Builder
+	have := 0
+
+	for {
+		by := make([]byte, n*2)
+		rng.cha8.Read(by)
+		for _, b := range by {
+			if b >= 250 {
+				// avoid biasing to lower 5 digits
+				continue
+			}
+			sb.WriteByte((b % 10) + 48)
+			have++
+			if have == n {
+				return sb.String()
+			}
+		}
+	}
+	panic("never reached")
 }
