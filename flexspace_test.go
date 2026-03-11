@@ -689,39 +689,29 @@ func TestFlexspace_LogEncodingBoundary(t *testing.T) {
 // TestFlexspace_BlockRecycling verifies that freed blocks are reused before
 // allocating new blocks beyond the current write cursor.
 //
-// We sync between writes so that the block manager flushes and advances to
-// a new block, creating non-sequential physical offsets (preventing the
-// FlexTree from merging extents across block boundaries).
+// We fill each 4 MB block completely (32 × 128 KB chunks) so the block
+// manager naturally advances to the next block when the current one is full.
 func TestFlexspace_BlockRecycling(t *testing.T) {
 	fs, dir := newTestFS(t)
 	ff := mustOpen(t, dir, fs)
 	defer ff.Close()
 
 	chunkSize := uint64(FLEXSPACE_MAX_EXTENT_SIZE) // 128 KB
+	chunksPerBlock := FLEXSPACE_BLOCK_SIZE / chunkSize
 
 	data := make([]byte, chunkSize)
 	for i := range data {
 		data[i] = byte('A' + (i % 26))
 	}
 
-	// Write 128KB to block 0, then sync (flush forces move to block 1).
-	_, err := ff.Insert(data, ff.Size(), chunkSize)
-	if err != nil {
-		t.Fatalf("Insert to block 0: %v", err)
-	}
-	ff.Sync()
-
-	// Write 128KB to block 1, then sync (forces move to block 2).
-	_, err = ff.Insert(data, ff.Size(), chunkSize)
-	if err != nil {
-		t.Fatalf("Insert to block 1: %v", err)
-	}
-	ff.Sync()
-
-	// Write 128KB to block 2, then sync (forces move to block 3).
-	_, err = ff.Insert(data, ff.Size(), chunkSize)
-	if err != nil {
-		t.Fatalf("Insert to block 2: %v", err)
+	// Fill 3 full blocks (32 × 128KB each = 4MB per block).
+	for b := 0; b < 3; b++ {
+		for c := uint64(0); c < chunksPerBlock; c++ {
+			_, err := ff.Insert(data, ff.Size(), chunkSize)
+			if err != nil {
+				t.Fatalf("Insert block %d chunk %d: %v", b, c, err)
+			}
+		}
 	}
 	ff.Sync()
 
@@ -733,9 +723,7 @@ func TestFlexspace_BlockRecycling(t *testing.T) {
 	}
 
 	// Collapse all data (frees blocks 0, 1, 2).
-	// Extents are NOT merged across blocks (non-sequential poffs), so
-	// block accounting is correct.
-	err = ff.Collapse(0, ff.Size())
+	err := ff.Collapse(0, ff.Size())
 	if err != nil {
 		t.Fatalf("Collapse: %v", err)
 	}
@@ -749,7 +737,7 @@ func TestFlexspace_BlockRecycling(t *testing.T) {
 	}
 
 	// Write new data - should reuse blocks 0, 1, 2 instead of 3+.
-	// (With the fix, findEmptyBlock prefers recycled blocks before fromBlkid.)
+	// (findEmptyBlock prefers recycled blocks before fromBlkid.)
 	_, err = ff.Insert(data, ff.Size(), chunkSize)
 	if err != nil {
 		t.Fatalf("Insert reuse: %v", err)
@@ -776,9 +764,8 @@ func TestFlexspace_BlockRecycling(t *testing.T) {
 // TestFlexspace_TruncateTrailingBlocks verifies that after collapsing trailing
 // data, sync shrinks the FLEXSPACE.KV128_BLOCKS file.
 //
-// Strategy: write to 4 separate blocks (syncing between writes to prevent
-// extent merging across blocks), then collapse the trailing 2 blocks and
-// verify the file shrinks.
+// Strategy: fill 4 complete blocks (32 × 128KB each), then collapse the
+// trailing 2 blocks and verify the file shrinks.
 func TestFlexspace_TruncateTrailingBlocks(t *testing.T) {
 	fs, dir := newTestFS(t)
 	ff := mustOpen(t, dir, fs)
@@ -786,20 +773,23 @@ func TestFlexspace_TruncateTrailingBlocks(t *testing.T) {
 
 	blockSize := uint64(FLEXSPACE_BLOCK_SIZE)
 	chunkSize := uint64(FLEXSPACE_MAX_EXTENT_SIZE) // 128 KB
+	chunksPerBlock := FLEXSPACE_BLOCK_SIZE / chunkSize
 
 	data := make([]byte, chunkSize)
 	for i := range data {
 		data[i] = byte('X')
 	}
 
-	// Write to 4 separate blocks (sync between to prevent merging).
+	// Fill 4 complete blocks.
 	for b := 0; b < 4; b++ {
-		_, err := ff.Insert(data, ff.Size(), chunkSize)
-		if err != nil {
-			t.Fatalf("Insert block %d: %v", b, err)
+		for c := uint64(0); c < chunksPerBlock; c++ {
+			_, err := ff.Insert(data, ff.Size(), chunkSize)
+			if err != nil {
+				t.Fatalf("Insert block %d chunk %d: %v", b, c, err)
+			}
 		}
-		ff.Sync()
 	}
+	ff.Sync()
 
 	// Check that we have data in blocks 0-3.
 	for i := 0; i < 4; i++ {
@@ -815,14 +805,13 @@ func TestFlexspace_TruncateTrailingBlocks(t *testing.T) {
 		t.Fatalf("Stat: %v", err)
 	}
 	sizeAfterWrite := fi.Size()
-	t.Logf("file size after 4 writes: %d (%.1f blocks)", sizeAfterWrite, float64(sizeAfterWrite)/float64(blockSize))
+	t.Logf("file size after 4 full blocks: %d (%.1f blocks)", sizeAfterWrite, float64(sizeAfterWrite)/float64(blockSize))
 	if sizeAfterWrite < int64(2*blockSize) {
 		t.Fatalf("file too small: %d < %d", sizeAfterWrite, 2*blockSize)
 	}
 
-	// Collapse the last 2 chunks (data in blocks 2 and 3).
-	// Each chunk is at a separate logical offset; collapse the trailing ones.
-	keepSize := 2 * chunkSize
+	// Collapse the trailing 2 blocks worth of data.
+	keepSize := 2 * blockSize
 	err = ff.Collapse(keepSize, ff.Size()-keepSize)
 	if err != nil {
 		t.Fatalf("Collapse trailing: %v", err)

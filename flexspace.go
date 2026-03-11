@@ -125,6 +125,7 @@ type blockManager struct {
 	file       *FlexSpace
 	blkid      uint64   // current block being written
 	blkoff     uint64   // offset within current block (0..FLEXSPACE_BLOCK_SIZE)
+	flushedOff uint64   // how much of the current block has been written to disk
 	buf        []byte   // single 4 MB write buffer
 	blkusage   []uint32 // [FLEXSPACE_BLOCK_COUNT] bytes used per block
 	blkdist    []uint64 // [FLEXSPACE_BM_BLKDIST_SIZE] usage histogram buckets
@@ -201,26 +202,37 @@ func (bm *blockManager) write(buf []byte, size uint64, isGC bool) uint64 {
 }
 
 // nextBlock flushes the current block to disk and switches to a new empty block.
+// Called only when the current block is full (from write()).
 func (bm *blockManager) nextBlock(isGC bool) {
 	oldBlkid := bm.blkid
 	newBlkid := bm.findEmptyBlock(oldBlkid, isGC)
 	if oldBlkid == newBlkid {
 		return // current block is already empty (blkoff==0), nothing to do
 	}
-	// Write the filled portion of the current block to disk
-	off := int64(oldBlkid * FLEXSPACE_BLOCK_SIZE)
-	_, err := bm.file.fdKV128blocks.WriteAt(bm.buf[:bm.blkoff], off)
-	panicOn(err)
-	atomic.AddInt64(&bm.file.KV128BytesWritten, int64(bm.blkoff))
+	// Write only the unflushed portion of the current block to disk
+	if bm.blkoff > bm.flushedOff {
+		off := int64(oldBlkid*FLEXSPACE_BLOCK_SIZE) + int64(bm.flushedOff)
+		_, err := bm.file.fdKV128blocks.WriteAt(bm.buf[bm.flushedOff:bm.blkoff], off)
+		panicOn(err)
+		atomic.AddInt64(&bm.file.KV128BytesWritten, int64(bm.blkoff-bm.flushedOff))
+	}
 	bm.blkid = newBlkid
 	bm.blkoff = 0
+	bm.flushedOff = 0
 }
 
-// flush persists the current in-memory block to disk and syncs the data file.
+// flush persists the current in-memory block's dirty data to disk and syncs.
+// Unlike nextBlock, flush does NOT move to a new block — it continues
+// filling the current block across sync boundaries.
 func (bm *blockManager) flush(isGC bool) {
-	bm.nextBlock(isGC)
+	if bm.blkoff > bm.flushedOff {
+		off := int64(bm.blkid*FLEXSPACE_BLOCK_SIZE) + int64(bm.flushedOff)
+		_, err := bm.file.fdKV128blocks.WriteAt(bm.buf[bm.flushedOff:bm.blkoff], off)
+		panicOn(err)
+		atomic.AddInt64(&bm.file.KV128BytesWritten, int64(bm.blkoff-bm.flushedOff))
+		bm.flushedOff = bm.blkoff
+	}
 	panicOn(bm.file.fdKV128blocks.Sync())
-	//vv("we did direct fsync on '%v'; stack= \n %v", bm.file.fdKV128blocks.Name(), stack())
 }
 
 // read attempts to satisfy a read from the in-memory buffer.
@@ -310,7 +322,7 @@ func bmInit(bm *blockManager, tree *FlexTree) {
 //
 // 2. Mapping: Each chunk written gets a physical offset
 // (poff = blkid × 4MB + blkoff). That poff is inserted into the
-// FlexTree, which maps logical offset → physical offset. So
+// FlexTree, which maps logical offset -> physical offset. So
 // the FlexTree is the indirection layer that lets you read
 // kv128 intervals by logical position even though they're
 // scattered across 4 MB blocks on disk.
@@ -622,6 +634,14 @@ func (ff *FlexSpace) truncateTrailingBlocks() {
 	}
 	ff.fdKV128blocks.Truncate(newSize)
 	vv("did ff.fdKV128blocks.Truncate(newSize = %v)", newSize)
+
+	// If the current write block is beyond the truncated file,
+	// reset to the first empty block so we don't write into a gap.
+	if int64(ff.bm.blkid)*FLEXSPACE_BLOCK_SIZE >= newSize {
+		ff.bm.blkid = ff.bm.findEmptyBlock(0, true)
+		ff.bm.blkoff = 0
+		ff.bm.flushedOff = 0
+	}
 }
 
 var debugTruncate = false
@@ -779,12 +799,25 @@ func (ff *FlexSpace) collapseR(loff, length uint64, commit bool) error {
 	ff.gc.writeBetweenStages = true
 	ff.globalEpoch++
 
-	// Query extents being collapsed to update block usage
+	// Query extents being collapsed to update block usage.
+	// Extents may span multiple blocks (FlexTree merges sequential extents),
+	// so split the usage decrement across block boundaries.
 	rr := ff.tree.Query(loff, length)
 	if rr != nil {
 		for i := uint64(0); i < rr.Count; i++ {
-			blkid := rr.V[i].Poff >> FLEXSPACE_BLOCK_BITS
-			ff.bm.updateBlkUsage(blkid, -int32(rr.V[i].Len))
+			poff := rr.V[i].Poff
+			remaining := uint64(rr.V[i].Len)
+			for remaining > 0 {
+				blkid := poff >> FLEXSPACE_BLOCK_BITS
+				blkEnd := (blkid + 1) << FLEXSPACE_BLOCK_BITS
+				inBlock := blkEnd - poff
+				if inBlock > remaining {
+					inBlock = remaining
+				}
+				ff.bm.updateBlkUsage(blkid, -int32(inBlock))
+				poff += inBlock
+				remaining -= inBlock
+			}
 		}
 	}
 	ff.tree.Delete(loff, length)
@@ -923,6 +956,15 @@ func (ff *FlexSpace) Overwrite(buf []byte, loff uint64, length uint64) error {
 		if blkid == ff.bm.blkid {
 			blkoff := poff & (FLEXSPACE_BLOCK_SIZE - 1)
 			copy(ff.bm.buf[blkoff:], b[:slen])
+			// If we're modifying the already-flushed region of the current
+			// block, we must also write to disk since flush() only writes
+			// buf[flushedOff:blkoff] (the new data appended after flushedOff).
+			if blkoff < ff.bm.flushedOff {
+				_, err := ff.fdKV128blocks.WriteAt(b[:slen], int64(poff))
+				if err != nil {
+					return fmt.Errorf("flexspace: overwrite pwrite at poff=%d len=%d: %w", poff, slen, err)
+				}
+			}
 		} else {
 			_, err := ff.fdKV128blocks.WriteAt(b[:slen], int64(poff))
 			if err != nil {
@@ -1308,3 +1350,43 @@ func (ff *FlexSpace) GC() {
 			ff.bm.freeBlocks, uint64(FLEXSPACE_GC_THRESHOLD))
 	}
 }
+
+/* note on fixes 2025 March 11, to get gc_test.go
+Test_GC1K_write_1k_keys_with_large_values green. (atop 1fc1b32)
+
+Fixes in flexspace.go
+
+1. blockManager struct — Added flushedOff uint64
+field to track how much of the current block has
+been written to disk.
+
+2. flush() — Changed from nextBlock() (allocate new block)
+to writing only the dirty portion buf[flushedOff:blkoff]
+and staying on the current block. Blocks now advance only
+when genuinely full (via write() -> nextBlock()).
+
+3. nextBlock() — Updated to only write the unflushed
+portion and reset flushedOff when advancing.
+
+4. Overwrite() — When overwriting data in the
+already-flushed region of the current block (blkoff < flushedOff), also
+write directly to disk. Without this, overwrites (e.g.,
+from delete tombstones) in the flushed region would be lost
+since flush() only writes buf[flushedOff:blkoff].
+
+5. collapseR() — Fixed a latent bug where
+cross-block extents (created by FlexTree's extent merging)
+caused blkusage underflow. Now splits the usage
+decrement across block boundaries.
+
+6. truncateTrailingBlocks() — Reset bm.blkid to the
+first empty block when truncation eliminates the current write
+block, preventing writes into a gap.
+
+Test updates in flexspace_test.go
+
+Updated TestFlexspace_BlockRecycling and
+TestFlexspace_TruncateTrailingBlocks to fill blocks
+completely (32 × 128KB = 4MB) rather than relying
+on sync to advance blocks.
+*/
