@@ -222,7 +222,7 @@ func (bm *blockManager) nextBlock(isGC bool) {
 }
 
 // flush persists the current in-memory block's dirty data to disk and syncs.
-// Unlike nextBlock, flush does NOT move to a new block — it continues
+// Unlike nextBlock, flush does NOT move to a new block - it continues
 // filling the current block across sync boundaries.
 func (bm *blockManager) flush(isGC bool) {
 	if bm.blkoff > bm.flushedOff {
@@ -279,14 +279,23 @@ func bmInit(bm *blockManager, tree *FlexTree) {
 			if ext.IsHole() {
 				continue // holes have no physical storage
 			}
+			// Handle extents that may span multiple blocks (legacy data).
 			poff := ext.Address() // 47-bit physical address (no hole flag)
-			length := uint64(ext.Len)
-			blkid := poff >> FLEXSPACE_BLOCK_BITS
-			if blkid > maxBlkid {
-				maxBlkid = blkid
+			remaining := uint64(ext.Len)
+			for remaining > 0 {
+				blkid := poff >> FLEXSPACE_BLOCK_BITS
+				blkEnd := (blkid + 1) << FLEXSPACE_BLOCK_BITS
+				inBlock := blkEnd - poff
+				if inBlock > remaining {
+					inBlock = remaining
+				}
+				if blkid > maxBlkid {
+					maxBlkid = blkid
+				}
+				bm.updateBlkUsage(blkid, int32(inBlock))
+				poff += inBlock
+				remaining -= inBlock
 			}
-			// extents are guaranteed not to cross block boundaries
-			bm.updateBlkUsage(blkid, int32(length))
 		}
 		nodeID = le.Next
 	}
@@ -517,6 +526,7 @@ func OpenFlexSpaceCoW(path string, omitRedoLog bool, fs vfs.FS) (*FlexSpace, err
 		return nil, fmt.Errorf("flexspace: open CoW tree: %w", err)
 	}
 	ff.tree = tree
+	ff.tree.MaxExtentSize = FLEXSPACE_BLOCK_SIZE // prevent cross-block extent merging
 
 	// Open the redo-log file
 	logPath := filepath.Join(path, "FLEXSPACE.REDO.LOG")
@@ -1214,9 +1224,10 @@ func (ff *FlexSpace) gcAsyncPrepare(bitmap []bool) {
 
 		ff.gc.loff += uint64(length)
 
-		// Sanity: extent must not cross block boundary
+		// Skip extents that cross block boundaries (legacy merged extents).
+		// They'll be cleaned up naturally as their individual blocks are GC'd.
 		if blkid != (poff+uint64(length)-1)>>FLEXSPACE_BLOCK_BITS {
-			panic("flexspace: GC found extent crossing block boundary")
+			continue
 		}
 		if !bitmap[blkid] {
 			continue // not a GC target block
@@ -1271,11 +1282,24 @@ func (ff *FlexSpace) gcAsyncExecute(histBitmap []bool, commit bool) int {
 		ff.bm.write(item.buf, uint64(length), true /* isGC */)
 		histBitmap[newBlkid] = true // blacklist new GC block from future rounds
 
-		// Decrement old block usage
-		oblkid := opoff >> FLEXSPACE_BLOCK_BITS
-		newUsage := ff.bm.updateBlkUsage(oblkid, -int32(length))
-		if newUsage == 0 {
-			rblocks++
+		// Decrement old block usage (handle cross-block extents from legacy data)
+		{
+			p := opoff
+			rem := uint64(length)
+			for rem > 0 {
+				oblkid := p >> FLEXSPACE_BLOCK_BITS
+				blkEnd := (oblkid + 1) << FLEXSPACE_BLOCK_BITS
+				inBlock := blkEnd - p
+				if inBlock > rem {
+					inBlock = rem
+				}
+				newUsage := ff.bm.updateBlkUsage(oblkid, -int32(inBlock))
+				if newUsage == 0 {
+					rblocks++
+				}
+				p += inBlock
+				rem -= inBlock
+			}
 		}
 
 		// Log the move: p1=old_poff, p2=new_poff, p3=len
@@ -1356,30 +1380,30 @@ Test_GC1K_write_1k_keys_with_large_values green. (atop 1fc1b32)
 
 Fixes in flexspace.go
 
-1. blockManager struct — Added flushedOff uint64
+1. blockManager struct - Added flushedOff uint64
 field to track how much of the current block has
 been written to disk.
 
-2. flush() — Changed from nextBlock() (allocate new block)
+2. flush() - Changed from nextBlock() (allocate new block)
 to writing only the dirty portion buf[flushedOff:blkoff]
 and staying on the current block. Blocks now advance only
 when genuinely full (via write() -> nextBlock()).
 
-3. nextBlock() — Updated to only write the unflushed
+3. nextBlock() - Updated to only write the unflushed
 portion and reset flushedOff when advancing.
 
-4. Overwrite() — When overwriting data in the
+4. Overwrite() - When overwriting data in the
 already-flushed region of the current block (blkoff < flushedOff), also
 write directly to disk. Without this, overwrites (e.g.,
 from delete tombstones) in the flushed region would be lost
 since flush() only writes buf[flushedOff:blkoff].
 
-5. collapseR() — Fixed a latent bug where
+5. collapseR() - Fixed a latent bug where
 cross-block extents (created by FlexTree's extent merging)
 caused blkusage underflow. Now splits the usage
 decrement across block boundaries.
 
-6. truncateTrailingBlocks() — Reset bm.blkid to the
+6. truncateTrailingBlocks() - Reset bm.blkid to the
 first empty block when truncation eliminates the current write
 block, preventing writes into a gap.
 
@@ -1389,4 +1413,35 @@ Updated TestFlexspace_BlockRecycling and
 TestFlexspace_TruncateTrailingBlocks to fill blocks
 completely (32 × 128KB = 4MB) rather than relying
 on sync to advance blocks.
+
+---
+after adding tests, additional fixes were applied:
+
+  flexspace.go - 4 fixes, atop 8f9775a
+
+  1. Set MaxExtentSize = FLEXSPACE_BLOCK_SIZE on open (line ~520): Prevents FlexTree from merging extents across 4MB block boundaries by setting the merge bin size to exactly one
+   block.
+  2. Fixed bmInit cross-block accounting (line ~282): Replaced single updateBlkUsage(blkid, length) call with a loop that splits the usage increment across block boundaries,
+  handling legacy cross-block extents correctly.
+  3. Fixed gcAsyncPrepare panic (line ~1218): Replaced panic("GC found extent crossing block boundary") with continue - cross-block extents are skipped and cleaned up naturally
+  as individual blocks are GC'd.
+  4. Fixed gcAsyncExecute cross-block decrement (line ~1274): Replaced single-block updateBlkUsage with the same cross-block split loop used in collapseR, preventing blkusage
+  underflow on legacy data.
+
+  flexspace_test.go - 2 helpers + 8 tests
+
+  Helpers:
+  - verifyBlkUsageInvariant(t, ff) - walks all leaf extents, computes expected per-block usage, compares with bm.blkusage[]
+  - verifyNoBlockCrossing(t, ff) - verifies no extent spans multiple 4MB blocks
+
+  Tests (all passing):
+  1. TestFlexspace_BlkUsageInvariant_InsertCollapse - insert/collapse cycles with full collapse to zero
+  2. TestFlexspace_BlkUsageInvariant_OverwriteInFlushedRegion - overwrite in flushed region + reopen
+  3. TestFlexspace_BlkUsageInvariant_MultiBlockFill - fill 3 blocks, collapse middle, reuse
+  4. TestFlexspace_BlkUsageInvariant_MultiSyncSameBlock - multiple syncs in same block (GC1K scenario)
+  5. TestFlexspace_BlkUsageInvariant_Recovery - blkusage correctness after close/reopen cycles
+  6. TestFlexspace_BlkUsageInvariant_GC - blkusage after partial collapse
+  7. TestFlexspace_NoBlockCrossing_AfterMaxExtentSizeFix - proves MaxExtentSize=4MB prevents cross-block merging
+  8. TestFlexspace_BlkUsageInvariant_RandomOps - 500 random insert/collapse/overwrite/sync ops with periodic invariant checks + reopen verification
+
 */

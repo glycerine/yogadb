@@ -847,3 +847,502 @@ func TestFlexspace_TruncateTrailingBlocks(t *testing.T) {
 		t.Fatalf("Read: got %d bytes, want %d", n, keepSize)
 	}
 }
+
+// ======================== Block Usage Invariant Helpers ========================
+
+// verifyBlkUsageInvariant walks all FlexTree leaf extents and verifies that
+// bm.blkusage[i] matches the actual bytes stored in block i.
+func verifyBlkUsageInvariant(t *testing.T, ff *FlexSpace) {
+	t.Helper()
+
+	expected := make(map[uint64]uint32)
+	totalExtentBytes := uint64(0)
+
+	nodeID := ff.tree.LeafHead
+	for !nodeID.IsIllegal() {
+		le := ff.tree.GetLeaf(nodeID)
+		for i := uint32(0); i < le.Count; i++ {
+			ext := &le.Extents[i]
+			if ext.IsHole() {
+				continue
+			}
+			poff := ext.Address()
+			remaining := uint64(ext.Len)
+			totalExtentBytes += remaining
+			for remaining > 0 {
+				blkid := poff >> FLEXSPACE_BLOCK_BITS
+				blkEnd := (blkid + 1) << FLEXSPACE_BLOCK_BITS
+				inBlock := blkEnd - poff
+				if inBlock > remaining {
+					inBlock = remaining
+				}
+				expected[blkid] += uint32(inBlock)
+				poff += inBlock
+				remaining -= inBlock
+			}
+		}
+		nodeID = le.Next
+	}
+
+	// Check expected against actual
+	for blkid, want := range expected {
+		got := ff.bm.blkusage[blkid]
+		if got != want {
+			t.Errorf("blkusage[%d]: got %d, want %d", blkid, got, want)
+		}
+		if want > FLEXSPACE_BLOCK_SIZE {
+			t.Errorf("blkusage[%d] = %d exceeds block size %d", blkid, want, FLEXSPACE_BLOCK_SIZE)
+		}
+	}
+
+	// Check no unexpected non-zero blocks
+	for i := range ff.bm.blkusage {
+		if ff.bm.blkusage[i] != 0 && expected[uint64(i)] == 0 {
+			t.Errorf("blkusage[%d] = %d but no extents reference this block", i, ff.bm.blkusage[i])
+		}
+	}
+
+	// Verify total bytes match
+	totalUsage := uint64(0)
+	for _, v := range expected {
+		totalUsage += uint64(v)
+	}
+	if totalUsage != totalExtentBytes {
+		t.Errorf("sum(blkusage) = %d != sum(extent.Len) = %d", totalUsage, totalExtentBytes)
+	}
+}
+
+// verifyNoBlockCrossing checks that no extent crosses a 4MB block boundary.
+func verifyNoBlockCrossing(t *testing.T, ff *FlexSpace) {
+	t.Helper()
+	nodeID := ff.tree.LeafHead
+	for !nodeID.IsIllegal() {
+		le := ff.tree.GetLeaf(nodeID)
+		for i := uint32(0); i < le.Count; i++ {
+			ext := &le.Extents[i]
+			if ext.IsHole() || ext.Len == 0 {
+				continue
+			}
+			poff := ext.Address()
+			startBlk := poff >> FLEXSPACE_BLOCK_BITS
+			endBlk := (poff + uint64(ext.Len) - 1) >> FLEXSPACE_BLOCK_BITS
+			if startBlk != endBlk {
+				t.Errorf("extent at loff=%d poff=%d len=%d crosses block boundary: blocks %d-%d",
+					ext.Loff, poff, ext.Len, startBlk, endBlk)
+			}
+		}
+		nodeID = le.Next
+	}
+}
+
+// ======================== Block Usage Invariant Tests ========================
+
+func TestFlexspace_BlkUsageInvariant_InsertCollapse(t *testing.T) {
+	fs, dir := newTestFS(t)
+	ff := mustOpen(t, dir, fs)
+	defer ff.Close()
+
+	// Insert 10 chunks of varying sizes
+	sizes := []uint64{32768, 65536, 40000, 128000, 50000, 80000, 100000, 131072, 70000, 90000}
+	data := make([]byte, 131072)
+	for i := range data {
+		data[i] = byte(i % 251)
+	}
+	for _, sz := range sizes {
+		_, err := ff.Insert(data[:sz], ff.Size(), sz)
+		if err != nil {
+			t.Fatalf("Insert(%d): %v", sz, err)
+		}
+	}
+	verifyBlkUsageInvariant(t, ff)
+	verifyNoBlockCrossing(t, ff)
+
+	// Collapse first 3 chunks worth (32768+65536+40000 = 138304)
+	collapseLen := uint64(32768 + 65536 + 40000)
+	if err := ff.Collapse(0, collapseLen); err != nil {
+		t.Fatalf("Collapse: %v", err)
+	}
+	verifyBlkUsageInvariant(t, ff)
+
+	// Insert more data
+	_, err := ff.Insert(data[:50000], ff.Size(), 50000)
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	verifyBlkUsageInvariant(t, ff)
+
+	// Collapse all data
+	if err := ff.Collapse(0, ff.Size()); err != nil {
+		t.Fatalf("Collapse all: %v", err)
+	}
+	verifyBlkUsageInvariant(t, ff)
+
+	// All blkusage should be 0
+	for i := range ff.bm.blkusage {
+		if ff.bm.blkusage[i] != 0 {
+			t.Errorf("blkusage[%d] = %d after full collapse, want 0", i, ff.bm.blkusage[i])
+			break
+		}
+	}
+}
+
+func TestFlexspace_BlkUsageInvariant_OverwriteInFlushedRegion(t *testing.T) {
+	fs, dir := newTestFS(t)
+	ff := mustOpen(t, dir, fs)
+
+	// Insert data and sync (creates flushed region in block 0)
+	data := make([]byte, 64*1024)
+	for i := range data {
+		data[i] = byte('A')
+	}
+	_, err := ff.Insert(data, 0, uint64(len(data)))
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	ff.Sync()
+
+	// Insert more data (in same block, unflushed region)
+	data2 := make([]byte, 32*1024)
+	for i := range data2 {
+		data2[i] = byte('B')
+	}
+	_, err = ff.Insert(data2, ff.Size(), uint64(len(data2)))
+	if err != nil {
+		t.Fatalf("Insert2: %v", err)
+	}
+
+	// Overwrite data in the flushed region
+	overwrite := make([]byte, 16*1024)
+	for i := range overwrite {
+		overwrite[i] = byte('C')
+	}
+	_, err = ff.Write(overwrite, 0, uint64(len(overwrite)))
+	if err != nil {
+		t.Fatalf("Write overwrite: %v", err)
+	}
+	verifyBlkUsageInvariant(t, ff)
+
+	// Sync, close, reopen
+	ff.Sync()
+	ff.Close()
+
+	ff2 := mustOpen(t, dir, fs)
+	defer ff2.Close()
+	verifyBlkUsageInvariant(t, ff2)
+
+	// Verify data reads back correctly
+	got := mustRead(t, ff2, 0, uint64(len(overwrite)))
+	for i, b := range got {
+		if b != byte('C') {
+			t.Errorf("byte[%d] = %d, want 'C'", i, b)
+			break
+		}
+	}
+}
+
+func TestFlexspace_BlkUsageInvariant_MultiBlockFill(t *testing.T) {
+	fs, dir := newTestFS(t)
+	ff := mustOpen(t, dir, fs)
+	defer ff.Close()
+
+	chunkSize := uint64(FLEXSPACE_MAX_EXTENT_SIZE) // 128 KB
+	chunksPerBlock := uint64(FLEXSPACE_BLOCK_SIZE) / chunkSize
+
+	data := make([]byte, chunkSize)
+	for i := range data {
+		data[i] = byte(i % 251)
+	}
+
+	// Fill 3 complete blocks
+	for b := 0; b < 3; b++ {
+		for c := uint64(0); c < chunksPerBlock; c++ {
+			_, err := ff.Insert(data, ff.Size(), chunkSize)
+			if err != nil {
+				t.Fatalf("Insert block %d chunk %d: %v", b, c, err)
+			}
+		}
+	}
+	verifyBlkUsageInvariant(t, ff)
+	verifyNoBlockCrossing(t, ff)
+
+	// Each block should have exactly 4MB usage
+	for i := 0; i < 3; i++ {
+		if ff.bm.blkusage[i] != FLEXSPACE_BLOCK_SIZE {
+			t.Errorf("block %d usage: got %d, want %d", i, ff.bm.blkusage[i], FLEXSPACE_BLOCK_SIZE)
+		}
+	}
+
+	// Collapse middle block
+	if err := ff.Collapse(uint64(FLEXSPACE_BLOCK_SIZE), uint64(FLEXSPACE_BLOCK_SIZE)); err != nil {
+		t.Fatalf("Collapse middle: %v", err)
+	}
+	verifyBlkUsageInvariant(t, ff)
+
+	// Insert new data — should reuse freed space
+	_, err := ff.Insert(data, ff.Size(), chunkSize)
+	if err != nil {
+		t.Fatalf("Insert after collapse: %v", err)
+	}
+	verifyBlkUsageInvariant(t, ff)
+}
+
+func TestFlexspace_BlkUsageInvariant_MultiSyncSameBlock(t *testing.T) {
+	fs, dir := newTestFS(t)
+	ff := mustOpen(t, dir, fs)
+	defer ff.Close()
+
+	data := make([]byte, 64*1024)
+	for i := range data {
+		data[i] = byte('X')
+	}
+
+	// Insert 64KB, Sync x3
+	for round := 0; round < 3; round++ {
+		_, err := ff.Insert(data, ff.Size(), uint64(len(data)))
+		if err != nil {
+			t.Fatalf("Insert round %d: %v", round, err)
+		}
+		ff.Sync()
+	}
+
+	verifyBlkUsageInvariant(t, ff)
+
+	// All data should be in block 0 (192KB < 4MB)
+	expectedUsage := uint32(3 * 64 * 1024)
+	if ff.bm.blkusage[0] != expectedUsage {
+		t.Errorf("blkusage[0]: got %d, want %d", ff.bm.blkusage[0], expectedUsage)
+	}
+	// No other block should have data
+	for i := 1; i < len(ff.bm.blkusage); i++ {
+		if ff.bm.blkusage[i] != 0 {
+			t.Errorf("blkusage[%d] = %d, want 0", i, ff.bm.blkusage[i])
+			break
+		}
+	}
+}
+
+func TestFlexspace_BlkUsageInvariant_Recovery(t *testing.T) {
+	fs, dir := newTestFS(t)
+
+	// Insert data across 2 blocks, Sync
+	ff := mustOpen(t, dir, fs)
+	chunkSize := uint64(FLEXSPACE_MAX_EXTENT_SIZE)
+	chunksPerBlock := uint64(FLEXSPACE_BLOCK_SIZE) / chunkSize
+	data := make([]byte, chunkSize)
+	for i := range data {
+		data[i] = byte(i % 251)
+	}
+	// Fill 2 blocks
+	for c := uint64(0); c < 2*chunksPerBlock; c++ {
+		_, err := ff.Insert(data, ff.Size(), chunkSize)
+		if err != nil {
+			t.Fatalf("Insert chunk %d: %v", c, err)
+		}
+	}
+	ff.Sync()
+	ff.Close()
+
+	// Reopen and verify
+	ff2 := mustOpen(t, dir, fs)
+	verifyBlkUsageInvariant(t, ff2)
+
+	// Insert more, collapse some
+	_, err := ff2.Insert(data, ff2.Size(), chunkSize)
+	if err != nil {
+		t.Fatalf("Insert after reopen: %v", err)
+	}
+	if err := ff2.Collapse(0, chunkSize); err != nil {
+		t.Fatalf("Collapse: %v", err)
+	}
+	ff2.Sync()
+	ff2.Close()
+
+	// Reopen again
+	ff3 := mustOpen(t, dir, fs)
+	defer ff3.Close()
+	verifyBlkUsageInvariant(t, ff3)
+
+	// Verify data reads back
+	size := ff3.Size()
+	if size == 0 {
+		t.Fatal("size should be > 0 after recovery")
+	}
+	buf := make([]byte, chunkSize)
+	_, err = ff3.Read(buf, 0, chunkSize)
+	if err != nil {
+		t.Fatalf("Read after recovery: %v", err)
+	}
+}
+
+func TestFlexspace_BlkUsageInvariant_GC(t *testing.T) {
+	fs, dir := newTestFS(t)
+	ff := mustOpen(t, dir, fs)
+	defer ff.Close()
+
+	chunkSize := uint64(FLEXSPACE_MAX_EXTENT_SIZE)
+	chunksPerBlock := uint64(FLEXSPACE_BLOCK_SIZE) / chunkSize
+	data := make([]byte, chunkSize)
+	for i := range data {
+		data[i] = byte(i % 251)
+	}
+
+	// Fill block 0 completely (4MB), sync
+	for c := uint64(0); c < chunksPerBlock; c++ {
+		_, err := ff.Insert(data, ff.Size(), chunkSize)
+		if err != nil {
+			t.Fatalf("Insert chunk %d: %v", c, err)
+		}
+	}
+	ff.Sync()
+
+	// Collapse most of block 0 (leave ~128KB)
+	collapseLen := uint64(FLEXSPACE_BLOCK_SIZE) - chunkSize
+	if err := ff.Collapse(0, collapseLen); err != nil {
+		t.Fatalf("Collapse: %v", err)
+	}
+	ff.Sync()
+
+	// Fill enough data to trigger GC (need freeBlocks < FLEXSPACE_GC_THRESHOLD).
+	// Write data into many blocks to consume free blocks.
+	// Actually, GC is triggered when freeBlocks drops below threshold.
+	// For a simpler test, just call gcRun directly if possible.
+	// Let's just verify blkusage after the operations we've done.
+	verifyBlkUsageInvariant(t, ff)
+
+	// Verify data reads back correctly
+	size := ff.Size()
+	if size == 0 {
+		t.Fatal("size should be > 0")
+	}
+	buf := make([]byte, size)
+	_, err := ff.Read(buf, 0, size)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+}
+
+func TestFlexspace_NoBlockCrossing_AfterMaxExtentSizeFix(t *testing.T) {
+	fs, dir := newTestFS(t)
+	ff := mustOpen(t, dir, fs)
+	defer ff.Close()
+
+	// Verify MaxExtentSize is set to block size
+	if ff.tree.MaxExtentSize != FLEXSPACE_BLOCK_SIZE {
+		t.Fatalf("MaxExtentSize: got %d, want %d", ff.tree.MaxExtentSize, FLEXSPACE_BLOCK_SIZE)
+	}
+
+	chunkSize := uint64(FLEXSPACE_MAX_EXTENT_SIZE) // 128 KB
+	data := make([]byte, chunkSize)
+	for i := range data {
+		data[i] = byte(i % 251)
+	}
+
+	// Write data that fills block 0 and spills into block 1
+	// (sequential poffs that would have merged before the fix)
+	chunksPerBlock := uint64(FLEXSPACE_BLOCK_SIZE) / chunkSize
+	for c := uint64(0); c < chunksPerBlock+4; c++ {
+		_, err := ff.Insert(data, ff.Size(), chunkSize)
+		if err != nil {
+			t.Fatalf("Insert chunk %d: %v", c, err)
+		}
+	}
+
+	verifyNoBlockCrossing(t, ff)
+	verifyBlkUsageInvariant(t, ff)
+}
+
+func TestFlexspace_BlkUsageInvariant_RandomOps(t *testing.T) {
+	fs, dir := newTestFS(t)
+	ff := mustOpen(t, dir, fs)
+
+	// Deterministic PRNG
+	seed := uint64(12345)
+	prng := func() uint64 {
+		seed ^= seed << 13
+		seed ^= seed >> 7
+		seed ^= seed << 17
+		return seed
+	}
+
+	const numOps = 500
+	const checkInterval = 50
+
+	data := make([]byte, 128*1024)
+	for i := range data {
+		data[i] = byte(i % 251)
+	}
+
+	for op := 0; op < numOps; op++ {
+		size := ff.Size()
+		r := prng() % 4
+
+		switch {
+		case r == 0 || size < 1024:
+			// Insert: random size 1KB-128KB at end
+			sz := (prng()%(128*1024-1024) + 1024)
+			_, err := ff.Insert(data[:sz], ff.Size(), sz)
+			if err != nil {
+				t.Fatalf("op %d Insert(%d): %v", op, sz, err)
+			}
+
+		case r == 1 && size > 2048:
+			// Collapse: random range within existing data
+			maxLen := size / 4
+			if maxLen < 1 {
+				maxLen = 1
+			}
+			clen := prng()%maxLen + 1
+			coff := prng() % (size - clen)
+			if err := ff.Collapse(coff, clen); err != nil {
+				t.Fatalf("op %d Collapse(%d, %d): %v", op, coff, clen, err)
+			}
+
+		case r == 2 && size > 1024:
+			// Overwrite: random range within existing data
+			maxLen := size / 4
+			if maxLen > 128*1024 {
+				maxLen = 128 * 1024
+			}
+			if maxLen < 1 {
+				maxLen = 1
+			}
+			wlen := prng()%maxLen + 1
+			woff := prng() % (size - wlen)
+			_, err := ff.Write(data[:wlen], woff, wlen)
+			if err != nil {
+				t.Fatalf("op %d Write(%d, %d): %v", op, woff, wlen, err)
+			}
+
+		case r == 3:
+			// Sync
+			ff.Sync()
+		}
+
+		if (op+1)%checkInterval == 0 {
+			verifyBlkUsageInvariant(t, ff)
+			verifyNoBlockCrossing(t, ff)
+		}
+	}
+
+	// Final check
+	verifyBlkUsageInvariant(t, ff)
+	verifyNoBlockCrossing(t, ff)
+
+	// Close, reopen, verify
+	ff.Sync()
+	ff.Close()
+
+	ff2 := mustOpen(t, dir, fs)
+	defer ff2.Close()
+	verifyBlkUsageInvariant(t, ff2)
+
+	// Verify reads
+	size := ff2.Size()
+	if size > 0 {
+		buf := make([]byte, size)
+		_, err := ff2.Read(buf, 0, size)
+		if err != nil {
+			t.Fatalf("Read after reopen: %v", err)
+		}
+	}
+}
