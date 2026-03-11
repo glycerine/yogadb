@@ -77,7 +77,9 @@ func (c *YviewConfig) justShowAll(db *yogadb.FlexDB, dbPath string) {
 				buf = buf[:0]
 			}
 			buf = append(buf, key...)
-			if !c.KeysOnly {
+			if c.KeysOnly {
+				buf = append(buf, []byte(fmt.Sprintf(" => val len %v", len(value)))...)
+			} else {
 				if len(value) > 0 {
 					buf = append(buf, colonarrow...)
 					buf = append(buf, value...)
