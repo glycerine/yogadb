@@ -10,7 +10,7 @@ Insert (end + middle), Collapse, Write (overwrite),
 and Sync with a ground-truth byte-buffer oracle.
 Checks all 6 invariants (INV-FS-1 through INV-FS-6) every 8 ops.
 
-2. FuzzFlexSpaceRecovery - Same ops plus close/reopen
+2. FuzzRecoveryFlexSpace - Same ops plus close/reopen
 cycles (opcode 5). Verifies INV-FS-4 (recovery preserves blkusage and
 data) after each reopen.
 
@@ -29,7 +29,7 @@ Infrastructure:
 
   To run for 30 minutes:
   go test -tags memfs -fuzz '^FuzzFlexSpace$' -fuzztime 30m -run='^$' -timeout 35m
-  go test -tags memfs -fuzz '^FuzzFlexSpaceRecovery$' -fuzztime 30m -run='^$' -timeout 35m
+  go test -tags memfs -fuzz '^FuzzRecoveryFlexSpace$' -fuzztime 30m -run='^$' -timeout 35m
 
 */
 
@@ -364,10 +364,10 @@ func FuzzFlexSpace(f *testing.F) {
 }
 
 // ========================================================================
-// FuzzFlexSpaceRecovery - fuzz test that includes close/reopen cycles
+// FuzzRecoveryFlexSpace - fuzz test that includes close/reopen cycles
 // ========================================================================
 
-func FuzzFlexSpaceRecovery(f *testing.F) {
+func FuzzRecoveryFlexSpace(f *testing.F) {
 	f.Add([]byte{0, 0, 0, 0, 0, 0, 2, 0, 0}, int64(77))
 	f.Add([]byte{
 		0, 0, 0, 0, 0, 0, 1, 0, 0,
