@@ -212,6 +212,9 @@ func FuzzFlexSpace(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte, seed int64) {
 		fs, dir := newTestFS(t)
 		ff := mustOpenFuzz(t, dir, fs)
+		// Guarantee cleanup even on t.Fatal/panic — the fuzz engine
+		// requires each iteration to be fully self-contained.
+		t.Cleanup(func() { ff.Close() })
 		oracle := &flexSpaceOracle{}
 
 		pos := 0
@@ -358,8 +361,7 @@ func FuzzFlexSpace(f *testing.F) {
 			verifyNoBlockCrossingFuzz(t, ff, "final")
 			verifyReadCorrectness(t, ff, oracle, "final")
 		}
-
-		ff.Close()
+		// ff.Close() handled by t.Cleanup
 	})
 }
 
@@ -379,6 +381,14 @@ func FuzzRecoveryFlexSpace(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte, seed int64) {
 		fs, dir := newTestFS(t)
 		ff := mustOpenFuzz(t, dir, fs)
+		// Track whether ff is currently open so t.Cleanup doesn't
+		// double-close after an opcode-5 close+reopen sequence.
+		ffOpen := true
+		t.Cleanup(func() {
+			if ffOpen {
+				ff.Close()
+			}
+		})
 		oracle := &flexSpaceOracle{}
 
 		pos := 0
@@ -479,8 +489,10 @@ func FuzzRecoveryFlexSpace(f *testing.F) {
 			case 5: // Sync + Close + Reopen (INV-FS-4: recovery preserves state)
 				ff.Sync()
 				ff.Close()
+				ffOpen = false
 
 				ff = mustOpenFuzz(t, dir, fs)
+				ffOpen = true
 
 				// After recovery: verify invariants
 				verifyAllFlexSpaceInvariants(t, ff, fmt.Sprintf("recovery#%d", opCount))
@@ -499,8 +511,7 @@ func FuzzRecoveryFlexSpace(f *testing.F) {
 			verifyAllFlexSpaceInvariants(t, ff, "final")
 			verifyReadCorrectness(t, ff, oracle, "final")
 		}
-
-		ff.Close()
+		// ff.Close() handled by t.Cleanup
 	})
 }
 
@@ -511,6 +522,12 @@ func FuzzRecoveryFlexSpace(f *testing.F) {
 func TestFlexSpace_RandomizedInvariants(t *testing.T) {
 	fs, dir := newTestFS(t)
 	ff := mustOpenFuzz(t, dir, fs)
+	ffOpen := true
+	defer func() {
+		if ffOpen {
+			ff.Close()
+		}
+	}()
 	oracle := &flexSpaceOracle{}
 
 	seed := uint64(54321)
@@ -607,7 +624,9 @@ func TestFlexSpace_RandomizedInvariants(t *testing.T) {
 		case r == 9 && reopenCount < 5: // Reopen (10%, max 5 times)
 			ff.Sync()
 			ff.Close()
+			ffOpen = false
 			ff = mustOpenFuzz(t, dir, fs)
+			ffOpen = true
 			reopenCount++
 
 			verifyAllFlexSpaceInvariants(t, ff, fmt.Sprintf("reopen#%d", reopenCount))
@@ -637,8 +656,7 @@ func TestFlexSpace_RandomizedInvariants(t *testing.T) {
 	verifyAllFlexSpaceInvariants(t, ff, "final")
 	verifyNoBlockCrossingFuzz(t, ff, "final")
 	verifyReadCorrectness(t, ff, oracle, "final")
-
-	ff.Close()
+	// ff.Close() handled by defer
 
 	t.Logf("Completed %d ops, %d reopens. Final size: %d bytes", numOps, reopenCount, oracle.size())
 }
