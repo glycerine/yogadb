@@ -1109,8 +1109,8 @@ func (z *Metrics) String() (r string) {
 	}
 	r += fmt.Sprintf("\n   -------- on disk big files summary --------  \n")
 
-	r += fmt.Sprintf(" FLEXSPACE.KV128_BLOCKS: %0.3f MB\n", float64(z.KVBlocksOnDiskFootprintBytes)/(1<<20))
-	r += fmt.Sprintf("             LARGE.VLOG: %0.3f MB\n", float64(z.VlogOnDiskFootprintBytes)/(1<<20))
+	r += fmt.Sprintf(" FLEXSPACE.KV128_BLOCKS: %v (%0.3f MB)\n", formatInt64Under(z.KVBlocksOnDiskFootprintBytes), float64(z.KVBlocksOnDiskFootprintBytes)/(1<<20))
+	r += fmt.Sprintf("             LARGE.VLOG: %v (%0.3f MB)\n", formatInt64Under(z.VlogOnDiskFootprintBytes), float64(z.VlogOnDiskFootprintBytes)/(1<<20))
 
 	r += "}\n"
 	return
@@ -1232,6 +1232,9 @@ func (db *FlexDB) writeLockHeldFinalMetrics() *Metrics {
 
 	m.PiggybackGCRuns = db.piggyGCStats.TotalGCRuns
 	m.PiggybackGCLastDurMs = db.piggyGCStats.LastGCDuration.Milliseconds()
+
+	m.KVBlocksOnDiskFootprintBytes = mustStatFileSize(db.ff.fdKV128blocks)
+	m.VlogOnDiskFootprintBytes = mustStatFileSize(db.vlog.fd)
 
 	return m
 }
