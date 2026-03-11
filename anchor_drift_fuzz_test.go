@@ -1,5 +1,3 @@
-//go:build memfs
-
 package yogadb
 
 import (
@@ -263,7 +261,7 @@ func TestAnchorTreeDrift_VacuumThenWrite(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		mustPut(t, db, fmt.Sprintf("drift_%04d", i), makeTestValue(42))
 	}
-	// This Sync triggers flushDirtyPages which resizes tight→padded pages.
+	// This Sync triggers flushDirtyPages which resizes tight-padded pages.
 	// Without the shift propagation fix, verifyAnchorTags panics here.
 	db.Sync()
 
@@ -278,7 +276,7 @@ func TestAnchorTreeDrift_VacuumThenWrite(t *testing.T) {
 }
 
 // TestAnchorTreeDrift_MultipleResizeCycles tests that multiple rounds of
-// tight→padded page resizing don't accumulate shift errors.
+// tight-padded page resizing don't accumulate shift errors.
 func TestAnchorTreeDrift_MultipleResizeCycles(t *testing.T) {
 	fs, dir := newTestFS(t)
 
@@ -327,7 +325,7 @@ func TestAnchorTreeDrift_NewKeysAfterVacuum(t *testing.T) {
 	}
 	db.Sync()
 
-	// Overwrite + vacuum → tight pages.
+	// Overwrite + vacuum - tight pages.
 	for i := 0; i < 100; i++ {
 		mustPut(t, db, fmt.Sprintf("nk_%04d", i), makeTestValue(41))
 	}

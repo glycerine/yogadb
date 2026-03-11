@@ -1390,7 +1390,7 @@ func TestRecoveryStress_RandomCrashTiming(t *testing.T) {
 }
 
 // TestRecoveryStress_RepeatedRandomCrashes does 10 cycles of:
-// open → concurrent ops → random crash → recover.
+// open -> concurrent ops -> random crash -> recover.
 // The keyTracker accumulates across cycles: ksSet keys from prior
 // cycles must survive all subsequent crashes.
 func TestRecoveryStress_RepeatedRandomCrashes(t *testing.T) {

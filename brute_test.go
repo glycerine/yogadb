@@ -36,13 +36,13 @@ location (or is a hole). The extents collectively describe this mapping.
 
 An **extent** is a triple `(Loff, Len, Poff)` plus metadata `Tag`. It says:
 "logical bytes `[Loff, Loff+Len)` are stored at physical bytes `[Poff, Poff+Len)`."
-The mapping is linear within an extent: `logical_byte_i → Poff + (i - Loff)`.
+The mapping is linear within an extent: `logical_byte_i -> Poff + (i - Loff)`.
 
 ### Key operations (from paper Section 3.2)
 
 - **insert-range(loff, poff, len)**: Insert new data at `loff`. All existing data at
   `loff` and beyond is shifted forward by `len` bytes. The new extent maps
-  `[loff, loff+len)` → `[poff, poff+len)`. This is the key FlexTree innovation:
+  `[loff, loff+len)` -> `[poff, poff+len)`. This is the key FlexTree innovation:
   O(log N) shift cost vs O(N) for conventional B+-Trees.
 
 - **collapse-range(loff, len)** (= Delete): Remove the mapping at `[loff, loff+len)`.

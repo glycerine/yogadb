@@ -1014,7 +1014,7 @@ func TestFlexDB_CheckIntegrity_Clean(t *testing.T) {
 }
 
 // TestFlexDB_CheckIntegrity_AfterVacuumAndReopen exercises the integrity
-// checker through a full cycle: populate → vacuum → reopen → verify.
+// checker through a full cycle: populate -> vacuum -> reopen -> verify.
 func TestFlexDB_CheckIntegrity_AfterVacuumAndReopen(t *testing.T) {
 	fs, dir := newTestFS(t)
 	db := openTestDBAt(fs, t, dir, nil)
@@ -1323,7 +1323,7 @@ func TestDeleteRange_SingleKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Only key in DB → allGone fast path.
+	// Only key in DB -> allGone fast path.
 	if !allGone {
 		t.Fatal("expected allGone=true")
 	}
@@ -1369,7 +1369,7 @@ func TestDeleteRange_FullRange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// All keys in range → allGone fast path.
+	// All keys in range -> allGone fast path.
 	if !allGone {
 		t.Fatal("expected allGone=true")
 	}
@@ -1825,7 +1825,7 @@ func TestDeleteRange_AllGone(t *testing.T) {
 // ====================== DeleteRange includeLarge Tests ======================
 
 func TestDeleteRange_SkipLargeValues(t *testing.T) {
-	// Values > vlogInlineThreshold (64 bytes) go to VLOG → HasVPtr=true.
+	// Values > vlogInlineThreshold (64 bytes) go to VLOG -> HasVPtr=true.
 	bigVal := makeTestValue(200)
 	smallVal := "small"
 

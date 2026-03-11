@@ -95,7 +95,7 @@ func TestSlottedPage_RoundTrip_VPtr(t *testing.T) {
 }
 
 func TestSlottedPage_RoundTrip_SameHLC(t *testing.T) {
-	// All same HLC → all deltas are 0 → minimal HLC region.
+	// All same HLC -> all deltas are 0 -> minimal HLC region.
 	kvs := make([]KV, 100)
 	for i := range kvs {
 		kvs[i] = KV{

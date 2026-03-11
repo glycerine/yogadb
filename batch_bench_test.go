@@ -625,15 +625,15 @@ func BenchmarkPebble_BigRandomRWBatch(b *testing.B) {
 				// Pebble's Batch.Commit(pebble.Sync) does wait for fdatasync
 				// before returning. Here's the condensed path:
 				//
-				// 1. Batch.Commit(opts) → db.Apply() → db.applyInternal(sync=true, noSyncWait=false)
+				// 1. Batch.Commit(opts) -> db.Apply() -> db.applyInternal(sync=true, noSyncWait=false)
 				// 2. commitPipeline.Commit() calls prepare() which creates a sync.WaitGroup
 				//    with count 2 (one for publish, one for WAL sync)
 				// 3. The batch is written to the WAL via LogWriter.SyncRecord(), which
 				//    enqueues the WaitGroup into a sync queue and signals a background
 				//    flushLoop goroutine
-				// 4. flushLoop calls flushPending() → syncWithLatency() → w.s.Sync() which is:
+				// 4. flushLoop calls flushPending() -> syncWithLatency() -> w.s.Sync() which is:
 				//    - Linux: unix.Fdatasync(fd) (vfs/default_linux.go:74)
-				//    - macOS: os.File.Sync() → fsync (vfs/default_unix.go:43)
+				//    - macOS: os.File.Sync() -> fsync (vfs/default_unix.go:43)
 				// 5. After fdatasync returns, syncQueue.pop() calls wg.Done() on the batch's WaitGroup
 				// 6. Back in the commit pipeline, publish() calls b.commit.Wait(), which
 				//    blocks until both Done() calls fire (publish + WAL sync)

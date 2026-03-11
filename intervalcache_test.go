@@ -17,8 +17,8 @@ It sits between the sparse KV index and FlexSpace, caching decoded KV intervals 
 lookups avoid re-reading and re-decoding from disk. The cache uses 1024 hash-partitioned
 shards with CLOCK replacement eviction and reference counting.
 
-**Lookup path:** `Get(key) → sparse index finds anchor → cache partition (by key hash) →
-getEntry() (cache hit or FlexSpace load) → FindKeyEQ (linear scan with fingerprints) → value`
+**Lookup path:** `Get(key) -> sparse index finds anchor -> cache partition (by key hash) ->
+getEntry() (cache hit or FlexSpace load) -> FindKeyEQ (linear scan with fingerprints) -> value`
 
 The interval cache has no dedicated test file. The goal is to create `intervalcache_test.go`
 with comprehensive unit tests, fuzz tests, and benchmarks that exercise the cache in
@@ -47,7 +47,7 @@ isolation (no FlexDB/FlexSpace needed) by constructing cache structures directly
 | INV-IC-15 | **Replace maintains count, adjusts size:** After `cacheEntryReplace`, count unchanged, size changes by delta |
 | INV-IC-16 | **Eviction respects refcnt:** Entries with `refcnt > 0` are never evicted |
 | INV-IC-17 | **Eviction reduces size:** After `calibrate()`, `size <= cap` OR all remaining entries pinned |
-| INV-IC-18 | **Partition ID deterministic and in range:** `cachePartitionID(key)` ∈ [0, 1023], same input → same output |
+| INV-IC-18 | **Partition ID deterministic and in range:** `cachePartitionID(key)` ∈ [0, 1023], same input -> same output |
 
 ## Tests
 
@@ -57,7 +57,7 @@ isolation (no FlexDB/FlexSpace needed) by constructing cache structures directly
 |------|-----------|---------------|
 | `TestIntervalCache_DedupBasic` | 1,2,3 | No dups, all dups, mixed, empty, single |
 | `TestIntervalCache_DedupHLCWins` | 1 | Ascending/descending/middle/equal HLC patterns |
-| `TestIntervalCache_DedupSortedOutput` | 2 | 100 entries → 20 distinct, output strictly sorted |
+| `TestIntervalCache_DedupSortedOutput` | 2 | 100 entries -> 20 distinct, output strictly sorted |
 | `TestIntervalCache_FindKeyGE` | 4 | Existing keys, missing keys (before/between/after), empty entry |
 | `TestIntervalCache_FindKeyEQ` | 5 | Existing keys, missing keys, fingerprint verification |
 | `TestIntervalCache_FindKeyAgreement` | 6 | 50 sorted keys: GE and EQ agree on all existing + random missing |
@@ -67,7 +67,7 @@ isolation (no FlexDB/FlexSpace needed) by constructing cache structures directly
 | `TestIntervalCache_CacheEntryReplace` | 9,10,15 | Replace with longer/shorter/same-size value |
 | `TestIntervalCache_CacheEntryDelete` | 9,10,14 | Delete from beginning/middle/end/until empty |
 | `TestIntervalCache_Calibrate` | 17 | Entries exceeding cap are evicted; access counter grants reprieve |
-| `TestIntervalCache_EvictionRefcntProtection` | 16 | All entries pinned → none evicted; mix of pinned/unpinned |
+| `TestIntervalCache_EvictionRefcntProtection` | 16 | All entries pinned -> none evicted; mix of pinned/unpinned |
 | `TestIntervalCache_PartitionID` | 18 | Determinism, range [0,1023], edge cases (nil/empty/long keys) |
 | `TestIntervalCache_NewCache` | - | 1024 partitions, per-partition cap, initial size=0, tick=nil |
 
@@ -75,9 +75,9 @@ isolation (no FlexDB/FlexSpace needed) by constructing cache structures directly
 
 | Test | Invariants | Strategy |
 |------|-----------|----------|
-| `FuzzIntervalCache_Dedup` | 1,2,3,8 | Random sorted KV slices → dedup → check all dedup invariants |
-| `FuzzIntervalCache_FindKey` | 4,5,6 | Random sorted entries + random search key → check GE/EQ agreement |
-| `FuzzIntervalCache_Mutations` | 8,9,10,13,14,15 | Random insert/replace/delete sequences on a cache entry → check structural invariants after each op |
+| `FuzzIntervalCache_Dedup` | 1,2,3,8 | Random sorted KV slices -> dedup -> check all dedup invariants |
+| `FuzzIntervalCache_FindKey` | 4,5,6 | Random sorted entries + random search key -> check GE/EQ agreement |
+| `FuzzIntervalCache_Mutations` | 8,9,10,13,14,15 | Random insert/replace/delete sequences on a cache entry -> check structural invariants after each op |
 
 ### Benchmarks (3 benchmarks)
 
@@ -148,7 +148,7 @@ go test -count=1 ./...
   Benchmark results:
   - FindKeyEQ (linear scan + fingerprints, 100 entries): ~45 ns/op, 0 allocs
   - FindKeyGE (binary search, 100 entries): ~23 ns/op, 0 allocs
-  - Dedup (1000 KVs → 200 distinct): ~26 us/op
+  - Dedup (1000 KVs -> 200 distinct): ~26 us/op
 
   Full test suite: All existing tests continue to pass (50s total, no regressions).
 */
@@ -356,7 +356,7 @@ func TestIntervalCache_DedupSortedOutput(t *testing.T) {
 	}
 	out, fps, size := intervalCacheDedup(kvs)
 	if len(out) != 20 {
-		t.Fatalf("dedup 100→20: got %d", len(out))
+		t.Fatalf("dedup 100->20: got %d", len(out))
 	}
 	if len(fps) != 20 {
 		t.Fatalf("fps len: got %d", len(fps))
@@ -493,7 +493,7 @@ func TestIntervalCache_FingerprintNonZero(t *testing.T) {
 	}
 
 	// h where XOR of halves would be 0: upper and lower 16 bits equal
-	// e.g. 0x00010001: uint16(0x0001) ^ uint16(0x0001) = 0 → should become 1
+	// e.g. 0x00010001: uint16(0x0001) ^ uint16(0x0001) = 0 -> should become 1
 	if fp := fingerprint(0x00010001); fp == 0 {
 		t.Fatal("fingerprint(0x00010001) == 0")
 	}
@@ -591,7 +591,7 @@ func TestIntervalCache_CacheEntryReplace(t *testing.T) {
 	// Replace with longer value
 	p.cacheEntryReplace(fce, makeKV("b", "much-longer-value", 10), 1)
 	if fce.count != origCount {
-		t.Fatalf("count changed: %d → %d", origCount, fce.count)
+		t.Fatalf("count changed: %d -> %d", origCount, fce.count)
 	}
 	checkCountAndSize(t, fce)
 	checkFingerprintsMatch(t, fce)
@@ -609,7 +609,7 @@ func TestIntervalCache_CacheEntryReplace(t *testing.T) {
 
 	// Replace with same-size value
 	prevSize = fce.size
-	p.cacheEntryReplace(fce, makeKV("b", "y", 12), 1) // "x" → "y", same len
+	p.cacheEntryReplace(fce, makeKV("b", "y", 12), 1) // "x" -> "y", same len
 	checkCountAndSize(t, fce)
 	if fce.size != prevSize {
 		t.Fatalf("size should be unchanged: was %d, now %d", prevSize, fce.size)
@@ -666,7 +666,7 @@ func TestIntervalCache_Calibrate(t *testing.T) {
 		p.size += int64(32 + fce.size)
 	}
 
-	// Cap is 100 bytes, each entry is ~32 + (24+2+5) = 63 bytes → 5 entries = 315 bytes
+	// Cap is 100 bytes, each entry is ~32 + (24+2+5) = 63 bytes -> 5 entries = 315 bytes
 	if p.size <= p.cap {
 		t.Fatalf("test setup: size=%d should exceed cap=%d", p.size, p.cap)
 	}
@@ -707,7 +707,7 @@ func TestIntervalCache_EvictionRefcntProtection(t *testing.T) {
 	p.calibrate()
 	// No entries should be evicted because all are pinned
 	if p.size != sizeBefore {
-		t.Fatalf("pinned entries were evicted: size %d → %d", sizeBefore, p.size)
+		t.Fatalf("pinned entries were evicted: size %d -> %d", sizeBefore, p.size)
 	}
 	checkClockListIntegrity(t, p, 5)
 
@@ -769,7 +769,7 @@ func TestIntervalCache_CalibrateAccessChance(t *testing.T) {
 }
 
 func TestIntervalCache_PartitionID(t *testing.T) {
-	// Determinism: same key → same partition
+	// Determinism: same key -> same partition
 	for i := 0; i < 100; i++ {
 		key := fmt.Sprintf("test-key-%d", i)
 		id1 := cachePartitionID(key)
@@ -980,7 +980,7 @@ func FuzzIntervalCache_Mutations(f *testing.F) {
 			p.cacheEntryInsert(fce, kv, idx)
 			// INV-IC-9: count increased by 1
 			if fce.count != prevCount+1 {
-				t.Fatalf("insert: count %d → %d", prevCount, fce.count)
+				t.Fatalf("insert: count %d -> %d", prevCount, fce.count)
 			}
 			checkCountAndSize(t, fce)
 			checkFingerprintsMatch(t, fce)
@@ -995,7 +995,7 @@ func FuzzIntervalCache_Mutations(f *testing.F) {
 			p.cacheEntryReplace(fce, kv, idx)
 			// INV-IC-15: count unchanged
 			if fce.count != prevCount {
-				t.Fatalf("replace: count %d → %d", prevCount, fce.count)
+				t.Fatalf("replace: count %d -> %d", prevCount, fce.count)
 			}
 			checkCountAndSize(t, fce)
 			checkFingerprintsMatch(t, fce)
@@ -1009,7 +1009,7 @@ func FuzzIntervalCache_Mutations(f *testing.F) {
 			p.cacheEntryDelete(fce, idx)
 			// INV-IC-14: count decreased by 1
 			if fce.count != prevCount-1 {
-				t.Fatalf("delete: count %d → %d", prevCount, fce.count)
+				t.Fatalf("delete: count %d -> %d", prevCount, fce.count)
 			}
 			checkCountAndSize(t, fce)
 			checkFingerprintsMatch(t, fce)

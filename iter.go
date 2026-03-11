@@ -973,7 +973,7 @@ func (it *Iter) servePrefetchReverse() bool {
 func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, found bool) {
 	db := it.db
 
-	// Fast path: both memtables empty → pure FlexSpace iteration.
+	// Fast path: both memtables empty -> pure FlexSpace iteration.
 	// Skip all btree seeks and 3-way merging.
 	if db.memtables[0].empty && db.memtables[1].empty {
 		kv, found = it.flexSpaceOnlySeekGE(target, strict)
@@ -1203,7 +1203,7 @@ func (it *Iter) Seek(target string) {
 	db := it.db
 	it.initFlexCursorSeekGE(target)
 
-	// Prefetch fast path: both memtables empty → fill buffer from FlexSpace.
+	// Prefetch fast path: both memtables empty -> fill buffer from FlexSpace.
 	if db.memtables[0].empty && db.memtables[1].empty {
 		it.prefetchFillFlexSpaceOnly()
 		if it.pfSpanCount == 0 || !it.servePrefetch() {
@@ -1225,7 +1225,7 @@ func (it *Iter) seekLE(target string, strict bool) {
 	db := it.db
 	it.initFlexCursorSeekLE(target)
 
-	// Prefetch fast path: both memtables empty → fill buffer backward from FlexSpace.
+	// Prefetch fast path: both memtables empty -> fill buffer backward from FlexSpace.
 	if db.memtables[0].empty && db.memtables[1].empty {
 		if strict {
 			it.retreatFlexCursorBefore(target, true)
@@ -1256,7 +1256,7 @@ func (it *Iter) SeekToLast() {
 	db := it.db
 	it.initFlexCursorSeekLE("")
 
-	// Prefetch fast path: both memtables empty → fill buffer backward from FlexSpace.
+	// Prefetch fast path: both memtables empty -> fill buffer backward from FlexSpace.
 	if db.memtables[0].empty && db.memtables[1].empty {
 		it.prefetchFillFlexSpaceReverse()
 		if it.pfSpanCount == 0 || !it.servePrefetchReverse() {

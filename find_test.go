@@ -40,7 +40,7 @@ func TestFind_GTE(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateFindTestDB(t, db)
 
-	// GTE on existing key → exact match.
+	// GTE on existing key -> exact match.
 	kv, found, exact := db.Find(GTE, "key003")
 	if !found || !exact {
 		t.Fatalf("GTE key003: found=%v exact=%v, want true true", found, exact)
@@ -49,7 +49,7 @@ func TestFind_GTE(t *testing.T) {
 		t.Fatalf("got key=%q value=%q, want key003/val003", kv.Key, kv.Value)
 	}
 
-	// GTE on gap key → next key.
+	// GTE on gap key -> next key.
 	kv2, found2, exact2 := db.Find(GTE, "key002a")
 	if !found2 {
 		t.Fatal("GTE key002a: not found")
@@ -64,7 +64,7 @@ func TestFind_GTE(t *testing.T) {
 		t.Fatalf("got value %q, want val003", kv2.Value)
 	}
 
-	// GTE past end → not found.
+	// GTE past end -> not found.
 	kv3, found3, _ := db.Find(GTE, "key999")
 	if found3 {
 		t.Fatal("GTE key999: should not be found")
@@ -73,7 +73,7 @@ func TestFind_GTE(t *testing.T) {
 		t.Fatal("expected nil KV")
 	}
 
-	// GTE nil → first key.
+	// GTE nil -> first key.
 	kv4, found4, _ := db.Find(GTE, "")
 	if !found4 {
 		t.Fatal("GTE nil: not found")
@@ -88,7 +88,7 @@ func TestFind_GT(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateFindTestDB(t, db)
 
-	// GT on existing key → next key.
+	// GT on existing key -> next key.
 	kv, found, exact := db.Find(GT, "key003")
 	if !found {
 		t.Fatal("GT key003: not found")
@@ -103,7 +103,7 @@ func TestFind_GT(t *testing.T) {
 		t.Fatalf("got value %q, want val004", kv.Value)
 	}
 
-	// GT on gap key → next key (same as GTE on gap).
+	// GT on gap key -> next key (same as GTE on gap).
 	kv2, found2, _ := db.Find(GT, "key002a")
 	if !found2 {
 		t.Fatal("GT key002a: not found")
@@ -112,13 +112,13 @@ func TestFind_GT(t *testing.T) {
 		t.Fatalf("GT key002a: got key %q, want key003", kv2.Key)
 	}
 
-	// GT on last key → not found.
+	// GT on last key -> not found.
 	_, found3, _ := db.Find(GT, "key010")
 	if found3 {
 		t.Fatal("GT key010: should not be found")
 	}
 
-	// GT nil → first key.
+	// GT nil -> first key.
 	kv4, found4, _ := db.Find(GT, "")
 	if !found4 {
 		t.Fatal("GT nil: not found")
@@ -133,7 +133,7 @@ func TestFind_LTE(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateFindTestDB(t, db)
 
-	// LTE on existing key → exact match.
+	// LTE on existing key -> exact match.
 	kv, found, exact := db.Find(LTE, "key003")
 	if !found || !exact {
 		t.Fatalf("LTE key003: found=%v exact=%v, want true true", found, exact)
@@ -142,7 +142,7 @@ func TestFind_LTE(t *testing.T) {
 		t.Fatalf("got key=%q value=%q, want key003/val003", kv.Key, kv.Value)
 	}
 
-	// LTE on gap key → previous key.
+	// LTE on gap key -> previous key.
 	kv2, found2, exact2 := db.Find(LTE, "key003a")
 	if !found2 {
 		t.Fatal("LTE key003a: not found")
@@ -154,13 +154,13 @@ func TestFind_LTE(t *testing.T) {
 		t.Fatalf("LTE key003a: got key %q, want key003", kv2.Key)
 	}
 
-	// LTE before first → not found.
+	// LTE before first -> not found.
 	_, found3, _ := db.Find(LTE, "key000")
 	if found3 {
 		t.Fatal("LTE key000: should not be found")
 	}
 
-	// LTE nil → last key.
+	// LTE nil -> last key.
 	kv4, found4, _ := db.Find(LTE, "")
 	if !found4 {
 		t.Fatal("LTE nil: not found")
@@ -175,7 +175,7 @@ func TestFind_LT(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateFindTestDB(t, db)
 
-	// LT on existing key → previous key.
+	// LT on existing key -> previous key.
 	kv, found, exact := db.Find(LT, "key003")
 	if !found {
 		t.Fatal("LT key003: not found")
@@ -190,7 +190,7 @@ func TestFind_LT(t *testing.T) {
 		t.Fatalf("got value %q, want val002", kv.Value)
 	}
 
-	// LT on gap key → previous key.
+	// LT on gap key -> previous key.
 	kv2, found2, _ := db.Find(LT, "key003a")
 	if !found2 {
 		t.Fatal("LT key003a: not found")
@@ -199,13 +199,13 @@ func TestFind_LT(t *testing.T) {
 		t.Fatalf("LT key003a: got key %q, want key003", kv2.Key)
 	}
 
-	// LT on first key → not found.
+	// LT on first key -> not found.
 	_, found3, _ := db.Find(LT, "key001")
 	if found3 {
 		t.Fatal("LT key001: should not be found")
 	}
 
-	// LT nil → last key.
+	// LT nil -> last key.
 	kv4, found4, _ := db.Find(LT, "")
 	if !found4 {
 		t.Fatal("LT nil: not found")

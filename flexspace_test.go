@@ -201,18 +201,18 @@ func TestFlexspace_WriteExtend(t *testing.T) {
 	ff := mustOpen(t, dir, fs)
 	defer ff.Close()
 
-	// "abc": write at 0, size=0 → append
+	// "abc": write at 0, size=0 -> append
 	mustWrite(t, ff, "abc", 0)
 	checkContent(t, ff, "abc")
 
 	// write "def" at loff=1, len=3: loff+len=4 > size=3
-	// → collapse(1, 2) removes "bc"; then insert("def", 1) appends "def"
+	// -> collapse(1, 2) removes "bc"; then insert("def", 1) appends "def"
 	// Result: "adef"
 	mustWrite(t, ff, "def", 1)
 	checkContent(t, ff, "adef")
 
 	// write "123" at loff=2, len=3: loff+len=5 > size=4
-	// → collapse(2, 2) removes "ef"; then insert("123", 2) appends "123"
+	// -> collapse(2, 2) removes "ef"; then insert("123", 2) appends "123"
 	// Result: "ad123"
 	mustWrite(t, ff, "123", 2)
 	checkContent(t, ff, "ad123")
@@ -459,28 +459,28 @@ func TestFlexspace_CTest(t *testing.T) {
 
 	// --- Round 1 ---
 	ff := mustOpen(t, dir, fs)
-	mustWrite(t, ff, "abc", 0) // size=0 → insert → "abc"
-	mustWrite(t, ff, "def", 1) // loff+len=4>3 → collapse(1,2)+insert("def",1) → "adef"
-	mustWrite(t, ff, "123", 2) // loff+len=5>4 → collapse(2,2)+insert("123",2) → "ad123"
+	mustWrite(t, ff, "abc", 0) // size=0 -> insert -> "abc"
+	mustWrite(t, ff, "def", 1) // loff+len=4>3 -> collapse(1,2)+insert("def",1) -> "adef"
+	mustWrite(t, ff, "123", 2) // loff+len=5>4 -> collapse(2,2)+insert("123",2) -> "ad123"
 	ff.Close()
 
 	// --- Round 2: reopen and verify ---
 	ff = mustOpen(t, dir, fs)
 	checkContent(t, ff, "ad123")
-	mustWrite(t, ff, "abc", 1) // loff+len=4<=5 → update("abc",1,3,3) → "aabc123"? Let's trace:
-	// size=5, loff=1, len=3: loff+len=4 <= size=5 → update(buf, 1, 3, 3)
-	// update: collapse(1, 3) removes "d12" from "ad123" → "a23" (size=3)
-	// then insert("abc", 1, 3) → "aabc23"? No wait:
+	mustWrite(t, ff, "abc", 1) // loff+len=4<=5 -> update("abc",1,3,3) -> "aabc123"? Let's trace:
+	// size=5, loff=1, len=3: loff+len=4 <= size=5 -> update(buf, 1, 3, 3)
+	// update: collapse(1, 3) removes "d12" from "ad123" -> "a23" (size=3)
+	// then insert("abc", 1, 3) -> "aabc23"? No wait:
 	// After collapse(1,3) on "ad123": removes [1..4) = "d12", remaining = "a3" (size=2)? No:
 	// "ad123": positions 0='a',1='d',2='1',3='2',4='3'
 	// collapse(1, 3): delete positions [1..4) = "d12"
-	// remaining: 'a'(0), '3'(1) → "a3" (size=2)
-	// insert("abc", 1, 3): insert at pos 1 in "a3" → "a" + "abc" + "3" = "aabc3" (size=5)
+	// remaining: 'a'(0), '3'(1) -> "a3" (size=2)
+	// insert("abc", 1, 3): insert at pos 1 in "a3" -> "a" + "abc" + "3" = "aabc3" (size=5)
 	// But wait, loff+len = 1+3 = 4 <= size=5, so update is used, not collapse+insert.
 	// Let me re-check update: update(buf, loff=1, len=3, olen=3)
-	// → collapseR(1, 3) + insertR(buf, 1, 3)
-	// "ad123" → collapse(1,3) removes [1..4)="d12" → "a"+"3"="a3"
-	// → insert("abc", 1, 3) shifts "3" right by 3: "a"+"abc"+"3" = "aabc3" (size=5)
+	// -> collapseR(1, 3) + insertR(buf, 1, 3)
+	// "ad123" -> collapse(1,3) removes [1..4)="d12" -> "a"+"3"="a3"
+	// -> insert("abc", 1, 3) shifts "3" right by 3: "a"+"abc"+"3" = "aabc3" (size=5)
 	// Hmm, I expect "aabc3" but the C test says "aabcd123efbc" for a subsequent read...
 	// Let me just test what the implementation does and verify it's self-consistent.
 	ff.Close()

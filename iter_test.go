@@ -723,15 +723,15 @@ func TestFlexDB_VacuumKV_WithDeletes(t *testing.T) {
 // dirty flag to internal (ancestor) nodes. SyncCoW's post-order walk
 // skips clean internal nodes, so dirty leaves under clean parents are
 // never persisted. On reopen, those leaves still have their pre-vacuum
-// poff values, which point beyond the vacuumed (smaller) file → EOF.
+// poff values, which point beyond the vacuumed (smaller) file -> EOF.
 func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 	fs, dir := newTestFS(t)
 	cfg := &Config{FS: fs}
 	// Session 1: ingest many keys to create a multi-level tree.
 	// With FLEXTREE_LEAF_CAP=60 extents per leaf, we need >60 anchors
 	// to guarantee internal tree nodes. FlexDB creates one anchor per
-	// flexdbSparseInterval (32) keys, so 5000 keys → ~156 anchors →
-	// at least 3 leaf nodes → internal node(s) exist.
+	// flexdbSparseInterval (32) keys, so 5000 keys -> ~156 anchors ->
+	// at least 3 leaf nodes -> internal node(s) exist.
 	const nKeys = 5000
 	{
 		db, err := OpenFlexDB(dir, cfg)
@@ -779,7 +779,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 
 	// Session 3: open and vacuum AGAIN. This is where the bug manifests:
 	// leaves whose dirty flag was not persisted via SyncCoW still have
-	// old (pre-vacuum) poff values, which point beyond the vacuumed (smaller) file → EOF.
+	// old (pre-vacuum) poff values, which point beyond the vacuumed (smaller) file -> EOF.
 	{
 		db, err := OpenFlexDB(dir, cfg)
 		if err != nil {

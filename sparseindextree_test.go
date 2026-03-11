@@ -130,30 +130,30 @@ Instrument:
 | Test | What It Tests |
 |------|---------------|
 | `TestSparseIndexTree_Create` | New tree: root==leafHead, isLeaf, count==1, sentinel |
-| `TestSparseIndexTree_FindAnchorPosEmpty` | Any key → idx==0 (sentinel) on single-node tree |
-| `TestSparseIndexTree_FindAnchorPosNilKey` | nil key → idx==0 |
+| `TestSparseIndexTree_FindAnchorPosEmpty` | Any key -> idx==0 (sentinel) on single-node tree |
+| `TestSparseIndexTree_FindAnchorPosNilKey` | nil key -> idx==0 |
 | `TestSparseIndexTree_SingleInsert` | One anchor after sentinel, count==2 |
 | `TestSparseIndexTree_InsertMultipleOrdered` | 20 sequential keys, all in one leaf |
 | `TestSparseIndexTree_InsertMultipleRandom` | 50 random keys vs oracle |
-| `TestSparseIndexTree_LeafSplitTrigger` | 121 anchors → split, leafSplits>0, root becomes internal |
+| `TestSparseIndexTree_LeafSplitTrigger` | 121 anchors -> split, leafSplits>0, root becomes internal |
 | `TestSparseIndexTree_LeafSplitBalance` | Both halves ~equal, pivot == right child's first key |
-| `TestSparseIndexTree_InternalSplitTrigger` | ~5000 anchors → internalSplits>0, height==3 |
+| `TestSparseIndexTree_InternalSplitTrigger` | ~5000 anchors -> internalSplits>0, height==3 |
 | `TestSparseIndexTree_FindPosInternal` | Direct internal node binary search test |
 | `TestSparseIndexTree_FindPosLeafLE` | LE search: exact, between, before-all, after-all |
 | `TestSparseIndexTree_ShiftUpPropagateBasic` | Shift within one leaf, verify sibling loffs change |
 | `TestSparseIndexTree_ShiftUpPropagateAcrossLevels` | Shift after splits, verify all right siblings affected |
 | `TestSparseIndexTree_ShiftConsistency` | 500 inserts with psize, effective loffs match oracle |
 | `TestSparseIndexTree_DeleteSingleAnchor` | Remove from multi-anchor leaf |
-| `TestSparseIndexTree_DeleteUntilRecycle` | Delete all → recycleNode fires, recycleCount>0 |
+| `TestSparseIndexTree_DeleteUntilRecycle` | Delete all -> recycleNode fires, recycleCount>0 |
 | `TestSparseIndexTree_DeleteLeftmostPivotUpdate` | Delete idx==0, verify pivot updated |
 | `TestSparseIndexTree_RecycleNodeSiblingBecomesRoot` | Recycle causes parent collapse, sibling becomes root |
 | `TestSparseIndexTree_HandlerInfoUpdate` | Verify nh.shift == sum of parent shifts to root |
 | `TestSparseIndexTree_HintedSearchSameLeaf` | Hinted search within same leaf |
 | `TestSparseIndexTree_HintedSearchForwardLeaf` | Hinted search to a different leaf |
 | `TestSparseIndexTree_HintedSearchVsCold` | 100 random keys: hinted == cold findAnchorPos |
-| `TestSparseIndexTree_HintedSearchRightmostFixed` | Verify Fix 1: rightmost leaf + smaller key → correct result |
+| `TestSparseIndexTree_HintedSearchRightmostFixed` | Verify Fix 1: rightmost leaf + smaller key -> correct result |
 | `TestSparseIndexTree_UpdateSmallestKey` | Leftmost chain (no-op) + non-leftmost (updates pivot) |
-| `TestSparseIndexTree_RebaseTrigger` | loff >= 0x3FFFFFFF → rebase fires, rebaseCount>0 |
+| `TestSparseIndexTree_RebaseTrigger` | loff >= 0x3FFFFFFF -> rebase fires, rebaseCount>0 |
 | `TestSparseIndexTree_RebasePreservesEffectiveLoff` | effective loffs unchanged after rebase |
 | `TestSparseIndexTree_NodeShiftApply` | Apply shift to leaf and internal nodes |
 | `TestSparseIndexTree_RecycleLinkedList` | Remove middle/head leaf from linked list |
@@ -1409,7 +1409,7 @@ func TestSparseIndexTree_InsertDeleteMixed(t *testing.T) {
 
 func TestSparseIndexTree_CallerPatternInsert(t *testing.T) {
 	// Simulate the exact pattern db.go uses:
-	// findAnchorPos → grab anchor pointer → nh.idx++ → handlerInsert → nh.idx-- → shiftUpPropagate
+	// findAnchorPos -> grab anchor pointer -> nh.idx++ -> handlerInsert -> nh.idx-- -> shiftUpPropagate
 	tree := memSparseIndexTreeCreate()
 
 	for i := 1; i <= 300; i++ {
