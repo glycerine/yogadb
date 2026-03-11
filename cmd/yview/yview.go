@@ -61,10 +61,10 @@ func main() {
 		}()
 	}
 
-	justShowAll(db, dbPath)
+	cmdCfg.justShowAll(db, dbPath)
 }
 
-func justShowAll(db *yogadb.FlexDB, dbPath string) {
+func (c *YviewConfig) justShowAll(db *yogadb.FlexDB, dbPath string) {
 	saw := 0
 	buf := make([]byte, 0, 4<<20)
 	db.View(func(roDB *yogadb.ReadOnlyTx) error {
@@ -77,9 +77,11 @@ func justShowAll(db *yogadb.FlexDB, dbPath string) {
 				buf = buf[:0]
 			}
 			buf = append(buf, key...)
-			if len(value) > 0 {
-				buf = append(buf, colonarrow...)
-				buf = append(buf, value...)
+			if !c.KeysOnly {
+				if len(value) > 0 {
+					buf = append(buf, colonarrow...)
+					buf = append(buf, value...)
+				}
 			}
 			buf = append(buf, newline...)
 
