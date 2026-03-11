@@ -208,6 +208,12 @@ the entire system is assembled.
 
 [4] The FlexSpace paper should not be confused with "Flex-KV: Enabling High-performance and Flexible KV Systems" 2012 by Phanishayee et al. https://www.microsoft.com/en-us/research/wp-content/uploads/2016/10/flexkv_mbds12.pdf which is from a completely different research group.
 
+# more thorough (YCSB) benchmarks (these are ports in progress)
+
+external; from PingCap: https://github.com/glycerine/go-ycsb/tree/yogadb
+
+internal: https://github.com/glycerine/yogadb/tree/master/cmd/yogabench 
+
 # Reference C code repository
 
 [5] https://github.com/flexible-address-space/flexspace
