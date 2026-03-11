@@ -1517,14 +1517,16 @@ type VacuumKVStats struct {
 	OldFileSize      int64
 	NewFileSize      int64
 	BytesReclaimed   int64
+	PaddingReclaimed int64
 	ExtentsRewritten int64
 }
 
 func (z *VacuumKVStats) String() (r string) {
 	r = "VacuumKVStats{\n"
-	r += fmt.Sprintf("      OldFileSize: %v,\n", formatInt64Under(z.OldFileSize))
-	r += fmt.Sprintf("      NewFileSize: %v,\n", formatInt64Under(z.NewFileSize))
+	r += fmt.Sprintf("       OldFileSize: %v,\n", formatInt64Under(z.OldFileSize))
+	r += fmt.Sprintf("       NewFileSize: %v,\n", formatInt64Under(z.NewFileSize))
 	r += fmt.Sprintf("   BytesReclaimed: %v,\n", formatInt64Under(z.BytesReclaimed))
+	r += fmt.Sprintf("PaddingReclaimed: %v,\n", formatInt64Under(z.PaddingReclaimed))
 	r += fmt.Sprintf("ExtentsRewritten: %v,\n", formatInt64Under(z.ExtentsRewritten))
 	r += "}\n"
 	return
@@ -1540,10 +1542,13 @@ func (z *VacuumKVStats) String() (r string) {
 //
 // VacuumKV does a one-time compaction of already-bloated databases. Algorithm:
 // 1. Flush memtables, acquire exclusive locks
+// 1b. Compact slotted page padding: decode each page, compute tight size,
+//     Collapse the zero-padding in reverse loff order
 // 2. Walk FlexTree leaf linked list, read/rewrite all live extents sequentially to a .vacuum file
 // 3. Close old fd, rename .vacuum -> FLEXSPACE.KV128_BLOCKS, reopen
-// 4. Rebuild block manager, checkpoint FlexTree, invalidate caches
-// 5. Clean up stale .vacuum files on OpenFlexSpaceCoW
+// 4. Rebuild block manager, checkpoint FlexTree
+// 5. Rebuild anchor tree from FlexTree tags (replaces stale anchor loffs)
+// 6. Clean up stale .vacuum files on OpenFlexSpaceCoW
 //
 // See the tests:
 // TestFlexDB_VacuumKV_Basic - overwrites 200 keys, vacuums, verifies data integrity across reopen
@@ -1589,6 +1594,16 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 	}
 
 	// Walk all leaf nodes via the linked list, rewriting extents sequentially.
+	// Slotted pages are decoded and re-encoded tightly to remove zero-padding
+	// (which sits between entry records and values in the page layout).
+	// We build a new FlexTree rather than modifying the old one, since changing
+	// extent Len values would require fixing all internal node pivots and shifts.
+	type compactedExtent struct {
+		poff uint64
+		len  uint32
+		tag  uint16
+	}
+	var extents []compactedExtent
 	writeOffset := uint64(0)
 	nodeID := ff.tree.LeafHead
 	for !nodeID.IsIllegal() {
@@ -1598,37 +1613,87 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 			if ext.IsHole() {
 				continue // holes have no physical storage
 			}
-			length := uint64(ext.Len)
+			oldLen := uint64(ext.Len)
 			poff := ext.Address()
+			tag := ext.Tag()
 
 			// Read data from old file. After ff.Sync() above, the block
 			// manager has been flushed (blkoff=0), so all data is on disk.
 			// Read directly from the file to avoid any stale-buffer issues.
-			buf := make([]byte, length)
+			buf := make([]byte, oldLen)
 			n, readErr := ff.fdKV128blocks.ReadAt(buf, int64(poff))
-			if readErr != nil || uint64(n) != length {
+			if readErr != nil || uint64(n) != oldLen {
 				newFD.Close()
 				db.vfs.Remove(vacuumPath)
-				return stats, fmt.Errorf("vacuumkv: read poff=%d len=%d: %w", poff, length, readErr)
+				return stats, fmt.Errorf("vacuumkv: read poff=%d len=%d: %w", poff, oldLen, readErr)
 			}
 
+			// Try to compact slotted pages by removing zero-padding.
+			writeBuf := buf
+			if slottedPageIsSlotted(buf) {
+				kvs, _, decErr := slottedPageDecode(buf)
+				if decErr == nil && len(kvs) > 0 {
+					tight := slottedPageEncode(kvs)
+					if len(tight) < len(buf) {
+						stats.PaddingReclaimed += int64(len(buf) - len(tight))
+						writeBuf = tight
+					}
+				}
+			}
+
+			newLen := uint32(len(writeBuf))
+
 			// Write sequentially to new file.
-			_, writeErr := newFD.WriteAt(buf, int64(writeOffset))
+			_, writeErr := newFD.WriteAt(writeBuf, int64(writeOffset))
 			if writeErr != nil {
 				newFD.Close()
 				db.vfs.Remove(vacuumPath)
-				return stats, fmt.Errorf("vacuumkv: write offset=%d len=%d: %w", writeOffset, length, writeErr)
+				return stats, fmt.Errorf("vacuumkv: write offset=%d len=%d: %w", writeOffset, newLen, writeErr)
 			}
 
-			// Update extent's physical offset to the new location.
-			ext.SetPoff(writeOffset)
-			le.Dirty = true
+			extents = append(extents, compactedExtent{
+				poff: writeOffset,
+				len:  newLen,
+				tag:  tag,
+			})
 
-			writeOffset += length
+			writeOffset += uint64(newLen)
 			stats.ExtentsRewritten++
 		}
 		nodeID = le.Next
 	}
+
+	// Build a new FlexTree from the compacted extents. This ensures all
+	// internal node pivots and shifts are consistent with the new loff layout.
+	oldTree := ff.tree
+	newTree := NewFlexTree(oldTree.fs)
+	newTree.MaxExtentSize = oldTree.MaxExtentSize
+	newTree.cowEnabled = oldTree.cowEnabled
+	newTree.metaFD = oldTree.metaFD
+	newTree.nodeFD = oldTree.nodeFD
+	newTree.metaNextOff = oldTree.metaNextOff
+	newTree.metaFileCap = oldTree.metaFileCap
+	newTree.nodesFileCap = oldTree.nodesFileCap
+	// Copy cumulative counters so they survive vacuum.
+	newTree.totalLogicalBytesWrit = oldTree.totalLogicalBytesWrit
+	newTree.totalPhysicalBytesWrit = oldTree.totalPhysicalBytesWrit
+	newTree.PersistentVersion = oldTree.PersistentVersion
+	newTree.MaxHLC = oldTree.MaxHLC
+	newTree.liveKeys = oldTree.liveKeys
+	newTree.liveBigKeys = oldTree.liveBigKeys
+	newTree.liveSmallKeys = oldTree.liveSmallKeys
+	// Initialize root leaf node (InsertWTag needs a valid root).
+	root := newTree.AllocLeaf()
+	root.Dirty = true
+	newTree.NodeCount++
+	newTree.Root = root.NodeID
+	newTree.LeafHead = root.NodeID
+	loff := uint64(0)
+	for _, ext := range extents {
+		newTree.InsertWTag(loff, ext.poff, ext.len, ext.tag)
+		loff += uint64(ext.len)
+	}
+	ff.tree = newTree
 
 	// Sync the new file to ensure all data is durable before we rename.
 	if err := newFD.Sync(); err != nil {
@@ -1700,17 +1765,11 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 	ff.writeLogVersion()
 	ff.redoLogFlushAndSync()
 
-	// Invalidate all interval caches (poffs changed).
-	for node := db.tree.leafHead; node != nil; node = node.next {
-		for ai := 0; ai < node.count; ai++ {
-			anchor := node.anchors[ai]
-			if fce := anchor.loadFce(); fce != nil {
-				fce.anchor = nil
-				anchor.storeFce(nil)
-			}
-		}
-	}
+	// Rebuild anchor tree from FlexTree tags (loffs and poffs changed).
+	// This also invalidates all interval caches since the old anchor tree
+	// is destroyed and replaced.
 	db.cache.destroyAll()
+	db.rebuildAnchorsFromTags()
 
 	stats.NewFileSize = int64(writeOffset)
 	stats.BytesReclaimed = stats.OldFileSize - stats.NewFileSize
@@ -3261,8 +3320,11 @@ func (db *FlexDB) putPassthroughInitial(kv KV, nh *memSparseIndexTreeHandler, an
 		partition.cacheEntryInsert(fce, kv, idx)
 	}
 
-	// Encode as fixed-size padded page and insert.
-	buf := slottedPageEncodePadded(fce.kvs[:fce.count], slottedPageMaxSize)
+	// Encode as tight (unpadded) page. Padding to slottedPageMaxSize is deferred
+	// until the first dirty flush that needs to grow the page, at which point
+	// flushDirtyPages uses ff.Update to resize to slottedPageMaxSize.
+	// This avoids ~47% space waste for pages that are never updated after initial flush.
+	buf := slottedPageEncode(fce.kvs[:fce.count])
 	psize := uint32(len(buf))
 
 	db.ff.Insert(buf, anchorLoff, uint64(psize))
@@ -3283,12 +3345,18 @@ func (db *FlexDB) putPassthroughInitial(kv KV, nh *memSparseIndexTreeHandler, an
 func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *dbAnchor, partition *intervalCachePartition, fce *intervalCacheEntry) {
 	idx, eq := intervalCacheEntryFindKeyGE(fce, kv.Key)
 
-	// Check if the new KV would fit in the fixed-size page.
+	// Check if the new KV would fit. For pages smaller than slottedPageMaxSize
+	// (e.g. tight pages from initial flush or post-vacuum), use the full
+	// slottedPageMaxSize as the capacity — the page will be grown on flush.
 	replaceIdx := -1
 	if eq {
 		replaceIdx = idx
 	}
-	if !slottedPageWouldFit(fce.kvs, fce.count, kv, replaceIdx, int(anchor.psize)) {
+	fitTarget := int(anchor.psize)
+	if fitTarget < slottedPageMaxSize {
+		fitTarget = slottedPageMaxSize
+	}
+	if !slottedPageWouldFit(fce.kvs, fce.count, kv, replaceIdx, fitTarget) {
 		if eq {
 			// Replacing an existing key - the entry count stays the same.
 			// The overflow is from HLC varint growth (mixed old/new HLCs
@@ -3629,10 +3697,10 @@ func (db *FlexDB) clampAnchorPsizes() {
 	}
 }
 
-func (db *FlexDB) recovery() {
-	db.topMutRW.Lock()
-	defer db.topMutRW.Unlock()
-
+// rebuildAnchorsFromTags walks all FlexTree extents, finds anchor tags,
+// and rebuilds the sparse index tree from scratch. Called by recovery()
+// on open and by VacuumKV after compaction. Caller must hold topMutRW.
+func (db *FlexDB) rebuildAnchorsFromTags() {
 	type anchorInfo struct {
 		key      string
 		loff     uint64
@@ -3643,6 +3711,9 @@ func (db *FlexDB) recovery() {
 	if ffSize == 0 {
 		return
 	}
+
+	// Destroy old anchor tree, create fresh one with sentinel.
+	db.tree = memSparseIndexTreeCreate()
 
 	var anchors []anchorInfo
 	kvbuf := make([]byte, MaxKeySize)
@@ -3665,7 +3736,7 @@ func (db *FlexDB) recovery() {
 		fh.ForwardExtent()
 	}
 
-	// Build sparse index tree from collected anchors (in order)
+	// Build sparse index tree from collected anchors (in order).
 	var nh memSparseIndexTreeHandler
 	db.tree.findAnchorPos("", &nh)
 	lastAnchorLoff := uint64(0)
@@ -3688,71 +3759,24 @@ func (db *FlexDB) recovery() {
 		lastAnchorLoff = ai.loff
 	}
 
-	// Set last anchor's psize
+	// Set last anchor's psize — the tail fragment from lastAnchorLoff to ffSize.
+	// It is inherently variable-sized and may exceed slottedPageMaxSize; that's normal.
 	if nh.node != nil && nh.idx < nh.node.count {
 		last := nh.node.anchors[nh.idx]
-		lastPsize := uint32(ffSize - lastAnchorLoff)
-		last.psize = lastPsize
-
-		// The last anchor's psize is the tail fragment from lastAnchorLoff to ffSize.
-		// It is inherently variable-sized and routinely exceeds slottedPageMaxSize.
-		// this is normal, not an error. All reads use anchor.psize directly.
-		//vv("last anchor psize=%d (slottedPageMaxSize=%d, ffSize=%d lastAnchorLoff=%d nAnchors=%d)",
-		//	lastPsize, slottedPageMaxSize, ffSize, lastAnchorLoff, len(anchors))
-		//
-		// // earlier, bigger diagnostics:
-		// if lastPsize > uint32(slottedPageMaxSize) {
-		// 	alwaysPrintf("RECOVERY WARNING: last anchor psize=%d > slottedPageMaxSize=%d (ffSize=%d lastAnchorLoff=%d nAnchors=%d)",
-		// 		lastPsize, slottedPageMaxSize, ffSize, lastAnchorLoff, len(anchors))
-		// 	// Dump the last few anchors to see where the gap is.
-		// 	start := 0
-		// 	if len(anchors) > 5 {
-		// 		start = len(anchors) - 5
-		// 	}
-		// 	for j := start; j < len(anchors); j++ {
-		// 		alwaysPrintf("  anchor[%d]: loff=%d key=%q unsorted=%d", j, anchors[j].loff, anchors[j].key, anchors[j].unsorted)
-		// 	}
-		// 	// Walk extents around lastAnchorLoff to see what tags exist.
-		// 	alwaysPrintf("  extents near lastAnchorLoff=%d:", lastAnchorLoff)
-		// 	scanFh := db.ff.GetHandler(lastAnchorLoff)
-		// 	for k := 0; k < 10 && scanFh.Valid() && scanFh.Loff() < ffSize; k++ {
-		// 		stag, serr := scanFh.GetTag()
-		// 		sLoff := scanFh.Loff()
-		// 		alwaysPrintf("    extent loff=%d tag=%d isAnchor=%v err=%v", sLoff, stag, serr == nil && flexdbTagIsAnchor(stag), serr)
-		// 		scanFh.ForwardExtent()
-		// 	}
-		// 	// The warning is not error an it's benign. Here's what's happening:
-		//
-		// 	// The last anchor in the sparse index covers everything from lastAnchorLoff (46759936)
-		// 	// to the end of the flexspace (ffSize = 46764070). That span is 4134 bytes,
-		// 	// which is 38 bytes over the 4096-byte target page size.
-		//
-		// 	// This is expected and harmless because:
-		//
-		// 	// 1. The last anchor is a fragment tail it holds whatever KV pairs remain
-		// 	// after the last full-sized page. It's not required to be exactly slottedPageMaxSize.
-		//
-		// 	// 2. All reads use anchor.psize (line 3022-3021 the buffer is allocated
-		// 	// to the actual size, not the constant. So 4134 bytes is read and
-		// 	// decoded correctly.
-		//
-		// 	// 3. The decode path handles sizes variable slottedPageDecode works
-		// 	// on the actual buffer length, not a hardcoded constant.
-		//
-		// 	// 4. The in-place replace path already allows oversized pages (line 3300):
-		// 	// pages can grow up to 2*slottedPageMaxSize from replace operations before
-		// 	// triggering a split.
-		//
-		// 	// The 38-byte overshoot likely comes from a few extra KV entries landing
-		// 	// after the last anchor placed was normal for the tail of the dataset.
-		// 	// The warning was added as a diagnostic during development but isn't
-		// 	// indicating corruption or a bug.
-		//
-		// 	// If the warning is noisy, you could suppress it for the last anchor
-		// 	// specifically (since the tail page is inherently variable-sized), or
-		// 	// increase the threshold to only warn above e.g. 2*slottedPageMaxSize.
-		// }
+		last.psize = uint32(ffSize - lastAnchorLoff)
 	}
+}
+
+func (db *FlexDB) recovery() {
+	db.topMutRW.Lock()
+	defer db.topMutRW.Unlock()
+
+	ffSize := db.ff.Size()
+	if ffSize == 0 {
+		return
+	}
+
+	db.rebuildAnchorsFromTags()
 
 	// Replay WAL logs (replay older timestamp first)
 	treeVer := db.ff.tree.PersistentVersion

@@ -136,15 +136,33 @@ func (c *intervalCache) flushDirtyPages() {
 						anchor.loff, shift, absLoff, anchor.psize, c.db.ff.tree.MaxLoff, fce.count, anchor.key, err)
 				}
 			} else {
-				// HLC delta overflow: encoded tight (larger than psize).
-				// Use Update (collapse old + insert new) to change the
-				// extent size. This path is rare and transient.
-				_, err := c.db.ff.Update(buf, absLoff, uint64(len(buf)), uint64(anchor.psize))
+				// Content exceeds current psize. This happens when:
+				// (a) HLC delta overflow inflates encoding, or
+				// (b) page was tight (from initial flush or post-vacuum) and grew.
+				// Resize to slottedPageMaxSize to provide in-place overwrite
+				// capacity for future updates. If content exceeds that, use tight.
+				growTarget := slottedPageMaxSize
+				if len(buf) > slottedPageMaxSize {
+					growTarget = len(buf)
+				}
+				padBuf := slottedPageEncodePadded(fce.kvs[:fce.count], growTarget)
+				oldPsize := anchor.psize
+				_, err := c.db.ff.Update(padBuf, absLoff, uint64(len(padBuf)), uint64(oldPsize))
 				if err != nil {
 					panicf("flushDirtyPages Update: anchor.loff=%d absLoff=%d psize=%d bufLen=%d err=%v",
-						anchor.loff, absLoff, anchor.psize, len(buf), err)
+						anchor.loff, absLoff, oldPsize, len(padBuf), err)
 				}
-				anchor.psize = uint32(len(buf))
+				newPsize := uint32(len(padBuf))
+				anchor.psize = newPsize
+
+				// The FlexTree shifted subsequent loffs by (newPsize - oldPsize).
+				// Propagate the same shift in the anchor tree so that subsequent
+				// anchors' absLoff values remain correct.
+				if newPsize != oldPsize {
+					shiftDelta := int64(newPsize) - int64(oldPsize)
+					nh := memSparseIndexTreeHandler{node: leaf, idx: i, shift: shift}
+					nh.shiftUpPropagate(shiftDelta)
+				}
 			}
 			fce.dirty = false
 		}
@@ -234,12 +252,36 @@ func (p *intervalCachePartition) flushDirtyEntry(fce *intervalCacheEntry) {
 			panicf("flushDirtyEntry: %v", err)
 		}
 	} else {
-		// HLC delta overflow: see flushDirtyPages for explanation.
-		_, err := p.db.ff.Update(buf, absLoff, uint64(len(buf)), uint64(anchor.psize))
+		// Content exceeds current psize: see flushDirtyPages for explanation.
+		growTarget := slottedPageMaxSize
+		if len(buf) > slottedPageMaxSize {
+			growTarget = len(buf)
+		}
+		padBuf := slottedPageEncodePadded(fce.kvs[:fce.count], growTarget)
+		oldPsize := anchor.psize
+		_, err := p.db.ff.Update(padBuf, absLoff, uint64(len(padBuf)), uint64(oldPsize))
 		if err != nil {
 			panicf("flushDirtyEntry Update: %v", err)
 		}
-		anchor.psize = uint32(len(buf))
+		newPsize := uint32(len(padBuf))
+		anchor.psize = newPsize
+
+		// Propagate size change to anchor tree (same as flushDirtyPages).
+		if newPsize != oldPsize && fce.dirtyNode != nil {
+			shiftDelta := int64(newPsize) - int64(oldPsize)
+			// Find anchor's index in the leaf node.
+			idx := -1
+			for j := 0; j < fce.dirtyNode.count; j++ {
+				if fce.dirtyNode.anchors[j] == anchor {
+					idx = j
+					break
+				}
+			}
+			if idx >= 0 {
+				nh := memSparseIndexTreeHandler{node: fce.dirtyNode, idx: idx, shift: shift}
+				nh.shiftUpPropagate(shiftDelta)
+			}
+		}
 	}
 	fce.dirty = false
 	fce.dirtyNode = nil
