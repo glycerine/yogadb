@@ -1,5 +1,38 @@
 package yogadb
 
+/*
+  flexspace_fuzz_test.go — New file
+
+  3 tests:
+
+1. FuzzFlexSpace — Go native fuzz test exercising
+Insert (end + middle), Collapse, Write (overwrite),
+and Sync with a ground-truth byte-buffer oracle.
+Checks all 6 invariants (INV-FS-1 through INV-FS-6) every 8 ops.
+
+2. FuzzFlexSpaceRecovery — Same ops plus close/reopen
+cycles (opcode 5). Verifies INV-FS-4 (recovery preserves blkusage and
+data) after each reopen.
+
+3. TestFlexSpace_RandomizedInvariants — Deterministic 2000-op
+stress test with PRNG seed, including up to 5 reopen cycles. Full
+invariant checks every 50 ops, read correctness every 200 ops.
+
+Infrastructure:
+  - flexSpaceOracle — simple byte-slice ground truth
+    tracking insert/collapse/write semantics
+  - verifyAllFlexSpaceInvariants / verifyNoBlockCrossingFuzz —
+     reusable invariant checkers for testing.TB
+  - verifyReadCorrectness — chunk-wise full content
+    comparison against oracle
+  - makeFillData — deterministic fill data from PRNG
+
+  To run for 30 minutes:
+  go test -tags memfs -fuzz '^FuzzFlexSpace$' -fuzztime 30m -run='^$' -timeout 35m
+  go test -tags memfs -fuzz '^FuzzFlexSpaceRecovery$' -fuzztime 30m -run='^$' -timeout 35m
+
+*/
+
 // flexspace_fuzz_test.go - Fuzz tests for FlexSpace extent manipulation and
 // block usage accounting. Exercises Insert, Collapse, Write (overwrite),
 // SetTag/GetTag, and Sync at the FlexSpace layer, checking six invariants
