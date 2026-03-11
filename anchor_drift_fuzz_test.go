@@ -1,3 +1,5 @@
+//go:build memfs
+
 package yogadb
 
 import (
