@@ -217,8 +217,10 @@ func (vl *valueLog) sync() error {
 }
 
 // close closes the VLOG file.
-func (vl *valueLog) close() error {
-	return vl.fd.Close()
+func (vl *valueLog) close() (onDiskFootprintBytes int64, err error) {
+	onDiskFootprintBytes = mustStatFileSize(vl.fd)
+	err = vl.fd.Close()
+	return
 }
 
 // size returns the current VLOG file size.

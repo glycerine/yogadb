@@ -1002,19 +1002,20 @@ func (db *FlexDB) Close() *Metrics {
 	db.memtables[1].logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
 
 	db.cache.destroyAll()
+	var vlogFoot, kvFoot int64
 	if db.vlog != nil {
 		db.vlog.sync()
-		db.vlog.close()
+		vlogFoot, _ = db.vlog.close()
 	}
 	// Persist counters before final SyncCoW in Close.
 	db.persistCounters()
-	db.ff.Close()
+	kvFoot = db.ff.Close()
 
 	// Capture final metrics after all writes are done but before
 	// closing file descriptors. This solves the chicken-and-egg
 	// problem: accurate cumulative write amplification is only
 	// knowable after the final sync, but the DB is closing.
-	m := db.writeLockHeldFinalMetrics()
+	m := db.writeLockHeldFinalMetrics(kvFoot, vlogFoot)
 
 	db.memtables[0].memWalFD.Close()
 	db.memtables[1].memWalFD.Close()
@@ -1199,7 +1200,7 @@ func (db *FlexDB) persistCounters() {
 // finalMetrics builds a Metrics snapshot after the final sync in Close().
 // At this point all session counters are final and the cumulative totals
 // have been persisted, so the write amplification numbers are accurate.
-func (db *FlexDB) writeLockHeldFinalMetrics() *Metrics {
+func (db *FlexDB) writeLockHeldFinalMetrics(kvFoot, vlogFoot int64) *Metrics {
 
 	m := &Metrics{
 		Session:                   true,
@@ -1233,8 +1234,8 @@ func (db *FlexDB) writeLockHeldFinalMetrics() *Metrics {
 	m.PiggybackGCRuns = db.piggyGCStats.TotalGCRuns
 	m.PiggybackGCLastDurMs = db.piggyGCStats.LastGCDuration.Milliseconds()
 
-	m.KVBlocksOnDiskFootprintBytes = mustStatFileSize(db.ff.fdKV128blocks)
-	m.VlogOnDiskFootprintBytes = mustStatFileSize(db.vlog.fd)
+	m.KVBlocksOnDiskFootprintBytes = kvFoot
+	m.VlogOnDiskFootprintBytes = vlogFoot
 
 	return m
 }

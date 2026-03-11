@@ -590,7 +590,7 @@ func OpenFlexSpaceCoW(path string, omitRedoLog bool, fs vfs.FS) (*FlexSpace, err
 }
 
 // Close syncs and cleanly shuts down the FlexSpace.
-func (ff *FlexSpace) Close() {
+func (ff *FlexSpace) Close() (kvBlocksOnDiskFootprintBytes int64) {
 	ff.Sync() // does syncR which does ff.bm.flush which does fsync on FLEXSPACE.KV128.BLOCKS
 
 	// Save the tree checkpoint
@@ -605,6 +605,8 @@ func (ff *FlexSpace) Close() {
 	// Destroy block manager (flush remaining data)
 	ff.bm.flush(false) // fsyncs FLEXSPACE.KV128.BLOCKS again! do we need to?
 
+	kvBlocksOnDiskFootprintBytes = mustStatFileSize(ff.fdKV128blocks)
+
 	panicOn(ff.fdKV128blocks.Close())
 	panicOn(ff.redoLogFD.Close())
 
@@ -612,6 +614,8 @@ func (ff *FlexSpace) Close() {
 	ff.tree.nodeFD.Close()
 	ff.tree.metaFD.Close()
 	ff.tree.cowEnabled = false
+
+	return
 }
 
 // truncateTrailingBlocks shrinks FLEXSPACE.KV128_BLOCKS by removing empty blocks at the end.
