@@ -264,6 +264,23 @@ some benchmarks; it is another example.
 https://pkg.go.dev/github.com/glycerine/yogadb
 
 
+# VLOG data integrity with Blake3
+
+1. vlog.read() now verifies Blake3 cryptographic hash
+of the value bytes on every VLOG read, in addition to the existing hdrCRC and valCRC
+checks. Any VLOG corruption (bit flip, truncation, wrong entry) will be caught.
+
+2. db.CheckIntegrity() has a new Check 8 which walks every 
+decoded KV in every anchor interval; for each KV with a
+VPtr, calls vlog.read() which verifies hdrCRC, valCRC, and blake3. 
+It reports the key name and VPtr location on failure.
+
+3. TestFlexDB_CheckIntegrity_VLOGBlake3 is a dedicated 
+test that writes 50 keys with large values (VLOG-bound),
+overwrites half with same values (exercises dedup path) and half 
+with different values, then verifies integrity before and after
+close/reopen.
+
 # grab bag of implementation notes 
 
 in no particular order -- and mostly for my reference. Users/casual readers can
