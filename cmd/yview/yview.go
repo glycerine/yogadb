@@ -56,6 +56,13 @@ func main() {
 	panicOn(err)
 
 	if cmdCfg.StatsOnly {
+		errs := db.CheckIntegrity()
+		for i, err := range errs {
+			fmt.Printf("[integrity error %02d]: %v\n", i, err)
+		}
+		if len(errs) == 0 {
+			fmt.Printf("no integrity check errors found.\n")
+		}
 		metrics := db.Close()
 		fmt.Printf("closing metrics= \n%v\n", metrics)
 		return
