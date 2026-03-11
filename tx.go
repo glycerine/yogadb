@@ -471,3 +471,21 @@ func (db *FlexDB) View(fn func(ro *ReadOnlyTx) error) error {
 	}()
 	return fn(tx)
 }
+
+func (db *FlexDB) BeginUpdate() *WriteTx {
+	db.topMutRW.Lock()
+	return &WriteTx{txBase{db: db}}
+}
+func (wtx *WriteTx) Close() {
+	wtx.closeAll()
+	wtx.db.topMutRW.Unlock()
+}
+
+func (db *FlexDB) BeginView() *ReadOnlyTx {
+	db.topMutRW.RLock()
+	return &ReadOnlyTx{txBase{db: db}}
+}
+func (rtx *ReadOnlyTx) Close() {
+	rtx.closeAll()
+	rtx.db.topMutRW.RUnlock()
+}
