@@ -3713,6 +3713,38 @@ func (db *FlexDB) recovery() {
 				alwaysPrintf("    extent loff=%d tag=%d isAnchor=%v err=%v", sLoff, stag, serr == nil && flexdbTagIsAnchor(stag), serr)
 				scanFh.ForwardExtent()
 			}
+			/*
+			   The warning is not error an it's benign. Here's what's happening:
+
+			   The last anchor in the sparse index covers everything from lastAnchorLoff (46759936)
+			   to the end of the flexspace (ffSize = 46764070). That span is 4134 bytes,
+			   which is 38 bytes over the 4096-byte target page size.
+
+			   This is expected and harmless because:
+
+			   1. The last anchor is a fragment tail it holds whatever KV pairs remain
+			   after the last full-sized page. It's not required to be exactly slottedPageMaxSize.
+
+			   2. All reads use anchor.psize (line 3022-3021 the buffer is allocated
+			   to the actual size, not the constant. So 4134 bytes is read and
+			   decoded correctly.
+
+			   3. The decode path handles sizes variable slottedPageDecode works
+			   on the actual buffer length, not a hardcoded constant.
+
+			   4. The in-place replace path already allows oversized pages (line 3300):
+			   pages can grow up to 2*slottedPageMaxSize from replace operations before
+			   triggering a split.
+
+			   The 38-byte overshoot likely comes from a few extra KV entries landing
+			   after the last anchor placed was normal for the tail of the dataset.
+			   The warning was added as a diagnostic during development but isn't
+			   indicating corruption or a bug.
+
+			   If the warning is noisy, you could suppress it for the last anchor
+			   specifically (since the tail page is inherently variable-sized), or
+			   increase the threshold to only warn above e.g. 2*slottedPageMaxSize.
+			*/
 		}
 	}
 
