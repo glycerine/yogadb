@@ -1740,6 +1740,25 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 	}
 	bmInit(ff.bm, ff.tree)
 
+	// After vacuum, data is compacted sequentially from offset 0. The last
+	// block may be partially filled. Override bmInit's block selection to
+	// continue writing within the last data block instead of jumping to the
+	// next empty block (which would leave a gap in the file).
+	if writeOffset > 0 {
+		lastDataBlk := writeOffset >> FLEXSPACE_BLOCK_BITS
+		blkOff := writeOffset & (FLEXSPACE_BLOCK_SIZE - 1)
+		if blkOff > 0 {
+			// Partially filled block — continue writing here.
+			ff.bm.blkid = lastDataBlk
+			ff.bm.blkoff = blkOff
+
+			// Populate the write buffer with existing data from this block
+			// so that bm.read() can serve data from the unflushed portion.
+			blkStart := int64(lastDataBlk << FLEXSPACE_BLOCK_BITS)
+			ff.fdKV128blocks.ReadAt(ff.bm.buf[:blkOff], blkStart)
+		}
+	}
+
 	// Also truncate trailing empty blocks to reclaim any remaining
 	// slack from block-alignment rounding.
 	ff.truncateTrailingBlocks()
