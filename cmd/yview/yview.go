@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"time"
@@ -13,13 +14,31 @@ var colonarrow = []byte(" ::: ")
 
 const cmd = "yview"
 
+type YviewConfig struct {
+	KeysOnly bool
+}
+
+func (c *YviewConfig) SetFlags(fs *flag.FlagSet) {
+	fs.BoolVar(&c.KeysOnly, "keys", false, "show keys only")
+}
+func (c *YviewConfig) FinishConfig(fs *flag.FlagSet) (err error) {
+	return nil
+}
+
 func main() {
 
-	if len(os.Args) != 2 {
-		fmt.Fprintf(os.Stderr, "%v error: provide path to database to dump as only argument.\n", cmd)
+	cmdCfg := YviewConfig{}
+	fs := flag.NewFlagSet("yview", flag.ExitOnError)
+	cmdCfg.SetFlags(fs)
+	fs.Parse(os.Args[1:])
+	err := cmdCfg.FinishConfig(fs)
+
+	left := fs.Args()
+	if len(left) != 1 {
+		fmt.Fprintf(os.Stderr, "%v error: provide path to database to dump.\n", cmd)
 		os.Exit(1)
 	}
-	dbPath := os.Args[1]
+	dbPath := left[0]
 	if !dirExists(dbPath) {
 		fmt.Fprintf(os.Stderr, "%v error: path to database does not exist: '%v'\n", cmd, dbPath)
 		os.Exit(1)
