@@ -148,7 +148,7 @@ func closeDB(db *yogadb.FlexDB) {
 	if m != nil {
 		fmt.Fprintf(os.Stderr, "metrics: logical_written=%d physical_written=%d live=%d free_in_blocks=%d blocks=%d write_amp=%.2f\n",
 			m.LogicalBytesWritten, m.TotalBytesWritten,
-			m.TotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksInUse, m.WriteAmp)
+			m.KVBlocksTotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksInUse, m.WriteAmp)
 	}
 }
 

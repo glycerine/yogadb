@@ -169,3 +169,9 @@ func mustListDir(fs vfs.FS, path string) (r string) {
 	panicOn(err0)
 	return
 }
+
+func mustStatFileSize(fd vfs.File) int64 {
+	fi, err := fd.Stat()
+	panicOn(err)
+	return fi.Size()
+}

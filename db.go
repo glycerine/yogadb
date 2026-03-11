@@ -1057,9 +1057,15 @@ type Metrics struct {
 	// LowBlockUtilizationPct threshold (default 25%).
 	BlocksWithLowUtilization int64
 
-	// TotalLiveBytes is the sum of live (used) bytes across all blocks,
+	// KVBlocksTotalLiveBytes is the sum of live (used) bytes across all blocks,
 	// as tracked by the block manager.
-	TotalLiveBytes int64
+	KVBlocksTotalLiveBytes int64
+
+	// KVBlocksOnDiskFootprintBytes is the on-disk footprint of bytes for FLEXSPACE.KV128_BLOCKS.
+	KVBlocksOnDiskFootprintBytes int64
+
+	// VlogOnDiskFootprintBytes is the on-disk footprints for LARGE.VLOG.
+	VlogOnDiskFootprintBytes int64
 
 	// LowBlockUtilizationPct we used; copied from Config
 	// or what default we used if not set.
@@ -1075,32 +1081,36 @@ type Metrics struct {
 func (z *Metrics) String() (r string) {
 	r = "Metrics{\n"
 	r += fmt.Sprintf("      (just this) Session: %v\n", z.Session)
-	r += fmt.Sprintf("              LiveKeyCount: %v\n", formatWithUnderscores(z.LiveKeyCount))
-	r += fmt.Sprintf("        KV128 BytesWritten: %v\n", formatWithUnderscores(z.KV128BytesWritten))
-	r += fmt.Sprintf("       MemWAL BytesWritten: %v\n", formatWithUnderscores(z.MemWALBytesWritten))
-	r += fmt.Sprintf("      REDOLog BytesWritten: %v\n", formatWithUnderscores(z.REDOLogBytesWritten))
-	r += fmt.Sprintf("FlexTreePages BytesWritten: %v\n", formatWithUnderscores(z.FlexTreePagesBytesWritten))
-	r += fmt.Sprintf("   LARGE.VLOG BytesWritten: %v\n", formatWithUnderscores(z.VLOGBytesWritten))
-	r += fmt.Sprintf("      Logical BytesWritten: %v\n", formatWithUnderscores(z.LogicalBytesWritten))
-	r += fmt.Sprintf("        Total BytesWritten: %v\n", formatWithUnderscores(z.TotalBytesWritten))
+	r += fmt.Sprintf("              LiveKeyCount: %v\n", formatInt64Under(z.LiveKeyCount))
+	r += fmt.Sprintf("        KV128 BytesWritten: %v\n", formatInt64Under(z.KV128BytesWritten))
+	r += fmt.Sprintf("       MemWAL BytesWritten: %v\n", formatInt64Under(z.MemWALBytesWritten))
+	r += fmt.Sprintf("      REDOLog BytesWritten: %v\n", formatInt64Under(z.REDOLogBytesWritten))
+	r += fmt.Sprintf("FlexTreePages BytesWritten: %v\n", formatInt64Under(z.FlexTreePagesBytesWritten))
+	r += fmt.Sprintf("   LARGE.VLOG BytesWritten: %v\n", formatInt64Under(z.VLOGBytesWritten))
+	r += fmt.Sprintf("      Logical BytesWritten: %v\n", formatInt64Under(z.LogicalBytesWritten))
+	r += fmt.Sprintf("        Total BytesWritten: %v\n", formatInt64Under(z.TotalBytesWritten))
 	r += fmt.Sprintf("                 WriteAmp: %0.3f\n", z.WriteAmp)
 	r += fmt.Sprintf("\n   -------- lifetime totals over all sessions  --------  \n")
-	r += fmt.Sprintf("    TotalLogical BytesWrit: %v\n", formatWithUnderscores(z.totalLogicalBytesWrit))
-	r += fmt.Sprintf("   TotalPhysical BytesWrit: %v\n", formatWithUnderscores(z.totalPhysicalBytesWrit))
+	r += fmt.Sprintf("    TotalLogical BytesWrit: %v\n", formatInt64Under(z.totalLogicalBytesWrit))
+	r += fmt.Sprintf("   TotalPhysical BytesWrit: %v\n", formatInt64Under(z.totalPhysicalBytesWrit))
 	r += fmt.Sprintf("       CumulativeWriteAmp: %0.3f\n", z.CumulativeWriteAmp)
-	r += fmt.Sprintf("\n   -------- free space / block utilization --------  \n")
-	r += fmt.Sprintf("            TotalLiveBytes: %v (%0.2f MB)\n", formatWithUnderscores(z.TotalLiveBytes), float64(z.TotalLiveBytes)/(1<<20))
-	r += fmt.Sprintf("    TotalFreeBytesInBlocks: %v (%0.2f MB)\n", formatWithUnderscores(z.TotalFreeBytesInBlocks), float64(z.TotalFreeBytesInBlocks)/(1<<20))
+	r += fmt.Sprintf("\n   --- free space / block utilization in FLEXSPACE.KV128_BLOCKS ---  \n")
+	r += fmt.Sprintf("            KVBlocksTotalLiveBytes: %v (%0.2f MB)\n", formatInt64Under(z.KVBlocksTotalLiveBytes), float64(z.KVBlocksTotalLiveBytes)/(1<<20))
+	r += fmt.Sprintf("    TotalFreeBytesInBlocks: %v (%0.2f MB)\n", formatInt64Under(z.TotalFreeBytesInBlocks), float64(z.TotalFreeBytesInBlocks)/(1<<20))
 	r += fmt.Sprintf("      FLEXSPACE_BLOCK_SIZE: %0.2f MB\n", float64(FLEXSPACE_BLOCK_SIZE)/(1<<20))
-	r += fmt.Sprintf("               BlocksInUse: %v  (%0.2f MB)\n", formatWithUnderscores(z.BlocksInUse), float64(z.BlocksInUse*FLEXSPACE_BLOCK_SIZE)/(1<<20))
-	r += fmt.Sprintf("  BlocksWithLowUtilization: %v\n", formatWithUnderscores(z.BlocksWithLowUtilization))
+	r += fmt.Sprintf("               BlocksInUse: %v  (%0.2f MB)\n", formatInt64Under(z.BlocksInUse), float64(z.BlocksInUse*FLEXSPACE_BLOCK_SIZE)/(1<<20))
+	r += fmt.Sprintf("  BlocksWithLowUtilization: %v\n", formatInt64Under(z.BlocksWithLowUtilization))
 	r += fmt.Sprintf("\n   -------- based on parameters used --------  \n")
 	r += fmt.Sprintf("    LowBlockUtilizationPct: %0.1f %%\n", 100*z.LowBlockUtilizationPct)
 	if z.PiggybackGCRuns > 0 {
 		r += fmt.Sprintf("\n   -------- piggyback GC --------  \n")
-		r += fmt.Sprintf("          PiggybackGCRuns: %v\n", formatWithUnderscores(z.PiggybackGCRuns))
+		r += fmt.Sprintf("          PiggybackGCRuns: %v\n", formatInt64Under(z.PiggybackGCRuns))
 		r += fmt.Sprintf("     PiggybackGCLastDurMs: %v\n", z.PiggybackGCLastDurMs)
 	}
+	r += fmt.Sprintf("\n   -------- on disk big files summary --------  \n")
+
+	r += fmt.Sprintf(" FLEXSPACE.KV128_BLOCKS: %0.3f MB\n", float64(z.KVBlocksOnDiskFootprintBytes)/(1<<20))
+	r += fmt.Sprintf("             LARGE.VLOG: %0.3f MB\n", float64(z.VlogOnDiskFootprintBytes)/(1<<20))
 
 	r += "}\n"
 	return
@@ -1139,11 +1149,14 @@ func (db *FlexDB) writeLockHeldSessionMetrics() *Metrics {
 		m.CumulativeWriteAmp = float64(m.totalPhysicalBytesWrit) / float64(m.totalLogicalBytesWrit)
 	}
 
-	m.TotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksInUse, m.BlocksWithLowUtilization =
+	m.KVBlocksTotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksInUse, m.BlocksWithLowUtilization =
 		db.ff.garbageMetrics(db.cfg.LowBlockUtilizationPct)
 
 	m.PiggybackGCRuns = db.piggyGCStats.TotalGCRuns
 	m.PiggybackGCLastDurMs = db.piggyGCStats.LastGCDuration.Milliseconds()
+
+	m.KVBlocksOnDiskFootprintBytes = mustStatFileSize(db.ff.fdKV128blocks)
+	m.VlogOnDiskFootprintBytes = mustStatFileSize(db.vlog.fd)
 
 	return m
 }
@@ -1214,7 +1227,7 @@ func (db *FlexDB) writeLockHeldFinalMetrics() *Metrics {
 		m.CumulativeWriteAmp = float64(m.totalPhysicalBytesWrit) / float64(m.totalLogicalBytesWrit)
 	}
 
-	m.TotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksInUse, m.BlocksWithLowUtilization =
+	m.KVBlocksTotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksInUse, m.BlocksWithLowUtilization =
 		db.ff.garbageMetrics(db.cfg.LowBlockUtilizationPct)
 
 	m.PiggybackGCRuns = db.piggyGCStats.TotalGCRuns
@@ -1290,7 +1303,7 @@ func (db *FlexDB) CumulativeMetrics() *Metrics {
 		m.CumulativeWriteAmp = float64(m.totalPhysicalBytesWrit) / float64(m.totalLogicalBytesWrit)
 	}
 
-	m.TotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksInUse, m.BlocksWithLowUtilization =
+	m.KVBlocksTotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksInUse, m.BlocksWithLowUtilization =
 		db.ff.garbageMetrics(db.cfg.LowBlockUtilizationPct)
 
 	m.PiggybackGCRuns = db.piggyGCStats.TotalGCRuns
@@ -1346,11 +1359,11 @@ type VacuumVLOGStats struct {
 
 func (z *VacuumVLOGStats) String() (r string) {
 	r = "VacuumVLOGStats{\n"
-	r += fmt.Sprintf("       OldVLOGSize: %v,\n", z.OldVLOGSize)
-	r += fmt.Sprintf("       NewVLOGSize: %v,\n", z.NewVLOGSize)
-	r += fmt.Sprintf("    BytesReclaimed: %v,\n", z.BytesReclaimed)
-	r += fmt.Sprintf("     EntriesCopied: %v,\n", z.EntriesCopied)
-	r += fmt.Sprintf("IntervalsRewritten: %v,\n", z.IntervalsRewritten)
+	r += fmt.Sprintf("       OldVLOGSize: %v,\n", formatInt64Under(z.OldVLOGSize))
+	r += fmt.Sprintf("       NewVLOGSize: %v,\n", formatInt64Under(z.NewVLOGSize))
+	r += fmt.Sprintf("    BytesReclaimed: %v,\n", formatInt64Under(z.BytesReclaimed))
+	r += fmt.Sprintf("     EntriesCopied: %v,\n", formatInt64Under(z.EntriesCopied))
+	r += fmt.Sprintf("IntervalsRewritten: %v,\n", formatInt64Under(z.IntervalsRewritten))
 	r += "}\n"
 	return
 }
@@ -1505,10 +1518,10 @@ type VacuumKVStats struct {
 
 func (z *VacuumKVStats) String() (r string) {
 	r = "VacuumKVStats{\n"
-	r += fmt.Sprintf("      OldFileSize: %v,\n", z.OldFileSize)
-	r += fmt.Sprintf("      NewFileSize: %v,\n", z.NewFileSize)
-	r += fmt.Sprintf("   BytesReclaimed: %v,\n", z.BytesReclaimed)
-	r += fmt.Sprintf("ExtentsRewritten: %v,\n", z.ExtentsRewritten)
+	r += fmt.Sprintf("      OldFileSize: %v,\n", formatInt64Under(z.OldFileSize))
+	r += fmt.Sprintf("      NewFileSize: %v,\n", formatInt64Under(z.NewFileSize))
+	r += fmt.Sprintf("   BytesReclaimed: %v,\n", formatInt64Under(z.BytesReclaimed))
+	r += fmt.Sprintf("ExtentsRewritten: %v,\n", formatInt64Under(z.ExtentsRewritten))
 	r += "}\n"
 	return
 }

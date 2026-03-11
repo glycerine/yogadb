@@ -1219,8 +1219,8 @@ func TestGC_GarbageMetrics_InMetrics(t *testing.T) {
 
 	// Before any writes, all metrics should be zero.
 	m := db.SessionMetrics()
-	if m.TotalLiveBytes != 0 {
-		t.Errorf("expected TotalLiveBytes=0 before writes, got %d", m.TotalLiveBytes)
+	if m.KVBlocksTotalLiveBytes != 0 {
+		t.Errorf("expected KVBlocksTotalLiveBytes=0 before writes, got %d", m.KVBlocksTotalLiveBytes)
 	}
 	if m.TotalFreeBytesInBlocks != 0 {
 		t.Errorf("expected TotalFreeBytesInBlocks=0 before writes, got %d", m.TotalFreeBytesInBlocks)
@@ -1239,11 +1239,11 @@ func TestGC_GarbageMetrics_InMetrics(t *testing.T) {
 	db.Sync()
 
 	m = db.SessionMetrics()
-	t.Logf("After writes: TotalLiveBytes=%d, TotalFreeBytesInBlocks=%d, BlocksWithLowUtilization=%d",
-		m.TotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksWithLowUtilization)
+	t.Logf("After writes: KVBlocksTotalLiveBytes=%d, TotalFreeBytesInBlocks=%d, BlocksWithLowUtilization=%d",
+		m.KVBlocksTotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksWithLowUtilization)
 
-	if m.TotalLiveBytes == 0 {
-		t.Error("expected TotalLiveBytes > 0 after writes")
+	if m.KVBlocksTotalLiveBytes == 0 {
+		t.Error("expected KVBlocksTotalLiveBytes > 0 after writes")
 	}
 
 	// With only ~5 KB of data in a 4 MB block, the block has <25%
@@ -1261,9 +1261,9 @@ func TestGC_GarbageMetrics_InMetrics(t *testing.T) {
 
 	// CumulativeMetrics should also have the same garbage metrics.
 	cm := db.CumulativeMetrics()
-	if cm.TotalLiveBytes != m.TotalLiveBytes {
-		t.Errorf("CumulativeMetrics TotalLiveBytes=%d != SessionMetrics TotalLiveBytes=%d",
-			cm.TotalLiveBytes, m.TotalLiveBytes)
+	if cm.KVBlocksTotalLiveBytes != m.KVBlocksTotalLiveBytes {
+		t.Errorf("CumulativeMetrics KVBlocksTotalLiveBytes=%d != SessionMetrics KVBlocksTotalLiveBytes=%d",
+			cm.KVBlocksTotalLiveBytes, m.KVBlocksTotalLiveBytes)
 	}
 
 	// Verify String() includes garbage section.
@@ -1303,7 +1303,7 @@ func TestGC_GarbageMetrics_CustomThreshold(t *testing.T) {
 	t.Logf("Threshold 1%%: BlocksWithLowUtilization=%d", m1.BlocksWithLowUtilization)
 	t.Logf("Threshold 0.01%%: BlocksWithLowUtilization=%d", m2.BlocksWithLowUtilization)
 
-	// Both should have identical TotalLiveBytes (same data).
+	// Both should have identical KVBlocksTotalLiveBytes (same data).
 	// But with a very tight threshold, fewer blocks qualify as "low utilization".
 	if m2.BlocksWithLowUtilization > m1.BlocksWithLowUtilization {
 		t.Errorf("tighter threshold should not produce more low-util blocks: loose=%d, tight=%d",
@@ -1631,7 +1631,7 @@ FlexTreePages BytesWritten: 1152
        CumulativeWriteAmp: 1.242
 
    -------- free space / block utilization --------
-            TotalLiveBytes: 98304 (0.09 MB)
+            KVBlocksTotalLiveBytes: 98304 (0.09 MB)
     TotalFreeBytesInBlocks: 20873216 (19.91 MB)
       FLEXSPACE_BLOCK_SIZE: 4.00 MB
                BlocksInUse: 5  (20.00 MB)
@@ -1673,7 +1673,7 @@ FlexTreePages BytesWritten: 1152      // same
        CumulativeWriteAmp: 1.265
 
    -------- free space / block utilization --------
-            TotalLiveBytes: 110592 (0.11 MB)
+            KVBlocksTotalLiveBytes: 110592 (0.11 MB)
     TotalFreeBytesInBlocks: 4083712 (3.89 MB)
       FLEXSPACE_BLOCK_SIZE: 4.00 MB
                BlocksInUse: 1  (4.00 MB)
