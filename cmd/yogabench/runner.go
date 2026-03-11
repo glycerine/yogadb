@@ -125,11 +125,19 @@ func RunTimed(label string, nThreads int, duration time.Duration, fn WorkerFunc,
 func openDB(dir string, cf *CommonFlags) (*yogadb.FlexDB, error) {
 	os.RemoveAll(dir) // fresh DB each run
 	os.MkdirAll(dir, 0o755)
+	vv("openDB dir='%v'", dir)
 
 	cfg := &yogadb.Config{
 		CacheMB:         cf.CacheMB,
 		NoDisk:          cf.NoDisk,
 		OmitMemWalFsync: cf.OmitWALSync,
+
+		//	DisableVLOG bool
+		//	OmitFlexSpaceOpsRedoLog bool
+		//	LowBlockUtilizationPct float64
+		//	OmitMemWalFsync bool
+		//	PiggybackGC_on_SyncOrFlush bool
+		//	GCGarbagePct float64
 	}
 	return yogadb.OpenFlexDB(dir, cfg)
 }
