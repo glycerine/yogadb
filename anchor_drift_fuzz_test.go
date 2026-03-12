@@ -52,7 +52,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 
 		// Track what keys we've inserted and their expected values,
 		// so we can verify correctness after reopen.
-		kv := make(map[string]string) // key -> value
+		kv := newOmap[string, string]() // key -> value
 		synced := false
 
 		// Wrap in func+recover so panicOn() calls don't kill the fuzz worker subprocess.
@@ -92,23 +92,23 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					if err != nil {
 						t.Fatalf("Put(%q): %v", key, err)
 					}
-					kv[key] = val
+					kv.set(key, val)
 					synced = false
 
 				case 1: // Delete
-					if i+2 > len(data) || len(kv) == 0 {
+					if i+2 > len(data) || kv.Len() == 0 {
 						continue
 					}
 					keyIdx := int(binary.BigEndian.Uint16(data[i : i+2]))
 					i += 2
 					keyIdx = keyIdx % 500
 					key := fmt.Sprintf("k%04d", keyIdx)
-					if _, exists := kv[key]; exists {
+					if _, exists := kv.get2(key); exists {
 						err := db.Delete(key)
 						if err != nil {
 							t.Fatalf("Delete(%q): %v", key, err)
 						}
-						delete(kv, key)
+						kv.delkey(key)
 						synced = false
 					}
 
@@ -126,19 +126,19 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 						if err != nil {
 							t.Fatalf("Put(%q): %v", key, err)
 						}
-						kv[key] = val
+						kv.set(key, val)
 					}
 					synced = false
 
 				case 3: // Overwrite existing keys with different-sized values
-					if i+2 > len(data) || len(kv) == 0 {
+					if i+2 > len(data) || kv.Len() == 0 {
 						continue
 					}
 					newSize := int(data[i])%50 + 5
 					count := int(data[i+1])%10 + 1
 					i += 2
 					j := 0
-					for key := range kv {
+					for key := range kv.all() {
 						if j >= count {
 							break
 						}
@@ -147,13 +147,13 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 						if err != nil {
 							t.Fatalf("Put(%q): %v", key, err)
 						}
-						kv[key] = val
+						kv.set(key, val)
 						j++
 					}
 					synced = false
 
 				case 4: // Sync - triggers flushDirtyPages (the original bug site)
-					if len(kv) == 0 {
+					if kv.Len() == 0 {
 						continue
 					}
 					db.Sync()
@@ -162,7 +162,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					// here without panic, the anchor tree is in sync.
 
 				case 5: // VacuumKV - creates tight pages, rebuilds FlexTree
-					if !synced || len(kv) == 0 {
+					if !synced || kv.Len() == 0 {
 						continue
 					}
 					_, err := db.VacuumKV()
@@ -171,7 +171,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					}
 
 				case 6: // Close + Reopen - tests recovery path
-					if len(kv) == 0 {
+					if kv.Len() == 0 {
 						continue
 					}
 					if !synced {
@@ -184,7 +184,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 						t.Fatal("reopen failed")
 					}
 					// Verify all synced keys survived recovery.
-					for key, wantVal := range kv {
+					for key, wantVal := range kv.all() {
 						gotVal, ok, gerr := db.Get(key)
 						panicOn(gerr)
 						if !ok {
@@ -198,7 +198,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 			}
 
 			// Final sync + integrity check.
-			if len(kv) > 0 {
+			if kv.Len() > 0 {
 				db.Sync()
 				errs := db.CheckIntegrity()
 				if len(errs) > 0 {
