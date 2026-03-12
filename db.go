@@ -4232,7 +4232,9 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte, panicOnFailure boo
 		needHeader := slottedPageHeaderSize + 4 + binary.MaxVarintLen64
 		if needHeader > len(buf) {
 			alwaysPrintf("flexdbReadKVFromHandler: buf too small for slotted header at loff=%d need=%d bufLen=%d", fh.Loff(), needHeader, len(buf))
-			panicf("flexdbReadKVFromHandler: buf too small for slotted header at loff=%d need=%d bufLen=%d", fh.Loff(), needHeader, len(buf))
+			if panicOnFailure {
+				panicf("flexdbReadKVFromHandler: buf too small for slotted header at loff=%d need=%d bufLen=%d", fh.Loff(), needHeader, len(buf))
+			}
 			return KV{}, false
 		}
 		nr, err2 := fh.Read(buf[:needHeader], uint64(needHeader))
@@ -4247,7 +4249,9 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte, panicOnFailure boo
 		needBytes := slottedPageHeaderSize + 4 + binary.MaxVarintLen64 + keyLen
 		if needBytes > len(buf) {
 			alwaysPrintf("flexdbReadKVFromHandler: buf too small at loff=%d needBytes=%d bufLen=%d keyLen=%d", fh.Loff(), needBytes, len(buf), keyLen)
-			panicf("flexdbReadKVFromHandler: buf too small at loff=%d needBytes=%d bufLen=%d keyLen=%d", fh.Loff(), needBytes, len(buf), keyLen)
+			if panicOnFailure {
+				panicf("flexdbReadKVFromHandler: buf too small at loff=%d needBytes=%d bufLen=%d keyLen=%d", fh.Loff(), needBytes, len(buf), keyLen)
+			}
 			return KV{}, false
 		}
 		if needBytes > nr {
@@ -4287,7 +4291,9 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte, panicOnFailure boo
 		size, ok := kv128SizePrefix(kv128hdr[:])
 		if !ok || size > len(buf) {
 			alwaysPrintf("flexdbReadKVFromHandler: kv128 format fail at loff=%d ok=%v size=%d bufLen=%d header=%x", fh.Loff(), ok, size, len(buf), kv128hdr[:])
-			panicf("flexdbReadKVFromHandler: kv128 format fail at loff=%d ok=%v size=%d bufLen=%d header=%x", fh.Loff(), ok, size, len(buf), kv128hdr[:])
+			if panicOnFailure {
+				panicf("flexdbReadKVFromHandler: kv128 format fail at loff=%d ok=%v size=%d bufLen=%d header=%x", fh.Loff(), ok, size, len(buf), kv128hdr[:])
+			}
 			return KV{}, false
 		}
 		// Re-read from the start of the kv128 data (after the 16-byte magic).
@@ -4302,14 +4308,18 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte, panicOnFailure boo
 		kv, _, ok2 := kv128Decode(buf[:size])
 		if !ok2 {
 			alwaysPrintf("flexdbReadKVFromHandler: kv128Decode fail at loff=%d", fh.Loff())
-			panicf("flexdbReadKVFromHandler: kv128Decode fail at loff=%d", fh.Loff())
+			if panicOnFailure {
+				panicf("flexdbReadKVFromHandler: kv128Decode fail at loff=%d", fh.Loff())
+			}
 		}
 		return kv, ok2
 	}
 
 	// Unknown format - neither slotted page magic nor kv128 extent magic.
 	alwaysPrintf("flexdbReadKVFromHandler: unknown format at loff=%d magic=%x", fh.Loff(), magic[:])
-	panicf("flexdbReadKVFromHandler: unknown format at loff=%d magic=%x (neither slotted page nor kv128 extent)", fh.Loff(), magic[:])
+	if panicOnFailure {
+		panicf("flexdbReadKVFromHandler: unknown format at loff=%d magic=%x (neither slotted page nor kv128 extent)", fh.Loff(), magic[:])
+	}
 	return KV{}, false
 }
 
