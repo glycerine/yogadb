@@ -1840,7 +1840,7 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 	// This also invalidates all interval caches since the old anchor tree
 	// is destroyed and replaced.
 	db.cache.destroyAll()
-	db.rebuildAnchorsFromTags()
+	db.rebuildAnchorsFromTags(true)
 
 	stats.NewFileSize = int64(writeOffset)
 	stats.BytesReclaimed = stats.OldFileSize - stats.NewFileSize
@@ -4048,7 +4048,7 @@ func (db *FlexDB) clampAnchorPsizes() {
 // rebuildAnchorsFromTags walks all FlexTree extents, finds anchor tags,
 // and rebuilds the sparse index tree from scratch. Called by recovery()
 // on open and by VacuumKV after compaction. Caller must hold topMutRW.
-func (db *FlexDB) rebuildAnchorsFromTags() {
+func (db *FlexDB) rebuildAnchorsFromTags(panicOnFailure bool) {
 	type anchorInfo struct {
 		key      string
 		loff     uint64
@@ -4072,7 +4072,7 @@ func (db *FlexDB) rebuildAnchorsFromTags() {
 		if err == nil && flexdbTagIsAnchor(tag) {
 			loff := fh.Loff()
 			unsorted := flexdbTagUnsorted(tag)
-			kv, ok := flexdbReadKVFromHandler(fh, kvbuf)
+			kv, ok := flexdbReadKVFromHandler(fh, kvbuf, panicOnFailure)
 			if ok {
 				var anchorKey string
 				if loff > 0 {
@@ -4080,7 +4080,12 @@ func (db *FlexDB) rebuildAnchorsFromTags() {
 				}
 				anchors = append(anchors, anchorInfo{key: anchorKey, loff: loff, unsorted: unsorted})
 			} else {
-				alwaysPrintf("rebuildAnchorsFromTags: SKIPPED anchor at loff=%d tag=0x%04x (flexdbReadKVFromHandler returned false)", loff, tag)
+				if panicOnFailure {
+					alwaysPrintf("rebuildAnchorsFromTags: corrupt anchor at loff=%d tag=0x%04x: flexdbReadKVFromHandler could not read first key (anchor would be lost, orphaning all keys in this interval)", loff, tag)
+					panicf("rebuildAnchorsFromTags: corrupt anchor at loff=%d tag=0x%04x: flexdbReadKVFromHandler could not read first key (anchor would be lost, orphaning all keys in this interval)", loff, tag)
+				} else {
+					alwaysPrintf("rebuildAnchorsFromTags: WARNING: skipping unreadable anchor at loff=%d tag=0x%04x during crash recovery (data may have been lost in crash)", loff, tag)
+				}
 			}
 		}
 		fh.ForwardExtent()
@@ -4126,7 +4131,7 @@ func (db *FlexDB) recovery() {
 		return
 	}
 
-	db.rebuildAnchorsFromTags()
+	db.rebuildAnchorsFromTags(false)
 
 	// Replay WAL logs (replay older timestamp first)
 	treeVer := db.ff.tree.PersistentVersion
@@ -4170,11 +4175,18 @@ func (db *FlexDB) recovery() {
 // flexdbReadKVFromHandler reads the first KV (key only needed for anchor)
 // from a handler's current position (does NOT advance the handler).
 // Handles both slotted page and kv128 formats.
-func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte) (KV, bool) {
+// If panicOnFailure is true, any read/decode failure panics immediately
+// (used after VacuumKV where data must be intact). If false, failures
+// are logged and the caller handles the ok=false return (used during
+// crash recovery where incomplete WAL replay may leave partial extents).
+func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte, panicOnFailure bool) (KV, bool) {
 	var header [16]byte
 	n, err := fh.Read(header[:], 16)
 	if n < 1 || err != nil {
 		alwaysPrintf("flexdbReadKVFromHandler: header read fail at loff=%d n=%d err=%v", fh.Loff(), n, err)
+		if panicOnFailure {
+			panicf("flexdbReadKVFromHandler: header read fail at loff=%d n=%d err=%v", fh.Loff(), n, err)
+		}
 		return KV{}, false
 	}
 
@@ -4185,6 +4197,9 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte) (KV, bool) {
 		// We already have 16 bytes in header, which covers header(12) + keyLen(2) + valInfo(2).
 		if n < slottedPageHeaderSize+4 {
 			alwaysPrintf("flexdbReadKVFromHandler: slotted header too short at loff=%d n=%d need=%d", fh.Loff(), n, slottedPageHeaderSize+4)
+			if panicOnFailure {
+				panicf("flexdbReadKVFromHandler: slotted header too short at loff=%d n=%d need=%d", fh.Loff(), n, slottedPageHeaderSize+4)
+			}
 			return KV{}, false
 		}
 		keyLen := int(binary.LittleEndian.Uint16(header[slottedPageHeaderSize : slottedPageHeaderSize+2]))
@@ -4192,16 +4207,25 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte) (KV, bool) {
 		needBytes := slottedPageHeaderSize + 4 + binary.MaxVarintLen64 + keyLen
 		if needBytes > len(buf) {
 			alwaysPrintf("flexdbReadKVFromHandler: buf too small at loff=%d needBytes=%d bufLen=%d keyLen=%d", fh.Loff(), needBytes, len(buf), keyLen)
+			if panicOnFailure {
+				panicf("flexdbReadKVFromHandler: buf too small at loff=%d needBytes=%d bufLen=%d keyLen=%d", fh.Loff(), needBytes, len(buf), keyLen)
+			}
 			return KV{}, false
 		}
 		nr, err2 := fh.Read(buf[:needBytes], uint64(needBytes))
 		if nr < needBytes || err2 != nil {
 			alwaysPrintf("flexdbReadKVFromHandler: second read fail at loff=%d nr=%d needBytes=%d err=%v", fh.Loff(), nr, needBytes, err2)
+			if panicOnFailure {
+				panicf("flexdbReadKVFromHandler: second read fail at loff=%d nr=%d needBytes=%d err=%v", fh.Loff(), nr, needBytes, err2)
+			}
 			return KV{}, false
 		}
 		key, ok := slottedPageFirstKey(buf[:nr])
 		if !ok {
 			alwaysPrintf("flexdbReadKVFromHandler: slottedPageFirstKey fail at loff=%d datalen=%d header=%x", fh.Loff(), nr, buf[:min(nr, 32)])
+			if panicOnFailure {
+				panicf("flexdbReadKVFromHandler: slottedPageFirstKey fail at loff=%d datalen=%d header=%x", fh.Loff(), nr, buf[:min(nr, 32)])
+			}
 			return KV{}, false
 		}
 		return KV{Key: key}, true
@@ -4211,16 +4235,25 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte) (KV, bool) {
 	size, ok := kv128SizePrefix(header[:])
 	if !ok || size > len(buf) {
 		alwaysPrintf("flexdbReadKVFromHandler: legacy format fail at loff=%d ok=%v size=%d bufLen=%d header=%x", fh.Loff(), ok, size, len(buf), header[:])
+		if panicOnFailure {
+			panicf("flexdbReadKVFromHandler: legacy format fail at loff=%d ok=%v size=%d bufLen=%d header=%x", fh.Loff(), ok, size, len(buf), header[:])
+		}
 		return KV{}, false
 	}
 	n, err = fh.Read(buf[:size], uint64(size))
 	if n != size || err != nil {
 		alwaysPrintf("flexdbReadKVFromHandler: legacy read fail at loff=%d n=%d size=%d err=%v", fh.Loff(), n, size, err)
+		if panicOnFailure {
+			panicf("flexdbReadKVFromHandler: legacy read fail at loff=%d n=%d size=%d err=%v", fh.Loff(), n, size, err)
+		}
 		return KV{}, false
 	}
 	kv, _, ok2 := kv128Decode(buf[:size])
 	if !ok2 {
 		alwaysPrintf("flexdbReadKVFromHandler: kv128Decode fail at loff=%d", fh.Loff())
+		if panicOnFailure {
+			panicf("flexdbReadKVFromHandler: kv128Decode fail at loff=%d", fh.Loff())
+		}
 	}
 	return kv, ok2
 }

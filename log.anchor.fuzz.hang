@@ -1,0 +1,47 @@
+jaten@rog ~/yogadb (red_anchor) $ make fuzz
+go test -tags memfs -fuzz FuzzAnchorTreeDrift -fuzztime 30m -run=xxx -timeout 35m
+fuzz: elapsed: 0s, gathering baseline coverage: 0/129 completed
+fuzz: elapsed: 2s, gathering baseline coverage: 129/129 completed, now fuzzing with 48 workers
+fuzz: elapsed: 3s, execs: 154 (51/sec), new interesting: 0 (total: 129)
+fuzz: elapsed: 6s, execs: 306 (51/sec), new interesting: 0 (total: 129)
+fuzz: elapsed: 9s, execs: 413 (36/sec), new interesting: 0 (total: 129)
+fuzz: elapsed: 12s, execs: 475 (21/sec), new interesting: 0 (total: 129)
+fuzz: elapsed: 15s, execs: 523 (16/sec), new interesting: 0 (total: 129)
+fuzz: elapsed: 18s, execs: 566 (14/sec), new interesting: 0 (total: 129)
+fuzz: elapsed: 21s, execs: 589 (8/sec), new interesting: 0 (total: 129)
+fuzz: elapsed: 24s, execs: 609 (7/sec), new interesting: 0 (total: 129)
+fuzz: elapsed: 27s, execs: 613 (1/sec), new interesting: 0 (total: 129)
+fuzz: elapsed: 30s, execs: 616 (1/sec), new interesting: 0 (total: 129)
+fuzz: elapsed: 33s, execs: 617 (0/sec), new interesting: 0 (total: 129)
+fuzz: elapsed: 36s, execs: 670 (18/sec), new interesting: 1 (total: 130)
+fuzz: elapsed: 39s, execs: 675 (2/sec), new interesting: 1 (total: 130)
+fuzz: elapsed: 42s, execs: 678 (1/sec), new interesting: 1 (total: 130)
+fuzz: elapsed: 45s, execs: 681 (1/sec), new interesting: 1 (total: 130)
+fuzz: elapsed: 48s, execs: 681 (0/sec), new interesting: 1 (total: 130)
+fuzz: elapsed: 51s, execs: 682 (0/sec), new interesting: 1 (total: 130)
+fuzz: elapsed: 54s, execs: 682 (0/sec), new interesting: 1 (total: 130)
+fuzz: elapsed: 57s, execs: 682 (0/sec), new interesting: 1 (total: 130)
+fuzz: elapsed: 1m0s, execs: 682 (0/sec), new interesting: 1 (total: 130)
+fuzz: elapsed: 1m3s, execs: 682 (0/sec), new interesting: 1 (total: 130)
+fuzz: elapsed: 1m6s, execs: 804 (41/sec), new interesting: 6 (total: 135)
+fuzz: elapsed: 1m9s, execs: 822 (6/sec), new interesting: 13 (total: 142)
+fuzz: elapsed: 1m12s, execs: 869 (16/sec), new interesting: 18 (total: 147)
+fuzz: elapsed: 1m15s, execs: 943 (25/sec), new interesting: 21 (total: 150)
+fuzz: elapsed: 1m18s, execs: 1002 (20/sec), new interesting: 25 (total: 154)
+fuzz: elapsed: 1m21s, execs: 1076 (25/sec), new interesting: 28 (total: 157)
+fuzz: elapsed: 1m24s, execs: 1164 (29/sec), new interesting: 28 (total: 157)
+fuzz: elapsed: 1m27s, execs: 1213 (16/sec), new interesting: 30 (total: 159)
+fuzz: elapsed: 1m30s, execs: 1292 (26/sec), new interesting: 30 (total: 159)
+fuzz: elapsed: 1m33s, execs: 1338 (15/sec), new interesting: 30 (total: 159)
+fuzz: elapsed: 1m36s, execs: 1358 (7/sec), new interesting: 31 (total: 160)
+fuzz: elapsed: 1m37s, execs: 1358 (0/sec), new interesting: 31 (total: 160)
+--- FAIL: FuzzAnchorTreeDrift (97.39s)
+    fuzzing process hung or terminated unexpectedly: exit status 2
+    Failing input written to testdata/fuzz/FuzzAnchorTreeDrift/bfdfcdf5b8df2386
+    To re-run:
+    go test -run=FuzzAnchorTreeDrift/bfdfcdf5b8df2386
+FAIL
+exit status 1
+FAIL	github.com/glycerine/yogadb	97.613s
+make: *** [Makefile:14: fuzz] Error 1
+jaten@rog ~/yogadb (red_anchor) $ 
