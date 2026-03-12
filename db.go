@@ -619,8 +619,7 @@ type PiggybackGCStats struct {
 // ====================== FlexDB ======================
 
 // FlexDB is a persistent ordered key-value store backed by FlexSpace. It is
-// thread-safe, except for iteration via Ascend/Descend--which allows deletions
-// and updates on the fly.
+// goroutine-safe. It supports write batching and transactions.
 type FlexDB struct {
 	// hlc must be first field for 64-bit alignment on 32-bit architectures.
 	hlc HLC // hybrid logical clock for timestamping every KV
@@ -2422,11 +2421,12 @@ func findBuildKV(it *Iter) *KV {
 // beyond the found key, use FindIt inside a View or Update transaction.
 //
 // Goroutine safe. Acquires the read lock internally.
-func (db *FlexDB) Find(smod SearchModifier, key string) (kv *KV, found, exact bool) {
+func (db *FlexDB) Find(smod SearchModifier, key string) (kv *KV, foundErr error, exact bool) {
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
 	it := &Iter{db: db}
-	found, exact = findSeekIter(it, smod, key)
+	found, exact1 := findSeekIter(it, smod, key)
+	exact = exact1
 	if found {
 		zc := findBuildKV(it)
 		// String Key is immutable - no copy needed. Copy Value.
@@ -2436,17 +2436,23 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kv *KV, found, exact bo
 			owned.Value = append([]byte{}, zc.Value...)
 		}
 		kv = &owned
+	} else {
+		foundErr = NotFound
 	}
 	it.releaseIterState()
 	return
 }
 
+// NotFound is returned by FlexDB when a queried key
+// is not present in the database.
+var NotFound = fmt.Errorf("key not found")
+
 // GetKV is like Get but allows lazy loading of Large values;
 // they are not fetched automatically. If the user sees kv.Large() true,
 // then db.FetchLarge(kv) will return the large value.
 // GetKV is equivalent to db.Find(Exact, key).
-func (db *FlexDB) GetKV(key string) (kv *KV, found bool) {
-	kv, found, _ = db.Find(Exact, key)
+func (db *FlexDB) GetKV(key string) (kv *KV, foundErr error) {
+	kv, foundErr, _ = db.Find(Exact, key)
 	return
 }
 
@@ -2454,8 +2460,10 @@ func (db *FlexDB) GetKV(key string) (kv *KV, found bool) {
 // Get can return nil, true if a nil value was stored with the key.
 // Get is value size agnostic. It returns large and small values
 // immediately. This is tested at, for example, gc_test.go
-// Test_GC1K_write_1k_keys_with_large_values.
-func (db *FlexDB) Get(key string) (value []byte, found bool) {
+// Test_GC1K_write_1k_keys_with_large_values. To defer loading
+// large values, use GetKV. err will be NotFound if the key
+// was not in the database.
+func (db *FlexDB) Get(key string) (value []byte, err error) {
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
 
@@ -2465,18 +2473,18 @@ func (db *FlexDB) Get(key string) (value []byte, found bool) {
 		kv, ok := db.memtables[active].get(key)
 		if ok {
 			if kv.isTombstone() {
-				return nil, false // tombstone
+				return nil, NotFound // tombstone
 			}
 			val, err := db.resolveVPtr(kv)
 			if err != nil {
-				return nil, false
+				return nil, err
 			}
 			if val == nil {
-				return nil, true // live key, nil value
+				return nil, nil // live key, nil value
 			}
 			out := make([]byte, len(val))
 			copy(out, val)
-			return out, true
+			return out, nil
 		}
 	}
 
@@ -2512,24 +2520,27 @@ func (db *FlexDB) Get(key string) (value []byte, found bool) {
 		kv, ok := db.memtables[inactive].get(key)
 		if ok {
 			if kv.isTombstone() {
-				return nil, false
+				return nil, NotFound
 			}
 			val, err := db.resolveVPtr(kv)
 			if err != nil {
-				return nil, false
+				return nil, err
 			}
 			if val == nil {
-				return nil, true // live key, nil value
+				return nil, nil // live key, nil value
 			}
 			out := make([]byte, len(val))
 			copy(out, val)
-			return out, true // return a copy, 'out', that caller can own.
+			return out, nil // return a copy, 'out', that caller can own.
 		}
 	}
 
 	// Check FlexSpace via sparse index
 	val, found := db.getPassthrough(key)
-	return val, found
+	if found {
+		return val, nil
+	}
+	return nil, NotFound
 }
 
 // someLockHeldGet retrieves the value for key without acquiring topMutRW.

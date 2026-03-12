@@ -371,8 +371,8 @@ func TestFlexDB_VLOG_DedupSameValue(t *testing.T) {
 	hlcAfterFirst := make([]HLC, numKeys)
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("dedup_%04d", i)
-		kv, ok := db.GetKV(key)
-		if !ok {
+		kv, foundErr := db.GetKV(key)
+		if foundErr != nil {
 			t.Fatalf("GetKV(%q) not found after first write", key)
 		}
 		hlcAfterFirst[i] = kv.Hlc
@@ -399,8 +399,8 @@ func TestFlexDB_VLOG_DedupSameValue(t *testing.T) {
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("dedup_%04d", i)
 		mustGet(t, db, key, makeTestValue(200+i))
-		kv, ok := db.GetKV(key)
-		if !ok {
+		kv, err := db.GetKV(key)
+		if err != nil {
 			t.Fatalf("GetKV(%q) not found after dedup overwrite", key)
 		}
 		if kv.Hlc <= hlcAfterFirst[i] {
@@ -463,8 +463,8 @@ func TestFlexDB_VLOG_DedupBatch(t *testing.T) {
 	hlcAfterFirst := make([]HLC, numKeys)
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("bdedup_%04d", i)
-		kv, ok := db.GetKV(key)
-		if !ok {
+		kv, err := db.GetKV(key)
+		if err != nil {
 			t.Fatalf("GetKV(%q) not found after first batch", key)
 		}
 		hlcAfterFirst[i] = kv.Hlc
@@ -490,8 +490,8 @@ func TestFlexDB_VLOG_DedupBatch(t *testing.T) {
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("bdedup_%04d", i)
 		mustGet(t, db, key, makeTestValue(150+i))
-		kv, ok := db.GetKV(key)
-		if !ok {
+		kv, err := db.GetKV(key)
+		if err != nil {
 			t.Fatalf("GetKV(%q) not found after dedup batch", key)
 		}
 		if kv.Hlc <= hlcAfterFirst[i] {

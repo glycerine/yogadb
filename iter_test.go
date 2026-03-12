@@ -536,13 +536,13 @@ func TestFlexDB_HLC_Persistence(t *testing.T) {
 	}
 	defer db2.Close()
 
-	val, ok := db2.Get("pk1")
-	if !ok || string(val) != "pv1" {
-		t.Fatalf("pk1: got %q, ok=%v", val, ok)
+	val, err := db2.Get("pk1")
+	if err != nil || string(val) != "pv1" {
+		t.Fatalf("pk1: got %q, err=%v", val, err)
 	}
-	val, ok = db2.Get("pk2")
-	if !ok || string(val) != "pv2" {
-		t.Fatalf("pk2: got %q, ok=%v", val, ok)
+	val, err = db2.Get("pk2")
+	if err != nil || string(val) != "pv2" {
+		t.Fatalf("pk2: got %q, err=%v", val, err)
 	}
 }
 
@@ -570,8 +570,8 @@ func TestFlexDB_HLC_VLOGRoundTrip(t *testing.T) {
 	}
 	defer db2.Close()
 
-	val, ok := db2.Get("bigkey")
-	if !ok {
+	val, err := db2.Get("bigkey")
+	if err != nil {
 		t.Fatal("bigkey not found after reopen")
 	}
 	if string(val) != bigVal {
@@ -766,8 +766,8 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 		for i := 0; i < nKeys; i++ {
 			key := fmt.Sprintf("k%06d", i)
 			expected := fmt.Sprintf("v%06d", i)
-			got, ok := db.Get(key)
-			if !ok {
+			got, err := db.Get(key)
+			if err != nil {
 				t.Fatalf("session 2: key %q missing after vacuum", key)
 			}
 			if string(got) != expected {
@@ -796,8 +796,8 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 		for i := 0; i < nKeys; i++ {
 			key := fmt.Sprintf("k%06d", i)
 			expected := fmt.Sprintf("v%06d", i)
-			got, ok := db.Get(key)
-			if !ok {
+			got, err := db.Get(key)
+			if err != nil {
 				t.Fatalf("session 3: key %q missing", key)
 			}
 			if string(got) != expected {
@@ -1062,8 +1062,8 @@ func TestFlexDB_IteratorDeleteAllForward(t *testing.T) {
 	})
 
 	// DB should be empty
-	val, ok := db.Get("a")
-	if ok {
+	val, err := db.Get("a")
+	if err == nil {
 		t.Fatalf("expected empty DB, got key 'a' val=%q", val)
 	}
 }
@@ -1272,8 +1272,8 @@ func TestFlexDB_IteratorDeleteAllBackward(t *testing.T) {
 	})
 
 	// DB should be empty
-	val, ok := db.Get("c")
-	if ok {
+	val, err := db.Get("c")
+	if err == nil {
 		t.Fatalf("expected empty DB, got key 'c' val=%q", val)
 	}
 }

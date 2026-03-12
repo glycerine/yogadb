@@ -79,8 +79,8 @@ func mustDelete(t *testing.T, db *FlexDB, key string) {
 
 func mustGet(t *testing.T, db *FlexDB, key, wantValue string) {
 	t.Helper()
-	val, ok := db.Get(key)
-	if !ok {
+	val, err := db.Get(key)
+	if err == NotFound {
 		t.Fatalf("Get(%q): not found (want %q)", key, wantValue)
 	}
 	if string(val) != wantValue {
@@ -90,8 +90,8 @@ func mustGet(t *testing.T, db *FlexDB, key, wantValue string) {
 
 func mustMiss(t *testing.T, db *FlexDB, key string) {
 	t.Helper()
-	val, ok := db.Get(key)
-	if ok {
+	val, err := db.Get(key)
+	if err == nil {
 		t.Fatalf("Get(%q) = %q, want miss", key, val)
 	}
 }
@@ -686,9 +686,9 @@ func TestFlexDB_MergeIncrement(t *testing.T) {
 		}
 	}
 
-	val, ok := db.Get("ctr")
-	if !ok || val[0] != 10 {
-		t.Fatalf("expected counter=10, got %v ok=%v", val, ok)
+	val, err := db.Get("ctr")
+	if err != nil || val[0] != 10 {
+		t.Fatalf("expected err==nil and counter=10, got %v err=%v", val, err)
 	}
 }
 
@@ -1895,15 +1895,15 @@ func TestDeleteRange_SkipLargeValues(t *testing.T) {
 		mustMiss(t, db, "c")
 		mustMiss(t, db, "e")
 		// Large keys survive.
-		val, ok := db.Get("b")
-		if !ok {
+		val, err := db.Get("b")
+		if err == NotFound {
 			t.Fatal("large key 'b' should survive")
 		}
 		if string(val) != bigVal {
 			t.Fatalf("large key 'b' wrong value: got %d bytes", len(val))
 		}
-		val, ok = db.Get("d")
-		if !ok {
+		val, err = db.Get("d")
+		if err == NotFound {
 			t.Fatal("large key 'd' should survive")
 		}
 		if string(val) != bigVal {
@@ -1929,8 +1929,8 @@ func TestDeleteRange_SkipLargeValues(t *testing.T) {
 		}
 		mustMiss(t, db, "k1")
 		mustMiss(t, db, "k3")
-		val, ok := db.Get("k2")
-		if !ok {
+		val, err := db.Get("k2")
+		if err == NotFound {
 			t.Fatal("large key 'k2' should survive")
 		}
 		if string(val) != bigVal {
@@ -1970,12 +1970,12 @@ func TestDeleteRange_SkipLargeValues(t *testing.T) {
 			t.Fatalf("n=%d, want 0 (all keys are large)", n)
 		}
 		// Both keys survive.
-		_, ok := db.Get("a")
-		if !ok {
+		_, err = db.Get("a")
+		if err == NotFound {
 			t.Fatal("key 'a' should survive")
 		}
-		_, ok = db.Get("b")
-		if !ok {
+		_, err = db.Get("b")
+		if err == NotFound {
 			t.Fatal("key 'b' should survive")
 		}
 	})
@@ -2042,15 +2042,15 @@ func TestClear(t *testing.T) {
 		}
 		mustMiss(t, db, "a")
 		mustMiss(t, db, "c")
-		val, ok := db.Get("b")
-		if !ok {
+		val, err := db.Get("b")
+		if err == NotFound {
 			t.Fatal("large key 'b' should survive")
 		}
 		if string(val) != bigVal {
 			t.Fatalf("wrong value for 'b'")
 		}
-		val, ok = db.Get("d")
-		if !ok {
+		val, err = db.Get("d")
+		if err == NotFound {
 			t.Fatal("large key 'd' should survive")
 		}
 		if string(val) != bigVal {
@@ -2074,8 +2074,8 @@ func TestClear(t *testing.T) {
 			t.Fatal("expected allGone=false")
 		}
 		mustMiss(t, db, "x")
-		val, ok := db.Get("y")
-		if !ok {
+		val, err := db.Get("y")
+		if err == NotFound {
 			t.Fatal("large key 'y' should survive")
 		}
 		if string(val) != bigVal {
@@ -2408,8 +2408,8 @@ func TestFlexDB_NilValuePreservation(t *testing.T) {
 	}
 
 	// Get should return (nil, true) - found, with nil value
-	val, found := db.Get("setkey")
-	if !found {
+	val, err := db.Get("setkey")
+	if err == NotFound {
 		t.Fatal("nil-value key should be found")
 	}
 	if val != nil {
@@ -2428,8 +2428,8 @@ func TestFlexDB_NilValuePreservation(t *testing.T) {
 	}
 
 	// Should be gone
-	_, found = db.Get("setkey")
-	if found {
+	_, err = db.Get("setkey")
+	if err == nil {
 		t.Fatal("deleted key should not be found")
 	}
 	if db.Len() != 0 {
@@ -2446,8 +2446,8 @@ func TestFlexDB_NilValuePreservation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	val, found = db.Get("setkey2")
-	if !found {
+	val, err = db.Get("setkey2")
+	if err == NotFound {
 		t.Fatal("nil-value key should survive Sync")
 	}
 	if val != nil {
@@ -2459,8 +2459,8 @@ func TestFlexDB_NilValuePreservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	val, found = db.Get("emptykey")
-	if !found {
+	val, err = db.Get("emptykey")
+	if err == NotFound {
 		t.Fatal("empty-value key should be found")
 	}
 	// Both nil and empty return len=0, but both are live

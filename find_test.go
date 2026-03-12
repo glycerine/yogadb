@@ -11,9 +11,9 @@ func TestFind_Exact(t *testing.T) {
 	populateFindTestDB(t, db)
 
 	// Exact match: existing key.
-	kv, found, exact := db.Find(Exact, "key003")
-	if !found || !exact {
-		t.Fatalf("Exact key003: found=%v exact=%v, want true true", found, exact)
+	kv, foundErr, exact := db.Find(Exact, "key003")
+	if foundErr == NotFound || !exact {
+		t.Fatalf("Exact key003: foundErr=%v exact=%v, want true true", foundErr, exact)
 	}
 	if kv.Large() {
 		t.Fatal("unexpected large value")
@@ -26,9 +26,9 @@ func TestFind_Exact(t *testing.T) {
 	}
 
 	// Exact match: missing key.
-	kv2, found2, exact2 := db.Find(Exact, "key999")
-	if found2 || exact2 {
-		t.Fatalf("Exact key999: found=%v exact=%v, want false false", found2, exact2)
+	kv2, foundErr, exact2 := db.Find(Exact, "key999")
+	if foundErr == nil || exact2 {
+		t.Fatalf("Exact key999: found=%v exact=%v, want NotFound, exact=false", foundErr, exact2)
 	}
 	if kv2 != nil {
 		t.Fatalf("expected nil KV, got %v", kv2)
@@ -41,18 +41,18 @@ func TestFind_GTE(t *testing.T) {
 	populateFindTestDB(t, db)
 
 	// GTE on existing key -> exact match.
-	kv, found, exact := db.Find(GTE, "key003")
-	if !found || !exact {
-		t.Fatalf("GTE key003: found=%v exact=%v, want true true", found, exact)
+	kv, foundErr, exact := db.Find(GTE, "key003")
+	if foundErr != nil || !exact {
+		t.Fatalf("GTE key003: found=%v exact=%v, want nil true", foundErr, exact)
 	}
 	if string(kv.Key) != "key003" || string(kv.Value) != "val003" {
 		t.Fatalf("got key=%q value=%q, want key003/val003", kv.Key, kv.Value)
 	}
 
 	// GTE on gap key -> next key.
-	kv2, found2, exact2 := db.Find(GTE, "key002a")
-	if !found2 {
-		t.Fatal("GTE key002a: not found")
+	kv2, foundErr, exact2 := db.Find(GTE, "key002a")
+	if foundErr != nil {
+		t.Fatalf("GTE key002a: not found; err='%v'", foundErr)
 	}
 	if exact2 {
 		t.Fatal("GTE key002a: should not be exact")
@@ -65,8 +65,8 @@ func TestFind_GTE(t *testing.T) {
 	}
 
 	// GTE past end -> not found.
-	kv3, found3, _ := db.Find(GTE, "key999")
-	if found3 {
+	kv3, foundErr, _ := db.Find(GTE, "key999")
+	if foundErr == nil {
 		t.Fatal("GTE key999: should not be found")
 	}
 	if kv3 != nil {
@@ -74,8 +74,8 @@ func TestFind_GTE(t *testing.T) {
 	}
 
 	// GTE nil -> first key.
-	kv4, found4, _ := db.Find(GTE, "")
-	if !found4 {
+	kv4, foundErr, _ := db.Find(GTE, "")
+	if foundErr != nil {
 		t.Fatal("GTE nil: not found")
 	}
 	if string(kv4.Key) != "key001" {
@@ -89,8 +89,8 @@ func TestFind_GT(t *testing.T) {
 	populateFindTestDB(t, db)
 
 	// GT on existing key -> next key.
-	kv, found, exact := db.Find(GT, "key003")
-	if !found {
+	kv, foundErr, exact := db.Find(GT, "key003")
+	if foundErr != nil {
 		t.Fatal("GT key003: not found")
 	}
 	if exact {
@@ -104,8 +104,8 @@ func TestFind_GT(t *testing.T) {
 	}
 
 	// GT on gap key -> next key (same as GTE on gap).
-	kv2, found2, _ := db.Find(GT, "key002a")
-	if !found2 {
+	kv2, foundErr, _ := db.Find(GT, "key002a")
+	if foundErr != nil {
 		t.Fatal("GT key002a: not found")
 	}
 	if string(kv2.Key) != "key003" {
@@ -113,14 +113,14 @@ func TestFind_GT(t *testing.T) {
 	}
 
 	// GT on last key -> not found.
-	_, found3, _ := db.Find(GT, "key010")
-	if found3 {
+	_, foundErr, _ = db.Find(GT, "key010")
+	if foundErr == nil {
 		t.Fatal("GT key010: should not be found")
 	}
 
 	// GT nil -> first key.
-	kv4, found4, _ := db.Find(GT, "")
-	if !found4 {
+	kv4, foundErr, _ := db.Find(GT, "")
+	if foundErr != nil {
 		t.Fatal("GT nil: not found")
 	}
 	if string(kv4.Key) != "key001" {
@@ -134,17 +134,17 @@ func TestFind_LTE(t *testing.T) {
 	populateFindTestDB(t, db)
 
 	// LTE on existing key -> exact match.
-	kv, found, exact := db.Find(LTE, "key003")
-	if !found || !exact {
-		t.Fatalf("LTE key003: found=%v exact=%v, want true true", found, exact)
+	kv, foundErr, exact := db.Find(LTE, "key003")
+	if foundErr != nil || !exact {
+		t.Fatalf("LTE key003: found=%v exact=%v, want true true", foundErr, exact)
 	}
 	if string(kv.Key) != "key003" || string(kv.Value) != "val003" {
 		t.Fatalf("got key=%q value=%q, want key003/val003", kv.Key, kv.Value)
 	}
 
 	// LTE on gap key -> previous key.
-	kv2, found2, exact2 := db.Find(LTE, "key003a")
-	if !found2 {
+	kv2, foundErr, exact2 := db.Find(LTE, "key003a")
+	if foundErr != nil {
 		t.Fatal("LTE key003a: not found")
 	}
 	if exact2 {
@@ -155,14 +155,14 @@ func TestFind_LTE(t *testing.T) {
 	}
 
 	// LTE before first -> not found.
-	_, found3, _ := db.Find(LTE, "key000")
-	if found3 {
+	_, foundErr, _ = db.Find(LTE, "key000")
+	if foundErr == nil {
 		t.Fatal("LTE key000: should not be found")
 	}
 
 	// LTE nil -> last key.
 	kv4, found4, _ := db.Find(LTE, "")
-	if !found4 {
+	if found4 != nil {
 		t.Fatal("LTE nil: not found")
 	}
 	if string(kv4.Key) != "key010" {
@@ -176,8 +176,8 @@ func TestFind_LT(t *testing.T) {
 	populateFindTestDB(t, db)
 
 	// LT on existing key -> previous key.
-	kv, found, exact := db.Find(LT, "key003")
-	if !found {
+	kv, err, exact := db.Find(LT, "key003")
+	if err != nil {
 		t.Fatal("LT key003: not found")
 	}
 	if exact {
@@ -191,8 +191,8 @@ func TestFind_LT(t *testing.T) {
 	}
 
 	// LT on gap key -> previous key.
-	kv2, found2, _ := db.Find(LT, "key003a")
-	if !found2 {
+	kv2, found2err, _ := db.Find(LT, "key003a")
+	if found2err != nil {
 		t.Fatal("LT key003a: not found")
 	}
 	if string(kv2.Key) != "key003" {
@@ -201,13 +201,13 @@ func TestFind_LT(t *testing.T) {
 
 	// LT on first key -> not found.
 	_, found3, _ := db.Find(LT, "key001")
-	if found3 {
+	if found3 == nil {
 		t.Fatal("LT key001: should not be found")
 	}
 
 	// LT nil -> last key.
 	kv4, found4, _ := db.Find(LT, "")
-	if !found4 {
+	if found4 != nil {
 		t.Fatal("LT nil: not found")
 	}
 	if string(kv4.Key) != "key010" {
@@ -283,8 +283,8 @@ func TestFind_EmptyDB(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 
 	for _, smod := range []SearchModifier{Exact, GTE, GT, LTE, LT} {
-		kv, found, _ := db.Find(smod, "anything")
-		if found {
+		kv, foundErr, _ := db.Find(smod, "anything")
+		if foundErr == nil {
 			t.Errorf("smod=%d on empty DB: should not find anything", smod)
 		}
 		if kv != nil {
@@ -301,7 +301,7 @@ func TestFind_AfterSync(t *testing.T) {
 
 	// GTE on gap.
 	kv, found, exact := db.Find(GTE, "key004a")
-	if !found || exact {
+	if found != nil || exact {
 		t.Fatalf("GTE key004a after sync: found=%v exact=%v", found, exact)
 	}
 	if string(kv.Key) != "key005" {
@@ -310,7 +310,7 @@ func TestFind_AfterSync(t *testing.T) {
 
 	// LT on existing.
 	kv2, found2, exact2 := db.Find(LT, "key005")
-	if !found2 || exact2 {
+	if found2 != nil || exact2 {
 		t.Fatalf("LT key005 after sync: found=%v exact=%v", found2, exact2)
 	}
 	if string(kv2.Key) != "key004" {
@@ -326,7 +326,7 @@ func TestFind_KVOwnership(t *testing.T) {
 	db.Sync() // flush to FlexSpace
 
 	kv, found, _ := db.Find(GTE, "key005")
-	if !found {
+	if found != nil {
 		t.Fatal("not found")
 	}
 	origKey := string(kv.Key)
@@ -351,7 +351,7 @@ func TestFind_HLCPopulated(t *testing.T) {
 	populateFindTestDB(t, db)
 
 	kv, found, _ := db.Find(Exact, "key005")
-	if !found {
+	if found != nil {
 		t.Fatal("not found")
 	}
 	if kv.Hlc == 0 {
@@ -365,7 +365,7 @@ func TestFetchLarge_InlineValue(t *testing.T) {
 	populateFindTestDB(t, db)
 
 	kv, found, _ := db.Find(Exact, "key003")
-	if !found {
+	if found != nil {
 		t.Fatal("not found")
 	}
 	if kv.Large() {

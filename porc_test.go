@@ -71,7 +71,7 @@ func Test016_linz(t *testing.T) {
 		//vv("i=%v, jnode=%v, about to Read", i, jnode)
 
 		begtmRead := time.Now()
-		val, found := readers[jnode].db.Get(skey)
+		val, foundErr := readers[jnode].db.Get(skey)
 		endtmRead := time.Now()
 
 		finmut.Lock()
@@ -81,7 +81,7 @@ func Test016_linz(t *testing.T) {
 		//vv("i=%v, jnode=%v, back from Read", i, jnode)
 		var i2 int
 		var err error
-		if found {
+		if foundErr == nil {
 			i2, err = strconv.Atoi(string(val))
 			panicOn(err)
 		}
