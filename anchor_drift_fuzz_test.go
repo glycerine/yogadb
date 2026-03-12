@@ -268,7 +268,10 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 
 // openFuzzDB opens a FlexDB for fuzz testing. Returns nil on error.
 func openFuzzDB(fs vfs.FS, dir string) *FlexDB {
-	cfg := &Config{FS: fs}
+	cfg := &Config{
+		FS:                     fs,
+		DisableBackgroundFlush: true,
+	}
 	db, err := OpenFlexDB(dir, cfg)
 	if err != nil {
 		return nil

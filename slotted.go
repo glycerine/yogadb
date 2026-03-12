@@ -39,14 +39,14 @@ package yogadb
 //
 // ┌────────┬──────────────────────────────────────────┬──────┬──────────┬────────┐
 // │ Header │ Entry Records ->>>                        │free  │ ←← Values│ CRC32C │
-// │  12B   │ N × [keyLen + valInfo + hlc delta + key] │space │          │  4B    │
+// │  27B   │ N × [keyLen + valInfo + hlc delta + key] │space │          │  4B    │
 // └────────┴──────────────────────────────────────────┴──────┴──────────┴────────┘
 //
-// Header (12 bytes):
-//   [1] magic       slottedPageMagic (0x00)
-//   [1] unsorted    uint8 - number of unsorted appended entries at end
-//   [2] count       uint16 LE - total number of KV entries
-//   [8] baseHLC     int64 BE - minimum HLC among all entries
+// Header (27 bytes):
+//   [16] magic      slottedPageMagic (16-byte signature)
+//   [1]  unsorted   uint8 - number of unsorted appended entries at end
+//   [2]  count      uint16 LE - total number of KV entries
+//   [8]  baseHLC    int64 BE - minimum HLC among all entries
 //
 // Entry Records (packed forward, one per entry):
 //   [2] keyLen      uint16 LE - key length in bytes
@@ -74,6 +74,20 @@ import (
 	"strings"
 )
 
+// slottedPageMagic is a 16-byte signature at the start of every slotted page.
+// Derived from base64url("JFfXCmE-0VK1McB3uOIvlPQ3H8fxowydbRK0UddtmCkg")[:16].
+var slottedPageMagic = [16]byte{
+	0x24, 0x57, 0xd7, 0x0a, 0x61, 0x3e, 0xd1, 0x52,
+	0xb5, 0x31, 0xc0, 0x77, 0xb8, 0xe2, 0x2f, 0x94,
+}
+
+// kv128ExtentMagic is a 16-byte signature written at the start of kv128-format
+// extents in KV128_BLOCKS. Derived from base64url("xKts5aFDwMqctYg9tsZimUeKBkETaJZpe3SliPNMbqQc")[:16].
+var kv128ExtentMagic = [16]byte{
+	0xc4, 0xab, 0x6c, 0xe5, 0xa1, 0x43, 0xc0, 0xca,
+	0x9c, 0xb5, 0x88, 0x3d, 0xb6, 0xc6, 0x62, 0x99,
+}
+
 const (
 	// SLOTTED_PAGE_KB is the target page size for slotted page intervals.
 	// Tune this for different workloads. Larger pages amortize overhead
@@ -87,12 +101,8 @@ const (
 	// always fits in a page.
 	MAX_KEY_BYTES = SLOTTED_PAGE_KB * 512 // 32768 bytes
 
-	// slottedPageMagic is 0x00. This is unambiguous because kv128 entries
-	// start with varint(keyLen) where keyLen >= 1, so their first byte is
-	// always >= 0x01. A leading 0x00 byte can therefore ONLY be a slotted page.
-	slottedPageMagic = 0x00
-
-	slottedPageHeaderSize = 12 // 1 magic + 1 unsorted + 2 count + 8 baseHLC
+	slottedPageMagicSize  = 16
+	slottedPageHeaderSize = 27 // 16 magic + 1 unsorted + 2 count + 8 baseHLC
 	slottedPageCRCSize    = 4
 
 	// valInfo sentinels
@@ -127,7 +137,7 @@ func slottedPageEncodeInto(kvs []KV, unsorted uint8, targetSize int) []byte {
 		if targetSize > 0 {
 			// Empty padded page: header + CRC, zero-padded.
 			buf := make([]byte, targetSize)
-			buf[0] = slottedPageMagic
+			copy(buf[0:slottedPageMagicSize], slottedPageMagic[:])
 			// count=0, unsorted=0, baseHLC=0 - all zero is fine
 			crcOff := targetSize - slottedPageCRCSize
 			checksum := crc32.Checksum(buf[:crcOff], crc32cTable)
@@ -180,10 +190,10 @@ func slottedPageEncodeInto(kvs []KV, unsorted uint8, targetSize int) []byte {
 	buf := make([]byte, totalSize)
 
 	// --- Header ---
-	buf[0] = slottedPageMagic
-	buf[1] = unsorted
-	binary.LittleEndian.PutUint16(buf[2:4], uint16(count))
-	binary.BigEndian.PutUint64(buf[4:12], uint64(baseHLC))
+	copy(buf[0:slottedPageMagicSize], slottedPageMagic[:])
+	buf[16] = unsorted
+	binary.LittleEndian.PutUint16(buf[17:19], uint16(count))
+	binary.BigEndian.PutUint64(buf[19:27], uint64(baseHLC))
 
 	// --- Entry Records (forward) ---
 	entryOff := slottedPageHeaderSize
@@ -222,12 +232,12 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 	if len(src) < slottedPageHeaderSize+slottedPageCRCSize {
 		return nil, 0, fmt.Errorf("slotted page: too short (%d bytes)", len(src))
 	}
-	if src[0] != slottedPageMagic {
-		return nil, 0, fmt.Errorf("slotted page: bad magic 0x%02x", src[0])
+	if !slottedPageHasMagic(src) {
+		return nil, 0, fmt.Errorf("slotted page: bad magic %x", src[:min(len(src), slottedPageMagicSize)])
 	}
 
-	count := int(binary.LittleEndian.Uint16(src[2:4]))
-	baseHLC := HLC(binary.BigEndian.Uint64(src[4:12]))
+	count := int(binary.LittleEndian.Uint16(src[17:19]))
+	baseHLC := HLC(binary.BigEndian.Uint64(src[19:27]))
 
 	if count == 0 {
 		// For padded pages, consume the entire buffer.
@@ -336,9 +346,22 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 	return kvs, totalSize, nil
 }
 
+// slottedPageHasMagic checks if src starts with the 16-byte slotted page magic.
+func slottedPageHasMagic(src []byte) bool {
+	if len(src) < slottedPageMagicSize {
+		return false
+	}
+	for i := 0; i < slottedPageMagicSize; i++ {
+		if src[i] != slottedPageMagic[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // slottedPageIsSlotted checks if the data at src starts with a slotted page.
 func slottedPageIsSlotted(src []byte) bool {
-	return len(src) >= 1 && src[0] == slottedPageMagic
+	return slottedPageHasMagic(src)
 }
 
 // slottedValInfo returns the valInfo uint16 for a KV entry.
@@ -386,10 +409,10 @@ func slottedPageFirstKey(src []byte) (string, bool) {
 	if len(src) < slottedPageHeaderSize+5 {
 		return "", false
 	}
-	if src[0] != slottedPageMagic {
+	if !slottedPageHasMagic(src) {
 		return "", false
 	}
-	count := int(binary.LittleEndian.Uint16(src[2:4]))
+	count := int(binary.LittleEndian.Uint16(src[17:19]))
 	if count == 0 {
 		return "", false
 	}
@@ -425,7 +448,7 @@ func slottedPageUnsorted(src []byte) uint8 {
 	if len(src) < slottedPageHeaderSize {
 		return 0
 	}
-	return src[1]
+	return src[16]
 }
 
 // slottedPageComputeSize returns the encoded size of a slotted page for the given KVs.
@@ -514,14 +537,14 @@ func slottedPageDumpImpl(src []byte, vlog *valueLog) string {
 		fmt.Fprintf(&b, "SlottedPage [%dB] ERROR: too short\n", totalSize)
 		return b.String()
 	}
-	if src[0] != slottedPageMagic {
-		fmt.Fprintf(&b, "SlottedPage [%dB] ERROR: bad magic 0x%02x\n", totalSize, src[0])
+	if !slottedPageHasMagic(src) {
+		fmt.Fprintf(&b, "SlottedPage [%dB] ERROR: bad magic %x\n", totalSize, src[:min(totalSize, slottedPageMagicSize)])
 		return b.String()
 	}
 
-	unsorted := src[1]
-	count := int(binary.LittleEndian.Uint16(src[2:4]))
-	baseHLC := HLC(binary.BigEndian.Uint64(src[4:12]))
+	unsorted := src[16]
+	count := int(binary.LittleEndian.Uint16(src[17:19]))
+	baseHLC := HLC(binary.BigEndian.Uint64(src[19:27]))
 
 	// Verify CRC (try tight first, then padded).
 	crcStatus := "OK"
