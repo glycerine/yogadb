@@ -2348,6 +2348,11 @@ const (
 	GT SearchModifier = 3
 	// LT finds the largest key strictly less-than the query.
 	LT SearchModifier = 4
+	// LAZY_LARGE means we do not fetch LARGE.VLOG values
+	// automatically. The User must call FetchLarge() explicitly
+	// when they are desired.
+	// LAZY_LARGE can be | or-ed with Exact, GTE, GT, LTE, or LT.
+	LAZY_LARGE SearchModifier = 256
 )
 
 // findSeekIter positions it according to smod and key.
@@ -2425,7 +2430,13 @@ func findBuildKV(it *Iter) *KV {
 func (db *FlexDB) Find(smod SearchModifier, key string) (kv *KV, found, exact bool) {
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
+
 	it := &Iter{db: db}
+	lazyLarge := (smod&LAZY_LARGE != 0)
+	if lazyLarge {
+		it.lazyLarge = true
+		smod -= LAZY_LARGE
+	}
 	found, exact = findSeekIter(it, smod, key)
 	if found {
 		zc := findBuildKV(it)

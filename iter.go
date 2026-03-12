@@ -101,9 +101,10 @@ type Iter struct {
 	// cache memory (zero-copy), safe because the write lock is held.
 	pKV *KV
 
-	valid  bool
-	dir    int // 1=forward, -1=backward (informational)
-	closed bool
+	valid     bool
+	dir       int // 1=forward, -1=backward (informational)
+	closed    bool
+	lazyLarge bool
 
 	// Stateful FlexSpace cursor for O(1) amortized forward iteration.
 	fc flexCursor
