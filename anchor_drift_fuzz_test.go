@@ -83,7 +83,9 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 		}
 
 		fs := vfs.NewMem()
-		dir := "fuzz_anchor_drift"
+		// fresh memfs means we can use the same dir...
+		// but just in case we try to run on real filesystem...
+		dir := "fuzz_anchor_drift" + runID
 		if err := fs.MkdirAll(dir, 0755); err != nil {
 			return
 		}
@@ -95,6 +97,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 		defer func() {
 			// Always close DB to avoid leaking goroutines.
 			db.Close()
+
 		}()
 
 		// Track what keys we've inserted and their expected values,
