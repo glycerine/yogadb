@@ -11,6 +11,7 @@ all:
 	cd cmd/yogabench && go install
 
 fuzz:
+	rm ~/anchorfuzz/anchor_drift_log
 	go test -tags memfs -fuzz FuzzAnchorTreeDrift -fuzztime 30m -run=xxx -timeout 35m
 	go test -tags memfs -fuzz FuzzFlexSpace -fuzztime 30m -run=xxx -timeout 35m
 	go test -tags memfs -fuzz FuzzRecoveryFlexSpace -fuzztime 30m -run=xxx -timeout 35m

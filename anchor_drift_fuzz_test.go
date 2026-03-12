@@ -61,7 +61,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 
 		mklog := func() {
 			var err error
-			durlog, err = os.OpenFile(durlogPath, os.O_RDWR|os.O_CREATE, 0644)
+			durlog, err = os.OpenFile(durlogPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
 			if err != nil {
 				t.Fatalf("could not create logging output file '%v': '%v'", durlogPath, err)
 			}
