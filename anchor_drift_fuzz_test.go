@@ -53,6 +53,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 		// Track what keys we've inserted and their expected values,
 		// so we can verify correctness after reopen.
 		kv := newOmap[string, string]() // key -> value
+		kv2 := make(map[string]string)
 		synced := false
 
 		// Wrap in func+recover so panicOn() calls don't kill the fuzz worker subprocess.
@@ -93,22 +94,35 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 						t.Fatalf("Put(%q): %v", key, err)
 					}
 					kv.set(key, val)
+					kv2[key] = val
 					synced = false
 
 				case 1: // Delete
-					if i+2 > len(data) || kv.Len() == 0 {
+					kvLen := kv.Len()
+					kv2Len := len(kv2)
+					if kvLen != kv2Len {
+						t.Fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+					}
+					if i+2 > len(data) || kvLen == 0 {
 						continue
 					}
 					keyIdx := int(binary.BigEndian.Uint16(data[i : i+2]))
 					i += 2
 					keyIdx = keyIdx % 500
 					key := fmt.Sprintf("k%04d", keyIdx)
+
+					_, exists2 := kv2[key]
 					if _, exists := kv.get2(key); exists {
+						if exists != exists2 {
+							t.Fatalf("omap exists=%v but map exists2=%v for key '%v'; kv2='%#v'\n kv = \n%v\n", exists, exists2, key, kv2, kv.String())
+						}
+
 						err := db.Delete(key)
 						if err != nil {
 							t.Fatalf("Delete(%q): %v", key, err)
 						}
 						kv.delkey(key)
+						delete(kv2, key)
 						synced = false
 					}
 
@@ -127,11 +141,18 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 							t.Fatalf("Put(%q): %v", key, err)
 						}
 						kv.set(key, val)
+						kv2[key] = val
 					}
 					synced = false
 
 				case 3: // Overwrite existing keys with different-sized values
-					if i+2 > len(data) || kv.Len() == 0 {
+					kvLen := kv.Len()
+					kv2Len := len(kv2)
+					if kvLen != kv2Len {
+						t.Fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+					}
+
+					if i+2 > len(data) || kvLen == 0 {
 						continue
 					}
 					newSize := int(data[i])%50 + 5
@@ -148,12 +169,19 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 							t.Fatalf("Put(%q): %v", key, err)
 						}
 						kv.set(key, val)
+						kv2[key] = val
 						j++
 					}
 					synced = false
 
 				case 4: // Sync - triggers flushDirtyPages (the original bug site)
-					if kv.Len() == 0 {
+					kvLen := kv.Len()
+					kv2Len := len(kv2)
+					if kvLen != kv2Len {
+						t.Fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+					}
+
+					if kvLen == 0 {
 						continue
 					}
 					db.Sync()
@@ -162,7 +190,13 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					// here without panic, the anchor tree is in sync.
 
 				case 5: // VacuumKV - creates tight pages, rebuilds FlexTree
-					if !synced || kv.Len() == 0 {
+					kvLen := kv.Len()
+					kv2Len := len(kv2)
+					if kvLen != kv2Len {
+						t.Fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+					}
+
+					if !synced || kvLen == 0 {
 						continue
 					}
 					_, err := db.VacuumKV()
@@ -171,28 +205,30 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					}
 
 				case 6: // Close + Reopen - tests recovery path
-					if kv.Len() == 0 {
+					kvLen := kv.Len()
+					kv2Len := len(kv2)
+					if kvLen != kv2Len {
+						t.Fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+					}
+
+					if kvLen == 0 {
 						continue
 					}
 					if !synced {
 						db.Sync()
 						synced = true
 					}
-					anchorsBefore := db.tree.countAnchors()
-					t.Logf("before Close: %d anchors, %d keys", anchorsBefore, kv.Len())
 					db.Close()
 					db = openFuzzDB(fs, dir)
 					if db == nil {
 						t.Fatal("reopen failed")
 					}
-					anchorsAfter := db.tree.countAnchors()
-					t.Logf("after Reopen: %d anchors (was %d)", anchorsAfter, anchorsBefore)
 					// Verify all synced keys survived recovery.
 					for key, wantVal := range kv.all() {
 						gotVal, ok, gerr := db.Get(key)
 						panicOn(gerr)
 						if !ok {
-							t.Fatalf("after reopen: Get(%q) not found (anchors before=%d after=%d)", key, anchorsBefore, anchorsAfter)
+							t.Fatalf("after reopen: Get(%q) not found", key)
 						}
 						if string(gotVal) != wantVal {
 							t.Fatalf("after reopen: Get(%q) = %q, want %q", key, gotVal, wantVal)
@@ -202,7 +238,13 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 			}
 
 			// Final sync + integrity check.
-			if kv.Len() > 0 {
+			kvLen := kv.Len()
+			kv2Len := len(kv2)
+			if kvLen != kv2Len {
+				t.Fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+			}
+
+			if kvLen > 0 {
 				db.Sync()
 				errs := db.CheckIntegrity()
 				if len(errs) > 0 {
