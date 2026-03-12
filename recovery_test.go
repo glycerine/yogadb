@@ -170,7 +170,8 @@ func crashAndRecover(t *testing.T, fs *vfs.MemFS, dir string, cfg *Config) (*Fle
 func verifyDurability(t *testing.T, db *FlexDB, syncedKVs map[string]string) {
 	t.Helper()
 	for k, want := range syncedKVs {
-		got, found := db.Get(k)
+		got, found, gerr := db.Get(k)
+		panicOn(gerr)
 		if want == "" {
 			// deleted key: should not be found (we use "" as tombstone sentinel)
 			if found {

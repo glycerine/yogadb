@@ -9,7 +9,7 @@ package yogadb
 // It is nice for documention purposes though; to get an
 // overview of the available methods.
 type ReadOnlyDB interface {
-	Get(key string) ([]byte, bool)
+	Get(key string) ([]byte, bool, error)
 	GetKV(key string) (kv *KVcloser, err error)
 	Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error)
 	FindIt(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error, it *Iter)
@@ -91,7 +91,10 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 
 		// LAZY_SMALL path: try zero-copy via cache pinning.
 		if lazySmall && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
-			kvc = tx.db.findBuildKVZeroCopy(resultKey)
+			kvc, err = tx.db.findBuildKVZeroCopy(resultKey)
+			if err != nil {
+				return
+			}
 			if kvc != nil {
 				return
 			}
@@ -145,7 +148,10 @@ func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact
 
 	// LAZY_SMALL path: try zero-copy via cache pinning.
 	if lazySmall && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
-		kvc = tx.db.findBuildKVZeroCopy(resultKey)
+		kvc, err = tx.db.findBuildKVZeroCopy(resultKey)
+		if err != nil {
+			return
+		}
 		if kvc != nil {
 			return
 		}
@@ -184,9 +190,9 @@ type WriteTx struct{ txBase }
 
 var _ WritableDB = (*WriteTx)(nil)
 
-// Get retrieves the value for key. Returns (nil, false) if not found
+// Get retrieves the value for key. Returns (nil, false, nil) if not found
 // or deleted. The returned []byte is a copy, safe to retain.
-func (tx *WriteTx) Get(key string) (value []byte, found bool) {
+func (tx *WriteTx) Get(key string) (value []byte, found bool, err error) {
 	return tx.db.someLockHeldGet(key)
 }
 
@@ -394,9 +400,9 @@ var _ ReadOnlyDB = (*ReadOnlyTx)(nil)
 // transaction. Methods must not be used after the callback returns.
 type ReadOnlyTx struct{ txBase }
 
-// Get retrieves the value for key. Returns (nil, false) if not found
+// Get retrieves the value for key. Returns (nil, false, nil) if not found
 // or deleted. The returned []byte is a copy, safe to retain.
-func (roTx *ReadOnlyTx) Get(key string) (value []byte, found bool) {
+func (roTx *ReadOnlyTx) Get(key string) (value []byte, found bool, err error) {
 	return roTx.db.someLockHeldGet(key)
 }
 

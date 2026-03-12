@@ -1,6 +1,7 @@
 package yogadb
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -60,6 +61,7 @@ type intervalCacheEntry struct {
 	access    int32                   // clock chance counter (atomic)
 	refcnt    int32                   // active users (atomic)
 	loading   bool                    // being loaded
+	loadErr   error                   // error from loadInterval (nil on success)
 	prev      *intervalCacheEntry
 	next      *intervalCacheEntry
 }
@@ -314,7 +316,7 @@ func (p *intervalCachePartition) calibrate() {
 }
 
 // getEntry returns the cache entry for anchor, loading it from FlexSpace if necessary.
-func (p *intervalCachePartition) getEntry(anchor *dbAnchor, anchorLoff uint64, db *FlexDB) *intervalCacheEntry {
+func (p *intervalCachePartition) getEntry(anchor *dbAnchor, anchorLoff uint64, db *FlexDB) (*intervalCacheEntry, error) {
 	p.mu.Lock()
 	fce := anchor.loadFce()
 	if fce != nil {
@@ -333,7 +335,7 @@ func (p *intervalCachePartition) getEntry(anchor *dbAnchor, anchorLoff uint64, d
 			}
 		}
 		atomic.StoreInt32(&fce.access, intervalCacheEntryChance)
-		return fce
+		return fce, fce.loadErr
 	}
 	// miss: allocate and load
 	fce = &intervalCacheEntry{anchor: anchor}
@@ -345,7 +347,7 @@ func (p *intervalCachePartition) getEntry(anchor *dbAnchor, anchorLoff uint64, d
 	p.mu.Unlock()
 
 	// load interval from FlexSpace (without lock)
-	p.loadInterval(fce, anchor, anchorLoff, db)
+	fce.loadErr = p.loadInterval(fce, anchor, anchorLoff, db)
 
 	p.mu.Lock()
 	p.size += int64(fce.size)
@@ -353,34 +355,37 @@ func (p *intervalCachePartition) getEntry(anchor *dbAnchor, anchorLoff uint64, d
 	atomic.StoreInt32(&fce.access, intervalCacheEntryChance)
 	p.calibrate()
 	p.mu.Unlock()
-	return fce
+	return fce, fce.loadErr
 }
 
 // getEntryUnsorted returns the cache entry only if already loaded,
 // OR forces a load if the unsorted quota is exceeded.
-func (p *intervalCachePartition) getEntryUnsorted(anchor *dbAnchor, anchorLoff uint64, db *FlexDB) *intervalCacheEntry {
+func (p *intervalCachePartition) getEntryUnsorted(anchor *dbAnchor, anchorLoff uint64, db *FlexDB) (*intervalCacheEntry, error) {
 	// Atomic load - no lock needed just to check if fce is populated.
 	fce := anchor.loadFce()
 	if fce != nil || anchor.unsorted >= flexdbUnsortedWriteQuota || anchor.psize >= flexdbSparseIntervalSize {
 		return p.getEntry(anchor, anchorLoff, db)
 	}
-	return nil
+	return nil, nil
 }
 
 // loadInterval reads the FlexSpace interval and populates fce.
-func (p *intervalCachePartition) loadInterval(fce *intervalCacheEntry, anchor *dbAnchor, anchorLoff uint64, db *FlexDB) {
+func (p *intervalCachePartition) loadInterval(fce *intervalCacheEntry, anchor *dbAnchor, anchorLoff uint64, db *FlexDB) error {
 	fce.kvs = fce.kvs[:0]
 	fce.fps = fce.fps[:0]
 	fce.size = 0
 	fce.count = 0
 	if anchor.psize == 0 {
-		return
+		return nil
 	}
 	itvbuf := make([]byte, anchor.psize)
 	var frag uint64
 	n, fragOut, err := db.ff.ReadFragmentation(itvbuf, anchorLoff, uint64(anchor.psize))
-	if err != nil || n != int(anchor.psize) {
-		return
+	if err != nil {
+		return fmt.Errorf("flexdb: loadInterval ReadFragmentation at loff %d psize %d: %w", anchorLoff, anchor.psize, err)
+	}
+	if n != int(anchor.psize) {
+		return fmt.Errorf("flexdb: loadInterval short read at loff %d: got %d, want %d", anchorLoff, n, anchor.psize)
 	}
 	frag = fragOut
 
@@ -430,6 +435,7 @@ func (p *intervalCachePartition) loadInterval(fce *intervalCacheEntry, anchor *d
 	if frag > uint64(fce.count>>1) {
 		fce.frag = true
 	}
+	return nil
 }
 
 // intervalCacheDedup deduplicates a sorted KV slice (keeps highest HLC per key).

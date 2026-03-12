@@ -104,6 +104,7 @@ type Iter struct {
 	valid     bool
 	dir       int // 1=forward, -1=backward (informational)
 	closed    bool
+	err       error
 	lazyLarge bool
 
 	// Stateful FlexSpace cursor for O(1) amortized forward iteration.
@@ -177,7 +178,10 @@ func (it *Iter) prefetchFillFlexSpaceOnly() {
 		count := it.fc.fce.count
 		idx := it.fc.kvIdx
 		if idx >= count {
-			it.db.flexCursorNextInterval(&it.fc)
+			if err := it.db.flexCursorNextInterval(&it.fc); err != nil {
+				it.err = err
+				break
+			}
 			continue
 		}
 
@@ -197,7 +201,10 @@ func (it *Iter) prefetchFillFlexSpaceOnly() {
 
 		it.fc.kvIdx = idx + n
 		if it.fc.kvIdx >= count {
-			it.db.flexCursorNextInterval(&it.fc)
+			if err := it.db.flexCursorNextInterval(&it.fc); err != nil {
+				it.err = err
+				break
+			}
 		}
 	}
 	it.pfSpanCount = nSpans
@@ -294,10 +301,10 @@ func btreeSeekLE(bt *btree.BTreeG[KV], target string, strict bool) (KV, bool) {
 
 // flexSpaceSeekGE finds the first KV >= target in FlexSpace via sparse index + cache.
 // If strict is true, skips exact matches. Caller must hold topMutRW.RLock().
-func (db *FlexDB) flexSpaceSeekGE(target string, strict bool) (KV, bool) {
+func (db *FlexDB) flexSpaceSeekGE(target string, strict bool) (KV, bool, error) {
 	t := db.tree
 	if t == nil || t.root == nil {
-		return KV{}, false
+		return KV{}, false, nil
 	}
 
 	var nh memSparseIndexTreeHandler
@@ -307,14 +314,14 @@ func (db *FlexDB) flexSpaceSeekGE(target string, strict bool) (KV, bool) {
 	shift := nh.shift
 
 	if node == nil || node.count == 0 {
-		return KV{}, false
+		return KV{}, false, nil
 	}
 
 	for {
 		if anchorIdx >= node.count {
 			next := node.next
 			if next == nil {
-				return KV{}, false
+				return KV{}, false, nil
 			}
 			node = next
 			anchorIdx = 0
@@ -331,7 +338,10 @@ func (db *FlexDB) flexSpaceSeekGE(target string, strict bool) (KV, bool) {
 
 		anchorLoff := uint64(anchor.loff + shift)
 		partition := db.cache.getPartition(anchor)
-		fce := partition.getEntry(anchor, anchorLoff, db)
+		fce, err := partition.getEntry(anchor, anchorLoff, db)
+		if err != nil {
+			return KV{}, false, err
+		}
 
 		if fce.count == 0 {
 			partition.releaseEntry(fce)
@@ -349,7 +359,7 @@ func (db *FlexDB) flexSpaceSeekGE(target string, strict bool) (KV, bool) {
 			kv := fce.kvs[idx]
 			result := KV{Key: kv.Key, Value: dupBytes(kv.Value), Vptr: kv.Vptr, Hlc: kv.Hlc}
 			partition.releaseEntry(fce)
-			return result, true
+			return result, true, nil
 		}
 
 		partition.releaseEntry(fce)
@@ -359,10 +369,10 @@ func (db *FlexDB) flexSpaceSeekGE(target string, strict bool) (KV, bool) {
 
 // flexSpaceSeekLE finds the last KV <= target in FlexSpace via sparse index + cache.
 // If strict is true, skips exact matches. Caller must hold topMutRW.RLock().
-func (db *FlexDB) flexSpaceSeekLE(target string, strict bool) (KV, bool) {
+func (db *FlexDB) flexSpaceSeekLE(target string, strict bool) (KV, bool, error) {
 	t := db.tree
 	if t == nil || t.root == nil {
-		return KV{}, false
+		return KV{}, false, nil
 	}
 
 	var node *memSparseIndexTreeNode
@@ -377,7 +387,7 @@ func (db *FlexDB) flexSpaceSeekLE(target string, strict bool) (KV, bool) {
 		}
 		anchorIdx = node.count - 1
 		if anchorIdx < 0 {
-			return KV{}, false
+			return KV{}, false, nil
 		}
 		nh2 := memSparseIndexTreeHandler{node: node}
 		memSparseIndexTreeHandlerInfoUpdate(&nh2)
@@ -391,14 +401,14 @@ func (db *FlexDB) flexSpaceSeekLE(target string, strict bool) (KV, bool) {
 	}
 
 	if node == nil || node.count == 0 {
-		return KV{}, false
+		return KV{}, false, nil
 	}
 
 	for {
 		if anchorIdx < 0 {
 			prev := node.prev
 			if prev == nil {
-				return KV{}, false
+				return KV{}, false, nil
 			}
 			node = prev
 			anchorIdx = node.count - 1
@@ -406,7 +416,7 @@ func (db *FlexDB) flexSpaceSeekLE(target string, strict bool) (KV, bool) {
 			memSparseIndexTreeHandlerInfoUpdate(&nh2)
 			shift = nh2.shift
 			if anchorIdx < 0 {
-				return KV{}, false
+				return KV{}, false, nil
 			}
 		}
 
@@ -418,7 +428,10 @@ func (db *FlexDB) flexSpaceSeekLE(target string, strict bool) (KV, bool) {
 
 		anchorLoff := uint64(anchor.loff + shift)
 		partition := db.cache.getPartition(anchor)
-		fce := partition.getEntry(anchor, anchorLoff, db)
+		fce, err := partition.getEntry(anchor, anchorLoff, db)
+		if err != nil {
+			return KV{}, false, err
+		}
 
 		if fce.count == 0 {
 			partition.releaseEntry(fce)
@@ -441,7 +454,7 @@ func (db *FlexDB) flexSpaceSeekLE(target string, strict bool) (KV, bool) {
 			kv := fce.kvs[idx]
 			result := KV{Key: kv.Key, Value: dupBytes(kv.Value), Vptr: kv.Vptr, Hlc: kv.Hlc}
 			partition.releaseEntry(fce)
-			return result, true
+			return result, true, nil
 		}
 
 		partition.releaseEntry(fce)
@@ -455,13 +468,13 @@ func (db *FlexDB) flexSpaceSeekLE(target string, strict bool) (KV, bool) {
 // If strict is true, skips exact matches. The cursor holds a refcounted cache entry;
 // callers read the KV directly from fc.fce.kvs[fc.kvIdx] (zero-copy).
 // Caller must hold topMutRW.RLock().
-func (db *FlexDB) flexCursorSeekGE(fc *flexCursor, target string, strict bool) {
+func (db *FlexDB) flexCursorSeekGE(fc *flexCursor, target string, strict bool) error {
 	fc.release()
 	fc.positioned = false
 
 	t := db.tree
 	if t == nil || t.root == nil {
-		return
+		return nil
 	}
 
 	var nh memSparseIndexTreeHandler
@@ -475,14 +488,14 @@ func (db *FlexDB) flexCursorSeekGE(fc *flexCursor, target string, strict bool) {
 	shift = nh.shift
 
 	if node == nil || node.count == 0 {
-		return
+		return nil
 	}
 
 	for {
 		if anchorIdx >= node.count {
 			next := node.next
 			if next == nil {
-				return
+				return nil
 			}
 			node = next
 			anchorIdx = 0
@@ -499,7 +512,10 @@ func (db *FlexDB) flexCursorSeekGE(fc *flexCursor, target string, strict bool) {
 
 		anchorLoff := uint64(anchor.loff + shift)
 		partition := db.cache.getPartition(anchor)
-		fce := partition.getEntry(anchor, anchorLoff, db)
+		fce, err := partition.getEntry(anchor, anchorLoff, db)
+		if err != nil {
+			return err
+		}
 
 		if fce.count == 0 {
 			partition.releaseEntry(fce)
@@ -521,7 +537,7 @@ func (db *FlexDB) flexCursorSeekGE(fc *flexCursor, target string, strict bool) {
 			fc.partition = partition
 			fc.kvIdx = idx
 			fc.positioned = true
-			return
+			return nil
 		}
 
 		partition.releaseEntry(fce)
@@ -532,24 +548,24 @@ func (db *FlexDB) flexCursorSeekGE(fc *flexCursor, target string, strict bool) {
 // flexCursorAdvance moves the flexCursor to the next position.
 // After calling, check fc.positioned and read fc.fce.kvs[fc.kvIdx] directly.
 // Caller must hold topMutRW.RLock().
-func (db *FlexDB) flexCursorAdvance(fc *flexCursor) {
+func (db *FlexDB) flexCursorAdvance(fc *flexCursor) error {
 	if !fc.positioned {
-		return
+		return nil
 	}
 
 	// Try next entry in current interval - the common fast path (no alloc, no function call overhead)
 	fc.kvIdx++
 	if fc.fce != nil && fc.kvIdx < fc.fce.count {
-		return // still in same interval, zero-copy
+		return nil // still in same interval, zero-copy
 	}
 
-	db.flexCursorNextInterval(fc)
+	return db.flexCursorNextInterval(fc)
 }
 
 // flexCursorNextInterval crosses an interval boundary: releases the current
 // cache entry and advances to the next anchor. Called when we know kvIdx >= count.
 // Caller must hold topMutRW.RLock().
-func (db *FlexDB) flexCursorNextInterval(fc *flexCursor) {
+func (db *FlexDB) flexCursorNextInterval(fc *flexCursor) error {
 	// Inline release - skip nil checks since callers ensure fce is set.
 	if fc.fce != nil {
 		fc.partition.releaseEntry(fc.fce)
@@ -564,13 +580,13 @@ func (db *FlexDB) flexCursorNextInterval(fc *flexCursor) {
 	for {
 		if node == nil {
 			fc.positioned = false
-			return
+			return nil
 		}
 		if anchorIdx >= node.count {
 			node = node.next
 			if node == nil {
 				fc.positioned = false
-				return
+				return nil
 			}
 			anchorIdx = 0
 			nh2 := memSparseIndexTreeHandler{node: node}
@@ -607,7 +623,7 @@ func (db *FlexDB) flexCursorNextInterval(fc *flexCursor) {
 				fc.fce = fce
 				fc.partition = partition
 				fc.kvIdx = 0
-				return
+				return nil
 			}
 			// Race lost or still loading - release and use locked path.
 			atomic.AddInt32(&fce.refcnt, -1)
@@ -615,7 +631,10 @@ func (db *FlexDB) flexCursorNextInterval(fc *flexCursor) {
 
 		// Slow path: cache miss or loading - go through getEntry.
 		anchorLoff := uint64(anchor.loff + shift)
-		fce = partition.getEntry(anchor, anchorLoff, db)
+		fce, err := partition.getEntry(anchor, anchorLoff, db)
+		if err != nil {
+			return err
+		}
 
 		if fce.count == 0 {
 			partition.releaseEntry(fce)
@@ -629,7 +648,7 @@ func (db *FlexDB) flexCursorNextInterval(fc *flexCursor) {
 		fc.fce = fce
 		fc.partition = partition
 		fc.kvIdx = 0
-		return
+		return nil
 	}
 }
 
@@ -639,13 +658,13 @@ func (db *FlexDB) flexCursorNextInterval(fc *flexCursor) {
 // If strict is true, skips exact matches. The cursor holds a refcounted cache entry;
 // callers read the KV directly from fc.fce.kvs[fc.kvIdx] (zero-copy).
 // Caller must hold topMutRW.RLock().
-func (db *FlexDB) flexCursorSeekLE(fc *flexCursor, target string, strict bool) {
+func (db *FlexDB) flexCursorSeekLE(fc *flexCursor, target string, strict bool) error {
 	fc.release()
 	fc.positioned = false
 
 	t := db.tree
 	if t == nil || t.root == nil {
-		return
+		return nil
 	}
 
 	var node *memSparseIndexTreeNode
@@ -660,7 +679,7 @@ func (db *FlexDB) flexCursorSeekLE(fc *flexCursor, target string, strict bool) {
 		}
 		anchorIdx = node.count - 1
 		if anchorIdx < 0 {
-			return
+			return nil
 		}
 		nh2 := memSparseIndexTreeHandler{node: node}
 		memSparseIndexTreeHandlerInfoUpdate(&nh2)
@@ -674,14 +693,14 @@ func (db *FlexDB) flexCursorSeekLE(fc *flexCursor, target string, strict bool) {
 	}
 
 	if node == nil || node.count == 0 {
-		return
+		return nil
 	}
 
 	for {
 		if anchorIdx < 0 {
 			prev := node.prev
 			if prev == nil {
-				return
+				return nil
 			}
 			node = prev
 			anchorIdx = node.count - 1
@@ -689,7 +708,7 @@ func (db *FlexDB) flexCursorSeekLE(fc *flexCursor, target string, strict bool) {
 			memSparseIndexTreeHandlerInfoUpdate(&nh2)
 			shift = nh2.shift
 			if anchorIdx < 0 {
-				return
+				return nil
 			}
 		}
 
@@ -701,7 +720,10 @@ func (db *FlexDB) flexCursorSeekLE(fc *flexCursor, target string, strict bool) {
 
 		anchorLoff := uint64(anchor.loff + shift)
 		partition := db.cache.getPartition(anchor)
-		fce := partition.getEntry(anchor, anchorLoff, db)
+		fce, err := partition.getEntry(anchor, anchorLoff, db)
+		if err != nil {
+			return err
+		}
 
 		if fce.count == 0 {
 			partition.releaseEntry(fce)
@@ -728,7 +750,7 @@ func (db *FlexDB) flexCursorSeekLE(fc *flexCursor, target string, strict bool) {
 			fc.partition = partition
 			fc.kvIdx = idx
 			fc.positioned = true
-			return
+			return nil
 		}
 
 		partition.releaseEntry(fce)
@@ -739,24 +761,24 @@ func (db *FlexDB) flexCursorSeekLE(fc *flexCursor, target string, strict bool) {
 // flexCursorRetreat moves the flexCursor to the previous position.
 // After calling, check fc.positioned and read fc.fce.kvs[fc.kvIdx] directly.
 // Caller must hold topMutRW.RLock().
-func (db *FlexDB) flexCursorRetreat(fc *flexCursor) {
+func (db *FlexDB) flexCursorRetreat(fc *flexCursor) error {
 	if !fc.positioned {
-		return
+		return nil
 	}
 
 	// Try previous entry in current interval - the common fast path
 	fc.kvIdx--
 	if fc.kvIdx >= 0 {
-		return // still in same interval, zero-copy
+		return nil // still in same interval, zero-copy
 	}
 
-	db.flexCursorPrevInterval(fc)
+	return db.flexCursorPrevInterval(fc)
 }
 
 // flexCursorPrevInterval crosses an interval boundary backward: releases the
 // current cache entry and retreats to the previous anchor. Called when kvIdx < 0.
 // Caller must hold topMutRW.RLock().
-func (db *FlexDB) flexCursorPrevInterval(fc *flexCursor) {
+func (db *FlexDB) flexCursorPrevInterval(fc *flexCursor) error {
 	// Inline release - skip nil checks since callers ensure fce is set.
 	if fc.fce != nil {
 		fc.partition.releaseEntry(fc.fce)
@@ -771,13 +793,13 @@ func (db *FlexDB) flexCursorPrevInterval(fc *flexCursor) {
 	for {
 		if node == nil {
 			fc.positioned = false
-			return
+			return nil
 		}
 		if anchorIdx < 0 {
 			node = node.prev
 			if node == nil {
 				fc.positioned = false
-				return
+				return nil
 			}
 			anchorIdx = node.count - 1
 			nh2 := memSparseIndexTreeHandler{node: node}
@@ -785,7 +807,7 @@ func (db *FlexDB) flexCursorPrevInterval(fc *flexCursor) {
 			shift = nh2.shift
 			if anchorIdx < 0 {
 				fc.positioned = false
-				return
+				return nil
 			}
 		}
 
@@ -797,7 +819,10 @@ func (db *FlexDB) flexCursorPrevInterval(fc *flexCursor) {
 
 		anchorLoff := uint64(anchor.loff + shift)
 		partition := db.cache.getPartition(anchor)
-		fce := partition.getEntry(anchor, anchorLoff, db)
+		fce, err := partition.getEntry(anchor, anchorLoff, db)
+		if err != nil {
+			return err
+		}
 
 		if fce.count == 0 {
 			partition.releaseEntry(fce)
@@ -811,7 +836,7 @@ func (db *FlexDB) flexCursorPrevInterval(fc *flexCursor) {
 		fc.fce = fce
 		fc.partition = partition
 		fc.kvIdx = fce.count - 1
-		return
+		return nil
 	}
 }
 
@@ -832,7 +857,11 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 		if !db.memtables[inactive].empty {
 			candidates[1], have[1] = btreeSeekGE(db.memtables[inactive].bt, target, strict)
 		}
-		candidates[2], have[2] = db.flexSpaceSeekGE(target, strict)
+		var seekErr error
+		candidates[2], have[2], seekErr = db.flexSpaceSeekGE(target, strict)
+		if seekErr != nil {
+			return nil, nil, 0, false, VPtr{}, false
+		}
 
 		// Find minimum key
 		var minKey string
@@ -886,7 +915,11 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 // and snapshots the HLC. Caller must hold topMutRW.RLock().
 func (it *Iter) initFlexCursorSeekGE(target string) {
 	it.fc.reset()
-	it.db.flexCursorSeekGE(&it.fc, target, false) // positions cursor; read via fc.fce.kvs[fc.kvIdx]
+	if err := it.db.flexCursorSeekGE(&it.fc, target, false); err != nil {
+		it.fc.positioned = false
+		it.err = err
+		return
+	}
 	it.snapshotHLC = it.db.hlc.Aload()
 }
 
@@ -894,7 +927,11 @@ func (it *Iter) initFlexCursorSeekGE(target string) {
 // and snapshots the HLC. Caller must hold topMutRW.RLock().
 func (it *Iter) initFlexCursorSeekLE(target string) {
 	it.fc.reset()
-	it.db.flexCursorSeekLE(&it.fc, target, false)
+	if err := it.db.flexCursorSeekLE(&it.fc, target, false); err != nil {
+		it.fc.positioned = false
+		it.err = err
+		return
+	}
 	it.snapshotHLC = it.db.hlc.Aload()
 }
 
@@ -915,7 +952,10 @@ func (it *Iter) prefetchFillFlexSpaceReverse() {
 		count := it.fc.fce.count
 		idx := it.fc.kvIdx
 		if idx < 0 {
-			it.db.flexCursorPrevInterval(&it.fc)
+			if err := it.db.flexCursorPrevInterval(&it.fc); err != nil {
+				it.err = err
+				break
+			}
 			continue
 		}
 
@@ -939,7 +979,10 @@ func (it *Iter) prefetchFillFlexSpaceReverse() {
 
 		it.fc.kvIdx = endIdx // one below what we claimed
 		if it.fc.kvIdx < 0 {
-			it.db.flexCursorPrevInterval(&it.fc)
+			if err := it.db.flexCursorPrevInterval(&it.fc); err != nil {
+				it.err = err
+				break
+			}
 		}
 	}
 	it.pfSpanCount = nSpans
@@ -1034,7 +1077,10 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, f
 
 		// Advance FlexSpace cursor if it was consumed
 		if have[2] && candidates[2].Key == minKey {
-			db.flexCursorAdvance(&it.fc)
+			if err := db.flexCursorAdvance(&it.fc); err != nil {
+				it.err = err
+				return
+			}
 		}
 
 		if !haveBest || bestKV.isTombstone() {
@@ -1068,7 +1114,10 @@ func (it *Iter) flexSpaceOnlySeekGE(target string, strict bool) (kv *KV, found b
 		kv = &it.fc.fce.kvs[it.fc.kvIdx]
 
 		// Advance cursor position for next call (inline, no dupBytes)
-		it.db.flexCursorAdvance(&it.fc)
+		if err := it.db.flexCursorAdvance(&it.fc); err != nil {
+			it.err = err
+			return
+		}
 
 		if kv.isTombstone() {
 			continue
@@ -1107,7 +1156,11 @@ func (it *Iter) advanceFlexCursorPast(target string, strict bool) {
 				return
 			}
 		}
-		it.db.flexCursorAdvance(&it.fc)
+		if err := it.db.flexCursorAdvance(&it.fc); err != nil {
+			it.fc.positioned = false
+			it.err = err
+			return
+		}
 	}
 }
 
@@ -1121,7 +1174,11 @@ func (it *Iter) retreatFlexCursorBefore(target string, strict bool) {
 				return
 			}
 		}
-		it.db.flexCursorRetreat(&it.fc)
+		if err := it.db.flexCursorRetreat(&it.fc); err != nil {
+			it.fc.positioned = false
+			it.err = err
+			return
+		}
 	}
 }
 
@@ -1140,7 +1197,11 @@ func (db *FlexDB) mergedSeekLE(target string, strict bool) (kv *KV, found bool) 
 		if !db.memtables[inactive].empty {
 			candidates[1], have[1] = btreeSeekLE(db.memtables[inactive].bt, target, strict)
 		}
-		candidates[2], have[2] = db.flexSpaceSeekLE(target, strict)
+		var seekErr error
+		candidates[2], have[2], seekErr = db.flexSpaceSeekLE(target, strict)
+		if seekErr != nil {
+			return
+		}
 
 		// Find maximum key
 		var maxKey string
@@ -1515,6 +1576,9 @@ func (it *Iter) Close() {
 	it.valid = false
 	it.closed = true
 }
+
+// Err returns the last error encountered by the iterator (e.g. from cache entry loading).
+func (it *Iter) Err() error { return it.err }
 
 // Valid returns true if the iterator is positioned at a valid key.
 func (it *Iter) Valid() bool { return it.valid }

@@ -79,7 +79,10 @@ func mustDelete(t *testing.T, db *FlexDB, key string) {
 
 func mustGet(t *testing.T, db *FlexDB, key, wantValue string) {
 	t.Helper()
-	val, ok := db.Get(key)
+	val, ok, err := db.Get(key)
+	if err != nil {
+		t.Fatalf("Get(%q): %v", key, err)
+	}
 	if !ok {
 		t.Fatalf("Get(%q): not found (want %q)", key, wantValue)
 	}
@@ -90,7 +93,10 @@ func mustGet(t *testing.T, db *FlexDB, key, wantValue string) {
 
 func mustMiss(t *testing.T, db *FlexDB, key string) {
 	t.Helper()
-	val, ok := db.Get(key)
+	val, ok, err := db.Get(key)
+	if err != nil {
+		t.Fatalf("Get(%q): %v", key, err)
+	}
 	if ok {
 		t.Fatalf("Get(%q) = %q, want miss", key, val)
 	}
@@ -686,7 +692,8 @@ func TestFlexDB_MergeIncrement(t *testing.T) {
 		}
 	}
 
-	val, ok := db.Get("ctr")
+	val, ok, err := db.Get("ctr")
+	panicOn(err)
 	if !ok || val[0] != 10 {
 		t.Fatalf("expected counter=10, got %v ok=%v", val, ok)
 	}
@@ -1267,7 +1274,8 @@ func TestFlexDB_HLC_UpdatedOnReload(t *testing.T) {
 	}
 	hlcs1 := make(map[string]HLC)
 	for _, k := range keys {
-		kv, ok := db2.getPassthroughKV(k)
+		kv, ok, err := db2.getPassthroughKV(k)
+		panicOn(err)
 		if !ok {
 			t.Fatalf("session 2: key %q not found in passthrough", k)
 		}
@@ -1294,7 +1302,8 @@ func TestFlexDB_HLC_UpdatedOnReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, k := range keys {
-		kv, ok := db3.getPassthroughKV(k)
+		kv, ok, err := db3.getPassthroughKV(k)
+		panicOn(err)
 		if !ok {
 			t.Fatalf("session 3: key %q not found in passthrough", k)
 		}
@@ -1895,14 +1904,16 @@ func TestDeleteRange_SkipLargeValues(t *testing.T) {
 		mustMiss(t, db, "c")
 		mustMiss(t, db, "e")
 		// Large keys survive.
-		val, ok := db.Get("b")
+		val, ok, err := db.Get("b")
+		panicOn(err)
 		if !ok {
 			t.Fatal("large key 'b' should survive")
 		}
 		if string(val) != bigVal {
 			t.Fatalf("large key 'b' wrong value: got %d bytes", len(val))
 		}
-		val, ok = db.Get("d")
+		val, ok, err = db.Get("d")
+		panicOn(err)
 		if !ok {
 			t.Fatal("large key 'd' should survive")
 		}
@@ -1929,7 +1940,8 @@ func TestDeleteRange_SkipLargeValues(t *testing.T) {
 		}
 		mustMiss(t, db, "k1")
 		mustMiss(t, db, "k3")
-		val, ok := db.Get("k2")
+		val, ok, err := db.Get("k2")
+		panicOn(err)
 		if !ok {
 			t.Fatal("large key 'k2' should survive")
 		}
@@ -1970,11 +1982,13 @@ func TestDeleteRange_SkipLargeValues(t *testing.T) {
 			t.Fatalf("n=%d, want 0 (all keys are large)", n)
 		}
 		// Both keys survive.
-		_, ok := db.Get("a")
+		_, ok, err := db.Get("a")
+		panicOn(err)
 		if !ok {
 			t.Fatal("key 'a' should survive")
 		}
-		_, ok = db.Get("b")
+		_, ok, err = db.Get("b")
+		panicOn(err)
 		if !ok {
 			t.Fatal("key 'b' should survive")
 		}
@@ -2042,14 +2056,16 @@ func TestClear(t *testing.T) {
 		}
 		mustMiss(t, db, "a")
 		mustMiss(t, db, "c")
-		val, ok := db.Get("b")
+		val, ok, err := db.Get("b")
+		panicOn(err)
 		if !ok {
 			t.Fatal("large key 'b' should survive")
 		}
 		if string(val) != bigVal {
 			t.Fatalf("wrong value for 'b'")
 		}
-		val, ok = db.Get("d")
+		val, ok, err = db.Get("d")
+		panicOn(err)
 		if !ok {
 			t.Fatal("large key 'd' should survive")
 		}
@@ -2074,7 +2090,8 @@ func TestClear(t *testing.T) {
 			t.Fatal("expected allGone=false")
 		}
 		mustMiss(t, db, "x")
-		val, ok := db.Get("y")
+		val, ok, err := db.Get("y")
+		panicOn(err)
 		if !ok {
 			t.Fatal("large key 'y' should survive")
 		}
@@ -2407,8 +2424,9 @@ func TestFlexDB_NilValuePreservation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Get should return (nil, true) - found, with nil value
-	val, found := db.Get("setkey")
+	// Get should return (nil, true, nil) - found, with nil value
+	val, found, err := db.Get("setkey")
+	panicOn(err)
 	if !found {
 		t.Fatal("nil-value key should be found")
 	}
@@ -2428,7 +2446,8 @@ func TestFlexDB_NilValuePreservation(t *testing.T) {
 	}
 
 	// Should be gone
-	_, found = db.Get("setkey")
+	_, found, err = db.Get("setkey")
+	panicOn(err)
 	if found {
 		t.Fatal("deleted key should not be found")
 	}
@@ -2446,7 +2465,8 @@ func TestFlexDB_NilValuePreservation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	val, found = db.Get("setkey2")
+	val, found, err = db.Get("setkey2")
+	panicOn(err)
 	if !found {
 		t.Fatal("nil-value key should survive Sync")
 	}
@@ -2459,7 +2479,8 @@ func TestFlexDB_NilValuePreservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	val, found = db.Get("emptykey")
+	val, found, err = db.Get("emptykey")
+	panicOn(err)
 	if !found {
 		t.Fatal("empty-value key should be found")
 	}
