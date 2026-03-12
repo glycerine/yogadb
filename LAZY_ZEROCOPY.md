@@ -524,4 +524,86 @@ The `!it.valueResolved` check ensures we only attempt zero-copy when the fast pa
   Test/cmd files: ~60+ db.Get/rwDB.Get/roDB.Get call sites updated across db_test.go, gc_test.go, iter_test.go, recovery_test.go, tx_test.go, batch_test.go, find_test.go, porc_test.go,
   anchor_drift_fuzz_test.go, and cmd/yogabench/*.go.
 
+## iterator span nil-ing to prevent temp memleaks when ref counts hit 0.
+
+ Now addressing your follow-up question about cleanup safety: we need to verify that at each iterIOPanic site, the
+  panic unwind doesn't leave the database in a corrupted state. Key concerns:
+
+  1. Held cache entry refcounts - if getEntry returned an fce with bumped refcnt, and we panic before releaseEntry, the
+   refcnt leaks (entry never evictable)
+  2. flexCursor state - the cursor may hold a pinned fce
+  3. Partition locks - are any partition.mu locks held at panic time?
+
+  Let me trace each panic site. (done)
+
+
+follow up on potential for cache leaks, even if temporary.
+
+ So each interval has up to ~1000 KVs. With inline values <= 64 bytes and keys of variable size, each KV struct is 64 bytes (as mentioned in
+  the memory notes). So one interval is roughly 64 KB of KV structs plus the backing data for keys and small values.
+
+  Now the worst case. Let me check how the kvs backing array is allocated:
+
+ Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+ This is the key data. Line 310: kvs := make([]KV, count) - a fresh allocation per decode. Line 313: kvs[i].Key = string(src[...]) - copies
+  key bytes into a new string. Line 330-331: kvs[i].Value = make([]byte, vl) then copy - copies value bytes into a fresh allocation. Line 328:
+  VPtr entries just decode the pointer (no large value data).
+
+  So each cache entry's kvs backing array contains:
+  - The []KV array itself: count * 64 bytes (64-byte KV struct)
+  - Each Key string: independent allocation (Go string header + backing bytes)
+  - Each inline Value: independent make([]byte, vl) allocation, max 64 bytes
+  - VPtr entries: no Value allocation (just the 24-byte VPtr struct stored inline in KV)
+
+  Now I can do the worst-case analysis. Let me check maxPrefetchSpans:
+
+ Now I have the full picture. Here's the worst-case analysis:
+
+  Worst case: 24 spans, each from a different evicted interval.
+
+  Each interval has up to ~1000 KVs. The span's []KV slice header pins the entire backing array (that's how Go slices work - a slice of
+  kvs[:count] still pins the full cap of the underlying array).
+
+  Per evicted interval pinned by a span:
+  - []KV backing array: 1000 * 64 = 64 KB (KV structs)
+  - Key strings: each is an independent allocation, pinned by the string header inside the KV struct. ~1000 keys * avg key size. Say avg 32
+  bytes = 32 KB
+  - Inline Value []byte: ~1000 values * avg up to 64 bytes = 64 KB (worst case all inline)
+  - Total per interval: ~160 KB
+
+  With 24 spans: 24 * 160 KB = ~3.8 MB worst case per iterator.
+
+-----------
+All pass. Here's the analysis and what was done:
+
+  Worst-case space retention analysis
+
+  What the spans pin: Each prefetchSpan.kvs is a []KV slice header that keeps the entire backing array alive via Go GC roots, even after the
+  cache evicts the entry.
+
+  Per interval pinned:
+  - []KV backing array: ~1000 entries * 64 bytes = 64 KB
+  - Key strings (separate allocations, held by string headers in KV structs): ~32 KB avg
+  - Inline values (separate []byte allocations, max 64 bytes each): up to 64 KB
+  - Large values are NOT pinned - they live in VLOG, only a 24-byte VPtr is in the KV struct
+  - Total per interval: ~160 KB
+
+  Worst case per iterator: 24 spans * 160 KB = ~3.8 MB
+
+  Realistic case: The prefetch loop stops at 512 keys, and intervals hold ~1000 keys, so typically 1-2 spans. Retention: 160-320 KB, and only
+  until the next Next() refill.
+
+  Real risk scenario: Multiple idle iterators in a long View() transaction. 10 iterators * 3.8 MB = 38 MB of pinned evicted cache entries.
+
+  Fix applied
+
+  Nil out span.kvs at every point where spans are discarded:
+
+  1. servePrefetch/servePrefetchReverse - when advancing past an exhausted span (the most common path)
+  2. releaseIterState - clears all spans when iterator is closed/reset
+  3. HLC-stale invalidation in Next() and Prev() - clears unserved spans when a mutation invalidates the prefetch
+
+  This ensures cache entry backing arrays become GC-eligible as soon as we're done reading from each span, rather than lingering until the next
+   prefetchFill overwrites the span struct.
 
