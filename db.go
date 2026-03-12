@@ -2525,8 +2525,8 @@ func findBuildKV(it *Iter) *KV {
 //	  // to check the 'exact' bool return to know if we found
 //	  // our "needle", or went past it).
 //
-//	  // Here the all value sizes are automatically pulled in, since
-//	  // none of the LAZY smod were requested (LAZY, LAZY_SMALL, LAZY_LARGE).
+//	  // Here all value sizes are automatically pulled in, since
+//	  // none of the (LAZY_SMALL, LAZY_LARGE, LAZY) smod were requested
 //
 //	  processKeyAndValueAtHlcTimestamp(kvc.Key, kvc.Value, kvc.Hlc)
 //
@@ -2652,7 +2652,9 @@ func (s *KVcloser) Close() {
 //
 // Much more detail: after Find() returns, kvc.Value is always populated
 // for inline (small) values, regardless of whether LAZY_SMALL
-// was used. What "lazy" means in each case:
+// was used. Only SKIP_VALUES will result in kvc.Values always
+// being nil (even for non-nil Values in the db; SKIP_VALUES
+// means we do not retrieve them). What "lazy" means in each case:
 //
 // LAZY_LARGE: Value is not fetched from VLOG. kvc.Value == nil,
 // kvc.Large() == true. You must call Fetch() to get bytes.
