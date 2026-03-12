@@ -997,10 +997,6 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	// Start flush worker goroutine (unless disabled for fuzz testing).
 	if !db.cfg.DisableBackgroundFlush {
 		go db.flushWorker()
-	} else {
-		// Mark the halt channels as done so Close() doesn't block waiting.
-		db.flushHalt.ReqStop.Close()
-		db.flushHalt.Done.Close()
 	}
 
 	return db, nil
@@ -1009,12 +1005,14 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 // Close syncs and shuts down the FlexDB.
 func (db *FlexDB) Close() *Metrics {
 
-	// Signal flush worker to stop, then wait for it to finish.
-	// We do this first to avoid deadlock: if
-	// we grab the topMutRW and then flush worker waits
-	// on it rather than getting our halt request.
-	db.flushHalt.RequestStop()
-	<-db.flushHalt.Done.Chan
+	if !db.cfg.DisableBackgroundFlush {
+		// Signal flush worker to stop, then wait for it to finish.
+		// We do this first to avoid deadlock: if
+		// we grab the topMutRW and then flush worker waits
+		// on it rather than getting our halt request.
+		db.flushHalt.RequestStop()
+		<-db.flushHalt.Done.Chan
+	}
 
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
