@@ -12,7 +12,7 @@ type ReadOnlyDB interface {
 	Get(key string) ([]byte, bool)
 	GetKV(key string) (kv *KVcloser, err error)
 	Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error)
-	FindIt(smod SearchModifier, key string) (kv *KV, exact bool, err error, it *Iter)
+	FindIt(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error, it *Iter)
 	FetchLarge(kv *KV) ([]byte, error)
 	NewIter() *Iter
 	Ascend(pivot string, iter func(key string, value []byte) bool)
@@ -122,21 +122,52 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 }
 
 // txFindIt implements FindIt for both WriteTx and ReadOnlyTx.
-// Returns a *KV (not KVcloser) since the iterator keeps the position alive.
+// Returns a *KVcloser for the initial result (independent of the iterator)
+// and an iterator positioned at the result for continued scanning.
 // Caller must hold topMutRW (read or write lock).
-func txFindIt(tx *txBase, smod SearchModifier, key string) (kv *KV, exact bool, err error, it *Iter) {
+func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error, it *Iter) {
 	it = tx.newIter()
 	lazyLarge := (smod & LAZY_LARGE != 0)
+	lazyVal := (smod & LAZY_SMALL != 0)
 	if lazyLarge {
 		it.lazyLarge = true
 		smod &^= LAZY_LARGE
 	}
-	smod &^= LAZY_SMALL // strip; not applicable for FindIt (iterator owns the data)
+	smod &^= LAZY_SMALL
 
 	var found bool
 	found, exact = findSeekIter(it, smod, key)
-	if found {
-		kv = findBuildKV(it)
+	if !found {
+		return
+	}
+	zc := findBuildKV(it)
+	resultKey := zc.Key
+
+	// LAZY_SMALL path: try zero-copy via cache pinning.
+	if lazyVal && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
+		kvc = tx.db.findBuildKVZeroCopy(resultKey)
+		if kvc != nil {
+			return
+		}
+	}
+
+	// Standard path: copy inline value.
+	owned := KV{Vptr: zc.Vptr, Hlc: zc.Hlc}
+	owned.Key = resultKey
+	if !zc.HasVPtr() && zc.Value != nil {
+		owned.Value = append([]byte{}, zc.Value...)
+	}
+	kvc = &KVcloser{KV: owned, db: tx.db}
+
+	// Auto-fetch large value unless LAZY_LARGE was requested.
+	if !lazyLarge && kvc.HasVPtr() {
+		val, fetchErr := tx.db.resolveVPtr(kvc.KV)
+		if fetchErr != nil {
+			kvc = nil
+			err = fetchErr
+		} else {
+			kvc.Value = val
+		}
 	}
 	return
 }
@@ -202,9 +233,11 @@ func (tx *WriteTx) Find(smod SearchModifier, key string) (kvc *KVcloser, exact b
 }
 
 // FindIt is like Find but also returns an iterator positioned at the result.
-// The iterator is auto-closed when the transaction ends.
-func (tx *WriteTx) FindIt(smod SearchModifier, key string) (kv *KV, exact bool, err error, it *Iter) {
-	kv, exact, err, it = txFindIt(&tx.txBase, smod, key)
+// The returned KVcloser is independent of the iterator - the user must
+// call kvc.Close() when done with the initial result, and use the iterator
+// for continued scanning. The iterator is auto-closed when the transaction ends.
+func (tx *WriteTx) FindIt(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error, it *Iter) {
+	kvc, exact, err, it = txFindIt(&tx.txBase, smod, key)
 	return
 }
 
@@ -376,9 +409,11 @@ func (roTx *ReadOnlyTx) Find(smod SearchModifier, key string) (kvc *KVcloser, ex
 }
 
 // FindIt is like Find but also returns an iterator positioned at the result.
-// The iterator is auto-closed when the transaction ends.
-func (roTx *ReadOnlyTx) FindIt(smod SearchModifier, key string) (kv *KV, exact bool, err error, it *Iter) {
-	kv, exact, err, it = txFindIt(&roTx.txBase, smod, key)
+// The returned KVcloser is independent of the iterator - the user must
+// call kvc.Close() when done with the initial result, and use the iterator
+// for continued scanning. The iterator is auto-closed when the transaction ends.
+func (roTx *ReadOnlyTx) FindIt(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error, it *Iter) {
+	kvc, exact, err, it = txFindIt(&roTx.txBase, smod, key)
 	return
 }
 

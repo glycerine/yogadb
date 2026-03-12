@@ -251,16 +251,17 @@ func TestFindIt_IteratorContinuation(t *testing.T) {
 
 	err := db.View(func(roDB *ReadOnlyTx) error {
 		// FindIt GTE key005, then iterate forward.
-		kv, _, err, it := roDB.FindIt(GTE, "key005")
+		kvc, _, err, it := roDB.FindIt(GTE, "key005")
 		panicOn(err)
-		if kv == nil {
+		if kvc == nil {
 			it.Close()
 			t.Fatal("GTE key005: not found")
 		}
-		if string(kv.Key) != "key005" {
+		if string(kvc.Key) != "key005" {
 			it.Close()
-			t.Fatalf("got key %q, want key005", kv.Key)
+			t.Fatalf("got key %q, want key005", kvc.Key)
 		}
+		kvc.Close()
 		var keys []string
 		for it.Valid() {
 			keys = append(keys, it.Key())
@@ -278,15 +279,16 @@ func TestFindIt_IteratorContinuation(t *testing.T) {
 		}
 
 		// FindIt LTE key005, then iterate backward.
-		kv2, _, err2, it2 := roDB.FindIt(LTE, "key005")
+		kvc2, _, err2, it2 := roDB.FindIt(LTE, "key005")
 		defer it2.Close()
 		panicOn(err2)
-		if kv2 == nil {
+		if kvc2 == nil {
 			t.Fatal("LTE key005: not found")
 		}
-		if string(kv2.Key) != "key005" {
-			t.Fatalf("got key %q, want key005", kv2.Key)
+		if string(kvc2.Key) != "key005" {
+			t.Fatalf("got key %q, want key005", kvc2.Key)
 		}
+		kvc2.Close()
 		var keys2 []string
 		for it2.Valid() {
 			keys2 = append(keys2, string(it2.Key()))
