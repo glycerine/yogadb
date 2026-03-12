@@ -2511,8 +2511,6 @@ func findBuildKV(it *Iter) *KV {
 //
 // A typical call sequence would be:
 //
-// ```go
-//
 //	kvc, _, err := dbHaystack.Find(Exact, "needle")
 //
 //	if err != nil {
@@ -2532,8 +2530,6 @@ func findBuildKV(it *Iter) *KV {
 //
 //	  kvc.Close() // unpin from internal caches. Allows zero-copy reads.
 //	}
-//
-// ```
 //
 // The returned iterator is a locked iterator (holds the exclusive
 // Find looks up the first key matching the SearchModifier and returns
