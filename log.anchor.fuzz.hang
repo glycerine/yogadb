@@ -44,4 +44,30 @@ FAIL
 exit status 1
 FAIL	github.com/glycerine/yogadb	97.613s
 make: *** [Makefile:14: fuzz] Error 1
-jaten@rog ~/yogadb (red_anchor) $ 
+jaten@rog ~/yogadb (red_anchor) $
+
+
+jaten@rog ~/yogadb (master) $ make fuzz
+go test -tags memfs -fuzz FuzzAnchorTreeDrift -fuzztime 30m -run=xxx -timeout 35m
+fuzz: elapsed: 0s, gathering baseline coverage: 0/162 completed
+fuzz: elapsed: 3s, gathering baseline coverage: 141/162 completed
+fuzz: elapsed: 6s, gathering baseline coverage: 162/162 completed, now fuzzing with 48 workers
+fuzz: elapsed: 6s, execs: 162 (7/sec), new interesting: 0 (total: 162)
+fuzz: elapsed: 9s, execs: 270 (36/sec), new interesting: 0 (total: 162)
+fuzz: elapsed: 12s, execs: 368 (33/sec), new interesting: 0 (total: 162)
+fuzz: elapsed: 15s, execs: 434 (22/sec), new interesting: 0 (total: 162)
+fuzz: elapsed: 18s, execs: 463 (10/sec), new interesting: 0 (total: 162)
+fuzz: elapsed: 19s, execs: 463 (0/sec), new interesting: 0 (total: 162)
+--- FAIL: FuzzAnchorTreeDrift (18.89s)
+    fuzzing process hung or terminated unexpectedly: exit status 2
+    Failing input written to testdata/fuzz/FuzzAnchorTreeDrift/43cb2b6f7fc50706
+    To re-run:
+    go test -run=FuzzAnchorTreeDrift/43cb2b6f7fc50706
+FAIL
+exit status 1
+FAIL	github.com/glycerine/yogadb	18.923s
+make: *** [Makefile:14: fuzz] Error 1
+jaten@rog ~/yogadb (master) $ go test -run=FuzzAnchorTreeDrift/43cb2b6f7fc50706 -tags memfs
+PASS
+ok  	github.com/glycerine/yogadb	2.752s
+jaten@rog ~/yogadb (master) $
