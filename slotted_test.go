@@ -20,8 +20,8 @@ func TestSlottedPage_RoundTrip_Basic(t *testing.T) {
 	if encoded == nil {
 		t.Fatal("encoded is nil")
 	}
-	if encoded[0] != slottedPageMagic {
-		t.Fatalf("magic byte: got 0x%02x, want 0x00", encoded[0])
+	if !slottedPageHasMagic(encoded) {
+		t.Fatalf("magic mismatch: first 16 bytes: %x", encoded[:min(len(encoded), 16)])
 	}
 
 	decoded, n, err := slottedPageDecode(encoded)
@@ -199,25 +199,23 @@ func TestSlottedPage_IsSlotted(t *testing.T) {
 	if !slottedPageIsSlotted(page) {
 		t.Error("slotted page not detected")
 	}
-	if page[0] != slottedPageMagic {
-		t.Errorf("first byte: got 0x%02x, want 0x%02x", page[0], slottedPageMagic)
+	if !slottedPageHasMagic(page) {
+		t.Errorf("magic mismatch: first 16 bytes: %x", page[:min(len(page), 16)])
 	}
 
-	// kv128 entry starts with varint(keyLen >= 1), so first byte >= 0x01.
-	// It must NEVER be mistaken for a slotted page.
+	// Raw kv128 data must NEVER be mistaken for a slotted page.
 	kv128data := kv128Encode(nil, kvs[0])
 	if slottedPageIsSlotted(kv128data) {
-		t.Errorf("kv128 falsely detected as slotted page (first byte 0x%02x)", kv128data[0])
+		t.Errorf("kv128 falsely detected as slotted page")
 	}
 
-	// Verify the invariant: any kv128-encoded entry with keyLen >= 1
-	// has first byte >= 0x01.
-	for keyLen := 1; keyLen <= 300; keyLen++ {
-		kv := KV{Key: string(make([]byte, keyLen)), Value: []byte("v"), Hlc: 1}
-		enc := kv128Encode(nil, kv)
-		if enc[0] == 0x00 {
-			t.Fatalf("kv128 with keyLen=%d starts with 0x00 - ambiguous!", keyLen)
-		}
+	// kv128 data with its magic prefix must not be mistaken for a slotted page.
+	kv128withMagic := append(kv128ExtentMagic[:], kv128data...)
+	if slottedPageIsSlotted(kv128withMagic) {
+		t.Errorf("kv128 with magic prefix falsely detected as slotted page")
+	}
+	if !kv128HasMagic(kv128withMagic) {
+		t.Errorf("kv128 with magic prefix not detected by kv128HasMagic")
 	}
 }
 

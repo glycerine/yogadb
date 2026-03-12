@@ -2140,20 +2140,30 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 				}
 			}
 
-			// Decode remaining kv128 entries (overflow or legacy)
-			for len(src) > 0 {
-				kv, sz, ok := kv128Decode(src)
-				if !ok {
-					addErr("kv128_decode",
-						fmt.Sprintf("anchor %d (key=%q): kv128Decode failed at byte %d of %d (decoded %d KVs so far)",
-							anchorCount, anchor.key, int(psize)-len(src), psize, kvCount), false)
-					break
+			// Decode remaining kv128 entries
+			if len(src) > 0 {
+				if kv128HasMagic(src) {
+					src = src[slottedPageMagicSize:]
+				} else {
+					addErr("kv128_magic",
+						fmt.Sprintf("anchor %d (key=%q): unknown format after slotted page at byte %d of %d, first bytes: %x",
+							anchorCount, anchor.key, int(psize)-len(src), psize, src[:min(len(src), 16)]), false)
+					src = nil
 				}
-				kvCount++
-				prevKey = kv.Key
-				hasPrev = true
-				checkVlogBlake3(&kv, anchorCount, anchor.key)
-				src = src[sz:]
+				for len(src) > 0 {
+					kv, sz, ok := kv128Decode(src)
+					if !ok {
+						addErr("kv128_decode",
+							fmt.Sprintf("anchor %d (key=%q): kv128Decode failed at byte %d of %d (decoded %d KVs so far)",
+								anchorCount, anchor.key, int(psize)-len(src), psize, kvCount), false)
+						break
+					}
+					kvCount++
+					prevKey = kv.Key
+					hasPrev = true
+					checkVlogBlake3(&kv, anchorCount, anchor.key)
+					src = src[sz:]
+				}
 			}
 
 			if len(src) != 0 {
@@ -3445,13 +3455,21 @@ func (db *FlexDB) decodeIntervalDirect(anchor *dbAnchor, anchorLoff uint64) ([]K
 			src = nil
 		}
 	}
-	for len(src) > 0 {
-		kv, size, ok := kv128Decode(src)
-		if !ok {
-			break
+	if len(src) > 0 {
+		if kv128HasMagic(src) {
+			src = src[slottedPageMagicSize:]
+		} else {
+			alwaysPrintf("decodeIntervalDirect: unknown format at loff=%d, first 16 bytes: %x", anchorLoff, src[:min(len(src), 16)])
+			panicf("decodeIntervalDirect: unknown format at loff=%d, expected kv128ExtentMagic prefix", anchorLoff)
 		}
-		kvs = append(kvs, kv)
-		src = src[size:]
+		for len(src) > 0 {
+			kv, size, ok := kv128Decode(src)
+			if !ok {
+				break
+			}
+			kvs = append(kvs, kv)
+			src = src[size:]
+		}
 	}
 
 	if anchor.unsorted > 0 && len(kvs) > 1 {

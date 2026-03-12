@@ -364,6 +364,19 @@ func slottedPageIsSlotted(src []byte) bool {
 	return slottedPageHasMagic(src)
 }
 
+// kv128HasMagic checks if src starts with the 16-byte kv128 extent magic.
+func kv128HasMagic(src []byte) bool {
+	if len(src) < slottedPageMagicSize {
+		return false
+	}
+	for i := 0; i < slottedPageMagicSize; i++ {
+		if src[i] != kv128ExtentMagic[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // slottedValInfo returns the valInfo uint16 for a KV entry.
 func slottedValInfo(kv KV) uint16 {
 	if kv.isTombstone() {

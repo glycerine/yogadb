@@ -405,17 +405,25 @@ func (p *intervalCachePartition) loadInterval(fce *intervalCacheEntry, anchor *d
 			src = nil // corrupt page, skip
 		}
 	}
-	// Decode remaining kv128 entries (overflow or legacy).
-	for len(src) > 0 {
-		kv, size, ok := kv128Decode(src)
-		if !ok {
-			break
+	// Decode remaining kv128 entries.
+	if len(src) > 0 {
+		if kv128HasMagic(src) {
+			src = src[slottedPageMagicSize:]
+		} else {
+			alwaysPrintf("loadInterval: unknown format at loff=%d, first 16 bytes: %x", anchorLoff, src[:min(len(src), 16)])
+			panicf("loadInterval: unknown format at loff=%d, expected kv128ExtentMagic prefix", anchorLoff)
 		}
-		fce.kvs = append(fce.kvs, kv)
-		fce.fps = append(fce.fps, fingerprint(kvCRC32(kv.Key)))
-		fce.size += kvSizeApprox(&kv)
-		fce.count++
-		src = src[size:]
+		for len(src) > 0 {
+			kv, size, ok := kv128Decode(src)
+			if !ok {
+				break
+			}
+			fce.kvs = append(fce.kvs, kv)
+			fce.fps = append(fce.fps, fingerprint(kvCRC32(kv.Key)))
+			fce.size += kvSizeApprox(&kv)
+			fce.count++
+			src = src[size:]
+		}
 	}
 
 	// If unsorted, sort and dedup.
