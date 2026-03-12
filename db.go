@@ -816,6 +816,7 @@ func (db *FlexDB) recomputeKeyCountsLocked() {
 			partition := db.cache.getPartition(anchor)
 			fce, err := partition.getEntry(anchor, anchorLoff, db)
 			if err != nil {
+				partition.releaseEntry(fce)
 				continue
 			}
 			for _, kv := range fce.kvs {
@@ -1458,6 +1459,7 @@ func (db *FlexDB) VacuumVLOG() (*VacuumVLOGStats, error) {
 			partition := db.cache.getPartition(anchor)
 			fce, err := partition.getEntry(anchor, anchorLoff, db)
 			if err != nil {
+				partition.releaseEntry(fce)
 				return stats, fmt.Errorf("vacuum: getEntry: %w", err)
 			}
 

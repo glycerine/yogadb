@@ -345,6 +345,7 @@ func (db *FlexDB) flexSpaceSeekGE(target string, strict bool) (KV, bool, error) 
 		partition := db.cache.getPartition(anchor)
 		fce, err := partition.getEntry(anchor, anchorLoff, db)
 		if err != nil {
+			partition.releaseEntry(fce)
 			return KV{}, false, err
 		}
 
@@ -435,6 +436,7 @@ func (db *FlexDB) flexSpaceSeekLE(target string, strict bool) (KV, bool, error) 
 		partition := db.cache.getPartition(anchor)
 		fce, err := partition.getEntry(anchor, anchorLoff, db)
 		if err != nil {
+			partition.releaseEntry(fce)
 			return KV{}, false, err
 		}
 
@@ -519,6 +521,7 @@ func (db *FlexDB) flexCursorSeekGE(fc *flexCursor, target string, strict bool) e
 		partition := db.cache.getPartition(anchor)
 		fce, err := partition.getEntry(anchor, anchorLoff, db)
 		if err != nil {
+			partition.releaseEntry(fce)
 			return err
 		}
 
@@ -638,6 +641,7 @@ func (db *FlexDB) flexCursorNextInterval(fc *flexCursor) error {
 		anchorLoff := uint64(anchor.loff + shift)
 		fce, err := partition.getEntry(anchor, anchorLoff, db)
 		if err != nil {
+			partition.releaseEntry(fce)
 			return err
 		}
 
@@ -727,6 +731,7 @@ func (db *FlexDB) flexCursorSeekLE(fc *flexCursor, target string, strict bool) e
 		partition := db.cache.getPartition(anchor)
 		fce, err := partition.getEntry(anchor, anchorLoff, db)
 		if err != nil {
+			partition.releaseEntry(fce)
 			return err
 		}
 
@@ -826,6 +831,7 @@ func (db *FlexDB) flexCursorPrevInterval(fc *flexCursor) error {
 		partition := db.cache.getPartition(anchor)
 		fce, err := partition.getEntry(anchor, anchorLoff, db)
 		if err != nil {
+			partition.releaseEntry(fce)
 			return err
 		}
 
