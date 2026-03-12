@@ -2639,6 +2639,7 @@ func (db *FlexDB) findBuildKVZeroCopy(key string) (*KVcloser, error) {
 	partition := db.cache.getPartition(anchor)
 	fce, err := partition.getEntry(anchor, anchorLoff, db)
 	if err != nil {
+		partition.releaseEntry(fce) // getEntry always bumps refcnt
 		return nil, err
 	}
 
@@ -3614,6 +3615,7 @@ func (db *FlexDB) putPassthrough(kv KV, nh *memSparseIndexTreeHandler) error {
 	// Always load cache - no unsorted kv128 append path.
 	fce, err := partition.getEntry(anchor, anchorLoff, db)
 	if err != nil {
+		partition.releaseEntry(fce) // getEntry always bumps refcnt
 		return err
 	}
 
