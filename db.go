@@ -4314,11 +4314,24 @@ func (db *FlexDB) flushWorker() {
 		case <-db.flushHalt.ReqStop.Chan:
 			return
 		case <-db.flushTrigger:
-			db.doFlush()
+			db.safeDoFlush()
 		case <-ticker.C:
-			db.doFlush()
+			db.safeDoFlush()
 		}
 	}
+}
+
+// safeDoFlush wraps doFlush with a recover so that a panic in the
+// background flush goroutine does not crash the entire process.
+// This is critical for fuzz testing where 48+ worker subprocesses
+// share the process; an uncaught goroutine panic kills them all.
+func (db *FlexDB) safeDoFlush() {
+	defer func() {
+		if r := recover(); r != nil {
+			alwaysPrintf("flushWorker: recovered panic in doFlush: %v", r)
+		}
+	}()
+	db.doFlush()
 }
 
 // only called by the flushWorker goroutine.

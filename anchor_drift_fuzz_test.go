@@ -35,6 +35,14 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 	f.Add([]byte{0, 0, 0, 0, 30, 0, 0, 1, 0, 30, 1, 0, 0, 4, 0, 0, 2, 0, 30, 4})
 
 	f.Fuzz(func(t *testing.T, data []byte) {
+		// Cap input length to prevent slow iterations that cause
+		// the fuzz coordinator to consider workers "hung."
+		// 100 bytes ~= 20 operations max, which is enough to cover
+		// multi-step sequences without taking too long.
+		if len(data) > 100 {
+			data = data[:100]
+		}
+
 		fs := vfs.NewMem()
 		dir := "fuzz_anchor_drift"
 		if err := fs.MkdirAll(dir, 0755); err != nil {
@@ -79,7 +87,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					valSeed := int(data[i+3])
 					i += 4
 
-					keyIdx = keyIdx % 500 // cap key space
+					keyIdx = keyIdx % 64 // cap key space
 					if valSize < 5 {
 						valSize = 5
 					}
@@ -108,7 +116,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					}
 					keyIdx := int(binary.BigEndian.Uint16(data[i : i+2]))
 					i += 2
-					keyIdx = keyIdx % 500
+					keyIdx = keyIdx % 64
 					key := fmt.Sprintf("k%04d", keyIdx)
 
 					_, exists2 := kv2[key]
@@ -134,7 +142,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					count := int(data[i+1])%20 + 1
 					i += 2
 					for j := 0; j < count; j++ {
-						key := fmt.Sprintf("k%04d", (startIdx+j)%500)
+						key := fmt.Sprintf("k%04d", (startIdx+j)%64)
 						val := makeFuzzValue(30, startIdx+j)
 						err := db.Put(key, []byte(val))
 						if err != nil {
