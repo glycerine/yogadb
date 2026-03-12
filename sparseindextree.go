@@ -451,3 +451,12 @@ func memSparseIndexTreeRecycleNode(node *memSparseIndexTreeNode) {
 		memSparseIndexTreeRecycleNode(parent)
 	}
 }
+
+// countAnchors returns the total number of anchors across all leaf nodes.
+func (t *memSparseIndexTree) countAnchors() int {
+	total := 0
+	for node := t.leafHead; node != nil; node = node.next {
+		total += node.count
+	}
+	return total
+}

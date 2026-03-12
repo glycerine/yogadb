@@ -178,17 +178,21 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 						db.Sync()
 						synced = true
 					}
+					anchorsBefore := db.tree.countAnchors()
+					t.Logf("before Close: %d anchors, %d keys", anchorsBefore, kv.Len())
 					db.Close()
 					db = openFuzzDB(fs, dir)
 					if db == nil {
 						t.Fatal("reopen failed")
 					}
+					anchorsAfter := db.tree.countAnchors()
+					t.Logf("after Reopen: %d anchors (was %d)", anchorsAfter, anchorsBefore)
 					// Verify all synced keys survived recovery.
 					for key, wantVal := range kv.all() {
 						gotVal, ok, gerr := db.Get(key)
 						panicOn(gerr)
 						if !ok {
-							t.Fatalf("after reopen: Get(%q) not found", key)
+							t.Fatalf("after reopen: Get(%q) not found (anchors before=%d after=%d)", key, anchorsBefore, anchorsAfter)
 						}
 						if string(gotVal) != wantVal {
 							t.Fatalf("after reopen: Get(%q) = %q, want %q", key, gotVal, wantVal)

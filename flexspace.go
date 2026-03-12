@@ -302,6 +302,7 @@ func bmInit(bm *blockManager, tree *FlexTree) {
 	// isGC=true to avoid recursive GC call during initialization
 	bm.blkid = bm.findEmptyBlock(maxBlkid, true)
 	bm.blkoff = 0
+	bm.flushedOff = 0
 }
 
 // ======================== FlexSpace ========================

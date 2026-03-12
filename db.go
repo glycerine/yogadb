@@ -1798,6 +1798,11 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 			// Partially filled block - continue writing here.
 			ff.bm.blkid = lastDataBlk
 			ff.bm.blkoff = blkOff
+			// Data at buf[0:blkOff] was loaded from the already-synced
+			// vacuum file, so mark it as flushed. Without this, a stale
+			// flushedOff from before vacuum could cause flush() to skip
+			// writing new data appended after blkOff.
+			ff.bm.flushedOff = blkOff
 
 			// Populate the write buffer with existing data from this block
 			// so that bm.read() can serve data from the unflushed portion.
@@ -4074,6 +4079,8 @@ func (db *FlexDB) rebuildAnchorsFromTags() {
 					anchorKey = kv.Key
 				}
 				anchors = append(anchors, anchorInfo{key: anchorKey, loff: loff, unsorted: unsorted})
+			} else {
+				alwaysPrintf("rebuildAnchorsFromTags: SKIPPED anchor at loff=%d tag=0x%04x (flexdbReadKVFromHandler returned false)", loff, tag)
 			}
 		}
 		fh.ForwardExtent()
@@ -4167,6 +4174,7 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte) (KV, bool) {
 	var header [16]byte
 	n, err := fh.Read(header[:], 16)
 	if n < 1 || err != nil {
+		alwaysPrintf("flexdbReadKVFromHandler: header read fail at loff=%d n=%d err=%v", fh.Loff(), n, err)
 		return KV{}, false
 	}
 
@@ -4176,20 +4184,24 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte) (KV, bool) {
 		// [2B keyLen][2B valInfo][varint HLC][keyLen key bytes].
 		// We already have 16 bytes in header, which covers header(12) + keyLen(2) + valInfo(2).
 		if n < slottedPageHeaderSize+4 {
+			alwaysPrintf("flexdbReadKVFromHandler: slotted header too short at loff=%d n=%d need=%d", fh.Loff(), n, slottedPageHeaderSize+4)
 			return KV{}, false
 		}
 		keyLen := int(binary.LittleEndian.Uint16(header[slottedPageHeaderSize : slottedPageHeaderSize+2]))
 		// Need header(12) + 4B slot + up to 10B varint + keyLen bytes.
 		needBytes := slottedPageHeaderSize + 4 + binary.MaxVarintLen64 + keyLen
 		if needBytes > len(buf) {
+			alwaysPrintf("flexdbReadKVFromHandler: buf too small at loff=%d needBytes=%d bufLen=%d keyLen=%d", fh.Loff(), needBytes, len(buf), keyLen)
 			return KV{}, false
 		}
 		nr, err2 := fh.Read(buf[:needBytes], uint64(needBytes))
 		if nr < needBytes || err2 != nil {
+			alwaysPrintf("flexdbReadKVFromHandler: second read fail at loff=%d nr=%d needBytes=%d err=%v", fh.Loff(), nr, needBytes, err2)
 			return KV{}, false
 		}
 		key, ok := slottedPageFirstKey(buf[:nr])
 		if !ok {
+			alwaysPrintf("flexdbReadKVFromHandler: slottedPageFirstKey fail at loff=%d datalen=%d header=%x", fh.Loff(), nr, buf[:min(nr, 32)])
 			return KV{}, false
 		}
 		return KV{Key: key}, true
@@ -4198,13 +4210,18 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte) (KV, bool) {
 	// Legacy kv128 format.
 	size, ok := kv128SizePrefix(header[:])
 	if !ok || size > len(buf) {
+		alwaysPrintf("flexdbReadKVFromHandler: legacy format fail at loff=%d ok=%v size=%d bufLen=%d header=%x", fh.Loff(), ok, size, len(buf), header[:])
 		return KV{}, false
 	}
 	n, err = fh.Read(buf[:size], uint64(size))
 	if n != size || err != nil {
+		alwaysPrintf("flexdbReadKVFromHandler: legacy read fail at loff=%d n=%d size=%d err=%v", fh.Loff(), n, size, err)
 		return KV{}, false
 	}
 	kv, _, ok2 := kv128Decode(buf[:size])
+	if !ok2 {
+		alwaysPrintf("flexdbReadKVFromHandler: kv128Decode fail at loff=%d", fh.Loff())
+	}
 	return kv, ok2
 }
 
