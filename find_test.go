@@ -459,7 +459,7 @@ func TestFind_LazyLarge(t *testing.T) {
 	kvc2.Close()
 }
 
-// TestFind_LazyVal tests the LAZYVAL flag: zero-copy inline values
+// TestFind_LazyVal tests the LAZY_SMALL flag: zero-copy inline values
 // via cache pinning. Values alias cache memory and require Close().
 func TestFind_LazyVal(t *testing.T) {
 	db, _ := openTestDB(t, nil)
@@ -472,8 +472,8 @@ func TestFind_LazyVal(t *testing.T) {
 	}
 	db.Sync()
 
-	// LAZYVAL: zero-copy inline value
-	kvc, exact, err := db.Find(Exact|LAZYVAL, "key005")
+	// LAZY_SMALL: zero-copy inline value
+	kvc, exact, err := db.Find(Exact|LAZY_SMALL, "key005")
 	panicOn(err)
 	if kvc == nil || !exact {
 		t.Fatal("not found")
@@ -492,8 +492,8 @@ func TestFind_LazyVal(t *testing.T) {
 		t.Fatal("Value should be nil after Close")
 	}
 
-	// LAZYVAL with GTE: non-exact match
-	kvc2, exact2, err := db.Find(GTE|LAZYVAL, "key004a")
+	// LAZY_SMALL with GTE: non-exact match
+	kvc2, exact2, err := db.Find(GTE|LAZY_SMALL, "key004a")
 	panicOn(err)
 	if kvc2 == nil {
 		t.Fatal("not found")
@@ -509,12 +509,14 @@ func TestFind_LazyVal(t *testing.T) {
 	}
 	kvc2.Close()
 
-	// LAZYVAL|LAZY_LARGE combined with a large value
+	// LAZY_SMALL|LAZY_LARGE combined with a large value
 	bigVal := bytes.Repeat([]byte("B"), 200)
 	panicOn(db.Put("large001", bigVal))
 	db.Sync()
 
-	kvc3, _, err := db.Find(Exact|LAZYVAL|LAZY_LARGE, "large001")
+	// equivalent to LAZY, but just to be explicit:
+	//kvc3, _, err := db.Find(Exact|LAZY_SMALL|LAZY_LARGE, "large001")
+	kvc3, _, err := db.Find(Exact|LAZY, "large001")
 	panicOn(err)
 	if kvc3 == nil {
 		t.Fatal("not found")

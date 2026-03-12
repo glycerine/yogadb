@@ -2356,18 +2356,25 @@ const (
 	GT SearchModifier = 3
 	// LT finds the largest key strictly less-than the query.
 	LT SearchModifier = 4
-	// LAZYVAL requests zero-copy return of inline values.
+
+	// LAZY_SMALL requests zero-copy return of inline values.
 	// The returned KVcloser.Value aliases interval cache memory.
 	// The caller MUST call Close() to release the cache pin.
 	// If the result came from a memtable (not yet flushed),
-	// Value is copied as usual (best-effort zero-copy).
-	LAZYVAL SearchModifier = 64
+	// then we must do a copy; Value is copied as usual
+	// to avoid returning stale/non-linearizable data
+	// (best-effort zero-copy).
+	// LAZY_SMALL can be | or-ed with Exact, GTE, GT, LTE, or LT.
+	LAZY_SMALL SearchModifier = 32
 
 	// LAZY_LARGE means we do not fetch LARGE.VLOG values
 	// automatically. The User must call FetchLarge() explicitly
 	// when they are desired.
 	// LAZY_LARGE can be | or-ed with Exact, GTE, GT, LTE, or LT.
-	LAZY_LARGE SearchModifier = 128
+	LAZY_LARGE SearchModifier = 64
+
+	// LAZY means do both LAZY_SMALL and LAZY_LARGE
+	LAZY SearchModifier = 96
 )
 
 // findSeekIter positions it according to smod and key.
@@ -2453,13 +2460,13 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 	defer db.topMutRW.RUnlock()
 
 	it := &Iter{db: db}
-	lazyLarge := (smod & LAZY_LARGE != 0)
-	lazyVal := (smod & LAZYVAL != 0)
+	lazyLarge := (smod&LAZY_LARGE != 0)
+	lazyVal := (smod&LAZY_SMALL != 0)
 	if lazyLarge {
 		it.lazyLarge = true
 		smod &^= LAZY_LARGE
 	}
-	smod &^= LAZYVAL // strip LAZYVAL before passing to findSeekIter
+	smod &^= LAZY_SMALL // strip LAZY_SMALL before passing to findSeekIter
 
 	var found bool
 	found, exact = findSeekIter(it, smod, key)
@@ -2470,7 +2477,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 		// Release iterator state early - we have what we need.
 		it.releaseIterState()
 
-		// LAZYVAL path: try zero-copy via cache pinning.
+		// LAZY_SMALL path: try zero-copy via cache pinning.
 		// Only works for inline values from FlexSpace (not memtable).
 		if lazyVal && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
 			kvc = db.findBuildKVZeroCopy(resultKey)
