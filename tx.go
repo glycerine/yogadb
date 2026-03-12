@@ -542,13 +542,14 @@ func (roTx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, iter func(
 //
 // Do NOT call db.Put/db.Get/db.Delete/db.Sync inside fn - use rwDB
 // methods instead (deadlock).
-func (db *FlexDB) Update(fn func(rw *WriteTx) error) error {
+func (db *FlexDB) Update(fn func(rw *WriteTx) error) (err error) {
 	db.topMutRW.Lock()
 	tx := &WriteTx{txBase{db: db}}
 	defer func() {
 		tx.closeAll()
 		db.topMutRW.Unlock()
 	}()
+	defer recoverIterIOErr(&err)
 	return fn(tx)
 }
 
@@ -560,13 +561,14 @@ func (db *FlexDB) Update(fn func(rw *WriteTx) error) error {
 // are automatically closed when fn returns.
 //
 // Do NOT call db.Get inside fn - use roDB methods instead (deadlock).
-func (db *FlexDB) View(fn func(ro *ReadOnlyTx) error) error {
+func (db *FlexDB) View(fn func(ro *ReadOnlyTx) error) (err error) {
 	db.topMutRW.RLock()
 	tx := &ReadOnlyTx{txBase{db: db}}
 	defer func() {
 		tx.closeAll()
 		db.topMutRW.RUnlock()
 	}()
+	defer recoverIterIOErr(&err)
 	return fn(tx)
 }
 

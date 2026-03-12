@@ -2245,6 +2245,18 @@ func (db *FlexDB) writeLockHeldSync() error {
 
 var ErrKeyEmpty = fmt.Errorf("key cannot be the empty string")
 
+// recoverIterIOErr is deferred in Find/Get/Update/View to convert
+// iterIOErr panics (FlexSpace I/O failures) into returned errors.
+func recoverIterIOErr(errp *error) {
+	if r := recover(); r != nil {
+		if ioe, ok := r.(iterIOErr); ok {
+			*errp = ioe.err
+		} else {
+			panic(r) // re-panic anything else
+		}
+	}
+}
+
 // Put writes key -> value. len(value) == 0 is fine, if desired.
 // Call Delete instead of Put to delete a key and any associated value.
 //
@@ -2472,6 +2484,7 @@ func findBuildKV(it *Iter) *KV {
 func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error) {
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
+	defer recoverIterIOErr(&err)
 
 	it := &Iter{db: db}
 	lazyLarge := (smod&LAZY_LARGE != 0)
@@ -2660,6 +2673,7 @@ func (db *FlexDB) GetKV(key string) (kv *KVcloser, err error) {
 func (db *FlexDB) Get(key string) (value []byte, found bool, err error) {
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
+	defer recoverIterIOErr(&err)
 
 	// Check active memtable
 	active := db.activeMT

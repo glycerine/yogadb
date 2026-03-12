@@ -94,6 +94,12 @@ type prefetchSpan struct {
 //
 // Large values (stored in VLOG) are not fetched by default. Use
 // Large() to check and FetchV() to fetch on demand.
+// iterIOErr is a sentinel panic value for FlexSpace I/O errors during
+// iteration. Update/View/Find/Get recover it and return as error.
+type iterIOErr struct{ err error }
+
+func iterIOPanic(err error) { panic(iterIOErr{err}) }
+
 type Iter struct {
 	db *FlexDB
 
@@ -104,7 +110,6 @@ type Iter struct {
 	valid     bool
 	dir       int // 1=forward, -1=backward (informational)
 	closed    bool
-	err       error
 	lazyLarge bool
 
 	// Stateful FlexSpace cursor for O(1) amortized forward iteration.
@@ -179,7 +184,7 @@ func (it *Iter) prefetchFillFlexSpaceOnly() {
 		idx := it.fc.kvIdx
 		if idx >= count {
 			if err := it.db.flexCursorNextInterval(&it.fc); err != nil {
-				it.err = err
+				iterIOPanic(err)
 				break
 			}
 			continue
@@ -202,7 +207,7 @@ func (it *Iter) prefetchFillFlexSpaceOnly() {
 		it.fc.kvIdx = idx + n
 		if it.fc.kvIdx >= count {
 			if err := it.db.flexCursorNextInterval(&it.fc); err != nil {
-				it.err = err
+				iterIOPanic(err)
 				break
 			}
 		}
@@ -917,7 +922,7 @@ func (it *Iter) initFlexCursorSeekGE(target string) {
 	it.fc.reset()
 	if err := it.db.flexCursorSeekGE(&it.fc, target, false); err != nil {
 		it.fc.positioned = false
-		it.err = err
+		iterIOPanic(err)
 		return
 	}
 	it.snapshotHLC = it.db.hlc.Aload()
@@ -929,7 +934,7 @@ func (it *Iter) initFlexCursorSeekLE(target string) {
 	it.fc.reset()
 	if err := it.db.flexCursorSeekLE(&it.fc, target, false); err != nil {
 		it.fc.positioned = false
-		it.err = err
+		iterIOPanic(err)
 		return
 	}
 	it.snapshotHLC = it.db.hlc.Aload()
@@ -953,7 +958,7 @@ func (it *Iter) prefetchFillFlexSpaceReverse() {
 		idx := it.fc.kvIdx
 		if idx < 0 {
 			if err := it.db.flexCursorPrevInterval(&it.fc); err != nil {
-				it.err = err
+				iterIOPanic(err)
 				break
 			}
 			continue
@@ -980,7 +985,7 @@ func (it *Iter) prefetchFillFlexSpaceReverse() {
 		it.fc.kvIdx = endIdx // one below what we claimed
 		if it.fc.kvIdx < 0 {
 			if err := it.db.flexCursorPrevInterval(&it.fc); err != nil {
-				it.err = err
+				iterIOPanic(err)
 				break
 			}
 		}
@@ -1078,7 +1083,7 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, f
 		// Advance FlexSpace cursor if it was consumed
 		if have[2] && candidates[2].Key == minKey {
 			if err := db.flexCursorAdvance(&it.fc); err != nil {
-				it.err = err
+				iterIOPanic(err)
 				return
 			}
 		}
@@ -1115,7 +1120,7 @@ func (it *Iter) flexSpaceOnlySeekGE(target string, strict bool) (kv *KV, found b
 
 		// Advance cursor position for next call (inline, no dupBytes)
 		if err := it.db.flexCursorAdvance(&it.fc); err != nil {
-			it.err = err
+			iterIOPanic(err)
 			return
 		}
 
@@ -1158,7 +1163,7 @@ func (it *Iter) advanceFlexCursorPast(target string, strict bool) {
 		}
 		if err := it.db.flexCursorAdvance(&it.fc); err != nil {
 			it.fc.positioned = false
-			it.err = err
+			iterIOPanic(err)
 			return
 		}
 	}
@@ -1176,7 +1181,7 @@ func (it *Iter) retreatFlexCursorBefore(target string, strict bool) {
 		}
 		if err := it.db.flexCursorRetreat(&it.fc); err != nil {
 			it.fc.positioned = false
-			it.err = err
+			iterIOPanic(err)
 			return
 		}
 	}
@@ -1576,9 +1581,6 @@ func (it *Iter) Close() {
 	it.valid = false
 	it.closed = true
 }
-
-// Err returns the last error encountered by the iterator (e.g. from cache entry loading).
-func (it *Iter) Err() error { return it.err }
 
 // Valid returns true if the iterator is positioned at a valid key.
 func (it *Iter) Valid() bool { return it.valid }
