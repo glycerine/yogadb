@@ -161,6 +161,11 @@ type Iter struct {
 func (it *Iter) releaseIterState() {
 	it.fc.reset()
 	it.snapshotHLC = 0
+	// Nil out span kvs slices so the GC can collect evicted cache entries
+	// that these spans may be the sole remaining reference to.
+	for i := 0; i < it.pfSpanCount; i++ {
+		it.pfSpans[i].kvs = nil
+	}
 	it.pfSpanCount = 0
 	it.pfSpanIdx = 0
 }
@@ -243,6 +248,7 @@ func (it *Iter) servePrefetch() bool {
 			return true
 		}
 		span.pos = pos
+		span.kvs = nil // release reference to cache entry backing array
 		it.pfSpanIdx++
 	}
 	// All spans exhausted (possibly all tombstones). Don't set valid=false;
@@ -1017,6 +1023,7 @@ func (it *Iter) servePrefetchReverse() bool {
 			it.dir = -1
 			return true
 		}
+		span.kvs = nil // release reference to cache entry backing array
 		it.pfSpanIdx++
 	}
 	return false
@@ -1416,6 +1423,9 @@ func (it *Iter) Next() {
 			// Fall through to full refill.
 		} else {
 			// HLC changed: invalidate prefetch, fall through to slow path.
+			for i := it.pfSpanIdx; i < it.pfSpanCount; i++ {
+				it.pfSpans[i].kvs = nil
+			}
 			it.pfSpanCount = 0
 			it.pfSpanIdx = 0
 			//it.cntHLCStale++
@@ -1523,6 +1533,9 @@ func (it *Iter) Prev() {
 			// Spans exhausted; fall through to refill.
 		} else {
 			// HLC changed: invalidate prefetch, fall through to slow path.
+			for i := it.pfSpanIdx; i < it.pfSpanCount; i++ {
+				it.pfSpans[i].kvs = nil
+			}
 			it.pfSpanCount = 0
 			it.pfSpanIdx = 0
 		}
