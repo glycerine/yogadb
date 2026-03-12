@@ -2518,6 +2518,9 @@ type KVcloser struct {
 	db        *FlexDB
 }
 
+// Close must be called when done with the non-nil *KVcloser
+// result of a GetKV or Find call. Otherwise memory and resource
+// leaks will ensue.
 func (s *KVcloser) Close() {
 	if s == nil {
 		return
@@ -2534,6 +2537,35 @@ func (s *KVcloser) Close() {
 // a VPtr (kvc.Large() == true). For inline values, Fetch is a
 // no-op. After Fetch returns nil error, kvc.Value holds the bytes.
 // Fetch is only needed when LAZY_LARGE was used in the Find call.
+//
+// Much more detail: after Find() returns, kvc.Value is always populated
+// for inline (small) values, regardless of whether LAZY_SMALL
+// was used. What "lazy" means in each case:
+//
+// LAZY_LARGE: Value is not fetched from VLOG. kvc.Value == nil,
+// kvc.Large() == true. You must call Fetch() to get bytes.
+//
+// LAZY_SMALL: Value is present in kvc.Value, but it's a zero-copy
+// alias into cache memory instead of an owned copy. The "lazy"
+// here means "lazy about copying", not "lazy about providing the value".
+//
+// So after Find() with LAZY_SMALL:
+//
+// - Inline values: kvc.Value points into cache memory (or a copy if it
+// fell back). Ready to use.
+// - Large values (no LAZY_LARGE): auto-fetched, kvc.Value populated. Ready to use.
+// - Large values (with LAZY_LARGE): kvc.Value == nil, need Fetch().
+//
+// Requiring Fetch() only applies to the VLOG/large-value case. It doesn't
+// need a LAZY_SMALL path because the small value is already there, it
+// is just borrowed rather than copied.
+//
+// The only obligation LAZY_SMALL imposes is that you must call Close()
+// to release the cache pin (so the entry can be evicted).
+//
+// Currently without LAZY_SMALL, Close() is a no-op (the value is an
+// owned copy); but we reserve the right to alter this, and so require
+// that users properly use Close() if kvc != nil.
 func (s *KVcloser) Fetch() error {
 	if s == nil {
 		return nil
