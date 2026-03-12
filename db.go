@@ -2442,7 +2442,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kv *KV, found, exact bo
 }
 
 // GetKV is like Get but allows lazy loading of Large values;
-// they are not fetched automatically. If the user sees kv.Large(),
+// they are not fetched automatically. If the user sees kv.Large() true,
 // then db.FetchLarge(kv) will return the large value.
 // GetKV is equivalent to db.Find(Exact, key).
 func (db *FlexDB) GetKV(key string) (kv *KV, found bool) {
@@ -2451,6 +2451,10 @@ func (db *FlexDB) GetKV(key string) (kv *KV, found bool) {
 }
 
 // Get retrieves the value for key. Returns nil, false if not found.
+// Get can return nil, true if a nil value was stored with the key.
+// Get is value size agnostic. It returns large and small values
+// immediately. This is tested at, for example, gc_test.go
+// Test_GC1K_write_1k_keys_with_large_values.
 func (db *FlexDB) Get(key string) (value []byte, found bool) {
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
@@ -2519,7 +2523,7 @@ func (db *FlexDB) Get(key string) (value []byte, found bool) {
 			}
 			out := make([]byte, len(val))
 			copy(out, val)
-			return out, true // not val!
+			return out, true // return a copy, 'out', that caller can own.
 		}
 	}
 

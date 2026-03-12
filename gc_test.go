@@ -1546,6 +1546,15 @@ func Test_GC1K_write_1k_keys_with_large_values(t *testing.T) {
 	}
 	//met.BlocksWithLowUtilization was 5
 
+	// sanity
+	v2, found2 := db.Get(keys[0])
+	if !found2 {
+		panicf("key '%v' was written but not found", keys[0])
+	}
+	if string(v2) != vals[0] {
+		panicf("key '%v' was written but value retreived has mismatch! v2='%v' len; vals[0]='%v' len", keys[0], len(v2), len(vals[0]))
+	}
+
 	/*
 	   usageAfterRound0 := totalBlockUsage(db.ff)
 	   blocksAfterRound0 := countUsedBlocks(db.ff)
