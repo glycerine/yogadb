@@ -547,7 +547,8 @@ func TestLockedIter_PutGetDelete(t *testing.T) {
 
 	err := db.Update(func(rwDB *WriteTx) error {
 		// Get existing key.
-		val, ok := rwDB.Get("key005")
+		val, ok, gerr := rwDB.Get("key005")
+		panicOn(gerr)
 		if !ok {
 			t.Fatal("Get key005: not found")
 		}
@@ -561,7 +562,8 @@ func TestLockedIter_PutGetDelete(t *testing.T) {
 		}
 
 		// Read-your-writes: Get the just-inserted key.
-		val2, ok2 := rwDB.Get("key005a")
+		val2, ok2, gerr2 := rwDB.Get("key005a")
+		panicOn(gerr2)
 		if !ok2 {
 			t.Fatal("Get key005a: not found after Put")
 		}
@@ -575,7 +577,8 @@ func TestLockedIter_PutGetDelete(t *testing.T) {
 		}
 
 		// Read-your-writes: deleted key should be gone.
-		_, ok3 := rwDB.Get("key003")
+		_, ok3, gerr3 := rwDB.Get("key003")
+		panicOn(gerr3)
 		if ok3 {
 			t.Fatal("Get key003: should not be found after Delete")
 		}
@@ -622,7 +625,8 @@ func TestLockedIter_Sync(t *testing.T) {
 		}
 
 		// After sync, data should still be retrievable.
-		val, ok := rwDB.Get("key007")
+		val, ok, gerr := rwDB.Get("key007")
+		panicOn(gerr)
 		if !ok {
 			t.Fatal("Get key007 after Sync: not found")
 		}

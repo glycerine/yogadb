@@ -35,15 +35,18 @@ func TestTx_ViewBasic(t *testing.T) {
 	mustPut(t, db, "k2", "v2")
 
 	err := db.View(func(roDB *ReadOnlyTx) error {
-		val, ok := roDB.Get("k1")
+		val, ok, gerr := roDB.Get("k1")
+		panicOn(gerr)
 		if !ok || string(val) != "v1" {
 			t.Fatalf("View Get(k1) = %q, %v; want v1, true", val, ok)
 		}
-		val, ok = roDB.Get("k2")
+		val, ok, gerr = roDB.Get("k2")
+		panicOn(gerr)
 		if !ok || string(val) != "v2" {
 			t.Fatalf("View Get(k2) = %q, %v; want v2, true", val, ok)
 		}
-		_, ok = roDB.Get("k3")
+		_, ok, gerr = roDB.Get("k3")
+		panicOn(gerr)
 		if ok {
 			t.Fatal("View Get(k3): expected not found")
 		}
@@ -60,7 +63,8 @@ func TestTx_UpdateSeesOwnWrites(t *testing.T) {
 
 	err := db.Update(func(rwDB *WriteTx) error {
 		// Should see pre-existing key.
-		val, ok := rwDB.Get("k1")
+		val, ok, gerr := rwDB.Get("k1")
+		panicOn(gerr)
 		if !ok || string(val) != "v1" {
 			t.Fatalf("Get(k1) before write: %q, %v", val, ok)
 		}
@@ -71,7 +75,8 @@ func TestTx_UpdateSeesOwnWrites(t *testing.T) {
 		}
 
 		// Should see the write immediately.
-		val, ok = rwDB.Get("k2")
+		val, ok, gerr = rwDB.Get("k2")
+		panicOn(gerr)
 		if !ok || string(val) != "v2" {
 			t.Fatalf("Get(k2) after write: %q, %v", val, ok)
 		}
@@ -80,7 +85,8 @@ func TestTx_UpdateSeesOwnWrites(t *testing.T) {
 		if err := rwDB.Put("k1", []byte("v1-updated")); err != nil {
 			return err
 		}
-		val, ok = rwDB.Get("k1")
+		val, ok, gerr = rwDB.Get("k1")
+		panicOn(gerr)
 		if !ok || string(val) != "v1-updated" {
 			t.Fatalf("Get(k1) after overwrite: %q, %v", val, ok)
 		}
@@ -89,7 +95,8 @@ func TestTx_UpdateSeesOwnWrites(t *testing.T) {
 		if err := rwDB.Delete("k1"); err != nil {
 			return err
 		}
-		_, ok = rwDB.Get("k1")
+		_, ok, gerr = rwDB.Get("k1")
+		panicOn(gerr)
 		if ok {
 			t.Fatal("Get(k1) after delete: expected not found")
 		}
@@ -112,7 +119,8 @@ func TestTx_ViewCannotMutate(t *testing.T) {
 	// ReadOnlyDB has no Put or Delete methods -- this is a compile-time
 	// guarantee. We just verify that Get works inside View.
 	err := db.View(func(roDB *ReadOnlyTx) error {
-		val, ok := roDB.Get("k1")
+		val, ok, gerr := roDB.Get("k1")
+		panicOn(gerr)
 		if !ok || string(val) != "v1" {
 			t.Fatalf("View Get(k1) = %q, %v; want v1, true", val, ok)
 		}
@@ -141,7 +149,10 @@ func TestTx_SerializedUpdates(t *testing.T) {
 			defer wg.Done()
 			errs[i] = db.Update(func(rwDB *WriteTx) error {
 				// Read current counter value.
-				val, ok := rwDB.Get("counter")
+				val, ok, gerr := rwDB.Get("counter")
+				if gerr != nil {
+					return gerr
+				}
 				if !ok {
 					return fmt.Errorf("counter not found in goroutine %d", i)
 				}
@@ -165,7 +176,8 @@ func TestTx_SerializedUpdates(t *testing.T) {
 	}
 
 	// Because updates are serialized, counter should be exactly n.
-	val, ok := db.Get("counter")
+	val, ok, gerr := db.Get("counter")
+	panicOn(gerr)
 	if !ok {
 		t.Fatal("counter not found after all updates")
 	}

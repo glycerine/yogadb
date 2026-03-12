@@ -185,7 +185,8 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					}
 					// Verify all synced keys survived recovery.
 					for key, wantVal := range kv {
-						gotVal, ok := db.Get(key)
+						gotVal, ok, gerr := db.Get(key)
+						panicOn(gerr)
 						if !ok {
 							t.Fatalf("after reopen: Get(%q) not found", key)
 						}

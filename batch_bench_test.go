@@ -250,7 +250,7 @@ func BenchmarkYogaDB_BigRandomRWBatch(b *testing.B) {
 						b.ResetTimer()
 						t0 = time.Now()
 						for cid := range dup {
-							val, found := db.Get(cid)
+							val, found, _ := db.Get(cid)
 							if !found {
 								// we might not write all now that b.N controls how many we write.
 								//b.Fatalf("why not found '%v'", cid)
