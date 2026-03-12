@@ -3,7 +3,7 @@ package yogadb
 import (
 	//"context"
 	"fmt"
-	//"os"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -36,6 +36,7 @@ func Test016_linz(t *testing.T) {
 	wgcount := int64(numReaders * nSteps)
 
 	dbPath := "linz016.db"
+	os.RemoveAll(dbPath)
 	cfg := &Config{
 		//OmitFlexSpaceOpsRedoLog: true,
 		//OmitMemWalFsync: true, // would be dangerous here, eh?
