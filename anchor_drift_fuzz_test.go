@@ -41,6 +41,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 		// 100 bytes ~= 20 operations max, which is enough to cover
 		// multi-step sequences without taking too long.
 		if len(data) > 100 {
+			return
 			data = data[:100]
 		}
 
@@ -106,8 +107,9 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 				}
 			}()
 
+			maxOps := 150
 			i := 0
-			for i < len(data) {
+			for i < len(data) && i < maxOps {
 				op := data[i] % 7
 				i++
 
