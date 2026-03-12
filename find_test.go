@@ -463,9 +463,9 @@ func TestFind_LazyLarge(t *testing.T) {
 	kvc2.Close()
 }
 
-// TestFind_LazyVal tests the LAZY_SMALL flag: zero-copy inline values
+// TestFind_LazySmall tests the LAZY_SMALL flag: zero-copy inline values
 // via cache pinning. Values alias cache memory and require Close().
-func TestFind_LazyVal(t *testing.T) {
+func TestFind_LazySmall(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 
 	// Populate and flush to FlexSpace so values are in cache.

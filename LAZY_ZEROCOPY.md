@@ -1,4 +1,4 @@
-# Plan: KVcloser API with LAZY_LARGE, LAZYVAL, and Error Returns
+# Plan: KVcloser API with LAZY_LARGE, LAZY_SMALL, and Error Returns
 
 ## Context
 
@@ -6,9 +6,9 @@ The current `Find` API returns `(*KV, bool, bool)` - no error propagation for VL
 
 Two orthogonal SearchModifier flags:
 - **LAZY_LARGE (128):** Don't auto-fetch VLOG values. User calls `kvc.Fetch()` explicitly.
-- **LAZYVAL (64):** Zero-copy for inline values via cache pinning. `kvc.Value` aliases cache memory. User MUST call `Close()` to release the pin.
+- **LAZY_SMALL (64):** Zero-copy for inline values via cache pinning. `kvc.Value` aliases cache memory. User MUST call `Close()` to release the pin.
 
-The diff in `diffs.txt` has partial work: the signature is changed, KVcloser struct exists with cache-pinning fields and Close(), but auto-fetch, `Fetch()`, and LAZYVAL are not yet implemented.
+The diff in `diffs.txt` has partial work: the signature is changed, KVcloser struct exists with cache-pinning fields and Close(), but auto-fetch, `Fetch()`, and LAZY_SMALL are not yet implemented.
 
 ## Key Design Decisions
 
@@ -18,13 +18,13 @@ The diff in `diffs.txt` has partial work: the signature is changed, KVcloser str
 
 3. **KVcloser.Close()** is a no-op on nil receiver (safe to defer unconditionally). After Close, `Value` is set to nil to catch use-after-close. Key and Vptr remain accessible (owned copies, not cache-borrowed).
 
-4. **LAZY_LARGE and LAZYVAL are orthogonal.** They can be combined with bitwise OR:
+4. **LAZY_LARGE and LAZY_SMALL are orthogonal.** They can be combined with bitwise OR:
    - Neither: inline values copied, large values auto-fetched (safest, most convenient)
    - `LAZY_LARGE` only: inline values copied, large values deferred
-   - `LAZYVAL` only: inline values zero-copy (cache-pinned), large values auto-fetched
-   - `LAZYVAL|LAZY_LARGE`: inline values zero-copy, large values deferred (fastest)
+   - `LAZY_SMALL` only: inline values zero-copy (cache-pinned), large values auto-fetched
+   - `LAZY_SMALL|LAZY_LARGE`: inline values zero-copy, large values deferred (fastest)
 
-5. **LAZYVAL cache-pinning uses a re-lookup approach.** After the iterator finds the result, we release the iterator and do a direct sparse-index lookup on the result key to get a pinned cache entry. This avoids modifying the hot iteration path (no changes to prefetchSpan or servePrefetch). The re-lookup is a guaranteed cache hit since the entry was just accessed. If the result came from a memtable (not FlexSpace), we fall back to copying (can't pin memtable data).
+5. **LAZY_SMALL cache-pinning uses a re-lookup approach.** After the iterator finds the result, we release the iterator and do a direct sparse-index lookup on the result key to get a pinned cache entry. This avoids modifying the hot iteration path (no changes to prefetchSpan or servePrefetch). The re-lookup is a guaranteed cache hit since the entry was just accessed. If the result came from a memtable (not FlexSpace), we fall back to copying (can't pin memtable data).
 
 6. **tx.Find (WriteTx/ReadOnlyTx):** Keep existing `(*KV, bool, bool)` signature for now. These run within transaction callbacks that hold the lock, so the returned KV is valid for the callback's lifetime. Changing these is a separate follow-up.
 
@@ -53,8 +53,8 @@ if kvc != nil {
    kvc.Close()
 }
 
-// Example 3: LAZYVAL (zero-copy inline values, auto-fetch large)
-kvc, _, err := db.Find(Exact|LAZYVAL, "needle")
+// Example 3: LAZY_SMALL (zero-copy inline values, auto-fetch large)
+kvc, _, err := db.Find(Exact|LAZY_SMALL, "needle")
 panicOn(err)
 if kvc != nil {
    // kvc.Value aliases cache memory - zero-copy!
@@ -63,8 +63,8 @@ if kvc != nil {
    kvc.Close()             // releases cache entry pin
 }
 
-// Example 4: LAZYVAL|LAZY_LARGE (maximum performance)
-kvc, _, err := db.Find(GTE|LAZYVAL|LAZY_LARGE, "prefix")
+// Example 4: LAZY_SMALL|LAZY_LARGE (maximum performance)
+kvc, _, err := db.Find(GTE|LAZY_SMALL|LAZY_LARGE, "prefix")
 panicOn(err)
 if kvc != nil {
    if kvc.Large() {
@@ -78,7 +78,7 @@ if kvc != nil {
 
 ## Changes
 
-### Step 1: Add LAZYVAL constant (db.go, SearchModifier consts)
+### Step 1: Add LAZY_SMALL constant (db.go, SearchModifier consts)
 
 ```go
 const (
@@ -88,12 +88,12 @@ const (
     GT         SearchModifier = 3
     LT         SearchModifier = 4
 
-    // LAZYVAL requests zero-copy return of inline values.
+    // LAZY_SMALL requests zero-copy return of inline values.
     // The returned KVcloser.Value aliases interval cache memory.
     // The caller MUST call Close() to release the cache pin.
     // If the result came from a memtable (not yet flushed),
     // Value is copied as usual (best-effort zero-copy).
-    LAZYVAL    SearchModifier = 64
+    LAZY_SMALL    SearchModifier = 64
 
     // LAZY_LARGE requests that large values (stored in VLOG)
     // not be fetched automatically. The caller must call
@@ -153,7 +153,7 @@ Note: `db.FetchLarge` acquires `topMutRW.RLock` internally, so Fetch is goroutin
 
 ### Step 4: Add findBuildKVZeroCopy helper (db.go)
 
-This is the key new function for LAZYVAL. It does a direct sparse-index lookup on a known-to-exist key and returns a KVcloser that pins the cache entry.
+This is the key new function for LAZY_SMALL. It does a direct sparse-index lookup on a known-to-exist key and returns a KVcloser that pins the cache entry.
 
 ```go
 // findBuildKVZeroCopy returns a KVcloser whose Value aliases
@@ -212,12 +212,12 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 
     it := &Iter{db: db}
     lazyLarge := (smod & LAZY_LARGE != 0)
-    lazyVal := (smod & LAZYVAL != 0)
+    lazyVal := (smod & LAZY_SMALL != 0)
     if lazyLarge {
         it.lazyLarge = true
         smod &^= LAZY_LARGE
     }
-    smod &^= LAZYVAL // strip LAZYVAL before passing to findSeekIter
+    smod &^= LAZY_SMALL // strip LAZY_SMALL before passing to findSeekIter
 
     var found bool
     found, exact = findSeekIter(it, smod, key)
@@ -228,7 +228,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
         // Release iterator state early - we have what we need.
         it.releaseIterState()
 
-        // LAZYVAL path: try zero-copy via cache pinning.
+        // LAZY_SMALL path: try zero-copy via cache pinning.
         // Only works for inline values from FlexSpace (not memtable).
         if lazyVal && !zc.HasVPtr() && zc.Value != nil {
             kvc = db.findBuildKVZeroCopy(resultKey)
@@ -265,7 +265,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 }
 ```
 
-**Key change from the diff:** `it.releaseIterState()` is called inside the `if found` block (early), then we do the re-lookup for LAZYVAL. The `else` path (not found) also calls `releaseIterState`. This avoids using the iterator's state after release.
+**Key change from the diff:** `it.releaseIterState()` is called inside the `if found` block (early), then we do the re-lookup for LAZY_SMALL. The `else` path (not found) also calls `releaseIterState`. This avoids using the iterator's state after release.
 
 **Note on `smod &^= LAZY_LARGE` vs `smod -= LAZY_LARGE`:** Using bit-clear (`&^=`) is safer than subtraction - it's idempotent and can't underflow.
 
@@ -324,7 +324,7 @@ Tests to update (all in find_test.go):
 - TestFind_HLCPopulated
 - TestFetchLarge_InlineValue (uses db.Find + db.FetchLarge)
 
-### Step 8: Add LAZY_LARGE and LAZYVAL tests (find_test.go)
+### Step 8: Add LAZY_LARGE and LAZY_SMALL tests (find_test.go)
 
 ```go
 func TestFind_LazyLarge(t *testing.T) {
@@ -372,8 +372,8 @@ func TestFind_LazyVal(t *testing.T) {
     }
     db.Sync()
 
-    // LAZYVAL: zero-copy inline value
-    kvc, exact, err := db.Find(Exact|LAZYVAL, "key005")
+    // LAZY_SMALL: zero-copy inline value
+    kvc, exact, err := db.Find(Exact|LAZY_SMALL, "key005")
     panicOn(err)
     if kvc == nil || !exact { t.Fatal("not found") }
     if string(kvc.Value) != "val005" {
@@ -386,8 +386,8 @@ func TestFind_LazyVal(t *testing.T) {
     // After Close, kvc.Value is nil
     if kvc.Value != nil { t.Fatal("Value should be nil after Close") }
 
-    // LAZYVAL with GTE: non-exact match
-    kvc2, exact2, err := db.Find(GTE|LAZYVAL, "key004a")
+    // LAZY_SMALL with GTE: non-exact match
+    kvc2, exact2, err := db.Find(GTE|LAZY_SMALL, "key004a")
     panicOn(err)
     if kvc2 == nil { t.Fatal("not found") }
     if exact2 { t.Fatal("should not be exact") }
@@ -397,12 +397,12 @@ func TestFind_LazyVal(t *testing.T) {
     }
     kvc2.Close()
 
-    // LAZYVAL|LAZY_LARGE combined with a large value
+    // LAZY_SMALL|LAZY_LARGE combined with a large value
     bigVal := bytes.Repeat([]byte("B"), 200)
     panicOn(db.Put("large001", bigVal))
     db.Sync()
 
-    kvc3, _, err := db.Find(Exact|LAZYVAL|LAZY_LARGE, "large001")
+    kvc3, _, err := db.Find(Exact|LAZY_SMALL|LAZY_LARGE, "large001")
     panicOn(err)
     if kvc3 == nil { t.Fatal("not found") }
     if !kvc3.Large() { t.Fatal("expected Large") }
@@ -439,9 +439,9 @@ Ensure all KVcloser methods handle nil receiver:
 3. **Key (string):** Go strings are immutable. Assignment shares the string data. Already zero-copy.
 4. **Vptr/Hlc:** Value types (16 + 8 bytes). Trivial.
 
-### LAZYVAL cache-pinning design
+### LAZY_SMALL cache-pinning design
 
-When LAZYVAL is set and the value is inline (not VLOG):
+When LAZY_SMALL is set and the value is inline (not VLOG):
 
 1. Find uses the iterator to locate the key (via findSeekIter, which calls Seek internally)
 2. Record the result key from pKV.Key
@@ -460,14 +460,14 @@ When LAZYVAL is set and the value is inline (not VLOG):
 - Cost: one sparse index tree walk + one partition lock acquisition (both fast)
 - Works for all search modifiers (Exact, GTE, GT, LTE, LT)
 
-**When LAZYVAL falls back to copying:**
-- Result came from memtable (data not in FlexSpace yet): `valueResolved` would be true in the iterator, but since we release iterator state before the re-lookup, we detect this when `findBuildKVZeroCopy` returns nil (key not found in FlexSpace). Actually, more precisely: the key might be in both memtable and FlexSpace, but the memtable version wins in the merge. The re-lookup would find the FlexSpace version which may be stale. To handle this correctly, we check `it.valueResolved` BEFORE the re-lookup: if the iterator used the merged path (valueResolved=true, meaning memtables were non-empty), we skip the LAZYVAL optimization and copy.
+**When LAZY_SMALL falls back to copying:**
+- Result came from memtable (data not in FlexSpace yet): `valueResolved` would be true in the iterator, but since we release iterator state before the re-lookup, we detect this when `findBuildKVZeroCopy` returns nil (key not found in FlexSpace). Actually, more precisely: the key might be in both memtable and FlexSpace, but the memtable version wins in the merge. The re-lookup would find the FlexSpace version which may be stale. To handle this correctly, we check `it.valueResolved` BEFORE the re-lookup: if the iterator used the merged path (valueResolved=true, meaning memtables were non-empty), we skip the LAZY_SMALL optimization and copy.
 
 Wait - this is an important correction. Let me refine:
 
-**Refined LAZYVAL condition in Find (Step 5):**
+**Refined LAZY_SMALL condition in Find (Step 5):**
 ```go
-// LAZYVAL zero-copy only when the fast path was used (empty memtables,
+// LAZY_SMALL zero-copy only when the fast path was used (empty memtables,
 // pKV came from cache). When memtables are non-empty, the merged path
 // may return a memtable result that differs from FlexSpace. Re-lookup
 // would return stale FlexSpace data. Fall back to copy.
@@ -481,8 +481,8 @@ The `!it.valueResolved` check ensures we only attempt zero-copy when the fast pa
 
 ## Files to Modify
 
-1. **`db.go`** - LAZYVAL const, findBuildKVZeroCopy(), KVcloser.Fetch(), Find logic
-2. **`find_test.go`** - Update ~25 Find() call sites + add LAZY_LARGE and LAZYVAL tests
+1. **`db.go`** - LAZY_SMALL const, findBuildKVZeroCopy(), KVcloser.Fetch(), Find logic
+2. **`find_test.go`** - Update ~25 Find() call sites + add LAZY_LARGE and LAZY_SMALL tests
 3. **`vlog_test.go`** - Update 4 GetKV() call sites (lines 374, 402, 466, 493)
 
 ## Verification
@@ -491,5 +491,37 @@ The `!it.valueResolved` check ensures we only attempt zero-copy when the fast pa
 2. `go test -run TestFind ./...` - all Find tests pass with new signature
 3. `go test -run TestFetchLarge ./...` - large value tests
 4. `go test -run TestFind_LazyLarge ./...` - new LAZY_LARGE test
-5. `go test -run TestFind_LazyVal ./...` - new LAZYVAL zero-copy test
+5. `go test -run TestFind_LazyVal ./...` - new LAZY_SMALL zero-copy test
 6. `go test ./...` - full test suite passes
+
+## IO erros now propagated up
+
+  intervalcache.go:
+  - intervalCacheEntry gained loadErr error field
+  - loadInterval returns error (wraps ReadFragmentation failures with context)
+  - getEntry returns (*intervalCacheEntry, error) - stores/checks loadErr including for spin-wait path
+  - getEntryUnsorted returns (*intervalCacheEntry, error)
+
+  iter.go:
+  - Iter struct gained err error field + Err() error method
+  - 6 flex* methods now return error: flexSpaceSeekGE, flexSpaceSeekLE, flexCursorSeekGE, flexCursorSeekLE, flexCursorNextInterval, flexCursorPrevInterval
+  - All callers within iter.go set it.err on error and bail out
+
+  db.go:
+  - findBuildKVZeroCopy returns (*KVcloser, error)
+  - getPassthrough returns ([]byte, bool, error)
+  - getPassthroughKV returns (KV, bool, error)
+  - putPassthrough returns error
+  - someLockHeldGet returns ([]byte, bool, error) - propagates resolveVPtr errors
+  - FlexDB.Get returns ([]byte, bool, error)
+  - FlexDB.Find propagates findBuildKVZeroCopy error
+
+  tx.go:
+  - ReadOnlyDB.Get interface returns ([]byte, bool, error)
+  - WriteTx.Get / ReadOnlyTx.Get return ([]byte, bool, error)
+  - txFind/txFindIt propagate findBuildKVZeroCopy error
+
+  Test/cmd files: ~60+ db.Get/rwDB.Get/roDB.Get call sites updated across db_test.go, gc_test.go, iter_test.go, recovery_test.go, tx_test.go, batch_test.go, find_test.go, porc_test.go,
+  anchor_drift_fuzz_test.go, and cmd/yogabench/*.go.
+
+
