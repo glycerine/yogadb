@@ -2490,22 +2490,50 @@ func findBuildKV(it *Iter) *KV {
 //
 // Exact: find a matching key exactly.
 //
-// If key is nil, then GTE and GT return the first key
+// If key is the empty string, then GTE and GT return the first key
 // in the tree, while LTE and LT return the last key.
 //
-// The LAZY_LARGE flag can be bitwise-OR-ed with the smod
-// to request that large values not be returned unless
+// Any of the LAZY* set of flag can be bitwise-OR-ed with the smod
+// to request that large/small/all values not be returned unless
 // and until we decide we want them with an explicit
-// FetchLarge() call. For example: Find(Exact|LAZY_LARGE, "needle")
+// FetchLarge() call. For example: Find(Exact|LAZY, "needle")
 //
-// The returned *KVcloser contains the found key and its inline
-// value (for non-large values). For large values stored
-// in the VLOG, kv.Large() returns true and db.FetchLarge(kv)
-// retrieves the value bytes. Update: the large value is automatically
-// fetched now, unless LAZY_LARGE is also supplied.
+// The returned *KVcloser contains the found key and its value;
+// unless laziness was requested.
 //
-// found indicates whether any key was found.
-// exact indicates an exact match to the query key.
+// The returned bool, 'exact', indicates an exact match to the query key.
+//
+// If the returned kvc *KVcloser is nil, this means that
+// the key was not found, or there was an I/O error. The
+// caller should always check the returned error (err) first rule out
+// I/O error before concluding the key was not found
+// from a nil kvc.
+//
+// A typical call sequence would be:
+//
+// ```go
+//
+//	kvc, _, err := dbHaystack.Find(Exact, "needle")
+//
+//	if err != nil {
+//	   return err
+//	}
+//
+//	if kvc != nil {
+//	  // found exact match! (we know, because Exact was
+//	  // requested; if this was a GTE search we would need
+//	  // to check the 'exact' bool return to know if we found
+//	  // our "needle", or went past it).
+//
+//	  // Here the all value sizes are automatically pulled in, since
+//	  // none of the LAZY smod were requested (LAZY, LAZY_SMALL, LAZY_LARGE).
+//
+//	  processKeyAndValueAtHlcTimestamp(kvc.Key, kvc.Value, kvc.Hlc)
+//
+//	  kvc.Close() // unpin from internal caches. Allows zero-copy reads.
+//	}
+//
+// ```
 //
 // The returned iterator is a locked iterator (holds the exclusive
 // Find looks up the first key matching the SearchModifier and returns
@@ -2514,9 +2542,9 @@ func findBuildKV(it *Iter) *KV {
 //
 // Goroutine safe. Acquires the read lock internally.
 //
-// Warning: the user must call Close() on the returned kvc *KVcloser
-// when done copying any Value out, or else memory and resource
-// leaks will ensue.
+// Warning: if kvc != nil, the user must call Close() on the
+// returned kvc *KVcloser when done copying any Value out, or
+// else memory and resource leaks will ensue.
 //
 // The kvc.Close() can be skipped if kvc is nil (key not found).
 // However it is always fine to do the Close() even then, as
