@@ -73,6 +73,9 @@ func (db *FlexDB) NewBatch() (b *Batch) {
 // original memory is safe to be re-used by the
 // caller immediately after Set returns.
 func (s *Batch) Set(key string, value []byte) (err error) {
+	if key == "" {
+		return ErrKeyEmpty
+	}
 
 	// String keys are immutable - no copy needed.
 	// Value is []byte, so we must copy it.
@@ -2234,6 +2237,8 @@ func (db *FlexDB) writeLockHeldSync() error {
 	return nil
 }
 
+var ErrKeyEmpty = fmt.Errorf("key cannot be the empty string")
+
 // Put writes key -> value. len(value) == 0 is fine, if desired.
 // Call Delete instead of Put to delete a key and any associated value.
 //
@@ -2249,6 +2254,9 @@ func (db *FlexDB) writeLockHeldSync() error {
 // the rate of fsyncs and trade that against their durability
 // requirements.
 func (db *FlexDB) Put(key string, value []byte) error {
+	if key == "" {
+		return ErrKeyEmpty
+	}
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 	return db.writeLockHeldPut(key, value, false)
@@ -2352,7 +2360,7 @@ const (
 	// automatically. The User must call FetchLarge() explicitly
 	// when they are desired.
 	// LAZY_LARGE can be | or-ed with Exact, GTE, GT, LTE, or LT.
-	LAZY_LARGE SearchModifier = 256
+	LAZY_LARGE SearchModifier = 128
 )
 
 // findSeekIter positions it according to smod and key.
@@ -2388,7 +2396,7 @@ func findSeekIter(it *Iter, smod SearchModifier, key string) (found, exact bool)
 // findBuildKV constructs a *KV from the iterator's current
 // position. Returns a shallow copy of the internal KV - Key
 // and Value alias cache memory (zero-copy). This is safe
-// because the iterator holds the exclusive write lock,
+// because the iterator user holds topMutRW read or write lock,
 // preventing concurrent mutation.
 func findBuildKV(it *Iter) *KV {
 	if it.pKV == nil {
@@ -2413,10 +2421,16 @@ func findBuildKV(it *Iter) *KV {
 // If key is nil, then GTE and GT return the first key
 // in the tree, while LTE and LT return the last key.
 //
-// The returned *KV contains the found key and its inline
+// The LAZY_LARGE flag can be bitwise-OR-ed with the smod
+// to request that large values not be returned unless
+// and until we decide we want them with an explicit
+// FetchLarge() call. For example: Find(Exact|LAZY_LARGE, "needle")
+//
+// The returned *KVcloser contains the found key and its inline
 // value (for non-large values). For large values stored
 // in the VLOG, kv.Large() returns true and db.FetchLarge(kv)
-// retrieves the value bytes.
+// retrieves the value bytes. Update: the large value is automatically
+// fetched now, unless LAZY_LARGE is also supplied.
 //
 // found indicates whether any key was found.
 // exact indicates an exact match to the query key.
@@ -2427,7 +2441,7 @@ func findBuildKV(it *Iter) *KV {
 // beyond the found key, use FindIt inside a View or Update transaction.
 //
 // Goroutine safe. Acquires the read lock internally.
-func (db *FlexDB) Find(smod SearchModifier, key string) (kv *KV, found, exact bool) {
+func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error) {
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
 
@@ -2437,6 +2451,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kv *KV, found, exact bo
 		it.lazyLarge = true
 		smod -= LAZY_LARGE
 	}
+	var found bool
 	found, exact = findSeekIter(it, smod, key)
 	if found {
 		zc := findBuildKV(it)
@@ -2446,18 +2461,37 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kv *KV, found, exact bo
 		if !zc.HasVPtr() && zc.Value != nil {
 			owned.Value = append([]byte{}, zc.Value...)
 		}
-		kv = &owned
+		kvc = &KVcloser{KV: owned, db: db}
 	}
 	it.releaseIterState()
 	return
+}
+
+type KVcloser struct {
+	KV
+	partition *intervalCachePartition // nil when no pin needed
+	entry     *intervalCacheEntry     // nil when no pin needed
+	db        *FlexDB
+}
+
+func (s *KVcloser) Close() {
+	if s == nil {
+		return
+	}
+	if s.entry != nil {
+		s.partition.releaseEntry(s.entry)
+		s.partition = nil
+		s.entry = nil
+	}
+	s.Value = nil // prevent use-after-close
 }
 
 // GetKV is like Get but allows lazy loading of Large values;
 // they are not fetched automatically. If the user sees kv.Large() true,
 // then db.FetchLarge(kv) will return the large value.
 // GetKV is equivalent to db.Find(Exact, key).
-func (db *FlexDB) GetKV(key string) (kv *KV, found bool) {
-	kv, found, _ = db.Find(Exact, key)
+func (db *FlexDB) GetKV(key string) (kv *KVcloser, err error) {
+	kv, _, err = db.Find(Exact, key)
 	return
 }
 
@@ -2595,6 +2629,9 @@ func (db *FlexDB) someLockHeldGet(key string) ([]byte, bool) {
 
 // Delete removes key from the store.
 func (db *FlexDB) Delete(key string) error {
+	if key == "" {
+		return ErrKeyEmpty
+	}
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 	return db.writeLockHeldPut(key, nil, true)
