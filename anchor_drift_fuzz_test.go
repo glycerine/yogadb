@@ -79,6 +79,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 			if durlog == nil {
 				mklog()
 			}
+			vv(format, a...)
 			t.Fatalf(format, a...)
 		}
 
