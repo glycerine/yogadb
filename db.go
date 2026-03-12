@@ -2420,7 +2420,7 @@ func findBuildKV(it *Iter) *KV {
 	return &out
 }
 
-// FindIt allows GTE, GT, LTE, LT, and Exact searches.
+// Find allows GTE, GT, LTE, LT, and Exact searches.
 //
 // GTE: find the smallest key greater-than-or-equal to key.
 //
@@ -2452,9 +2452,15 @@ func findBuildKV(it *Iter) *KV {
 // The returned iterator is a locked iterator (holds the exclusive
 // Find looks up the first key matching the SearchModifier and returns
 // an owned copy of the KV (safe to retain indefinitely). For scanning
-// beyond the found key, use FindIt inside a View or Update transaction.
+// beyond the found key, use Find inside a View or Update transaction.
 //
 // Goroutine safe. Acquires the read lock internally.
+//
+// The user must call Close() on the returned kvc *KVcloser
+// when done copying any Value out, or else memory and resource
+// leaks will ensue. The kvc.Close() can be skipped
+// if kvc is nil (key not found). However it is always fine
+// to do the Close() even then -- kvc.Close() is a no-op if kvc is nil.
 func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error) {
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
@@ -2511,6 +2517,9 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 	return
 }
 
+// KVcloser is the result of a Find or GetKV call.
+// The user must call Close() on the KVcloser when done copying any
+// value out, or else memory and resource leaks will ensue.
 type KVcloser struct {
 	KV
 	partition *intervalCachePartition // nil when no pin needed

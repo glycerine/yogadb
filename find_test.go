@@ -251,8 +251,9 @@ func TestFindIt_IteratorContinuation(t *testing.T) {
 
 	err := db.View(func(roDB *ReadOnlyTx) error {
 		// FindIt GTE key005, then iterate forward.
-		kv, found, _, it := roDB.FindIt(GTE, "key005")
-		if !found {
+		kv, _, err, it := roDB.FindIt(GTE, "key005")
+		panicOn(err)
+		if kv == nil {
 			it.Close()
 			t.Fatal("GTE key005: not found")
 		}
@@ -277,9 +278,10 @@ func TestFindIt_IteratorContinuation(t *testing.T) {
 		}
 
 		// FindIt LTE key005, then iterate backward.
-		kv2, found2, _, it2 := roDB.FindIt(LTE, "key005")
+		kv2, _, err2, it2 := roDB.FindIt(LTE, "key005")
 		defer it2.Close()
-		if !found2 {
+		panicOn(err2)
+		if kv2 == nil {
 			t.Fatal("LTE key005: not found")
 		}
 		if string(kv2.Key) != "key005" {

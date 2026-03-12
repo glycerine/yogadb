@@ -10,9 +10,9 @@ package yogadb
 // overview of the available methods.
 type ReadOnlyDB interface {
 	Get(key string) ([]byte, bool)
-	GetKV(key string) (kv *KV, found bool)
-	Find(smod SearchModifier, key string) (kv *KV, found, exact bool)
-	FindIt(smod SearchModifier, key string) (kv *KV, found, exact bool, it *Iter)
+	GetKV(key string) (kv *KVcloser, err error)
+	Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error)
+	FindIt(smod SearchModifier, key string) (kv *KV, exact bool, err error, it *Iter)
 	FetchLarge(kv *KV) ([]byte, error)
 	NewIter() *Iter
 	Ascend(pivot string, iter func(key string, value []byte) bool)
@@ -69,6 +69,78 @@ func (tx *txBase) closeAll() {
 	tx.iters = tx.iters[:0]
 }
 
+// txFind implements Find for both WriteTx and ReadOnlyTx.
+// Caller must hold topMutRW (read or write lock).
+func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error) {
+	it := tx.newIter()
+	lazyLarge := (smod & LAZY_LARGE != 0)
+	lazyVal := (smod & LAZY_SMALL != 0)
+	if lazyLarge {
+		it.lazyLarge = true
+		smod &^= LAZY_LARGE
+	}
+	smod &^= LAZY_SMALL
+
+	var found bool
+	found, exact = findSeekIter(it, smod, key)
+	if found {
+		zc := findBuildKV(it)
+		resultKey := zc.Key
+
+		it.Close()
+
+		// LAZY_SMALL path: try zero-copy via cache pinning.
+		if lazyVal && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
+			kvc = tx.db.findBuildKVZeroCopy(resultKey)
+			if kvc != nil {
+				return
+			}
+		}
+
+		// Standard path: copy inline value.
+		owned := KV{Vptr: zc.Vptr, Hlc: zc.Hlc}
+		owned.Key = resultKey
+		if !zc.HasVPtr() && zc.Value != nil {
+			owned.Value = append([]byte{}, zc.Value...)
+		}
+		kvc = &KVcloser{KV: owned, db: tx.db}
+
+		// Auto-fetch large value unless LAZY_LARGE was requested.
+		if !lazyLarge && kvc.HasVPtr() {
+			val, fetchErr := tx.db.resolveVPtr(kvc.KV)
+			if fetchErr != nil {
+				kvc = nil
+				err = fetchErr
+			} else {
+				kvc.Value = val
+			}
+		}
+		return
+	}
+	it.Close()
+	return
+}
+
+// txFindIt implements FindIt for both WriteTx and ReadOnlyTx.
+// Returns a *KV (not KVcloser) since the iterator keeps the position alive.
+// Caller must hold topMutRW (read or write lock).
+func txFindIt(tx *txBase, smod SearchModifier, key string) (kv *KV, exact bool, err error, it *Iter) {
+	it = tx.newIter()
+	lazyLarge := (smod & LAZY_LARGE != 0)
+	if lazyLarge {
+		it.lazyLarge = true
+		smod &^= LAZY_LARGE
+	}
+	smod &^= LAZY_SMALL // strip; not applicable for FindIt (iterator owns the data)
+
+	var found bool
+	found, exact = findSeekIter(it, smod, key)
+	if found {
+		kv = findBuildKV(it)
+	}
+	return
+}
+
 // ========== WriteTx (implements WritableDB) ==========
 
 // WriteTx extends ReadTx with mutation methods. Passed to
@@ -87,12 +159,9 @@ func (tx *WriteTx) Get(key string) (value []byte, found bool) {
 	return tx.db.someLockHeldGet(key)
 }
 
-// GetKV is like Get but allows lazy loading of Large values;
-// they are not fetched automatically. If the user sees kv.Large(),
-// then tx.FetchLarge(kv) will return the large value.
 // GetKV is equivalent to tx.Find(Exact, key).
-func (tx *WriteTx) GetKV(key string) (kv *KV, found bool) {
-	kv, found, _ = tx.Find(Exact, key)
+func (tx *WriteTx) GetKV(key string) (kv *KVcloser, err error) {
+	kv, _, err = tx.Find(Exact, key)
 	return
 }
 
@@ -125,25 +194,17 @@ func (tx *WriteTx) Sync() error {
 }
 
 // Find seeks to a key relative to the given key per smod (Exact, GTE, GT, LTE, LT)
-// and returns an owned KV copy. exact is true when the returned key equals the query.
-func (tx *WriteTx) Find(smod SearchModifier, key string) (kv *KV, found, exact bool) {
-	it := tx.newIter()
-	found, exact = findSeekIter(it, smod, key)
-	if found {
-		kv = findBuildKV(it)
-	}
-	it.Close()
+// and returns a KVcloser. nil KVcloser means not found. exact is true when the
+// returned key equals the query. Supports LAZY_SMALL, LAZY_LARGE, and LAZY flags.
+func (tx *WriteTx) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error) {
+	kvc, exact, err = txFind(&tx.txBase, smod, key)
 	return
 }
 
 // FindIt is like Find but also returns an iterator positioned at the result.
 // The iterator is auto-closed when the transaction ends.
-func (tx *WriteTx) FindIt(smod SearchModifier, key string) (kv *KV, found, exact bool, it *Iter) {
-	it = tx.newIter()
-	found, exact = findSeekIter(it, smod, key)
-	if found {
-		kv = findBuildKV(it)
-	}
+func (tx *WriteTx) FindIt(smod SearchModifier, key string) (kv *KV, exact bool, err error, it *Iter) {
+	kv, exact, err, it = txFindIt(&tx.txBase, smod, key)
 	return
 }
 
@@ -300,34 +361,24 @@ func (roTx *ReadOnlyTx) Get(key string) (value []byte, found bool) {
 	return roTx.db.someLockHeldGet(key)
 }
 
-// GetKV is like Get but allows lazy loading of Large values;
-// they are not fetched automatically. If the user sees kv.Large(),
-// then roTx.FetchLarge(kv) will return the large value.
-func (roTx *ReadOnlyTx) GetKV(key string) (kv *KV, found bool) {
-	kv, found, _ = roTx.Find(Exact, key)
+// GetKV is equivalent to roTx.Find(Exact, key).
+func (roTx *ReadOnlyTx) GetKV(key string) (kv *KVcloser, err error) {
+	kv, _, err = roTx.Find(Exact, key)
 	return
 }
 
 // Find seeks to a key relative to the given key per smod (Exact, GTE, GT, LTE, LT)
-// and returns an owned KV copy. exact is true when the returned key equals the query.
-func (roTx *ReadOnlyTx) Find(smod SearchModifier, key string) (kv *KV, found, exact bool) {
-	it := roTx.newIter()
-	found, exact = findSeekIter(it, smod, key)
-	if found {
-		kv = findBuildKV(it)
-	}
-	it.Close()
+// and returns a KVcloser. nil KVcloser means not found. exact is true when the
+// returned key equals the query. Supports LAZY_SMALL, LAZY_LARGE, and LAZY flags.
+func (roTx *ReadOnlyTx) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error) {
+	kvc, exact, err = txFind(&roTx.txBase, smod, key)
 	return
 }
 
 // FindIt is like Find but also returns an iterator positioned at the result.
 // The iterator is auto-closed when the transaction ends.
-func (roTx *ReadOnlyTx) FindIt(smod SearchModifier, key string) (kv *KV, found, exact bool, it *Iter) {
-	it = roTx.newIter()
-	found, exact = findSeekIter(it, smod, key)
-	if found {
-		kv = findBuildKV(it)
-	}
+func (roTx *ReadOnlyTx) FindIt(smod SearchModifier, key string) (kv *KV, exact bool, err error, it *Iter) {
+	kv, exact, err, it = txFindIt(&roTx.txBase, smod, key)
 	return
 }
 
