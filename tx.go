@@ -73,8 +73,8 @@ func (tx *txBase) closeAll() {
 // Caller must hold topMutRW (read or write lock).
 func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error) {
 	it := tx.newIter()
-	lazyLarge := (smod & LAZY_LARGE != 0)
-	lazyVal := (smod & LAZY_SMALL != 0)
+	lazyLarge := (smod&LAZY_LARGE != 0)
+	lazySmall := (smod&LAZY_SMALL != 0)
 	if lazyLarge {
 		it.lazyLarge = true
 		smod &^= LAZY_LARGE
@@ -90,7 +90,7 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 		it.Close()
 
 		// LAZY_SMALL path: try zero-copy via cache pinning.
-		if lazyVal && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
+		if lazySmall && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
 			kvc = tx.db.findBuildKVZeroCopy(resultKey)
 			if kvc != nil {
 				return
@@ -127,8 +127,8 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 // Caller must hold topMutRW (read or write lock).
 func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error, it *Iter) {
 	it = tx.newIter()
-	lazyLarge := (smod & LAZY_LARGE != 0)
-	lazyVal := (smod & LAZY_SMALL != 0)
+	lazyLarge := (smod&LAZY_LARGE != 0)
+	lazySmall := (smod&LAZY_SMALL != 0)
 	if lazyLarge {
 		it.lazyLarge = true
 		smod &^= LAZY_LARGE
@@ -144,7 +144,7 @@ func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact
 	resultKey := zc.Key
 
 	// LAZY_SMALL path: try zero-copy via cache pinning.
-	if lazyVal && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
+	if lazySmall && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
 		kvc = tx.db.findBuildKVZeroCopy(resultKey)
 		if kvc != nil {
 			return
@@ -225,15 +225,21 @@ func (tx *WriteTx) Sync() error {
 }
 
 // Find seeks to a key relative to the given key per smod (Exact, GTE, GT, LTE, LT)
-// and returns a KVcloser. nil KVcloser means not found. exact is true when the
-// returned key equals the query. Supports LAZY_SMALL, LAZY_LARGE, and LAZY flags.
+// and returns a KVcloser. Getting back a nil *KVcloser means not found.
+// The returned bool 'exact' is true when the
+// returned key equals the query. The smod supports bitwise OR-ing
+// with the LAZY_SMALL, LAZY_LARGE, and LAZY flags to control
+// value flow. e.g. LAZY allows near-zero-copy full-table key-only scans.
+//
+// Warning: the user must call Close() on the kvc *KVcloser when done copying any
+// value out, or else memory and resource leaks will ensue.
 func (tx *WriteTx) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error) {
 	kvc, exact, err = txFind(&tx.txBase, smod, key)
 	return
 }
 
 // FindIt is like Find but also returns an iterator positioned at the result.
-// The returned KVcloser is independent of the iterator - the user must
+// The returned kvc *KVcloser is independent of the iterator - the user must
 // call kvc.Close() when done with the initial result, and use the iterator
 // for continued scanning. The iterator is auto-closed when the transaction ends.
 func (tx *WriteTx) FindIt(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error, it *Iter) {

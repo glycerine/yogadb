@@ -2456,18 +2456,20 @@ func findBuildKV(it *Iter) *KV {
 //
 // Goroutine safe. Acquires the read lock internally.
 //
-// The user must call Close() on the returned kvc *KVcloser
+// Warning: the user must call Close() on the returned kvc *KVcloser
 // when done copying any Value out, or else memory and resource
-// leaks will ensue. The kvc.Close() can be skipped
-// if kvc is nil (key not found). However it is always fine
-// to do the Close() even then -- kvc.Close() is a no-op if kvc is nil.
+// leaks will ensue.
+//
+// The kvc.Close() can be skipped if kvc is nil (key not found).
+// However it is always fine to do the Close() even then, as
+// kvc.Close() is a no-op if kvc is nil.
 func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error) {
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
 
 	it := &Iter{db: db}
 	lazyLarge := (smod&LAZY_LARGE != 0)
-	lazyVal := (smod&LAZY_SMALL != 0)
+	lazySmall := (smod&LAZY_SMALL != 0)
 	if lazyLarge {
 		it.lazyLarge = true
 		smod &^= LAZY_LARGE
@@ -2485,7 +2487,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 
 		// LAZY_SMALL path: try zero-copy via cache pinning.
 		// Only works for inline values from FlexSpace (not memtable).
-		if lazyVal && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
+		if lazySmall && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
 			kvc = db.findBuildKVZeroCopy(resultKey)
 			if kvc != nil {
 				return
@@ -2530,6 +2532,7 @@ type KVcloser struct {
 // Close must be called when done with the non-nil *KVcloser
 // result of a GetKV or Find call. Otherwise memory and resource
 // leaks will ensue.
+// Close() is a no-op if called on a nil *KVcloser.
 func (s *KVcloser) Close() {
 	if s == nil {
 		return
