@@ -5,6 +5,7 @@ package yogadb
 import (
 	"encoding/binary"
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/glycerine/vfs"
@@ -43,6 +44,39 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 			data = data[:100]
 		}
 
+		// lazily log to real file on disk if we fatal out.
+		home := os.Getenv("HOME")
+		if home == "" {
+			t.Fatalf("could not get env HOME")
+		}
+		durlogDir := home + "/anchorfuzz"
+		durlogPath := durlogDir + "/anchor_drift_log." + cryRand15B()
+		err := os.MkdirAll(durlogDir, 0755)
+		if err != nil {
+			t.Fatalf("could not create logging output dir '%v': '%v'", durlogDir, err)
+		}
+		var durlog *os.File
+
+		mklog := func() {
+			var err error
+			durlog, err = os.Create(durlogPath)
+			if err != nil {
+				t.Fatalf("could not create logging output file '%v': '%v'", durlogPath, err)
+			}
+			ourStdout = durlog // vv, alwaysPrintf go here.
+		}
+		defer func() {
+			if durlog != nil {
+				durlog.Close()
+			}
+		}()
+		fatalf := func(format string, a ...interface{}) {
+			if durlog == nil {
+				mklog()
+			}
+			t.Fatalf(format, a...)
+		}
+
 		fs := vfs.NewMem()
 		dir := "fuzz_anchor_drift"
 		if err := fs.MkdirAll(dir, 0755); err != nil {
@@ -68,7 +102,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					t.Fatalf("panic in fuzz iteration: %v", r)
+					fatalf("panic in fuzz iteration: %v", r)
 				}
 			}()
 
@@ -99,7 +133,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					val := makeFuzzValue(valSize, valSeed)
 					err := db.Put(key, []byte(val))
 					if err != nil {
-						t.Fatalf("Put(%q): %v", key, err)
+						fatalf("Put(%q): %v", key, err)
 					}
 					kv.set(key, val)
 					kv2[key] = val
@@ -109,7 +143,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					kvLen := kv.Len()
 					kv2Len := len(kv2)
 					if kvLen != kv2Len {
-						t.Fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+						fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
 					}
 					if i+2 > len(data) || kvLen == 0 {
 						continue
@@ -122,12 +156,12 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					_, exists2 := kv2[key]
 					if _, exists := kv.get2(key); exists {
 						if exists != exists2 {
-							t.Fatalf("omap exists=%v but map exists2=%v for key '%v'; kv2='%#v'\n kv = \n%v\n", exists, exists2, key, kv2, kv.String())
+							fatalf("omap exists=%v but map exists2=%v for key '%v'; kv2='%#v'\n kv = \n%v\n", exists, exists2, key, kv2, kv.String())
 						}
 
 						err := db.Delete(key)
 						if err != nil {
-							t.Fatalf("Delete(%q): %v", key, err)
+							fatalf("Delete(%q): %v", key, err)
 						}
 						kv.delkey(key)
 						delete(kv2, key)
@@ -146,7 +180,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 						val := makeFuzzValue(30, startIdx+j)
 						err := db.Put(key, []byte(val))
 						if err != nil {
-							t.Fatalf("Put(%q): %v", key, err)
+							fatalf("Put(%q): %v", key, err)
 						}
 						kv.set(key, val)
 						kv2[key] = val
@@ -157,7 +191,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					kvLen := kv.Len()
 					kv2Len := len(kv2)
 					if kvLen != kv2Len {
-						t.Fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+						fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
 					}
 
 					if i+2 > len(data) || kvLen == 0 {
@@ -174,7 +208,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 						val := makeFuzzValue(newSize, j+newSize)
 						err := db.Put(key, []byte(val))
 						if err != nil {
-							t.Fatalf("Put(%q): %v", key, err)
+							fatalf("Put(%q): %v", key, err)
 						}
 						kv.set(key, val)
 						kv2[key] = val
@@ -186,7 +220,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					kvLen := kv.Len()
 					kv2Len := len(kv2)
 					if kvLen != kv2Len {
-						t.Fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+						fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
 					}
 
 					if kvLen == 0 {
@@ -201,7 +235,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					kvLen := kv.Len()
 					kv2Len := len(kv2)
 					if kvLen != kv2Len {
-						t.Fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+						fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
 					}
 
 					if !synced || kvLen == 0 {
@@ -209,14 +243,14 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					}
 					_, err := db.VacuumKV()
 					if err != nil {
-						t.Fatalf("VacuumKV: %v", err)
+						fatalf("VacuumKV: %v", err)
 					}
 
 				case 6: // Close + Reopen - tests recovery path
 					kvLen := kv.Len()
 					kv2Len := len(kv2)
 					if kvLen != kv2Len {
-						t.Fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+						fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
 					}
 
 					if kvLen == 0 {
@@ -236,10 +270,10 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 						gotVal, ok, gerr := db.Get(key)
 						panicOn(gerr)
 						if !ok {
-							t.Fatalf("after reopen: Get(%q) not found", key)
+							fatalf("after reopen: Get(%q) not found", key)
 						}
 						if string(gotVal) != wantVal {
-							t.Fatalf("after reopen: Get(%q) = %q, want %q", key, gotVal, wantVal)
+							fatalf("after reopen: Get(%q) = %q, want %q", key, gotVal, wantVal)
 						}
 					}
 				}
@@ -249,7 +283,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 			kvLen := kv.Len()
 			kv2Len := len(kv2)
 			if kvLen != kv2Len {
-				t.Fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+				fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
 			}
 
 			if kvLen > 0 {
@@ -259,7 +293,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 					for _, e := range errs {
 						t.Errorf("integrity: %v", e)
 					}
-					t.Fatalf("CheckIntegrity found %d errors", len(errs))
+					fatalf("CheckIntegrity found %d errors", len(errs))
 				}
 			}
 		}() // end recover wrapper
