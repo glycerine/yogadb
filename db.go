@@ -2526,6 +2526,9 @@ func findBuildKV(it *Iter) *KV {
 //	  // Here all value sizes are automatically pulled in, since
 //	  // none of the (LAZY_SMALL, LAZY_LARGE, LAZY) smod were requested
 //
+//	  // For performance, we do not copy kvc.Value for you.
+//	  // So you must copy kvc.Value, if you need it later,
+//	  // before doing kvc.Close().
 //	  processKeyAndValueAtHlcTimestamp(kvc.Key, kvc.Value, kvc.Hlc)
 //
 //	  kvc.Close() // unpin from internal caches. Allows zero-copy reads.
