@@ -2356,6 +2356,13 @@ const (
 	GT SearchModifier = 3
 	// LT finds the largest key strictly less-than the query.
 	LT SearchModifier = 4
+	// LAZYVAL requests zero-copy return of inline values.
+	// The returned KVcloser.Value aliases interval cache memory.
+	// The caller MUST call Close() to release the cache pin.
+	// If the result came from a memtable (not yet flushed),
+	// Value is copied as usual (best-effort zero-copy).
+	LAZYVAL SearchModifier = 64
+
 	// LAZY_LARGE means we do not fetch LARGE.VLOG values
 	// automatically. The User must call FetchLarge() explicitly
 	// when they are desired.
@@ -2446,22 +2453,52 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 	defer db.topMutRW.RUnlock()
 
 	it := &Iter{db: db}
-	lazyLarge := (smod&LAZY_LARGE != 0)
+	lazyLarge := (smod & LAZY_LARGE != 0)
+	lazyVal := (smod & LAZYVAL != 0)
 	if lazyLarge {
 		it.lazyLarge = true
-		smod -= LAZY_LARGE
+		smod &^= LAZY_LARGE
 	}
+	smod &^= LAZYVAL // strip LAZYVAL before passing to findSeekIter
+
 	var found bool
 	found, exact = findSeekIter(it, smod, key)
 	if found {
 		zc := findBuildKV(it)
-		// String Key is immutable - no copy needed. Copy Value.
+		resultKey := zc.Key
+
+		// Release iterator state early - we have what we need.
+		it.releaseIterState()
+
+		// LAZYVAL path: try zero-copy via cache pinning.
+		// Only works for inline values from FlexSpace (not memtable).
+		if lazyVal && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
+			kvc = db.findBuildKVZeroCopy(resultKey)
+			if kvc != nil {
+				return
+			}
+			// Fallback: key was in memtable or edge case. Copy below.
+		}
+
+		// Standard path: copy inline value, auto-fetch large value.
 		owned := KV{Vptr: zc.Vptr, Hlc: zc.Hlc}
-		owned.Key = zc.Key
+		owned.Key = resultKey
 		if !zc.HasVPtr() && zc.Value != nil {
 			owned.Value = append([]byte{}, zc.Value...)
 		}
 		kvc = &KVcloser{KV: owned, db: db}
+
+		// Auto-fetch large value unless LAZY_LARGE was requested
+		if !lazyLarge && kvc.HasVPtr() {
+			val, fetchErr := db.resolveVPtr(kvc.KV)
+			if fetchErr != nil {
+				kvc = nil
+				err = fetchErr
+			} else {
+				kvc.Value = val
+			}
+		}
+		return
 	}
 	it.releaseIterState()
 	return
@@ -2484,6 +2521,63 @@ func (s *KVcloser) Close() {
 		s.entry = nil
 	}
 	s.Value = nil // prevent use-after-close
+}
+
+// Fetch retrieves the large value from the VLOG if this KV has
+// a VPtr (kvc.Large() == true). For inline values, Fetch is a
+// no-op. After Fetch returns nil error, kvc.Value holds the bytes.
+// Fetch is only needed when LAZY_LARGE was used in the Find call.
+func (s *KVcloser) Fetch() error {
+	if s == nil {
+		return nil
+	}
+	if !s.HasVPtr() {
+		return nil // inline value already present
+	}
+	val, err := s.db.FetchLarge(&s.KV)
+	if err != nil {
+		return err
+	}
+	s.Value = val
+	return nil
+}
+
+// findBuildKVZeroCopy returns a KVcloser whose Value aliases
+// interval cache memory (zero-copy). The cache entry is pinned
+// via refcnt; the caller must call Close() to release.
+// Caller must hold topMutRW.RLock() or topMutRW.Lock().
+//
+// Returns nil if the key is not found in FlexSpace (e.g., it
+// was in a memtable, or was a tombstone). Caller should fall
+// back to the copy path.
+func (db *FlexDB) findBuildKVZeroCopy(key string) *KVcloser {
+	if db.tree == nil || db.tree.leafHead == nil {
+		return nil
+	}
+	var nh memSparseIndexTreeHandler
+	db.tree.findAnchorPos(key, &nh)
+	anchor := nh.node.anchors[nh.idx]
+	if anchor == nil || anchor.psize == 0 {
+		return nil
+	}
+	anchorLoff := uint64(anchor.loff + nh.shift)
+	partition := db.cache.getPartition(anchor)
+	fce := partition.getEntry(anchor, anchorLoff, db)
+
+	idx, ok := intervalCacheEntryFindKeyEQ(fce, key)
+	if !ok || fce.kvs[idx].isTombstone() {
+		partition.releaseEntry(fce)
+		return nil
+	}
+	// Transfer cache entry ownership to KVcloser (don't release).
+	// fce.kvs[idx] is a value copy of the KV struct (64B), but
+	// the .Value []byte slice header still points into cache memory.
+	return &KVcloser{
+		KV:        fce.kvs[idx],
+		partition: partition,
+		entry:     fce,
+		db:        db,
+	}
 }
 
 // GetKV is like Get but allows lazy loading of Large values;

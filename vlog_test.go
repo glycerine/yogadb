@@ -371,11 +371,13 @@ func TestFlexDB_VLOG_DedupSameValue(t *testing.T) {
 	hlcAfterFirst := make([]HLC, numKeys)
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("dedup_%04d", i)
-		kv, ok := db.GetKV(key)
-		if !ok {
+		kv, err := db.GetKV(key)
+		panicOn(err)
+		if kv == nil {
 			t.Fatalf("GetKV(%q) not found after first write", key)
 		}
 		hlcAfterFirst[i] = kv.Hlc
+		kv.Close()
 	}
 
 	// Overwrite ALL keys with the SAME values. The VLOG should NOT grow
@@ -399,14 +401,16 @@ func TestFlexDB_VLOG_DedupSameValue(t *testing.T) {
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("dedup_%04d", i)
 		mustGet(t, db, key, makeTestValue(200+i))
-		kv, ok := db.GetKV(key)
-		if !ok {
+		kv, err := db.GetKV(key)
+		panicOn(err)
+		if kv == nil {
 			t.Fatalf("GetKV(%q) not found after dedup overwrite", key)
 		}
 		if kv.Hlc <= hlcAfterFirst[i] {
 			t.Fatalf("key %q: HLC did not advance after dedup overwrite: first=%d, second=%d",
 				key, hlcAfterFirst[i], kv.Hlc)
 		}
+		kv.Close()
 	}
 
 	// Now overwrite with DIFFERENT values — VLOG should grow.
@@ -463,11 +467,13 @@ func TestFlexDB_VLOG_DedupBatch(t *testing.T) {
 	hlcAfterFirst := make([]HLC, numKeys)
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("bdedup_%04d", i)
-		kv, ok := db.GetKV(key)
-		if !ok {
+		kv, err := db.GetKV(key)
+		panicOn(err)
+		if kv == nil {
 			t.Fatalf("GetKV(%q) not found after first batch", key)
 		}
 		hlcAfterFirst[i] = kv.Hlc
+		kv.Close()
 	}
 
 	// Second batch with identical values.
@@ -490,14 +496,16 @@ func TestFlexDB_VLOG_DedupBatch(t *testing.T) {
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("bdedup_%04d", i)
 		mustGet(t, db, key, makeTestValue(150+i))
-		kv, ok := db.GetKV(key)
-		if !ok {
+		kv, err := db.GetKV(key)
+		panicOn(err)
+		if kv == nil {
 			t.Fatalf("GetKV(%q) not found after dedup batch", key)
 		}
 		if kv.Hlc <= hlcAfterFirst[i] {
 			t.Fatalf("key %q: HLC did not advance after dedup batch: first=%d, second=%d",
 				key, hlcAfterFirst[i], kv.Hlc)
 		}
+		kv.Close()
 	}
 
 	db.Close()

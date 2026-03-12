@@ -1,6 +1,7 @@
 package yogadb
 
 import (
+	"bytes"
 	"fmt"
 	"testing"
 )
@@ -11,27 +12,29 @@ func TestFind_Exact(t *testing.T) {
 	populateFindTestDB(t, db)
 
 	// Exact match: existing key.
-	kv, found, exact := db.Find(Exact, "key003")
-	if !found || !exact {
-		t.Fatalf("Exact key003: found=%v exact=%v, want true true", found, exact)
+	kvc, exact, err := db.Find(Exact, "key003")
+	panicOn(err)
+	if kvc == nil || !exact {
+		t.Fatalf("Exact key003: kvc=%v exact=%v, want non-nil true", kvc, exact)
 	}
-	if kv.Large() {
+	defer kvc.Close()
+	if kvc.Large() {
 		t.Fatal("unexpected large value")
 	}
-	if string(kv.Key) != "key003" {
-		t.Fatalf("got key %q, want key003", kv.Key)
+	if string(kvc.Key) != "key003" {
+		t.Fatalf("got key %q, want key003", kvc.Key)
 	}
-	if string(kv.Value) != "val003" {
-		t.Fatalf("got value %q, want val003", kv.Value)
+	if string(kvc.Value) != "val003" {
+		t.Fatalf("got value %q, want val003", kvc.Value)
 	}
 
 	// Exact match: missing key.
-	kv2, found2, exact2 := db.Find(Exact, "key999")
-	if found2 || exact2 {
-		t.Fatalf("Exact key999: found=%v exact=%v, want false false", found2, exact2)
+	kvc2, exact2, err2 := db.Find(Exact, "key999")
+	if err2 != nil {
+		t.Fatal(err2)
 	}
-	if kv2 != nil {
-		t.Fatalf("expected nil KV, got %v", kv2)
+	if kvc2 != nil || exact2 {
+		t.Fatalf("Exact key999: kvc=%v exact=%v, want nil false", kvc2, exact2)
 	}
 }
 
@@ -41,46 +44,50 @@ func TestFind_GTE(t *testing.T) {
 	populateFindTestDB(t, db)
 
 	// GTE on existing key -> exact match.
-	kv, found, exact := db.Find(GTE, "key003")
-	if !found || !exact {
-		t.Fatalf("GTE key003: found=%v exact=%v, want true true", found, exact)
+	kvc, exact, err := db.Find(GTE, "key003")
+	panicOn(err)
+	if kvc == nil || !exact {
+		t.Fatalf("GTE key003: kvc=%v exact=%v, want non-nil true", kvc, exact)
 	}
-	if string(kv.Key) != "key003" || string(kv.Value) != "val003" {
-		t.Fatalf("got key=%q value=%q, want key003/val003", kv.Key, kv.Value)
+	if string(kvc.Key) != "key003" || string(kvc.Value) != "val003" {
+		t.Fatalf("got key=%q value=%q, want key003/val003", kvc.Key, kvc.Value)
 	}
+	kvc.Close()
 
 	// GTE on gap key -> next key.
-	kv2, found2, exact2 := db.Find(GTE, "key002a")
-	if !found2 {
+	kvc2, exact2, err := db.Find(GTE, "key002a")
+	panicOn(err)
+	if kvc2 == nil {
 		t.Fatal("GTE key002a: not found")
 	}
 	if exact2 {
 		t.Fatal("GTE key002a: should not be exact")
 	}
-	if string(kv2.Key) != "key003" {
-		t.Fatalf("GTE key002a: got key %q, want key003", kv2.Key)
+	if string(kvc2.Key) != "key003" {
+		t.Fatalf("GTE key002a: got key %q, want key003", kvc2.Key)
 	}
-	if string(kv2.Value) != "val003" {
-		t.Fatalf("got value %q, want val003", kv2.Value)
+	if string(kvc2.Value) != "val003" {
+		t.Fatalf("got value %q, want val003", kvc2.Value)
 	}
+	kvc2.Close()
 
 	// GTE past end -> not found.
-	kv3, found3, _ := db.Find(GTE, "key999")
-	if found3 {
-		t.Fatal("GTE key999: should not be found")
-	}
-	if kv3 != nil {
-		t.Fatal("expected nil KV")
+	kvc3, _, err := db.Find(GTE, "key999")
+	panicOn(err)
+	if kvc3 != nil {
+		t.Fatal("expected nil KVcloser")
 	}
 
 	// GTE nil -> first key.
-	kv4, found4, _ := db.Find(GTE, "")
-	if !found4 {
+	kvc4, _, err := db.Find(GTE, "")
+	panicOn(err)
+	if kvc4 == nil {
 		t.Fatal("GTE nil: not found")
 	}
-	if string(kv4.Key) != "key001" {
-		t.Fatalf("GTE nil: got key %q, want key001", kv4.Key)
+	if string(kvc4.Key) != "key001" {
+		t.Fatalf("GTE nil: got key %q, want key001", kvc4.Key)
 	}
+	kvc4.Close()
 }
 
 // TestFind_GT tests Find with GT modifier.
@@ -89,43 +96,50 @@ func TestFind_GT(t *testing.T) {
 	populateFindTestDB(t, db)
 
 	// GT on existing key -> next key.
-	kv, found, exact := db.Find(GT, "key003")
-	if !found {
+	kvc, exact, err := db.Find(GT, "key003")
+	panicOn(err)
+	if kvc == nil {
 		t.Fatal("GT key003: not found")
 	}
 	if exact {
 		t.Fatal("GT key003: should not be exact (key003 itself is skipped)")
 	}
-	if string(kv.Key) != "key004" {
-		t.Fatalf("GT key003: got key %q, want key004", kv.Key)
+	if string(kvc.Key) != "key004" {
+		t.Fatalf("GT key003: got key %q, want key004", kvc.Key)
 	}
-	if string(kv.Value) != "val004" {
-		t.Fatalf("got value %q, want val004", kv.Value)
+	if string(kvc.Value) != "val004" {
+		t.Fatalf("got value %q, want val004", kvc.Value)
 	}
+	kvc.Close()
 
 	// GT on gap key -> next key (same as GTE on gap).
-	kv2, found2, _ := db.Find(GT, "key002a")
-	if !found2 {
+	kvc2, _, err := db.Find(GT, "key002a")
+	panicOn(err)
+	if kvc2 == nil {
 		t.Fatal("GT key002a: not found")
 	}
-	if string(kv2.Key) != "key003" {
-		t.Fatalf("GT key002a: got key %q, want key003", kv2.Key)
+	if string(kvc2.Key) != "key003" {
+		t.Fatalf("GT key002a: got key %q, want key003", kvc2.Key)
 	}
+	kvc2.Close()
 
 	// GT on last key -> not found.
-	_, found3, _ := db.Find(GT, "key010")
-	if found3 {
+	kvc3, _, err := db.Find(GT, "key010")
+	panicOn(err)
+	if kvc3 != nil {
 		t.Fatal("GT key010: should not be found")
 	}
 
 	// GT nil -> first key.
-	kv4, found4, _ := db.Find(GT, "")
-	if !found4 {
+	kvc4, _, err := db.Find(GT, "")
+	panicOn(err)
+	if kvc4 == nil {
 		t.Fatal("GT nil: not found")
 	}
-	if string(kv4.Key) != "key001" {
-		t.Fatalf("GT nil: got key %q, want key001", kv4.Key)
+	if string(kvc4.Key) != "key001" {
+		t.Fatalf("GT nil: got key %q, want key001", kvc4.Key)
 	}
+	kvc4.Close()
 }
 
 // TestFind_LTE tests Find with LTE modifier.
@@ -134,40 +148,47 @@ func TestFind_LTE(t *testing.T) {
 	populateFindTestDB(t, db)
 
 	// LTE on existing key -> exact match.
-	kv, found, exact := db.Find(LTE, "key003")
-	if !found || !exact {
-		t.Fatalf("LTE key003: found=%v exact=%v, want true true", found, exact)
+	kvc, exact, err := db.Find(LTE, "key003")
+	panicOn(err)
+	if kvc == nil || !exact {
+		t.Fatalf("LTE key003: kvc=%v exact=%v, want non-nil true", kvc, exact)
 	}
-	if string(kv.Key) != "key003" || string(kv.Value) != "val003" {
-		t.Fatalf("got key=%q value=%q, want key003/val003", kv.Key, kv.Value)
+	if string(kvc.Key) != "key003" || string(kvc.Value) != "val003" {
+		t.Fatalf("got key=%q value=%q, want key003/val003", kvc.Key, kvc.Value)
 	}
+	kvc.Close()
 
 	// LTE on gap key -> previous key.
-	kv2, found2, exact2 := db.Find(LTE, "key003a")
-	if !found2 {
+	kvc2, exact2, err := db.Find(LTE, "key003a")
+	panicOn(err)
+	if kvc2 == nil {
 		t.Fatal("LTE key003a: not found")
 	}
 	if exact2 {
 		t.Fatal("LTE key003a: should not be exact")
 	}
-	if string(kv2.Key) != "key003" {
-		t.Fatalf("LTE key003a: got key %q, want key003", kv2.Key)
+	if string(kvc2.Key) != "key003" {
+		t.Fatalf("LTE key003a: got key %q, want key003", kvc2.Key)
 	}
+	kvc2.Close()
 
 	// LTE before first -> not found.
-	_, found3, _ := db.Find(LTE, "key000")
-	if found3 {
+	kvc3, _, err := db.Find(LTE, "key000")
+	panicOn(err)
+	if kvc3 != nil {
 		t.Fatal("LTE key000: should not be found")
 	}
 
 	// LTE nil -> last key.
-	kv4, found4, _ := db.Find(LTE, "")
-	if !found4 {
+	kvc4, _, err := db.Find(LTE, "")
+	panicOn(err)
+	if kvc4 == nil {
 		t.Fatal("LTE nil: not found")
 	}
-	if string(kv4.Key) != "key010" {
-		t.Fatalf("LTE nil: got key %q, want key010", kv4.Key)
+	if string(kvc4.Key) != "key010" {
+		t.Fatalf("LTE nil: got key %q, want key010", kvc4.Key)
 	}
+	kvc4.Close()
 }
 
 // TestFind_LT tests Find with LT modifier.
@@ -176,43 +197,50 @@ func TestFind_LT(t *testing.T) {
 	populateFindTestDB(t, db)
 
 	// LT on existing key -> previous key.
-	kv, found, exact := db.Find(LT, "key003")
-	if !found {
+	kvc, exact, err := db.Find(LT, "key003")
+	panicOn(err)
+	if kvc == nil {
 		t.Fatal("LT key003: not found")
 	}
 	if exact {
 		t.Fatal("LT key003: should not be exact")
 	}
-	if string(kv.Key) != "key002" {
-		t.Fatalf("LT key003: got key %q, want key002", kv.Key)
+	if string(kvc.Key) != "key002" {
+		t.Fatalf("LT key003: got key %q, want key002", kvc.Key)
 	}
-	if string(kv.Value) != "val002" {
-		t.Fatalf("got value %q, want val002", kv.Value)
+	if string(kvc.Value) != "val002" {
+		t.Fatalf("got value %q, want val002", kvc.Value)
 	}
+	kvc.Close()
 
 	// LT on gap key -> previous key.
-	kv2, found2, _ := db.Find(LT, "key003a")
-	if !found2 {
+	kvc2, _, err := db.Find(LT, "key003a")
+	panicOn(err)
+	if kvc2 == nil {
 		t.Fatal("LT key003a: not found")
 	}
-	if string(kv2.Key) != "key003" {
-		t.Fatalf("LT key003a: got key %q, want key003", kv2.Key)
+	if string(kvc2.Key) != "key003" {
+		t.Fatalf("LT key003a: got key %q, want key003", kvc2.Key)
 	}
+	kvc2.Close()
 
 	// LT on first key -> not found.
-	_, found3, _ := db.Find(LT, "key001")
-	if found3 {
+	kvc3, _, err := db.Find(LT, "key001")
+	panicOn(err)
+	if kvc3 != nil {
 		t.Fatal("LT key001: should not be found")
 	}
 
 	// LT nil -> last key.
-	kv4, found4, _ := db.Find(LT, "")
-	if !found4 {
+	kvc4, _, err := db.Find(LT, "")
+	panicOn(err)
+	if kvc4 == nil {
 		t.Fatal("LT nil: not found")
 	}
-	if string(kv4.Key) != "key010" {
-		t.Fatalf("LT nil: got key %q, want key010", kv4.Key)
+	if string(kvc4.Key) != "key010" {
+		t.Fatalf("LT nil: got key %q, want key010", kvc4.Key)
 	}
+	kvc4.Close()
 }
 
 // TestFindIt_IteratorContinuation verifies that the returned iterator
@@ -283,12 +311,12 @@ func TestFind_EmptyDB(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 
 	for _, smod := range []SearchModifier{Exact, GTE, GT, LTE, LT} {
-		kv, found, _ := db.Find(smod, "anything")
-		if found {
-			t.Errorf("smod=%d on empty DB: should not find anything", smod)
+		kvc, _, err := db.Find(smod, "anything")
+		if err != nil {
+			t.Errorf("smod=%d on empty DB: unexpected error: %v", smod, err)
 		}
-		if kv != nil {
-			t.Errorf("smod=%d on empty DB: expected nil KV", smod)
+		if kvc != nil {
+			t.Errorf("smod=%d on empty DB: expected nil KVcloser", smod)
 		}
 	}
 }
@@ -300,22 +328,26 @@ func TestFind_AfterSync(t *testing.T) {
 	db.Sync()
 
 	// GTE on gap.
-	kv, found, exact := db.Find(GTE, "key004a")
-	if !found || exact {
-		t.Fatalf("GTE key004a after sync: found=%v exact=%v", found, exact)
+	kvc, exact, err := db.Find(GTE, "key004a")
+	panicOn(err)
+	if kvc == nil || exact {
+		t.Fatalf("GTE key004a after sync: kvc=%v exact=%v", kvc, exact)
 	}
-	if string(kv.Key) != "key005" {
-		t.Fatalf("got key %q, want key005", kv.Key)
+	if string(kvc.Key) != "key005" {
+		t.Fatalf("got key %q, want key005", kvc.Key)
 	}
+	kvc.Close()
 
 	// LT on existing.
-	kv2, found2, exact2 := db.Find(LT, "key005")
-	if !found2 || exact2 {
-		t.Fatalf("LT key005 after sync: found=%v exact=%v", found2, exact2)
+	kvc2, exact2, err := db.Find(LT, "key005")
+	panicOn(err)
+	if kvc2 == nil || exact2 {
+		t.Fatalf("LT key005 after sync: kvc=%v exact=%v", kvc2, exact2)
 	}
-	if string(kv2.Key) != "key004" {
-		t.Fatalf("got key %q, want key004", kv2.Key)
+	if string(kvc2.Key) != "key004" {
+		t.Fatalf("got key %q, want key004", kvc2.Key)
 	}
+	kvc2.Close()
 }
 
 // TestFind_KVOwnership verifies that the returned KV from Find is safe
@@ -325,24 +357,26 @@ func TestFind_KVOwnership(t *testing.T) {
 	populateFindTestDB(t, db)
 	db.Sync() // flush to FlexSpace
 
-	kv, found, _ := db.Find(GTE, "key005")
-	if !found {
+	kvc, _, err := db.Find(GTE, "key005")
+	panicOn(err)
+	if kvc == nil {
 		t.Fatal("not found")
 	}
-	origKey := string(kv.Key)
-	origVal := string(kv.Value)
+	origKey := string(kvc.Key)
+	origVal := string(kvc.Value)
 
 	// Overwrite the key and sync to potentially evict cache.
 	mustPut(t, db, "key005", "CHANGED")
 	db.Sync()
 
 	// The original KV should still hold the old values (owned copy).
-	if string(kv.Key) != origKey {
-		t.Fatalf("key mutated: got %q, want %q", kv.Key, origKey)
+	if string(kvc.Key) != origKey {
+		t.Fatalf("key mutated: got %q, want %q", kvc.Key, origKey)
 	}
-	if string(kv.Value) != origVal {
-		t.Fatalf("value mutated: got %q, want %q", kv.Value, origVal)
+	if string(kvc.Value) != origVal {
+		t.Fatalf("value mutated: got %q, want %q", kvc.Value, origVal)
 	}
+	kvc.Close()
 }
 
 // TestFind_HLCPopulated verifies that the returned KV has a non-zero HLC.
@@ -350,13 +384,15 @@ func TestFind_HLCPopulated(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateFindTestDB(t, db)
 
-	kv, found, _ := db.Find(Exact, "key005")
-	if !found {
+	kvc, _, err := db.Find(Exact, "key005")
+	panicOn(err)
+	if kvc == nil {
 		t.Fatal("not found")
 	}
-	if kv.Hlc == 0 {
+	if kvc.Hlc == 0 {
 		t.Fatal("expected non-zero HLC on found KV")
 	}
+	kvc.Close()
 }
 
 // TestFetchLarge_InlineValue verifies FetchLarge works for inline values.
@@ -364,21 +400,137 @@ func TestFetchLarge_InlineValue(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateFindTestDB(t, db)
 
-	kv, found, _ := db.Find(Exact, "key003")
-	if !found {
+	kvc, _, err := db.Find(Exact, "key003")
+	panicOn(err)
+	if kvc == nil {
 		t.Fatal("not found")
 	}
-	if kv.Large() {
+	if kvc.Large() {
 		t.Fatal("expected inline value, got large")
 	}
 	// FetchLarge on an inline value should return the value.
-	val, err := db.FetchLarge(kv)
+	val, err := db.FetchLarge(&kvc.KV)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(val) != "val003" {
 		t.Fatalf("got %q, want val003", val)
 	}
+	kvc.Close()
+}
+
+// TestFind_LazyLarge tests the LAZY_LARGE flag: large values are not
+// auto-fetched, and must be retrieved via kvc.Fetch().
+func TestFind_LazyLarge(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+
+	bigVal := bytes.Repeat([]byte("x"), 200)
+	panicOn(db.Put("bigkey", bigVal))
+	db.Sync()
+
+	// Without LAZY_LARGE: value auto-fetched
+	kvc, _, err := db.Find(Exact, "bigkey")
+	panicOn(err)
+	if kvc == nil {
+		t.Fatal("not found")
+	}
+	if !bytes.Equal(kvc.Value, bigVal) {
+		t.Fatal("value mismatch on auto-fetch")
+	}
+	kvc.Close()
+
+	// With LAZY_LARGE: value NOT fetched until Fetch()
+	kvc2, _, err := db.Find(Exact|LAZY_LARGE, "bigkey")
+	panicOn(err)
+	if kvc2 == nil {
+		t.Fatal("not found")
+	}
+	if kvc2.Value != nil {
+		t.Fatal("expected nil Value with LAZY_LARGE before Fetch")
+	}
+	if !kvc2.Large() {
+		t.Fatal("expected Large() == true")
+	}
+	err = kvc2.Fetch()
+	panicOn(err)
+	if !bytes.Equal(kvc2.Value, bigVal) {
+		t.Fatal("value mismatch after Fetch")
+	}
+	kvc2.Close()
+}
+
+// TestFind_LazyVal tests the LAZYVAL flag: zero-copy inline values
+// via cache pinning. Values alias cache memory and require Close().
+func TestFind_LazyVal(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+
+	// Populate and flush to FlexSpace so values are in cache.
+	for i := 1; i <= 10; i++ {
+		k := fmt.Sprintf("key%03d", i)
+		v := fmt.Sprintf("val%03d", i)
+		panicOn(db.Put(k, []byte(v)))
+	}
+	db.Sync()
+
+	// LAZYVAL: zero-copy inline value
+	kvc, exact, err := db.Find(Exact|LAZYVAL, "key005")
+	panicOn(err)
+	if kvc == nil || !exact {
+		t.Fatal("not found")
+	}
+	if string(kvc.Value) != "val005" {
+		t.Fatalf("got %q, want val005", kvc.Value)
+	}
+	// Value aliases cache memory - verify it's valid before Close
+	valRef := kvc.Value
+	if len(valRef) != 6 {
+		t.Fatal("unexpected length")
+	}
+	kvc.Close()
+	// After Close, kvc.Value is nil
+	if kvc.Value != nil {
+		t.Fatal("Value should be nil after Close")
+	}
+
+	// LAZYVAL with GTE: non-exact match
+	kvc2, exact2, err := db.Find(GTE|LAZYVAL, "key004a")
+	panicOn(err)
+	if kvc2 == nil {
+		t.Fatal("not found")
+	}
+	if exact2 {
+		t.Fatal("should not be exact")
+	}
+	if kvc2.Key != "key005" {
+		t.Fatalf("got %q, want key005", kvc2.Key)
+	}
+	if string(kvc2.Value) != "val005" {
+		t.Fatalf("got %q, want val005", kvc2.Value)
+	}
+	kvc2.Close()
+
+	// LAZYVAL|LAZY_LARGE combined with a large value
+	bigVal := bytes.Repeat([]byte("B"), 200)
+	panicOn(db.Put("large001", bigVal))
+	db.Sync()
+
+	kvc3, _, err := db.Find(Exact|LAZYVAL|LAZY_LARGE, "large001")
+	panicOn(err)
+	if kvc3 == nil {
+		t.Fatal("not found")
+	}
+	if !kvc3.Large() {
+		t.Fatal("expected Large")
+	}
+	if kvc3.Value != nil {
+		t.Fatal("expected nil Value before Fetch")
+	}
+	err = kvc3.Fetch()
+	panicOn(err)
+	if !bytes.Equal(kvc3.Value, bigVal) {
+		t.Fatal("value mismatch after Fetch")
+	}
+	kvc3.Close()
 }
 
 // TestLockedIter_PutGetDelete verifies that rwDB.Put, rwDB.Get, and rwDB.Delete
