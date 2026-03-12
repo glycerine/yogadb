@@ -107,10 +107,11 @@ type Iter struct {
 	// cache memory (zero-copy), safe because the write lock is held.
 	pKV *KV
 
-	valid     bool
-	dir       int // 1=forward, -1=backward (informational)
-	closed    bool
-	lazyLarge bool
+	valid      bool
+	dir        int // 1=forward, -1=backward (informational)
+	closed     bool
+	lazyLarge  bool
+	skipValues bool
 
 	// Stateful FlexSpace cursor for O(1) amortized forward iteration.
 	fc flexCursor
@@ -1665,7 +1666,7 @@ func (it *Iter) Key() string {
 // On the fast path (empty memtables), the first call copies from the
 // cache reference into valBuf. Subsequent calls return valBuf directly.
 func (it *Iter) Vin() (val []byte) {
-	if it.pKV == nil {
+	if it.pKV == nil || it.skipValues {
 		return nil
 	}
 
@@ -1697,6 +1698,9 @@ func (it *Iter) Vin() (val []byte) {
 func (it *Iter) Vel() (val []byte, empty, large bool) {
 	if it.pKV == nil {
 		empty = true
+		return
+	}
+	if it.skipValues {
 		return
 	}
 	large = it.pKV.HasVPtr()
@@ -1735,7 +1739,7 @@ func (it *Iter) Large() bool {
 // inline and not large, it will still be returned
 // (and the error will be nil).
 func (it *Iter) FetchV() ([]byte, error) {
-	if !it.valid || it.pKV == nil {
+	if !it.valid || it.pKV == nil || it.skipValues {
 		return nil, nil
 	}
 	if !it.pKV.HasVPtr() {
@@ -1749,7 +1753,7 @@ func (it *Iter) FetchV() ([]byte, error) {
 // iterResolvedValue returns the value for the current iterator position,
 // resolving VLOG pointers if needed.
 func (it *Iter) iterResolvedValue() []byte {
-	if it.pKV == nil {
+	if it.pKV == nil || it.skipValues {
 		return nil
 	}
 	if !it.pKV.HasVPtr() {

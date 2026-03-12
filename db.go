@@ -2377,6 +2377,14 @@ const (
 	// LT finds the largest key strictly less-than the query.
 	LT SearchModifier = 4
 
+	// SKIP_VALUES returns KV.Values = nil; we make
+	// no effort to retieve values, only keys. This is
+	// useful for very fast full-table scans of just the keys,
+	// when the user knows they will not inspect values
+	// at all. In contrast, LAZY keeps open the option to
+	// look at the values, but will pay some time in overhead.
+	SKIP_VALUES SearchModifier = 16
+
 	// LAZY_SMALL requests zero-copy return of inline values.
 	// The returned KVcloser.Value aliases interval cache memory.
 	// The caller MUST call Close() to release the cache pin.
@@ -2491,9 +2499,14 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 	it := &Iter{db: db}
 	lazyLarge := (smod&LAZY_LARGE != 0)
 	lazySmall := (smod&LAZY_SMALL != 0)
-	if lazyLarge {
+	skipValues := (smod&SKIP_VALUES != 0)
+	if lazyLarge || skipValues {
 		it.lazyLarge = true
 		smod &^= LAZY_LARGE
+	}
+	if skipValues {
+		it.skipValues = true
+		smod &^= SKIP_VALUES
 	}
 	smod &^= LAZY_SMALL // strip LAZY_SMALL before passing to findSeekIter
 
@@ -2505,6 +2518,11 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 
 		// Release iterator state early - we have what we need.
 		it.releaseIterState()
+
+		if skipValues {
+			kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: db}
+			return
+		}
 
 		// LAZY_SMALL path: try zero-copy via cache pinning.
 		// Only works for inline values from FlexSpace (not memtable).

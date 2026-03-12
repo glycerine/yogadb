@@ -539,6 +539,94 @@ func TestFind_LazySmall(t *testing.T) {
 	kvc3.Close()
 }
 
+// TestFind_SkipValues verifies SKIP_VALUES returns keys with nil Values
+// for both inline and VLOG values, and that iterator Vin/Vel/FetchV return nil.
+func TestFind_SkipValues(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+
+	// Populate with small (inline) and large (VLOG) values.
+	for i := 1; i <= 10; i++ {
+		k := fmt.Sprintf("key%03d", i)
+		v := fmt.Sprintf("val%03d", i)
+		panicOn(db.Put(k, []byte(v)))
+	}
+	bigVal := bytes.Repeat([]byte("X"), 200) // > vlogInlineThreshold
+	panicOn(db.Put("large001", bigVal))
+	db.Sync()
+
+	// Find with SKIP_VALUES: inline value
+	kvc, exact, err := db.Find(Exact|SKIP_VALUES, "key005")
+	panicOn(err)
+	if kvc == nil || !exact {
+		t.Fatal("not found")
+	}
+	if kvc.Key != "key005" {
+		t.Fatalf("got key %q, want key005", kvc.Key)
+	}
+	if kvc.Value != nil {
+		t.Fatalf("SKIP_VALUES: expected nil Value, got %q", kvc.Value)
+	}
+	kvc.Close()
+
+	// Find with SKIP_VALUES: large value
+	kvc2, exact2, err := db.Find(Exact|SKIP_VALUES, "large001")
+	panicOn(err)
+	if kvc2 == nil || !exact2 {
+		t.Fatal("not found")
+	}
+	if kvc2.Key != "large001" {
+		t.Fatalf("got key %q, want large001", kvc2.Key)
+	}
+	if kvc2.Value != nil {
+		t.Fatalf("SKIP_VALUES: expected nil Value for large key, got len=%d", len(kvc2.Value))
+	}
+	kvc2.Close()
+
+	// FindIt + iterator with SKIP_VALUES: keys-only scan
+	err = db.View(func(ro *ReadOnlyTx) error {
+		kvc3, _, ferr, it := ro.FindIt(GTE|SKIP_VALUES, "key001")
+		if ferr != nil {
+			return ferr
+		}
+		if kvc3 == nil {
+			t.Fatal("FindIt: not found")
+		}
+		if kvc3.Value != nil {
+			t.Fatalf("FindIt SKIP_VALUES: expected nil Value, got %q", kvc3.Value)
+		}
+		kvc3.Close()
+
+		// Iterate: all Vin/Vel/FetchV should return nil
+		count := 0
+		for it.Valid() {
+			if it.Key() == "" {
+				t.Fatal("empty key")
+			}
+			if it.Vin() != nil {
+				t.Fatalf("Vin should be nil with SKIP_VALUES, key=%s", it.Key())
+			}
+			val, empty, large := it.Vel()
+			if val != nil {
+				t.Fatalf("Vel should return nil val with SKIP_VALUES, key=%s", it.Key())
+			}
+			_ = empty
+			_ = large
+			fv, fe := it.FetchV()
+			if fv != nil || fe != nil {
+				t.Fatalf("FetchV should be nil with SKIP_VALUES, key=%s", it.Key())
+			}
+			count++
+			it.Next()
+		}
+		// 10 inline keys + 1 large key = 11, minus 1 for initial FindIt result
+		if count < 10 {
+			t.Fatalf("expected at least 10 keys, got %d", count)
+		}
+		return nil
+	})
+	panicOn(err)
+}
+
 // TestLockedIter_PutGetDelete verifies that rwDB.Put, rwDB.Get, and rwDB.Delete
 // work correctly through an Update transaction, with read-your-writes visibility.
 func TestLockedIter_PutGetDelete(t *testing.T) {

@@ -75,9 +75,14 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 	it := tx.newIter()
 	lazyLarge := (smod&LAZY_LARGE != 0)
 	lazySmall := (smod&LAZY_SMALL != 0)
-	if lazyLarge {
+	skipValues := (smod&SKIP_VALUES != 0)
+	if lazyLarge || skipValues {
 		it.lazyLarge = true
 		smod &^= LAZY_LARGE
+	}
+	if skipValues {
+		it.skipValues = true
+		smod &^= SKIP_VALUES
 	}
 	smod &^= LAZY_SMALL
 
@@ -88,6 +93,11 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 		resultKey := zc.Key
 
 		it.Close()
+
+		if skipValues {
+			kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: tx.db}
+			return
+		}
 
 		// LAZY_SMALL path: try zero-copy via cache pinning.
 		if lazySmall && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
@@ -132,9 +142,14 @@ func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact
 	it = tx.newIter()
 	lazyLarge := (smod&LAZY_LARGE != 0)
 	lazySmall := (smod&LAZY_SMALL != 0)
-	if lazyLarge {
+	skipValues := (smod&SKIP_VALUES != 0)
+	if lazyLarge || skipValues {
 		it.lazyLarge = true
 		smod &^= LAZY_LARGE
+	}
+	if skipValues {
+		it.skipValues = true
+		smod &^= SKIP_VALUES
 	}
 	smod &^= LAZY_SMALL
 
@@ -145,6 +160,11 @@ func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact
 	}
 	zc := findBuildKV(it)
 	resultKey := zc.Key
+
+	if skipValues {
+		kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: tx.db}
+		return
+	}
 
 	// LAZY_SMALL path: try zero-copy via cache pinning.
 	if lazySmall && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
