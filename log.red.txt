@@ -1,0 +1,12 @@
+-*- mode: compilation; default-directory: "~/yogadb/" -*-
+Compilation started at Thu Mar 12 09:38:14
+
+go test -run=FuzzAnchorTreeDrift/ca5461dc4ce79eab -tags memfs
+--- FAIL: FuzzAnchorTreeDrift (0.14s)
+    --- FAIL: FuzzAnchorTreeDrift/ca5461dc4ce79eab (0.14s)
+        anchor_drift_fuzz_test.go:191: after reopen: Get("k0016") not found
+FAIL
+exit status 1
+FAIL	github.com/glycerine/yogadb	0.186s
+
+Compilation exited abnormally with code 1 at Thu Mar 12 09:38:19
