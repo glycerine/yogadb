@@ -607,6 +607,12 @@ type Config struct {
 	// the entire fuzz worker subprocess if they panic (the test's recover()
 	// only catches panics on the test goroutine, not background goroutines).
 	DisableBackgroundFlush bool
+
+	// PaddedSplits controls whether treeInsertAnchor pads both split
+	// halves to slottedPageMaxSize. Default false uses tight encoding,
+	// which cuts space amplification substantially. When true, the old
+	// padded behavior is used (useful for A/B comparison).
+	PaddedSplits bool
 }
 
 // PiggybackGCStats tracks statistics for piggyback GC runs.
@@ -3624,8 +3630,13 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 	rightCount := count / 2
 	leftCount := count - rightCount
 
-	// Left half: tight-encode. flushDirtyPages will grow to slottedPageMaxSize on first dirty flush.
-	leftBuf := slottedPageEncode(fce.kvs[:leftCount])
+	// Left half: encode and Update if psize changed.
+	var leftBuf []byte
+	if db.cfg.PaddedSplits {
+		leftBuf = slottedPageEncodePadded(fce.kvs[:leftCount], slottedPageMaxSize)
+	} else {
+		leftBuf = slottedPageEncode(fce.kvs[:leftCount])
+	}
 	leftPSize := uint32(len(leftBuf))
 	if leftPSize != anchor.psize {
 		db.ff.Update(leftBuf, anchorLoff, uint64(leftPSize), uint64(anchor.psize))
@@ -3635,8 +3646,13 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 	// Left fce will be marked dirty by caller (putPassthroughMarkDirty or
 	// putPassthroughR's split path). Content written on flush.
 
-	// Right half: tight-encode. flushDirtyPages will grow to slottedPageMaxSize on first dirty flush.
-	rightBuf := slottedPageEncode(fce.kvs[leftCount:fce.count])
+	// Right half: encode and Insert.
+	var rightBuf []byte
+	if db.cfg.PaddedSplits {
+		rightBuf = slottedPageEncodePadded(fce.kvs[leftCount:fce.count], slottedPageMaxSize)
+	} else {
+		rightBuf = slottedPageEncode(fce.kvs[leftCount:fce.count])
+	}
 	rightPSize := uint32(len(rightBuf))
 	newAnchorLoff := anchorLoff + uint64(anchor.psize)
 	db.ff.Insert(rightBuf, newAnchorLoff, uint64(rightPSize))
