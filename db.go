@@ -3624,24 +3624,19 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 	rightCount := count / 2
 	leftCount := count - rightCount
 
-	// Left half: mark dirty (will be written on Sync/eviction).
-	// If psize changed (shouldn't with fixed pages), do a real Update.
-	if anchor.psize != uint32(slottedPageMaxSize) {
-		leftBuf := slottedPageEncodePadded(fce.kvs[:leftCount], slottedPageMaxSize)
-		leftPSize := uint32(len(leftBuf))
-		//alwaysPrintf("treeInsertAnchor Update: oldPsize=%d newPsize=%d key=%q",
-		//	anchor.psize, leftPSize, anchor.key)
+	// Left half: tight-encode. flushDirtyPages will grow to slottedPageMaxSize on first dirty flush.
+	leftBuf := slottedPageEncode(fce.kvs[:leftCount])
+	leftPSize := uint32(len(leftBuf))
+	if leftPSize != anchor.psize {
 		db.ff.Update(leftBuf, anchorLoff, uint64(leftPSize), uint64(anchor.psize))
-		if leftPSize != anchor.psize {
-			nh.shiftUpPropagate(int64(leftPSize) - int64(anchor.psize))
-		}
+		nh.shiftUpPropagate(int64(leftPSize) - int64(anchor.psize))
 		anchor.psize = leftPSize
 	}
 	// Left fce will be marked dirty by caller (putPassthroughMarkDirty or
 	// putPassthroughR's split path). Content written on flush.
 
-	// Right half: allocate new fixed-size page via Insert (structural change).
-	rightBuf := slottedPageEncodePadded(fce.kvs[leftCount:fce.count], slottedPageMaxSize)
+	// Right half: tight-encode. flushDirtyPages will grow to slottedPageMaxSize on first dirty flush.
+	rightBuf := slottedPageEncode(fce.kvs[leftCount:fce.count])
 	rightPSize := uint32(len(rightBuf))
 	newAnchorLoff := anchorLoff + uint64(anchor.psize)
 	db.ff.Insert(rightBuf, newAnchorLoff, uint64(rightPSize))

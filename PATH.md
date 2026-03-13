@@ -257,3 +257,255 @@ All tests pass. Here's a summary of the changes:
   WAL replay (logRedo at db.go:4400), plus unit tests in db_test.go.
 
 ---------
+  Why dead space isn't reused inline - it's a structural property of log-structured allocation:
+
+  The block manager maintains a single write cursor (blkid + blkoff) that only moves forward within a block. bm.write() copies data at bm.blkoff and advances it. There is no mechanism to seek backward within a partially-used block to fill a "hole" left by a collapsed extent.
+
+  When ff.Update runs (line 971-974), it does:
+  1. collapseR(loff, olen) - this decrements blkusage[blkid] for the old extent's bytes, but the physical bytes remain in the block untouched
+  2. insertR(buf, loff, length) - this appends the new data at bm.offset() (the current write cursor), which is always at the end of the current block
+
+  The dead bytes from step 1 are still physically sitting in the block. The blkusage counter knows they're dead, but the block manager has no free-space map within a block - it only tracks one number per block (total live bytes). It doesn't know where the holes are within the 4 MB block.
+
+  Why it's designed this way (not just philosophical purity):
+
+  1. No intra-block free map: blkusage[] is a single uint32 per block - total live bytes. To reuse holes you'd need a proper allocator (free list or bitmap) within each 4 MB block, tracking the offset and size of every dead region. That's a significant data structure.
+  2. Extent fragmentation: If you filled holes, a single logical page might span multiple non-contiguous physical regions within a block (or across blocks). The FlexTree can handle this (it already splits extents), but reads become more scattered.
+  3. GC is the designed reclamation path: The architecture's answer is: when a block's blkusage drops low enough, GC rewrites the entire block - copying only live extents to fresh space. This is the standard log-structured approach (like LSM compaction or log-structured filesystems).
+  4. findEmptyBlock only recycles completely empty blocks: Line 162-164 shows it only reuses blocks where blkusage[i] == 0. A block that's 90% dead but 10% live is never reused - only GC can reclaim it.
+
+  So the real question isn't "why no free list" but rather "why isn't GC running during loads?" And the answer is: PiggybackGC_on_SyncOrFlush is off by default, and the test disables it. The dead space accumulates because nothing triggers GC during a bulk load.
+
+  This is also why Option B (tight splits) helps so much - it doesn't eliminate dead space, but it makes the dead extents much smaller (tight ~27 KB instead of padded 64 KB), so less total garbage accumulates.
+
+  Let me update the plan file with this understanding and the implementation plan.
+
+⏺ Reading Plan(~/.claude/plans/rippling-chasing-matsumoto.md)
+  ⎿  Read 124 lines
+
+⏺ The plan file already matches what the user's prompt asked me to implement. This is the same task. Let me update it with the dead-space understanding and keep it focused.
+
+⏺ Updated plan
+  ⎿  Added 23 lines
+       88  increment (e.g. 2x content or +4KB). This is more complex but eliminates all padding waste.
+       89  Risk: more `ff.Update` calls during update workloads, more FlexSpace garbage.
+       90
+       91 +## Why Dead Space Is Not Reused Inline
+       92 +
+       93 +FlexSpace is log-structured. The block manager has a single write cursor (`blkid` + `blkoff`)
+       94 +that only moves forward. `bm.write()` appends at `bm.blkoff`; there is no mechanism to
+       95 +seek backward within a block to fill holes left by collapsed extents.
+       96 +
+       97 +`ff.Update` (flexspace.go:962) does `collapseR` then `insertR`:
+       98 +- `collapseR` decrements `blkusage[blkid]` but the physical bytes stay in the block
+       99 +- `insertR` appends new data at `bm.offset()` (end of current block)
+      100 +
+      101 +The dead bytes are tracked only as a count (`blkusage` is one `uint32` per block - total
+      102 +live bytes, not a map of where holes are). To reuse holes you'd need a per-block free-space
+      103 +allocator (bitmap or free list) tracking offset+size of every dead region.
+      104 +
+      105 +`findEmptyBlock` (line 157) only recycles **completely empty** blocks (`blkusage[i] == 0`).
+      106 +A block that is 90% dead / 10% live is never reused - only GC can reclaim it by rewriting
+      107 +the live extents to fresh space and freeing the entire block.
+      108 +
+      109 +This is the standard log-structured design tradeoff: simple append-only writes at the cost
+      110 +of background GC. The issue here is that GC doesn't run during bulk loads (PiggybackGC is off).
+      111 +
+      112  ## Recommended Approach: Idea B (tight splits)
+      113
+      114  Simplest change with the biggest impact. One function to modify.
+      115 +Does not eliminate dead space, but makes dead extents much smaller (tight ~27 KB vs padded 64 KB),
+      116 +so less total garbage accumulates.
+      117
+      118  ### Implementation
+      119
+  ⎿  1 PostToolUse hook ran
+-----------
+
+# Reduce Space Amplification at SLOTTED_PAGE_KB=64
+
+## Context
+
+At `SLOTTED_PAGE_KB=64`, loading 434K keys (22.8 MB raw) produces 68 MB on disk (3.13x).
+At `SLOTTED_PAGE_KB=4`, the same load produces 49 MB (2.27x).
+The difference is entirely in `KV.SLOT_BLOCKS`: 64 MB vs 47 MB.
+Goal: get SLOTTED_PAGE_KB=64 under 3x (ideally close to 2.27x).
+
+## Root Cause Analysis
+
+### Byte-level accounting (SLOTTED_PAGE_KB=64)
+
+| Component | Bytes | Notes |
+|-----------|-------|-------|
+| Raw key+value data | 22.8 MB | 434K keys, value=key |
+| Per-key overhead | ~4.7 MB | 2B keyLen + 2B valInfo + ~1B HLC varint = ~5B * 434K |
+| Page headers + CRCs | ~14 KB | 27B header + 4B CRC per page, ~435 pages |
+| **Subtotal (tight)** | **~27.5 MB** | What all pages would total if tight-encoded |
+| VLOG (large vals) | 3.7 MB | Stored separately |
+| REDO.LOG + metadata | ~0.4 MB | Small |
+| **Subtotal (logical)** | **~31.6 MB** | |
+
+So where does the other ~36 MB come from?
+
+### Source 1: Split padding waste (~14 MB)
+
+When an anchor reaches `flexdbSparseIntervalCount` (1000 keys), `treeInsertAnchor` splits it 50/50.
+Both halves are padded to `slottedPageMaxSize` = 64 KB via `slottedPageEncodePadded`.
+A half-full 64 KB page wastes ~32 KB. With ~435 anchors, that's ~435 * 32KB / 2 = ~7 MB average.
+But the left half was also grown from tight to 64KB, adding more waste.
+
+### Source 2: FlexSpace garbage from Update/Insert during splits (~20 MB)
+
+When `treeInsertAnchor` fires:
+1. Left half: `ff.Update(padded64KB, ..., oldTightSize)` - the old tight extent becomes garbage
+2. Right half: `ff.Insert(padded64KB, ...)` - 64 KB new extent
+
+Each split generates `oldTightSize` bytes of garbage (the old tight page).
+With ~435 splits and average tight size ~27.5MB/435 = ~63KB each, that's ~27 MB of garbage.
+Without `PiggybackGC_on_SyncOrFlush`, this garbage is never reclaimed during the load.
+
+At SLOTTED_PAGE_KB=4, the same splits only pad to 4 KB, so waste per split is 16x smaller.
+
+### Source 3: Block-level rounding (up to 4 MB)
+
+FlexSpace allocates in 4 MB blocks. The last block can waste up to 4 MB.
+At 64 MB total, 16 blocks are fully used (metrics show 65 KB free = nearly zero block waste).
+
+## Reduction Ideas
+
+### Idea A: Tight-encode on initial flush, pad only on first update (ALREADY DONE)
+
+`putPassthroughInitial` already encodes tight (line 3531). But `treeInsertAnchor` immediately
+pads both halves to 64 KB (lines 3630, 3644). The split is the main padding point.
+
+### Idea B: Tight-encode splits too (defer padding to first dirty flush)
+
+Change `treeInsertAnchor` to encode both halves **tight** instead of padded.
+The page will be grown to `slottedPageMaxSize` only when `flushDirtyPages` or
+`flushDirtyEntry` finds `content > psize` (which already handles this case, lines 143-173).
+
+**Savings**: ~14 MB (split padding waste) + ~14 MB (less garbage from smaller Updates)
+**Risk**: The first update to each post-split page will trigger an `ff.Update` to grow it.
+For a pure initial load followed by Sync, there are no updates - so pages stay tight.
+For update-heavy workloads, the first update grows the page (one-time cost, same as today
+for `putPassthroughInitial` tight pages).
+
+**Files**: `db.go` lines 3629-3647 (`treeInsertAnchor`)
+
+### Idea C: Enable PiggybackGC during load
+
+Already supported via Config. Reclaims garbage from splits. But adds I/O during load.
+The test commented this out. This is orthogonal to Idea B.
+
+### Idea D: Compact/VacuumKV after initial load
+
+Already exists. Would reclaim garbage and re-encode tight. But adds a full rewrite pass.
+
+### Idea E: Smaller split ratio (e.g. 75/25 instead of 50/50)
+
+Keep left page fuller, right page smaller. Reduces total padding.
+But doesn't address the fundamental issue of padding to 64KB at split time.
+
+### Idea F: Variable page sizes (no fixed slottedPageMaxSize pad target)
+
+Pages stay tight forever. Updates that overflow trigger an `ff.Update` to grow by some
+increment (e.g. 2x content or +4KB). This is more complex but eliminates all padding waste.
+Risk: more `ff.Update` calls during update workloads, more FlexSpace garbage.
+
+## Why Dead Space Is Not Reused Inline
+
+FlexSpace is log-structured. The block manager has a single write cursor (`blkid` + `blkoff`)
+that only moves forward. `bm.write()` appends at `bm.blkoff`; there is no mechanism to
+seek backward within a block to fill holes left by collapsed extents.
+
+`ff.Update` (flexspace.go:962) does `collapseR` then `insertR`:
+- `collapseR` decrements `blkusage[blkid]` but the physical bytes stay in the block
+- `insertR` appends new data at `bm.offset()` (end of current block)
+
+The dead bytes are tracked only as a count (`blkusage` is one `uint32` per block - total
+live bytes, not a map of where holes are). To reuse holes you'd need a per-block free-space
+allocator (bitmap or free list) tracking offset+size of every dead region.
+
+`findEmptyBlock` (line 157) only recycles **completely empty** blocks (`blkusage[i] == 0`).
+A block that is 90% dead / 10% live is never reused - only GC can reclaim it by rewriting
+the live extents to fresh space and freeing the entire block.
+
+This is the standard log-structured design tradeoff: simple append-only writes at the cost
+of background GC. The issue here is that GC doesn't run during bulk loads (PiggybackGC is off).
+
+## Recommended Approach: Idea B (tight splits)
+
+Simplest change with the biggest impact. One function to modify.
+Does not eliminate dead space, but makes dead extents much smaller (tight ~27 KB vs padded 64 KB),
+so less total garbage accumulates.
+
+### Implementation
+
+In `treeInsertAnchor` (db.go ~line 3619):
+
+1. **Left half** (lines 3629-3638): Instead of `slottedPageEncodePadded(..., slottedPageMaxSize)`,
+   use `slottedPageEncode(fce.kvs[:leftCount])`. Still need `ff.Update` if psize changed.
+
+2. **Right half** (lines 3643-3647): Instead of `slottedPageEncodePadded(..., slottedPageMaxSize)`,
+   use `slottedPageEncode(fce.kvs[leftCount:fce.count])`.
+
+3. The `flushDirtyPages`/`flushDirtyEntry` paths already handle `content > psize` by growing
+   to `slottedPageMaxSize` on the first dirty flush. No changes needed there.
+
+### Files to modify
+
+- `db.go`: `treeInsertAnchor` (~lines 3629-3647) - use tight encoding for both halves
+
+### Verification
+
+```bash
+go test -v -tags memfs -run TestLoadBloat_SpaceAmplification
+# Should show space amplification < 3.0x (target: ~2.3x like SLOTTED_PAGE_KB=4)
+
+go test -v -tags memfs -run TestVacuumThenOverwrite_DiskSizeBounded
+# Existing test must still pass
+
+go test -tags memfs ./...
+# Full test suite must pass
+```
+
+
+------------
+ Two questions: a) I have been reluctant to run GC during a data load, because it seemed like a global large cost, but perhaps a targeted GC on just one or two blocks could be acceptable and amortize
+well. b) Let me understand the impact of Option B, tight splits: would we not, after packing tight, immediately just split again? It seems the risk is alot of cascading re-writes and work-amplification
+if we pack tight after a split. No?
+
+
+  (b) Would tight splits cause cascading re-splits?
+
+  No - and here's why. The split threshold is key count (flexdbSparseIntervalCount = 1000 keys), not byte size. Look at line 3507:
+
+  if fce.count >= flexdbSparseIntervalCount {
+      db.treeInsertAnchor(nh, partition, fce)
+  }
+
+  After a split, left has 500 keys, right has 500 keys. Whether the on-disk encoding is tight (32 KB) or padded (64 KB) doesn't matter - neither half will split again until it
+  accumulates another 500 keys. Tight encoding doesn't change fce.count, so no cascading splits.
+
+  The concern about write amplification would be: what happens when the next key lands in a tight post-split page? During a bulk load, it goes through putPassthroughR (line 3505,
+   since anchor.psize != 0). putPassthroughR checks slottedPageWouldFit (line 3563) using fitTarget = slottedPageMaxSize (line 3560-3561) - so it knows the page can grow to 64 KB
+   even though psize is currently ~32 KB. The key is accepted into the cache, and the page is just marked dirty (putPassthroughMarkDirty). No immediate disk I/O.
+
+  The growth to 64 KB only happens later, when flushDirtyPages runs (on Sync or eviction). At that point (intervalcache.go line 143-169), it does one ff.Update to grow the ~32 KB
+   tight page to 64 KB padded. That's a one-time cost per page, and it's the same cost that putPassthroughInitial tight pages already pay today.
+
+  During a pure bulk load (load all keys, then Sync), many of those 500-key post-split pages will accumulate more keys before being flushed. Some may even reach 1000 and split
+  again - still tight. The growth-to-64KB only fires if a page is dirty at Sync time and content exceeds psize. For a load-then-Sync, pages that split and then re-split are
+  re-encoded tight both times. Only the final state gets flushed.
+
+  (a) Targeted GC on one or two blocks
+
+  You're right that full GC is heavy. Looking at the code, GC() (which findEmptyBlock calls at line 159) does scan for candidate blocks. But the real question is: during a bulk
+  load, blocks don't become fully empty (they have a mix of live and dead extents from splits), so even targeted GC would need to rewrite a block to compact it.
+
+  A lighter approach: since Option B makes dead extents much smaller (~32 KB per split instead of ~63 KB), the total dead space drops from ~27 MB to ~14 MB. That might be
+  acceptable without any GC. If not, a targeted "GC the worst N blocks" after the load completes (but before Sync returns) could reclaim that remaining 14 MB with bounded I/O
+  cost - rewriting just 2-3 of the worst blocks rather than scanning all 16.
+
+  This could be a good follow-up after Option B, since Option B alone should get you from 3.13x to roughly 2.4-2.5x.
+-----------
