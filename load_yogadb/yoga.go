@@ -18,8 +18,8 @@ func main() {
 
 	cfg := &yogadb.Config{
 		//OmitFlexSpaceOpsRedoLog: true,
-		OmitMemWalFsync:            true,
-		PiggybackGC_on_SyncOrFlush: true,
+		OmitMemWalFsync: true,
+		//PiggybackGC_on_SyncOrFlush: true,
 	}
 	db, err := yogadb.OpenFlexDB(dbPath, cfg)
 	fmt.Fprintf(os.Stderr, "using REDO.LOG: %v\n", !cfg.OmitFlexSpaceOpsRedoLog)
@@ -168,6 +168,15 @@ func main() {
 	//vv("load_yogadb about to call db.Sync()")
 	db.Sync()
 	//vv("load_yogadb back from db.Sync()")
+
+	tvac := time.Now()
+	vv("YogaDB data ingestion finished in: %v, starting VacuumKV", time.Since(t0))
+	vacstat, err := db.VacuumKV()
+	panicOn(err)
+	elapvac := time.Since(tvac)
+	elaptot := time.Since(t0)
+	vv("vacstat = '%v'", vacstat)
+	vv("YogaDB data ingestion+vacuum finished in: %v, (vacuum time: %v)", elaptot, elapvac)
 
 	if false {
 		// write back out, to check completeness (no data is lost) and sorted-ness (proper order).

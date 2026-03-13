@@ -37,10 +37,10 @@ package yogadb
 //
 // On-disk layout:
 //
-// ┌────────┬──────────────────────────────────────────┬──────┬──────────┬────────┐
-// │ Header │ Entry Records ->>>                        │free  │ ←← Values│ CRC32C │
-// │  27B   │ N × [keyLen + valInfo + hlc delta + key] │space │          │  4B    │
-// └────────┴──────────────────────────────────────────┴──────┴──────────┴────────┘
+//  ---------------------------------------------------------------------
+// |Header | Entry Records ->>>                |free  |<<- Values| CRC32C|
+// | 27B   | N × [keyLen valInfo hlcDelta key] |space |          |  4B   |
+//  ---------------------------------------------------------------------
 //
 // Header (27 bytes):
 //   [16] magic      slottedPageMagic (16-byte signature)
@@ -97,7 +97,7 @@ const (
 	// our load time is the same as pebble, but we are 3x faster than Bolt.
 	// See go test -v -tags memfs -run=xxx -bench Iter
 	// And go test -v -tags memfs -run=xxx -bench BigRandomRWBatch
-	SLOTTED_PAGE_KB = 64 // 10:5.214 8:5.84 12:7.874 // up from 2 to 10 seems to help scans alot. 10: (9.984, 10.01, 9.817 ns/key); 2: (23.72 ns/key); 20:14.84 128: 4ns/key sequential scan, nice. 8: 5.347 ns/key. 4: very fast insert. 7.6 ns/key full scan. 32:4.473 ns/key. choice for now: keep at 4 for a litle balance between insert and scan through. but 64:4.168 ns/key, but random rw slows 2x.
+	SLOTTED_PAGE_KB = 4 // 10:5.214 8:5.84 12:7.874 // up from 2 to 10 seems to help scans alot. 10: (9.984, 10.01, 9.817 ns/key); 2: (23.72 ns/key); 20:14.84 128: 4ns/key sequential scan, nice. 8: 5.347 ns/key. 4: very fast insert. 7.6 ns/key full scan. 32:4.473 ns/key. choice for now: keep at 4 for a litle balance between insert and scan through. but 64:4.168 ns/key, but random rw slows 2x.
 
 	slottedPageMaxSize = SLOTTED_PAGE_KB * 1024 // e.g. 65536 bytes if we used 64 for SLOTTED_PAGE_KB
 
