@@ -4227,11 +4227,13 @@ func (db *FlexDB) flushWorker() {
 // This is critical for fuzz testing where 48+ worker subprocesses
 // share the process; an uncaught goroutine panic kills them all.
 func (db *FlexDB) safeDoFlush() {
-	defer func() {
-		if r := recover(); r != nil {
-			alwaysPrintf("flushWorker: recovered panic in doFlush: %v", r)
-		}
-	}()
+	if false {
+		defer func() {
+			if r := recover(); r != nil {
+				alwaysPrintf("flushWorker: recovered panic in doFlush: %v", r)
+			}
+		}()
+	}
 	db.doFlush()
 }
 
