@@ -179,7 +179,7 @@ func TestFlexDB_PersistenceWAL(t *testing.T) {
 	mustPut(t, db, "b", "2")
 	// Flush WAL but don't Sync() (don't flush to FlexSpace).
 	// WAL is written on every Put, so data is in WAL.
-	db.memtables[db.activeMT].logFlush()
+	db.mt.logFlush()
 	// Close without Sync - but Close() itself flushes active memtable
 	db.Close()
 

@@ -205,8 +205,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	// batch WAL writes under a single mt.memWalMut hold.
 	// This amortizes both mutex acquisitions across the entire batch.
 
-	wasActive := db.activeMT
-	mt := &db.memtables[wasActive]
+	mt := &db.mt
 
 	mt.memWalMut.Lock()
 	defer mt.memWalMut.Unlock()
@@ -216,25 +215,16 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 
 		if mt.size >= memtableCap {
 			// Memtable full - flush inline.
-			db.activeMT = 1 - wasActive
-			db.memtables[db.activeMT].empty = true
-			db.memtables[db.activeMT].size = 0
-
-			// we already holdmt.memWalMut
 			mt.logFlushLocked()
 
-			db.flushMemtable(wasActive)
+			db.flushMemtable()
 			db.persistCounters()
 			db.ff.Sync()
 
 			mt.bt.Clear()
 			mt.empty = true
 			mt.size = 0
-
-			// db.go:220
-			// flips... why? now that we just cleared it... I don't believe we want this... not sure though.
-			//wasActive = db.activeMT
-			//mt = &db.memtables[wasActive]
+			db.flushSeq++
 		}
 		putKV := *s.puts[idx]
 		newState := kvToState(putKV)
@@ -650,8 +640,8 @@ type FlexDB struct {
 
 	topMutRW sync.RWMutex
 
-	memtables [2]memtable
-	activeMT  int // 0 or 1
+	mt       memtable // single memtable (was dual; see commit history)
+	flushSeq uint64   // incremented on each memtable flush (inline or background)
 
 	// flush worker
 	flushTrigger chan struct{}
@@ -662,7 +652,7 @@ type FlexDB struct {
 	itvbuf []byte
 
 	// Write-byte counters (accessed atomically)
-	MemWALBytesWritten  int64 // WAL (FLEXDB.MEMWAL1 + FLEXDB.MEMWAL2) bytes written
+	MemWALBytesWritten  int64 // WAL (FLEXDB.MEMWAL) bytes written
 	LogicalBytesWritten int64 // user payload bytes (key+value)
 
 	// Cumulative counters loaded from cowMeta on open.
@@ -719,16 +709,10 @@ func (db *FlexDB) adjustKeyCounters(oldState, newState keyState) {
 	}
 }
 
-// writeLockHeldKeyState checks the inactive memtable and FlexSpace for a key's state.
-// Called when a key is new to the active memtable.
+// writeLockHeldKeyState checks FlexSpace for a key's state.
+// Called when a key is new to the memtable.
 // Caller must hold topMutRW.Lock().
 func (db *FlexDB) writeLockHeldKeyState(key string) keyState {
-	inactive := 1 - db.activeMT
-	if !db.memtables[inactive].empty {
-		if kv, ok := db.memtables[inactive].get(key); ok {
-			return kvToState(kv)
-		}
-	}
 	if db.ff.Size() == 0 {
 		return ksNotExists
 	}
@@ -745,22 +729,12 @@ func (db *FlexDB) writeLockHeldKeyState(key string) keyState {
 // Used by the VLOG dedup path to avoid writing duplicate large values.
 // Caller must hold topMutRW.Lock().
 func (db *FlexDB) lookupOldVPtr(key string) VPtr {
-	// Check active memtable first (most likely hit for repeated overwrites).
-	if kv, ok := db.memtables[db.activeMT].get(key); ok {
+	// Check memtable first (most likely hit for repeated overwrites).
+	if kv, ok := db.mt.get(key); ok {
 		if kv.HasVPtr() {
 			return kv.Vptr
 		}
 		return VPtr{}
-	}
-	// Check inactive memtable.
-	inactive := 1 - db.activeMT
-	if !db.memtables[inactive].empty {
-		if kv, ok := db.memtables[inactive].get(key); ok {
-			if kv.HasVPtr() {
-				return kv.Vptr
-			}
-			return VPtr{}
-		}
 	}
 	// Check FlexSpace (loads interval cache if needed).
 	if db.ff.Size() == 0 {
@@ -888,31 +862,17 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 		return nil, fmt.Errorf("flexdb: open flexspace: %w", err)
 	}
 
-	// Open WAL files
-	log1Path := filepath.Join(path, "FLEXDB.MEMWAL1")
-	//fd1, err := fs.OpenFile(log1Path, os.O_RDWR|os.O_CREATE, 0644)
-	fd1, err := fs.OpenReadWrite(log1Path, vfs.WriteCategoryUnspecified)
+	// Open WAL file (single MEMWAL; legacy dual MEMWAL1/MEMWAL2 replayed below).
+	walPath := filepath.Join(path, "FLEXDB.MEMWAL")
+	walFD, err := fs.OpenReadWrite(walPath, vfs.WriteCategoryUnspecified)
 	if err != nil {
 		ff.Close()
-		return nil, fmt.Errorf("flexdb: open FLEXDB.MEMWAL1: %w", err)
+		return nil, fmt.Errorf("flexdb: open FLEXDB.MEMWAL: %w", err)
 	}
 
 	// From github.com/tigerbeetle/tigerbeetle/src/io/linux.zig:1640
 	// "The best fsync strategy is always to fsync before reading..."
-	fd1.Sync()
-
-	log2Path := filepath.Join(path, "FLEXDB.MEMWAL2")
-	//fd2, err := fs.OpenFile(log2Path, os.O_RDWR|os.O_CREATE, 0644)
-	fd2, err := fs.OpenReadWrite(log2Path, vfs.WriteCategoryUnspecified)
-	if err != nil {
-		ff.Close()
-		fd1.Close()
-		return nil, fmt.Errorf("flexdb: open FLEXDB.MEMWAL2: %w", err)
-	}
-	//vv("begin fd2.Sync")
-	//t0sync := time.Now()
-	fd2.Sync()
-	//vv("end fd2.Sync, took %v", time.Since(t0sync))
+	walFD.Sync()
 
 	// Open VLOG (value log for large values) unless disabled.
 	var vl *valueLog
@@ -921,8 +881,7 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 		vl, err = openValueLog(vlogPath, fs)
 		if err != nil {
 			ff.Close()
-			fd1.Close()
-			fd2.Close()
+			walFD.Close()
 			return nil, fmt.Errorf("flexdb: open VLOG: %w", err)
 		}
 	}
@@ -932,8 +891,7 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	// the file contents were synced.
 	if err := syncDir(fs, path); err != nil {
 		ff.Close()
-		fd1.Close()
-		fd2.Close()
+		walFD.Close()
 		if vl != nil {
 			vl.close()
 		}
@@ -956,10 +914,8 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	for i := range db.cache.partitions {
 		db.cache.partitions[i].db = db
 	}
-	db.memtables[0] = *newMemtable(fd1)
-	db.memtables[1] = *newMemtable(fd2)
-	db.memtables[0].memWalBytesWritten = &db.MemWALBytesWritten
-	db.memtables[1].memWalBytesWritten = &db.MemWALBytesWritten
+	db.mt = *newMemtable(walFD)
+	db.mt.memWalBytesWritten = &db.MemWALBytesWritten
 
 	// Load cumulative counters from the last cowMeta commit.
 	db.totalLogicalBase = ff.tree.totalLogicalBytesWrit
@@ -983,11 +939,9 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 		_ = ff.SetTag(0, tag) // best-effort on empty FlexSpace
 	}
 
-	// Reset WAL logs (always use 20-byte versioned header for consistent disk format)
+	// Reset WAL (always use 20-byte versioned header for consistent disk format)
 	ts := uint64(time.Now().UnixNano())
-	db.memtables[0].logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
-	ts2 := uint64(time.Now().UnixNano())
-	db.memtables[1].logTruncateWithVersion(ts2, db.ff.tree.PersistentVersion)
+	db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
 
 	// Restore live key counters from persisted cowMeta.
 	db.liveKeys = ff.tree.liveKeys
@@ -1022,25 +976,14 @@ func (db *FlexDB) Close() *Metrics {
 	}
 	db.closed = true
 
-	// Flush any data that is still in the active memtable.
-	active := db.activeMT
-	hasData := !db.memtables[active].empty
-	if hasData {
-		newActive := 1 - active
-		db.activeMT = newActive
-		db.memtables[newActive].empty = true
-		db.memtables[newActive].size = 0
-	}
-
-	if hasData {
-		db.memtables[active].logFlush()
-
-		db.flushMemtable(active)
+	// Flush any data that is still in the memtable.
+	if !db.mt.empty {
+		db.mt.logFlush()
+		db.flushMemtable()
 		db.cache.flushDirtyPages()
 		db.persistCounters()
 		db.ff.Sync()
 		db.verifyAnchorTags()
-
 	} else {
 		// Even without new memtable data, flush any dirty cache entries
 		// that were modified earlier but not yet written.
@@ -1050,10 +993,9 @@ func (db *FlexDB) Close() *Metrics {
 		db.verifyAnchorTags()
 	}
 
-	// Truncate WAL logs (always use 20-byte versioned header for consistent disk format)
+	// Truncate WAL (always use 20-byte versioned header for consistent disk format)
 	ts := uint64(time.Now().UnixNano())
-	db.memtables[0].logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
-	db.memtables[1].logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
+	db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
 
 	db.cache.destroyAll()
 	var vlogFoot, kvFoot int64
@@ -1071,8 +1013,7 @@ func (db *FlexDB) Close() *Metrics {
 	// knowable after the final sync, but the DB is closing.
 	m := db.writeLockHeldFinalMetrics(kvFoot, vlogFoot)
 
-	db.memtables[0].memWalFD.Close()
-	db.memtables[1].memWalFD.Close()
+	db.mt.memWalFD.Close()
 	return m
 }
 
@@ -1081,7 +1022,7 @@ type Metrics struct {
 	Session                   bool
 	LiveKeyCount              int64
 	KV128BytesWritten         int64 // FlexSpace FLEXSPACE.KV128_BLOCKS file
-	MemWALBytesWritten        int64 // FlexDB WAL (FLEXDB.MEMWAL1 + FLEXDB.MEMWAL2)
+	MemWALBytesWritten        int64 // FlexDB WAL (FLEXDB.MEMWAL)
 	REDOLogBytesWritten       int64 // FLEXSPACE.REDO.LOG
 	FlexTreePagesBytesWritten int64 // CoW FLEXTREE.PAGES + FLEXTREE.COMMIT
 	VLOGBytesWritten          int64 // VLOG value log
@@ -1311,12 +1252,9 @@ func (db *FlexDB) CumulativeMetrics() *Metrics {
 		m.KV128BytesWritten = fi.Size()
 	}
 
-	// WAL files: FLEXDB.MEMWAL1 + FLEXDB.MEMWAL2 current sizes.
-	if fi, err := db.memtables[0].memWalFD.Stat(); err == nil {
-		m.MemWALBytesWritten += fi.Size()
-	}
-	if fi, err := db.memtables[1].memWalFD.Stat(); err == nil {
-		m.MemWALBytesWritten += fi.Size()
+	// WAL file: FLEXDB.MEMWAL current size.
+	if fi, err := db.mt.memWalFD.Stat(); err == nil {
+		m.MemWALBytesWritten = fi.Size()
 	}
 
 	// FlexSpace redo LOG file.
@@ -1442,10 +1380,10 @@ func (db *FlexDB) VacuumVLOG() (*VacuumVLOGStats, error) {
 	}
 	stats := &VacuumVLOGStats{}
 
-	// Flush memtables so all live VPtrs are in FlexSpace.
+	// Flush memtable so all live VPtrs are in FlexSpace.
 	db.writeLockHeldSync()
 
-	// Exclusive access to FlexSpace and memtables by topMutRW
+	// Exclusive access to FlexSpace and memtable by topMutRW
 
 	stats.OldVLOGSize = db.vlog.size()
 
@@ -1599,7 +1537,7 @@ func (z *VacuumKVStats) String() (r string) {
 // present) is harmless and will be overwritten on the next vacuum.
 //
 // VacuumKV does a one-time compaction of already-bloated databases. Algorithm:
-// 1. Flush memtables, acquire exclusive locks
+// 1. Flush memtable, acquire exclusive locks
 // 1b. Compact slotted page padding: decode each page, compute tight size,
 //
 //	Collapse the zero-padding in reverse loff order
@@ -1620,10 +1558,10 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 
 	stats := &VacuumKVStats{}
 
-	// Flush memtables so all live data is in FlexSpace.
+	// Flush memtable so all live data is in FlexSpace.
 	db.writeLockHeldSync()
 
-	// Exclusive access to FlexSpace and memtables by topMutRW.
+	// Exclusive access to FlexSpace and memtable by topMutRW.
 
 	ff := db.ff
 
@@ -1882,7 +1820,7 @@ func (e IntegrityError) Error() string {
 }
 
 // CheckIntegrity performs a read-only consistency check of the FlexDB.
-// It flushes memtables first, then acquires a read lock on FlexSpace.
+// It flushes the memtable first, then acquires a read lock on FlexSpace.
 //
 // Checks performed:
 //  1. FlexTree leaf linked list: no cycles, prev/next consistency
@@ -1900,7 +1838,7 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 
-	// Flush memtables so FlexSpace has all live data.
+	// Flush memtable so FlexSpace has all live data.
 	db.writeLockHeldSync()
 
 	var errs []IntegrityError
@@ -2205,24 +2143,17 @@ func (db *FlexDB) maybePiggybackGC() {
 
 func (db *FlexDB) writeLockHeldSync() error {
 
-	wasActive := db.activeMT
-	if db.memtables[wasActive].empty {
+	if db.mt.empty {
 		return nil // nothing to flush
 	}
 
-	// Switch writes to the other table.
-	newActive := 1 - wasActive
-	db.activeMT = newActive
-	db.memtables[newActive].empty = true
-	db.memtables[newActive].size = 0
-
-	// Flush the old active table.
+	// Flush memtable to FlexSpace.
 	if db.cfg.OmitMemWalFsync {
-		db.memtables[wasActive].logFlush() // insufficient for safety: does not fdatasync!
+		db.mt.logFlush() // insufficient for safety: does not fdatasync!
 	} else {
-		db.memtables[wasActive].logSync() // flush + fdatasync. here in FlexDB.Sync()
+		db.mt.logSync() // flush + fdatasync. here in FlexDB.Sync()
 	}
-	db.flushMemtable(wasActive)
+	db.flushMemtable()
 	db.cache.flushDirtyPages()
 	db.persistCounters()
 	db.ff.Sync() // fsyncs FLEXSPACE.KV128.BLOCKS
@@ -2248,11 +2179,11 @@ func (db *FlexDB) writeLockHeldSync() error {
 	}
 
 	ts := uint64(time.Now().UnixNano())
-	db.memtables[wasActive].logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
+	db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
 
-	db.memtables[wasActive].bt.Clear()
-	db.memtables[wasActive].empty = true
-	db.memtables[wasActive].size = 0
+	db.mt.bt.Clear()
+	db.mt.empty = true
+	db.mt.size = 0
 
 	return nil
 }
@@ -2325,7 +2256,7 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, doDelete bool) erro
 	}
 
 	if db.vlog != nil && value != nil && len(value) > vlogInlineThreshold {
-		// Look up old VPtr for blake3 dedup. Check memtables first (cheap),
+		// Look up old VPtr for blake3 dedup. Check memtable first (cheap),
 		// then FlexSpace (loads interval cache). If the old value has the
 		// same blake3 checksum, we reuse the old VPtr and skip the VLOG write.
 		// See "HLC STALENESS IN VLOG HEADERS" in vlog.go.
@@ -2337,27 +2268,21 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, doDelete bool) erro
 		kv = KV{Key: key, Vptr: vp, Hlc: hlcVal}
 	}
 
-	if db.memtables[db.activeMT].size >= memtableCap {
-		// Inline flush - same pattern as Batch.Commit overflow path.
-		wasActive := db.activeMT
-		db.activeMT = 1 - wasActive
-		db.memtables[db.activeMT].empty = true
-		db.memtables[db.activeMT].size = 0
-
-		db.memtables[wasActive].logFlush() // we don't hold memWalMut yet
-
-		db.flushMemtable(wasActive)
+	if db.mt.size >= memtableCap {
+		// Inline flush when memtable is full.
+		db.mt.logFlush()
+		db.flushMemtable()
 		db.persistCounters()
 		db.ff.Sync()
 
-		db.memtables[wasActive].bt.Clear()
-		db.memtables[wasActive].empty = true
-		db.memtables[wasActive].size = 0
+		db.mt.bt.Clear()
+		db.mt.empty = true
+		db.mt.size = 0
+		db.flushSeq++
 	}
-	active := db.activeMT
 	newState := kvToState(kv)
-	old, replaced := db.memtables[active].put(kv)
-	db.memtables[active].empty = false
+	old, replaced := db.mt.put(kv)
+	db.mt.empty = false
 
 	var oldState keyState
 	if replaced {
@@ -2369,7 +2294,7 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, doDelete bool) erro
 
 	// WAL stores VPtr (not full value) for large values. Since LARGE.VLOG was
 	// fsynced above, the VPtr is safe to reference on crash recovery.
-	db.memtables[active].logAppend(kv)
+	db.mt.logAppend(kv)
 
 	return nil
 }
@@ -2737,10 +2662,9 @@ func (db *FlexDB) Get(key string) (value []byte, found bool, err error) {
 	defer db.topMutRW.RUnlock()
 	defer recoverIterIOErr(&err)
 
-	// Check active memtable
-	active := db.activeMT
-	if !db.memtables[active].empty {
-		kv, ok := db.memtables[active].get(key)
+	// Check memtable
+	if !db.mt.empty {
+		kv, ok := db.mt.get(key)
 		if ok {
 			if kv.isTombstone() {
 				return nil, false, nil // tombstone
@@ -2758,53 +2682,6 @@ func (db *FlexDB) Get(key string) (value []byte, found bool, err error) {
 		}
 	}
 
-	// Check inactive memtable...
-	// Why is this needed, you may ask (as I did)?
-	// The inactive memtable never receives new puts, but it
-	// still contains data that hasn't been flushed to FlexSpace yet.
-	//
-	// Here's the window:
-	//
-	// doFlush():
-	//   2247:  db.activeMT = 1 - db.activeMT   // swap (under mtMu)
-	//   2250:  db.mtMu.Unlock()
-	//          // -- WINDOW: inactive has data, FlexSpace doesn't yet --
-	// 	2258:  db.ffMu.Lock()
-	// 	2259:  db.flushMemtable(inactive)        // writes to FlexSpace
-	//          ...
-	// 			   2269:  db.mtMu.Lock()
-	// 	2270:  db.memtables[inactive].bt.Clear()  // now it's gone
-	// 	2271:  db.memtables[inactive].empty = true
-	//
-	// 	Between lines 2250 and 2271, a concurrent Get() call would:
-	// 	- Not find the key in the (new, empty) active memtable
-	// 	- Not find it in FlexSpace (not flushed yet)
-	// - Only find it by checking the inactive memtable at line 1621
-	//
-	// The inactive memtable is a read-only buffer during that window.
-	// No puts go in, but the existing data is the only copy until
-	// flushMemtable completes.
-
-	inactive := 1 - db.activeMT
-	if !db.memtables[inactive].empty {
-		kv, ok := db.memtables[inactive].get(key)
-		if ok {
-			if kv.isTombstone() {
-				return nil, false, nil
-			}
-			val, err := db.resolveVPtr(kv)
-			if err != nil {
-				return nil, false, err
-			}
-			if val == nil {
-				return nil, true, nil // live key, nil value
-			}
-			out := make([]byte, len(val))
-			copy(out, val)
-			return out, true, nil // return a copy, 'out', that caller can own.
-		}
-	}
-
 	// Check FlexSpace via sparse index
 	val, found, err := db.getPassthrough(key)
 	return val, found, err
@@ -2813,31 +2690,9 @@ func (db *FlexDB) Get(key string) (value []byte, found bool, err error) {
 // someLockHeldGet retrieves the value for key without acquiring topMutRW.
 // Caller must already hold topMutRW.Lock() or topMutRW.RLock().
 func (db *FlexDB) someLockHeldGet(key string) ([]byte, bool, error) {
-	// Check active memtable
-	active := db.activeMT
-	if !db.memtables[active].empty {
-		kv, ok := db.memtables[active].get(key)
-		if ok {
-			if kv.isTombstone() {
-				return nil, false, nil
-			}
-			val, err := db.resolveVPtr(kv)
-			if err != nil {
-				return nil, false, err
-			}
-			if val == nil {
-				return nil, true, nil // live key, nil value
-			}
-			out := make([]byte, len(val))
-			copy(out, val)
-			return out, true, nil
-		}
-	}
-
-	// Check inactive memtable
-	inactive := 1 - db.activeMT
-	if !db.memtables[inactive].empty {
-		kv, ok := db.memtables[inactive].get(key)
+	// Check memtable
+	if !db.mt.empty {
+		kv, ok := db.mt.get(key)
 		if ok {
 			if kv.isTombstone() {
 				return nil, false, nil
@@ -2918,14 +2773,11 @@ func (db *FlexDB) writeLockHeldDeleteRange(includeLarge bool, begKey, endKey str
 		return 0, true, err
 	}
 
-	// Phase 1: Tombstone all non-tombstone keys in range in both memtables.
-	for _, mtIdx := range []int{db.activeMT, 1 - db.activeMT} {
-		if db.memtables[mtIdx].empty {
-			continue
-		}
-		// Collect keys first since writeLockHeldPut mutates the active memtable.
+	// Phase 1: Tombstone all non-tombstone keys in range in the memtable.
+	if !db.mt.empty {
+		// Collect keys first since writeLockHeldPut mutates the memtable.
 		var keys []string
-		db.memtables[mtIdx].bt.Ascend(KV{Key: begKey}, func(item KV) bool {
+		db.mt.bt.Ascend(KV{Key: begKey}, func(item KV) bool {
 			if !deleteRangeInBounds(item.Key, begKey, endKey, begInclusive, endInclusive) {
 				// Past endKey - stop iteration.
 				if deleteRangePastEnd(item.Key, endKey, endInclusive) {
@@ -2986,13 +2838,10 @@ func (db *FlexDB) writeLockHeldClear(includeLarge bool) (allGone bool, err error
 
 	// !includeLarge: must iterate and tombstone only small-value keys.
 
-	// Phase 1: Tombstone small-value keys in both memtables.
-	for _, mtIdx := range []int{db.activeMT, 1 - db.activeMT} {
-		if db.memtables[mtIdx].empty {
-			continue
-		}
+	// Phase 1: Tombstone small-value keys in the memtable.
+	if !db.mt.empty {
 		var keys []string
-		db.memtables[mtIdx].bt.Scan(func(item KV) bool {
+		db.mt.bt.Scan(func(item KV) bool {
 			if !item.isTombstone() && !item.HasVPtr() {
 				keys = append(keys, item.Key)
 			}
@@ -3011,7 +2860,7 @@ func (db *FlexDB) writeLockHeldClear(includeLarge bool) (allGone bool, err error
 }
 
 // writeLockHeldCoversAllKeys returns true if the given range covers every
-// key in the database (memtables + FlexSpace). When true, the caller can
+// key in the database (memtable + FlexSpace). When true, the caller can
 // use the fast "delete all" path instead of iterating.
 //
 // The check is conservative: it finds the actual min and max keys across
@@ -3025,14 +2874,11 @@ func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey string, begInclusive
 	}
 
 	// Check memtable min/max keys.
-	for i := 0; i < 2; i++ {
-		if db.memtables[i].empty {
-			continue
-		}
+	if !db.mt.empty {
 		// Min key (first in ascending order).
 		var minKV KV
 		var minFound bool
-		db.memtables[i].bt.Scan(func(item KV) bool {
+		db.mt.bt.Scan(func(item KV) bool {
 			minKV = item
 			minFound = true
 			return false
@@ -3043,7 +2889,7 @@ func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey string, begInclusive
 		// Max key (first in descending order).
 		var maxKV KV
 		var maxFound bool
-		db.memtables[i].bt.Reverse(func(item KV) bool {
+		db.mt.bt.Reverse(func(item KV) bool {
 			maxKV = item
 			maxFound = true
 			return false
@@ -3118,13 +2964,10 @@ func (db *FlexDB) writeLockHeldDeleteAll() error {
 	// alone; it can resume when we are done, and that
 	// will be just fine.
 
-	// 2. Clear both memtables.
-	for i := 0; i < 2; i++ {
-		db.memtables[i].bt.Clear()
-		db.memtables[i].empty = true
-		db.memtables[i].size = 0
-	}
-	db.activeMT = 0
+	// 2. Clear memtable.
+	db.mt.bt.Clear()
+	db.mt.empty = true
+	db.mt.size = 0
 
 	// 3. Destroy interval cache.
 	db.cache.destroyAll()
@@ -3181,11 +3024,9 @@ func (db *FlexDB) writeLockHeldDeleteAll() error {
 	db.liveBigKeys = 0
 	db.liveSmallKeys = 0
 
-	// 8. Truncate WAL files.
+	// 8. Truncate WAL file.
 	ts := uint64(time.Now().UnixNano())
-	db.memtables[0].logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
-	ts2 := uint64(time.Now().UnixNano())
-	db.memtables[1].logTruncateWithVersion(ts2, db.ff.tree.PersistentVersion)
+	db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
 
 	// 9. (no longer need to: Restart flush worker; we never killed it).
 
@@ -3229,7 +3070,7 @@ func deleteRangePastEnd(key, endKey string, endInclusive bool) bool {
 // cache to avoid pollution), and writes tombstones for all non-tombstone
 // keys within the specified bounds.
 //
-// On memtable flush (detected by activeMT flip), re-seeks from the last
+// On memtable flush (detected by flushSeq change), re-seeks from the last
 // processed key in the rebuilt sparse index tree.
 //
 // Caller must hold topMutRW.Lock().
@@ -3311,14 +3152,14 @@ func (db *FlexDB) deleteRangeFlexSpace(begKey, endKey string, begInclusive, endI
 					continue // skip large-value keys
 				}
 
-				// Write tombstone. Track activeMT to detect flush.
-				prevActive := db.activeMT
+				// Write tombstone. Track flushSeq to detect inline flush.
+				prevSeq := db.flushSeq
 				if err := db.writeLockHeldPut(kv.Key, nil, true); err != nil {
 					return n, err
 				}
 				n++
 
-				if db.activeMT != prevActive {
+				if db.flushSeq != prevSeq {
 					// Memtable flushed - sparse index tree was rebuilt.
 					// Re-seek strictly past this key in the new tree.
 					target = kv.Key
@@ -3420,13 +3261,13 @@ func (db *FlexDB) deleteRangeFlexSpaceClearSmall() (int64, error) {
 					continue // skip tombstones and large-value keys
 				}
 
-				prevActive := db.activeMT
+				prevSeq := db.flushSeq
 				if err := db.writeLockHeldPut(kv.Key, nil, true); err != nil {
 					return n, err
 				}
 				n++
 
-				if db.activeMT != prevActive {
+				if db.flushSeq != prevSeq {
 					target = kv.Key
 					seekStrict = true
 					flushed = true
@@ -3538,13 +3379,12 @@ func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists b
 		return fmt.Errorf("flexdb: key too large for merge (max %d bytes)", MaxKeySize)
 	}
 
-	// Phase 1: check active memtable.
-	active := db.activeMT
+	// Phase 1: check memtable.
 	var oldVal []byte
 	var exists bool
 
-	if !db.memtables[active].empty {
-		kv, ok := db.memtables[active].get(key)
+	if !db.mt.empty {
+		kv, ok := db.mt.get(key)
 		if ok {
 			if !kv.isTombstone() {
 				val, err := db.resolveVPtr(kv)
@@ -3557,24 +3397,7 @@ func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists b
 	}
 
 	if !exists {
-		// Phase 2: check inactive memtable.
-		inactive := 1 - active
-		if !db.memtables[inactive].empty {
-			kv, ok := db.memtables[inactive].get(key)
-			if ok {
-				if !kv.isTombstone() {
-					val, err := db.resolveVPtr(kv)
-					if err == nil {
-						oldVal = val
-						exists = true
-					}
-				}
-			}
-		}
-	}
-
-	if !exists {
-		// Phase 3: check FlexSpace (getPassthrough already resolves VPtrs).
+		// Phase 2: check FlexSpace (getPassthrough already resolves VPtrs).
 		val, found, err := db.getPassthrough(key)
 		if err != nil {
 			return fmt.Errorf("flexdb: merge getPassthrough: %w", err)
@@ -4170,43 +3993,89 @@ func (db *FlexDB) recovery() {
 
 	db.rebuildAnchorsFromTags(false)
 
-	// Replay WAL logs (replay older timestamp first)
+	// Replay WAL. Also replay legacy MEMWAL1/MEMWAL2 if present (migration).
 	treeVer := db.ff.tree.PersistentVersion
-	size1 := db.memtables[0].memWalSize()
-	size2 := db.memtables[1].memWalSize()
-	hdr1 := db.memtables[0].memWalDataOffset()
-	hdr2 := db.memtables[1].memWalDataOffset()
 
-	// Check if each WAL's data was already flushed to the tree
-	skip1 := false
-	skip2 := false
+	// Replay current WAL (FLEXDB.MEMWAL).
+	walSize := db.mt.memWalSize()
+	walHdr := db.mt.memWalDataOffset()
+	skipWal := false
 	if db.ff.omitRedoLog {
-		if v := db.memtables[0].logTreeVersion(); v > 0 && v <= treeVer {
-			skip1 = true
+		if v := db.mt.logTreeVersion(); v > 0 && v <= treeVer {
+			skipWal = true
 		}
-		if v := db.memtables[1].logTreeVersion(); v > 0 && v <= treeVer {
-			skip2 = true
+	}
+	if walSize > walHdr && !skipWal {
+		db.logRedo(db.mt.memWalFD, walSize)
+	}
+
+	// Legacy migration: replay old MEMWAL1/MEMWAL2 if they exist.
+	db.replayLegacyWALs(treeVer)
+
+	db.ff.Sync()
+}
+
+// replayLegacyWALs replays the old dual-WAL files (FLEXDB.MEMWAL1/MEMWAL2)
+// if they exist, then removes them. This provides one-time migration from
+// the dual-MEMWAL format to the single-MEMWAL format.
+func (db *FlexDB) replayLegacyWALs(treeVer uint64) {
+	fs := db.vfs
+	path := db.Path
+
+	type legacyWAL struct {
+		path string
+		fd   vfs.File
+	}
+	var wals []legacyWAL
+	for _, name := range []string{"FLEXDB.MEMWAL1", "FLEXDB.MEMWAL2"} {
+		p := filepath.Join(path, name)
+		fd, err := fs.OpenReadWrite(p, vfs.WriteCategoryUnspecified)
+		if err != nil {
+			continue // file doesn't exist
+		}
+		wals = append(wals, legacyWAL{path: p, fd: fd})
+	}
+	if len(wals) == 0 {
+		return
+	}
+
+	// Build temporary memtable wrappers to use logTimestamp/logTreeVersion.
+	type walInfo struct {
+		mt   memtable
+		size int64
+		hdr  int64
+		skip bool
+		ts   uint64
+		lw   legacyWAL
+	}
+	var infos []walInfo
+	for _, lw := range wals {
+		m := memtable{memWalFD: lw.fd}
+		sz := m.memWalSize()
+		hdr := m.memWalDataOffset()
+		skip := false
+		if db.ff.omitRedoLog {
+			if v := m.logTreeVersion(); v > 0 && v <= treeVer {
+				skip = true
+			}
+		}
+		if sz > hdr && !skip {
+			infos = append(infos, walInfo{mt: m, size: sz, hdr: hdr, ts: m.logTimestamp(), lw: lw})
+		} else {
+			lw.fd.Close()
+			fs.Remove(lw.path)
 		}
 	}
 
-	has1 := size1 > hdr1 && !skip1
-	has2 := size2 > hdr2 && !skip2
-	if has1 && has2 {
-		t1 := db.memtables[0].logTimestamp()
-		t2 := db.memtables[1].logTimestamp()
-		if t1 > t2 {
-			db.logRedo(db.memtables[0].memWalFD, size1)
-			db.logRedo(db.memtables[1].memWalFD, size2)
-		} else {
-			db.logRedo(db.memtables[1].memWalFD, size2)
-			db.logRedo(db.memtables[0].memWalFD, size1)
-		}
-	} else if has1 {
-		db.logRedo(db.memtables[0].memWalFD, size1)
-	} else if has2 {
-		db.logRedo(db.memtables[1].memWalFD, size2)
+	// Sort by timestamp (older first) and replay.
+	sort.Slice(infos, func(i, j int) bool {
+		return infos[i].ts < infos[j].ts
+	})
+	for _, info := range infos {
+		db.logRedo(info.mt.memWalFD, info.size)
+		info.lw.fd.Close()
+		fs.Remove(info.lw.path)
 	}
-	db.ff.Sync()
 }
 
 // flexdbReadKVFromHandler reads the first KV (key only needed for anchor)
@@ -4377,39 +4246,33 @@ func (db *FlexDB) doFlush() {
 		}()
 	}
 
-	wasActive := db.activeMT
-	if db.memtables[wasActive].empty {
+	if db.mt.empty {
 		return
 	}
-	// Swap memtables
-	db.activeMT = 1 - db.activeMT
-	db.memtables[db.activeMT].empty = true
-	db.memtables[db.activeMT].size = 0
 
-	inactive := wasActive
-	// Flush log to disk
-	db.memtables[inactive].logFlush()
-	panicOn(db.memtables[inactive].memWalFD.Sync())
+	// Flush WAL to disk
+	db.mt.logFlush()
+	panicOn(db.mt.memWalFD.Sync())
 
 	// Flush memtable to FlexSpace
-	db.flushMemtable(inactive)
+	db.flushMemtable()
 	db.persistCounters()
 	db.ff.Sync()
 	db.maybePiggybackGC()
 
 	// Truncate WAL (always use 20-byte versioned header for consistent disk format)
 	ts := uint64(time.Now().UnixNano())
-	db.memtables[inactive].logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
+	db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
 
 	// Clear the btree
-
-	db.memtables[inactive].bt.Clear()
-	db.memtables[inactive].empty = true
-	db.memtables[inactive].size = 0
+	db.mt.bt.Clear()
+	db.mt.empty = true
+	db.mt.size = 0
+	db.flushSeq++
 }
 
-func (db *FlexDB) flushMemtable(mtIdx int) {
-	m := &db.memtables[mtIdx]
+func (db *FlexDB) flushMemtable() {
+	m := &db.mt
 	var nh memSparseIndexTreeHandler
 	batch := make([]KV, 0, memtableFlushBatch)
 

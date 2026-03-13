@@ -80,7 +80,7 @@ func TestFlexDB_VLOG_WALRecovery(t *testing.T) {
 	db := openTestDBAt(fs, t, dir, nil)
 	mustPut(t, db, "wal_key", val)
 	// Flush WAL but don't Sync to FlexSpace.
-	db.memtables[db.activeMT].logFlush()
+	db.mt.logFlush()
 	db.Close()
 
 	db2 := openTestDBAt(fs, t, dir, nil)
