@@ -126,31 +126,33 @@ func (c *YviewConfig) justShowAll(db *yogadb.FlexDB, dbPath string) {
 				saw++
 			}
 		}
-		roDB.Ascend("", func(key string, value []byte) bool {
-			keyb += int64(len(key))
-			valb += int64(len(value))
-			need := 2 + len(key) + len(value)
-			if len(buf)+need <= cap(buf) {
-				// fine. write below.
-			} else {
-				os.Stdout.Write(buf)
-				buf = buf[:0]
-			}
-			buf = append(buf, key...)
-			if c.KeysOnly {
-				b3 := blake3OfBytes(value)
-				buf = append(buf, []byte(fmt.Sprintf(" => val len %v b3: %v", len(value), b3))...)
-			} else {
-				if len(value) > 0 {
-					buf = append(buf, colonarrow...)
-					buf = append(buf, value...)
+		if false { // old non-timestamp version
+			roDB.Ascend("", func(key string, value []byte) bool {
+				keyb += int64(len(key))
+				valb += int64(len(value))
+				need := 2 + len(key) + len(value)
+				if len(buf)+need <= cap(buf) {
+					// fine. write below.
+				} else {
+					os.Stdout.Write(buf)
+					buf = buf[:0]
 				}
-			}
-			buf = append(buf, newline...)
+				buf = append(buf, key...)
+				if c.KeysOnly {
+					b3 := blake3OfBytes(value)
+					buf = append(buf, []byte(fmt.Sprintf(" => val len %v b3: %v", len(value), b3))...)
+				} else {
+					if len(value) > 0 {
+						buf = append(buf, colonarrow...)
+						buf = append(buf, value...)
+					}
+				}
+				buf = append(buf, newline...)
 
-			saw++
-			return true
-		})
+				saw++
+				return true
+			})
+		}
 		return nil
 	})
 	if len(buf) > 0 {
