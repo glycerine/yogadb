@@ -19,11 +19,13 @@ const cmd = "yview"
 type YviewConfig struct {
 	KeysOnly  bool
 	StatsOnly bool
+	ShowHlc   bool
 }
 
 func (c *YviewConfig) SetFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&c.KeysOnly, "keys", false, "show keys only")
 	fs.BoolVar(&c.StatsOnly, "stats", false, "show stats only")
+	fs.BoolVar(&c.ShowHlc, "hlc", false, "show hlc timestamps")
 }
 func (c *YviewConfig) FinishConfig(fs *flag.FlagSet) (err error) {
 	return nil
@@ -86,31 +88,71 @@ func (c *YviewConfig) justShowAll(db *yogadb.FlexDB, dbPath string) {
 	var keyb, valb int64
 	buf := make([]byte, 0, 4<<20)
 	db.View(func(roDB *yogadb.ReadOnlyTx) error {
-		roDB.Ascend("", func(key string, value []byte) bool {
-			keyb += int64(len(key))
-			valb += int64(len(value))
-			need := 2 + len(key) + len(value)
-			if len(buf)+need <= cap(buf) {
-				// fine. write below.
-			} else {
-				os.Stdout.Write(buf)
-				buf = buf[:0]
-			}
-			buf = append(buf, key...)
-			if c.KeysOnly {
-				b3 := blake3OfBytes(value)
-				buf = append(buf, []byte(fmt.Sprintf(" => val len %v b3: %v", len(value), b3))...)
-			} else {
-				if len(value) > 0 {
-					buf = append(buf, colonarrow...)
-					buf = append(buf, value...)
-				}
-			}
-			buf = append(buf, newline...)
+		it := roDB.NewIter()
 
-			saw++
-			return true
-		})
+		for it.SeekToFirst(); it.Valid(); it.Next() {
+			kv := it.KV()
+			if kv != nil {
+				value, err := it.FetchV()
+				panicOn(err)
+				key := kv.Key
+
+				keyb += int64(len(kv.Key))
+				valb += int64(len(value))
+				need := 2 + len(key) + len(value)
+				if len(buf)+need <= cap(buf) {
+					// fine. write below.
+				} else {
+					os.Stdout.Write(buf)
+					buf = buf[:0]
+				}
+
+				if c.ShowHlc {
+					buf = append(buf, []byte(fmt.Sprintf("%v [%v] ", nice9(time.Unix(0, int64(kv.Hlc))), kv.Hlc))...)
+				}
+
+				buf = append(buf, key...)
+				if c.KeysOnly {
+					b3 := blake3OfBytes(value)
+					buf = append(buf, []byte(fmt.Sprintf(" => val len %v b3: %v", len(value), b3))...)
+				} else {
+					if len(value) > 0 {
+						buf = append(buf, colonarrow...)
+						buf = append(buf, value...)
+					}
+				}
+				buf = append(buf, newline...)
+
+				saw++
+			}
+		}
+		if false { // old non-timestamp version
+			roDB.Ascend("", func(key string, value []byte) bool {
+				keyb += int64(len(key))
+				valb += int64(len(value))
+				need := 2 + len(key) + len(value)
+				if len(buf)+need <= cap(buf) {
+					// fine. write below.
+				} else {
+					os.Stdout.Write(buf)
+					buf = buf[:0]
+				}
+				buf = append(buf, key...)
+				if c.KeysOnly {
+					b3 := blake3OfBytes(value)
+					buf = append(buf, []byte(fmt.Sprintf(" => val len %v b3: %v", len(value), b3))...)
+				} else {
+					if len(value) > 0 {
+						buf = append(buf, colonarrow...)
+						buf = append(buf, value...)
+					}
+				}
+				buf = append(buf, newline...)
+
+				saw++
+				return true
+			})
+		}
 		return nil
 	})
 	if len(buf) > 0 {
