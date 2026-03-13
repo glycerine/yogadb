@@ -3788,8 +3788,8 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 				// Page genuinely grew - resize the extent in place.
 				buf := slottedPageEncode(fce.kvs[:fce.count])
 				anchorLoff := uint64(anchor.loff + nh.shift)
-				alwaysPrintf("putPassthroughR Update: oldPsize=%d newSize=%d key=%q",
-					anchor.psize, len(buf), kv.Key)
+				//alwaysPrintf("putPassthroughR Update: oldPsize=%d newSize=%d key=%q",
+				//	anchor.psize, len(buf), kv.Key)
 				db.ff.Update(buf, anchorLoff, uint64(len(buf)), uint64(anchor.psize))
 				nh.shiftUpPropagate(int64(len(buf)) - int64(anchor.psize))
 				anchor.psize = uint32(len(buf))
@@ -3844,8 +3844,8 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 	if anchor.psize != uint32(slottedPageMaxSize) {
 		leftBuf := slottedPageEncodePadded(fce.kvs[:leftCount], slottedPageMaxSize)
 		leftPSize := uint32(len(leftBuf))
-		alwaysPrintf("treeInsertAnchor Update: oldPsize=%d newPsize=%d key=%q",
-			anchor.psize, leftPSize, anchor.key)
+		//alwaysPrintf("treeInsertAnchor Update: oldPsize=%d newPsize=%d key=%q",
+		//	anchor.psize, leftPSize, anchor.key)
 		db.ff.Update(leftBuf, anchorLoff, uint64(leftPSize), uint64(anchor.psize))
 		if leftPSize != anchor.psize {
 			nh.shiftUpPropagate(int64(leftPSize) - int64(anchor.psize))

@@ -175,10 +175,10 @@ func (c *intervalCache) flushDirtyPages() {
 		}
 		leaf = leaf.next
 	}
-	if flushUpdates > 0 || flushOverwrites > 0 {
-		alwaysPrintf("flushDirtyPages: overwrites=%d updates=%d updateGarbage=%d",
-			flushOverwrites, flushUpdates, flushUpdateGarbage)
-	}
+	//if flushUpdates > 0 || flushOverwrites > 0 {
+	//	alwaysPrintf("flushDirtyPages: overwrites=%d updates=%d updateGarbage=%d",
+	//		flushOverwrites, flushUpdates, flushUpdateGarbage)
+	//}
 }
 
 // allocEntryForNewAnchor creates a new (empty) cache entry for a freshly created anchor.
@@ -270,8 +270,8 @@ func (p *intervalCachePartition) flushDirtyEntry(fce *intervalCacheEntry) {
 		}
 		padBuf := slottedPageEncodePadded(fce.kvs[:fce.count], growTarget)
 		oldPsize := anchor.psize
-		alwaysPrintf("flushDirtyEntry Update: oldPsize=%d newSize=%d key=%q",
-			oldPsize, len(padBuf), anchor.key)
+		//alwaysPrintf("flushDirtyEntry Update: oldPsize=%d newSize=%d key=%q",
+		//	oldPsize, len(padBuf), anchor.key)
 		_, err := p.db.ff.Update(padBuf, absLoff, uint64(len(padBuf)), uint64(oldPsize))
 		if err != nil {
 			panicf("flushDirtyEntry Update: %v", err)
