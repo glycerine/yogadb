@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"testing"
 
 	"github.com/glycerine/vfs"
@@ -19,6 +20,10 @@ import (
 // ff.Update, the FlexTree shifts subsequent loffs but the anchor tree's
 // shifts were not updated, causing verifyAnchorTags to fail.
 func FuzzAnchorTreeDrift(f *testing.F) {
+
+	// try limiting memory
+	debug.SetMemoryLimit(10 << 30) // 10 GB. Was 2 GB but => grinding at 400% cpu sometimes.
+
 	// Seeds covering key scenarios:
 	// 1. Basic put + sync
 	f.Add([]byte{0, 0, 0, 0, 30, 0, 1, 0, 30, 4})
@@ -101,7 +106,6 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 		defer func() {
 			// Always close DB to avoid leaking goroutines.
 			db.Close()
-
 		}()
 
 		// Track what keys we've inserted and their expected values,
@@ -111,205 +115,205 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 		synced := false
 
 		// Wrap in func+recover so panicOn() calls don't kill the fuzz worker subprocess.
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					fatalf("panic in fuzz iteration: %v", r)
+		//func() {
+		//	defer func() {
+		//		if r := recover(); r != nil {
+		//			fatalf("panic in fuzz iteration: %v", r)
+		//		}
+		//	}()
+
+		maxOps := 150
+		i := 0
+		for i < len(data) && i < maxOps {
+			op := data[i] % 7
+			i++
+
+			switch op {
+			case 0: // Put with key index and value size from fuzz data
+				if i+4 > len(data) {
+					return
 				}
-			}()
+				keyIdx := int(binary.BigEndian.Uint16(data[i : i+2]))
+				valSize := int(data[i+2])
+				valSeed := int(data[i+3])
+				i += 4
 
-			maxOps := 150
-			i := 0
-			for i < len(data) && i < maxOps {
-				op := data[i] % 7
-				i++
+				keyIdx = keyIdx % 64 // cap key space
+				if valSize < 5 {
+					valSize = 5
+				}
+				if valSize > 55 { // keep values inline (< 64)
+					valSize = 55
+				}
 
-				switch op {
-				case 0: // Put with key index and value size from fuzz data
-					if i+4 > len(data) {
-						return
+				key := fmt.Sprintf("k%04d", keyIdx)
+				val := makeFuzzValue(valSize, valSeed)
+				err := db.Put(key, []byte(val))
+				if err != nil {
+					fatalf("Put(%q): %v", key, err)
+				}
+				kv.set(key, val)
+				kv2[key] = val
+				synced = false
+
+			case 1: // Delete
+				kvLen := kv.Len()
+				kv2Len := len(kv2)
+				if kvLen != kv2Len {
+					fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+				}
+				if i+2 > len(data) || kvLen == 0 {
+					continue
+				}
+				keyIdx := int(binary.BigEndian.Uint16(data[i : i+2]))
+				i += 2
+				keyIdx = keyIdx % 64
+				key := fmt.Sprintf("k%04d", keyIdx)
+
+				_, exists2 := kv2[key]
+				if _, exists := kv.get2(key); exists {
+					if exists != exists2 {
+						fatalf("omap exists=%v but map exists2=%v for key '%v'; kv2='%#v'\n kv = \n%v\n", exists, exists2, key, kv2, kv.String())
 					}
-					keyIdx := int(binary.BigEndian.Uint16(data[i : i+2]))
-					valSize := int(data[i+2])
-					valSeed := int(data[i+3])
-					i += 4
 
-					keyIdx = keyIdx % 64 // cap key space
-					if valSize < 5 {
-						valSize = 5
+					err := db.Delete(key)
+					if err != nil {
+						fatalf("Delete(%q): %v", key, err)
 					}
-					if valSize > 55 { // keep values inline (< 64)
-						valSize = 55
-					}
+					kv.delkey(key)
+					delete(kv2, key)
+					synced = false
+				}
 
-					key := fmt.Sprintf("k%04d", keyIdx)
-					val := makeFuzzValue(valSize, valSeed)
+			case 2: // Put batch - insert several sequential keys
+				if i+2 > len(data) {
+					continue
+				}
+				startIdx := int(data[i]) * 2
+				count := int(data[i+1])%20 + 1
+				i += 2
+				for j := 0; j < count; j++ {
+					key := fmt.Sprintf("k%04d", (startIdx+j)%64)
+					val := makeFuzzValue(30, startIdx+j)
 					err := db.Put(key, []byte(val))
 					if err != nil {
 						fatalf("Put(%q): %v", key, err)
 					}
 					kv.set(key, val)
 					kv2[key] = val
-					synced = false
+				}
+				synced = false
 
-				case 1: // Delete
-					kvLen := kv.Len()
-					kv2Len := len(kv2)
-					if kvLen != kv2Len {
-						fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
-					}
-					if i+2 > len(data) || kvLen == 0 {
-						continue
-					}
-					keyIdx := int(binary.BigEndian.Uint16(data[i : i+2]))
-					i += 2
-					keyIdx = keyIdx % 64
-					key := fmt.Sprintf("k%04d", keyIdx)
+			case 3: // Overwrite existing keys with different-sized values
+				kvLen := kv.Len()
+				kv2Len := len(kv2)
+				if kvLen != kv2Len {
+					fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+				}
 
-					_, exists2 := kv2[key]
-					if _, exists := kv.get2(key); exists {
-						if exists != exists2 {
-							fatalf("omap exists=%v but map exists2=%v for key '%v'; kv2='%#v'\n kv = \n%v\n", exists, exists2, key, kv2, kv.String())
-						}
+				if i+2 > len(data) || kvLen == 0 {
+					continue
+				}
+				newSize := int(data[i])%50 + 5
+				count := int(data[i+1])%10 + 1
+				i += 2
+				j := 0
+				for key := range kv.all() {
+					if j >= count {
+						break
+					}
+					val := makeFuzzValue(newSize, j+newSize)
+					err := db.Put(key, []byte(val))
+					if err != nil {
+						fatalf("Put(%q): %v", key, err)
+					}
+					kv.set(key, val)
+					kv2[key] = val
+					j++
+				}
+				synced = false
 
-						err := db.Delete(key)
-						if err != nil {
-							fatalf("Delete(%q): %v", key, err)
-						}
-						kv.delkey(key)
-						delete(kv2, key)
-						synced = false
-					}
+			case 4: // Sync - triggers flushDirtyPages (the original bug site)
+				kvLen := kv.Len()
+				kv2Len := len(kv2)
+				if kvLen != kv2Len {
+					fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+				}
 
-				case 2: // Put batch - insert several sequential keys
-					if i+2 > len(data) {
-						continue
-					}
-					startIdx := int(data[i]) * 2
-					count := int(data[i+1])%20 + 1
-					i += 2
-					for j := 0; j < count; j++ {
-						key := fmt.Sprintf("k%04d", (startIdx+j)%64)
-						val := makeFuzzValue(30, startIdx+j)
-						err := db.Put(key, []byte(val))
-						if err != nil {
-							fatalf("Put(%q): %v", key, err)
-						}
-						kv.set(key, val)
-						kv2[key] = val
-					}
-					synced = false
+				if kvLen == 0 {
+					continue
+				}
+				db.Sync()
+				synced = true
+				// verifyAnchorTags is called inside Sync, so if we get
+				// here without panic, the anchor tree is in sync.
 
-				case 3: // Overwrite existing keys with different-sized values
-					kvLen := kv.Len()
-					kv2Len := len(kv2)
-					if kvLen != kv2Len {
-						fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
-					}
+			case 5: // VacuumKV - creates tight pages, rebuilds FlexTree
+				kvLen := kv.Len()
+				kv2Len := len(kv2)
+				if kvLen != kv2Len {
+					fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+				}
 
-					if i+2 > len(data) || kvLen == 0 {
-						continue
-					}
-					newSize := int(data[i])%50 + 5
-					count := int(data[i+1])%10 + 1
-					i += 2
-					j := 0
-					for key := range kv.all() {
-						if j >= count {
-							break
-						}
-						val := makeFuzzValue(newSize, j+newSize)
-						err := db.Put(key, []byte(val))
-						if err != nil {
-							fatalf("Put(%q): %v", key, err)
-						}
-						kv.set(key, val)
-						kv2[key] = val
-						j++
-					}
-					synced = false
+				if !synced || kvLen == 0 {
+					continue
+				}
+				_, err := db.VacuumKV()
+				if err != nil {
+					fatalf("VacuumKV: %v", err)
+				}
 
-				case 4: // Sync - triggers flushDirtyPages (the original bug site)
-					kvLen := kv.Len()
-					kv2Len := len(kv2)
-					if kvLen != kv2Len {
-						fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
-					}
+			case 6: // Close + Reopen - tests recovery path
+				kvLen := kv.Len()
+				kv2Len := len(kv2)
+				if kvLen != kv2Len {
+					fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+				}
 
-					if kvLen == 0 {
-						continue
-					}
+				if kvLen == 0 {
+					continue
+				}
+				if !synced {
 					db.Sync()
 					synced = true
-					// verifyAnchorTags is called inside Sync, so if we get
-					// here without panic, the anchor tree is in sync.
-
-				case 5: // VacuumKV - creates tight pages, rebuilds FlexTree
-					kvLen := kv.Len()
-					kv2Len := len(kv2)
-					if kvLen != kv2Len {
-						fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+				}
+				db.Close()
+				db = openFuzzDB(fs, dir)
+				if db == nil {
+					t.Fatal("reopen failed")
+				}
+				// Verify all synced keys survived recovery.
+				for key, wantVal := range kv.all() {
+					gotVal, ok, gerr := db.Get(key)
+					panicOn(gerr)
+					if !ok {
+						fatalf("after reopen: Get(%q) not found", key)
 					}
-
-					if !synced || kvLen == 0 {
-						continue
-					}
-					_, err := db.VacuumKV()
-					if err != nil {
-						fatalf("VacuumKV: %v", err)
-					}
-
-				case 6: // Close + Reopen - tests recovery path
-					kvLen := kv.Len()
-					kv2Len := len(kv2)
-					if kvLen != kv2Len {
-						fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
-					}
-
-					if kvLen == 0 {
-						continue
-					}
-					if !synced {
-						db.Sync()
-						synced = true
-					}
-					db.Close()
-					db = openFuzzDB(fs, dir)
-					if db == nil {
-						t.Fatal("reopen failed")
-					}
-					// Verify all synced keys survived recovery.
-					for key, wantVal := range kv.all() {
-						gotVal, ok, gerr := db.Get(key)
-						panicOn(gerr)
-						if !ok {
-							fatalf("after reopen: Get(%q) not found", key)
-						}
-						if string(gotVal) != wantVal {
-							fatalf("after reopen: Get(%q) = %q, want %q", key, gotVal, wantVal)
-						}
+					if string(gotVal) != wantVal {
+						fatalf("after reopen: Get(%q) = %q, want %q", key, gotVal, wantVal)
 					}
 				}
 			}
+		}
 
-			// Final sync + integrity check.
-			kvLen := kv.Len()
-			kv2Len := len(kv2)
-			if kvLen != kv2Len {
-				fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
-			}
+		// Final sync + integrity check.
+		kvLen := kv.Len()
+		kv2Len := len(kv2)
+		if kvLen != kv2Len {
+			fatalf("omap kvLen=%v but map len=%v kv2='%#v'\n kv = \n%v\n", kvLen, kv2Len, kv2, kv.String())
+		}
 
-			if kvLen > 0 {
-				db.Sync()
-				errs := db.CheckIntegrity()
-				if len(errs) > 0 {
-					for _, e := range errs {
-						t.Errorf("integrity: %v", e)
-					}
-					fatalf("CheckIntegrity found %d errors", len(errs))
+		if kvLen > 0 {
+			db.Sync()
+			errs := db.CheckIntegrity()
+			if len(errs) > 0 {
+				for _, e := range errs {
+					t.Errorf("integrity: %v", e)
 				}
+				fatalf("CheckIntegrity found %d errors", len(errs))
 			}
-		}() // end recover wrapper
+		}
+		//}() // end recover wrapper
 	})
 }
 
