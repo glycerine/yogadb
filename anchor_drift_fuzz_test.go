@@ -45,9 +45,9 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 		// the fuzz coordinator to consider workers "hung."
 		// 100 bytes ~= 20 operations max, which is enough to cover
 		// multi-step sequences without taking too long.
-		if len(data) > 100 {
+		if len(data) > 300 {
 			return
-			data = data[:100]
+			data = data[:300]
 		}
 
 		runID := cryRand15B()
@@ -73,7 +73,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 				t.Fatalf("could not create logging output file '%v': '%v'", durlogPath, err)
 			}
 			ourStdout = durlog // vv, alwaysPrintf go here.
-			//vv("anchor_drift_fuzzing started runID='%v'", runID)
+			vv("anchor_drift_fuzzing started runID='%v'", runID)
 		}
 		defer func() {
 			if durlog != nil {
@@ -95,13 +95,12 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 		// fresh memfs means we can use the same dir...
 		// but just in case we try to run on real filesystem...
 		dir := "fuzz_anchor_drift" + runID
-		if err := fs.MkdirAll(dir, 0755); err != nil {
-			return
-		}
+		err = fs.MkdirAll(dir, 0755)
+		panicOn(err)
 
 		db := openFuzzDB(fs, dir)
 		if db == nil {
-			return
+			panic("no db, why?!?")
 		}
 		defer func() {
 			// Always close DB to avoid leaking goroutines.
@@ -130,7 +129,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 			switch op {
 			case 0: // Put with key index and value size from fuzz data
 				if i+4 > len(data) {
-					return
+					return // out of data
 				}
 				keyIdx := int(binary.BigEndian.Uint16(data[i : i+2]))
 				valSize := int(data[i+2])

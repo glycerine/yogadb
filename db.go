@@ -4222,12 +4222,13 @@ func (db *FlexDB) flushWorker() {
 	}
 }
 
+// update: just hides bugs. not sure this is a good idea! off for now.
 // safeDoFlush wraps doFlush with a recover so that a panic in the
 // background flush goroutine does not crash the entire process.
 // This is critical for fuzz testing where 48+ worker subprocesses
 // share the process; an uncaught goroutine panic kills them all.
 func (db *FlexDB) safeDoFlush() {
-	if false {
+	if false { // off for now.
 		defer func() {
 			if r := recover(); r != nil {
 				alwaysPrintf("flushWorker: recovered panic in doFlush: %v", r)
@@ -4242,7 +4243,7 @@ func (db *FlexDB) doFlush() {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 
-	if false {
+	if true {
 		defer func() {
 			vv("end of doFlush: sessionMetrics() = '%v'", db.writeLockHeldSessionMetrics())
 		}()
