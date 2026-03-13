@@ -104,6 +104,8 @@ func (c *intervalCache) flushDirtyPages() {
 	if tree == nil {
 		return
 	}
+	var flushOverwrites, flushUpdates int
+	var flushUpdateGarbage int64
 	// Walk the sparse index tree leaf linked list.
 	leaf := tree.leafHead
 	for leaf != nil {
@@ -137,6 +139,7 @@ func (c *intervalCache) flushDirtyPages() {
 					panicf("flushDirtyPages: anchor.loff=%d shift=%d absLoff=%d psize=%d maxLoff=%d count=%d key=%q err=%v",
 						anchor.loff, shift, absLoff, anchor.psize, c.db.ff.tree.MaxLoff, fce.count, anchor.key, err)
 				}
+				flushOverwrites++
 			} else {
 				// Content exceeds current psize. This happens when:
 				// (a) HLC delta overflow inflates encoding, or
@@ -165,10 +168,16 @@ func (c *intervalCache) flushDirtyPages() {
 					nh := memSparseIndexTreeHandler{node: leaf, idx: i, shift: shift}
 					nh.shiftUpPropagate(shiftDelta)
 				}
+				flushUpdates++
+				flushUpdateGarbage += int64(oldPsize)
 			}
 			fce.dirty = false
 		}
 		leaf = leaf.next
+	}
+	if flushUpdates > 0 || flushOverwrites > 0 {
+		alwaysPrintf("flushDirtyPages: overwrites=%d updates=%d updateGarbage=%d",
+			flushOverwrites, flushUpdates, flushUpdateGarbage)
 	}
 }
 
@@ -261,6 +270,8 @@ func (p *intervalCachePartition) flushDirtyEntry(fce *intervalCacheEntry) {
 		}
 		padBuf := slottedPageEncodePadded(fce.kvs[:fce.count], growTarget)
 		oldPsize := anchor.psize
+		alwaysPrintf("flushDirtyEntry Update: oldPsize=%d newSize=%d key=%q",
+			oldPsize, len(padBuf), anchor.key)
 		_, err := p.db.ff.Update(padBuf, absLoff, uint64(len(padBuf)), uint64(oldPsize))
 		if err != nil {
 			panicf("flushDirtyEntry Update: %v", err)

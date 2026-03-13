@@ -370,6 +370,10 @@ type FlexSpace struct {
 	// Write-byte counters (accessed atomically)
 	KV128BytesWritten   int64 // FLEXSPACE.KV128_BLOCKS file bytes written
 	REDOLogBytesWritten int64 // redo LOG bytes written
+
+	// Debug counters for bloat investigation (accessed atomically)
+	updateCount        int64
+	updateGarbageBytes int64
 }
 
 // ======================== Log helpers ========================
@@ -914,6 +918,8 @@ func (ff *FlexSpace) Update(buf []byte, loff, length, olen uint64) (int, error) 
 	if loff+olen > ff.tree.MaxLoff {
 		return -1, fmt.Errorf("flexspace: update out of range")
 	}
+	atomic.AddInt64(&ff.updateCount, 1)
+	atomic.AddInt64(&ff.updateGarbageBytes, int64(olen))
 	// Preserve tag
 	tag, _ := ff.GetTag(loff)
 
