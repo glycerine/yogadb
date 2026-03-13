@@ -183,9 +183,11 @@ func (vl *valueLog) appendLockedWithHash(value []byte, hlc HLC, b3 []byte) (VPtr
 	case "none":
 		onDiskValue = value
 		flags = vlogFlagUncompressed
-	default: // "s2"
+	case "s2", "":
 		onDiskValue = s2.Encode(nil, value)
 		flags = vlogFlagS2
+	default:
+		panicf("unknown compression: '%v'", vl.compress)
 	}
 	onDiskLen := uint64(len(onDiskValue))
 

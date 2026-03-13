@@ -844,6 +844,12 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	if cfg.LowBlockUtilizationPct <= 0 || cfg.LowBlockUtilizationPct > 1 {
 		cfg.LowBlockUtilizationPct = 0.50
 	}
+	switch cfg.Compress {
+	case "none", "s2", "":
+	default:
+		return nil, fmt.Errorf("unknown Config.Compress option: '%v'", cfg.Compress)
+	}
+
 	//vv("using cfg.LowBlockUtilizationPct = %v", cfg.LowBlockUtilizationPct)
 
 	// Resolve VFS: explicit FS > NoDisk > RealVFS.
