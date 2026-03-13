@@ -612,6 +612,9 @@ type Config struct {
 	// halves to slottedPageMaxSize. Default false uses tight encoding,
 	// which cuts space amplification substantially. When true, the old
 	// padded behavior is used (useful for A/B comparison).
+	// Padding allows in-place additions to a slotted page to
+	// occur, making key updates more efficient. The trade-off
+	// is pre-allocating space for new additions.
 	PaddedSplits bool
 }
 

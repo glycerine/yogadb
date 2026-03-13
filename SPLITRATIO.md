@@ -155,3 +155,37 @@ Option B (tight splits) is the best starting point:
 - Biggest immediate impact (~28 MB savings on the 64 KB test case)
 - No downside for load-then-Sync workloads
 - Can combine with Option C (PiggybackGC) later if dead space is still too high
+
+-----
+Q: which "padding" we are talking about. The slotted 
+page design was intentionally update-in-place with
+free space filled in towards either end. Are we talking 
+about that key-value free space when we say padding? Or something about
+the anchors and intervals?
+
+A: Yes, it's exactly the slotted page free space you designed. 
+Here's what's happening:
+
+  The slotted page layout is: 
+  [header | entry records -->  gap  <-- values | CRC]
+
+  - slottedPageEncode (tight): totalSize = contentSize - entries and values are packed with no gap between them. The page is exactly as large as the data requires.
+  
+  - slottedPageEncodePadded (padded to slottedPageMaxSize): totalSize = targetSize (64 KB). Entry records grow forward, values
+  grow backward from the CRC, and there's a zero-filled gap in the middle. That gap is the free space for future in-place updates.
+
+  The old treeInsertAnchor was calling slottedPageEncodePadded(..., slottedPageMaxSize) for both split halves. So a page that was
+  full at 64 KB gets split into two ~half-full 64 KB pages - each with ~32 KB of free space gap. That doubles the disk footprint
+  at the moment of split.
+
+The tight-encode approach writes each half as ~32 KB (no gap). 
+Then when flushDirtyPages later writes a dirty page to disk, it
+grows it to slottedPageMaxSize via ff.Update at that point;
+but only if the page has actually been modified with new puts. 
+So you don't pay the 64 KB cost until the page actually needs
+update-in-place room.
+
+The waste was: every split (on 64KB slotted pages) 
+instantly allocates 128 KB of FlexSpace for data 
+that only needs ~64 KB, and those zero-filled gaps
+stay on disk as dead weight until the page gets dirty again.
