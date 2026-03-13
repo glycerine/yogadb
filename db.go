@@ -1117,8 +1117,8 @@ func (z *Metrics) String() (r string) {
 	}
 	r += fmt.Sprintf("\n   -------- on disk big files summary --------  \n")
 
-	r += fmt.Sprintf(" FLEXSPACE.KV.SLOT_BLOCKS: %7.3f MB (%15s bytes)\n", float64(z.KVBlocksOnDiskFootprintBytes)/(1<<20), formatInt64Under(z.KVBlocksOnDiskFootprintBytes))
-	r += fmt.Sprintf("             LARGE.VLOG: %7.3f MB (%15s bytes)\n", float64(z.VlogOnDiskFootprintBytes)/(1<<20), formatInt64Under(z.VlogOnDiskFootprintBytes))
+	r += fmt.Sprintf("  FLEXSPACE.KV.SLOT_BLOCKS: %7.3f MB :%15s bytes\n", float64(z.KVBlocksOnDiskFootprintBytes)/(1<<20), formatInt64Under(z.KVBlocksOnDiskFootprintBytes))
+	r += fmt.Sprintf("               LARGE.VLOG: %7.3f MB :%15s bytes\n", float64(z.VlogOnDiskFootprintBytes)/(1<<20), formatInt64Under(z.VlogOnDiskFootprintBytes))
 
 	r += "}\n"
 	return
