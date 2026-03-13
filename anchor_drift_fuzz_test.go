@@ -7,10 +7,50 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"syscall"
 	"testing"
 
 	"github.com/glycerine/vfs"
 )
+
+var durlog *os.File
+
+func TestMain(m *testing.M) {
+
+	pid := fmt.Sprintf("%v", os.Getpid())
+	home := os.Getenv("HOME")
+	if home == "" {
+		panic("could not get env HOME")
+	}
+	durlogDir := home + "/anchorfuzz"
+	durlogPath := durlogDir + "/anchor_drift_log." + pid
+	err := os.MkdirAll(durlogDir, 0755)
+	if err != nil {
+		panicf("could not create logging output dir '%v': '%v'", durlogDir, err)
+	}
+
+	// All to file (durlog).
+
+	durlog, err = os.OpenFile(durlogPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		panicf("could not create logging output file '%v': '%v'", durlogPath, err)
+	}
+	ourStdout = durlog // vv, alwaysPrintf go here.
+
+	if err := syscall.Dup2(int(durlog.Fd()), int(os.Stderr.Fd())); err != nil {
+		panic(err)
+	}
+	if err := syscall.Dup2(int(durlog.Fd()), int(os.Stdout.Fd())); err != nil {
+		panic(err)
+	}
+	os.Stderr = durlog
+	os.Stdout = durlog
+	exitcode := m.Run()
+	durlog.Sync()
+	durlog.Close()
+
+	os.Exit(exitcode)
+}
 
 // FuzzAnchorTreeDrift exercises sequences of Put, Delete, Sync, VacuumKV,
 // and Close+Reopen to detect cases where the memSparseIndexTree (anchor tree)
@@ -22,7 +62,7 @@ import (
 func FuzzAnchorTreeDrift(f *testing.F) {
 
 	// try limiting memory
-	debug.SetMemoryLimit(10 << 30) // 10 GB. Was 2 GB but => grinding at 400% cpu sometimes.
+	debug.SetMemoryLimit(10 << 30) // 10 GB.
 
 	// Seeds covering key scenarios:
 	// 1. Basic put + sync
@@ -52,41 +92,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 
 		runID := cryRand15B()
 
-		var durlog *os.File
-		//if true {
-		// lazily log to real file on disk if we fatal out.
-		home := os.Getenv("HOME")
-		if home == "" {
-			t.Fatalf("could not get env HOME")
-		}
-		durlogDir := home + "/anchorfuzz"
-		durlogPath := durlogDir + "/anchor_drift_log"
-		err := os.MkdirAll(durlogDir, 0755)
-		if err != nil {
-			t.Fatalf("could not create logging output dir '%v': '%v'", durlogDir, err)
-		}
-
-		mklog := func() {
-			var err error
-			durlog, err = os.OpenFile(durlogPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
-			if err != nil {
-				t.Fatalf("could not create logging output file '%v': '%v'", durlogPath, err)
-			}
-			ourStdout = durlog // vv, alwaysPrintf go here.
-			vv("anchor_drift_fuzzing started runID='%v'", runID)
-		}
-		defer func() {
-			if durlog != nil {
-				//vv("anchor_drift_fuzzing ending runID='%v'", runID)
-				durlog.Close()
-			}
-		}()
-		mklog()
-		//}
 		fatalf := func(format string, a ...interface{}) {
-			if durlog == nil {
-				mklog()
-			}
 			vv(format, a...)
 			t.Fatalf(format, a...)
 		}
@@ -95,7 +101,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 		// fresh memfs means we can use the same dir...
 		// but just in case we try to run on real filesystem...
 		dir := "fuzz_anchor_drift" + runID
-		err = fs.MkdirAll(dir, 0755)
+		err := fs.MkdirAll(dir, 0755)
 		panicOn(err)
 
 		db := openFuzzDB(fs, dir)
