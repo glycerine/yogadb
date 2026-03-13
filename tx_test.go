@@ -198,7 +198,7 @@ func TestTx_UpdateIterator(t *testing.T) {
 		defer it.Close()
 
 		var got []string
-		it.SeekToFirst()
+		it.SeekFirst()
 		for it.Valid() {
 			got = append(got, string(it.Key()))
 			it.Next()
@@ -223,7 +223,7 @@ func TestTx_ViewIterator(t *testing.T) {
 		defer it.Close()
 
 		var got []string
-		it.SeekToFirst()
+		it.SeekFirst()
 		for it.Valid() {
 			got = append(got, string(it.Key()))
 			it.Next()
@@ -252,11 +252,11 @@ func TestTx_MultipleIteratorsUpdate(t *testing.T) {
 
 		// Forward scan with it1.
 		var fwd []string
-		it1.SeekToFirst()
+		it1.SeekFirst()
 
 		// Backward scan with it2.
 		var bwd []string
-		it2.SeekToLast()
+		it2.SeekLast()
 
 		for it1.Valid() || it2.Valid() {
 			if it1.Valid() {
@@ -295,11 +295,11 @@ func TestTx_MultipleIteratorsView(t *testing.T) {
 
 		// Forward scan with it1.
 		var fwd []string
-		it1.SeekToFirst()
+		it1.SeekFirst()
 
 		// Backward scan with it2.
 		var bwd []string
-		it2.SeekToLast()
+		it2.SeekLast()
 
 		for it1.Valid() || it2.Valid() {
 			if it1.Valid() {

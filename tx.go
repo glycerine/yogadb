@@ -362,7 +362,7 @@ func (tx *WriteTx) Descend(pivot string, iter func(key string, value []byte) boo
 	it := tx.newIter()
 	defer it.Close()
 	if pivot == "" {
-		it.SeekToLast()
+		it.SeekLast()
 	} else {
 		it.seekLE(pivot, false)
 	}
@@ -397,7 +397,7 @@ func (tx *WriteTx) DescendRange(lessOrEqual, greaterThan string, iter func(key s
 	it := tx.newIter()
 	defer it.Close()
 	if lessOrEqual == "" {
-		it.SeekToLast()
+		it.SeekLast()
 	} else {
 		it.seekLE(lessOrEqual, false)
 	}
@@ -498,7 +498,7 @@ func (roTx *ReadOnlyTx) Descend(pivot string, iter func(key string, value []byte
 	it := roTx.newIter()
 	defer it.Close()
 	if pivot == "" {
-		it.SeekToLast()
+		it.SeekLast()
 	} else {
 		it.seekLE(pivot, false)
 	}
@@ -533,7 +533,7 @@ func (roTx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, iter func(
 	it := roTx.newIter()
 	defer it.Close()
 	if lessOrEqual == "" {
-		it.SeekToLast()
+		it.SeekLast()
 	} else {
 		it.seekLE(lessOrEqual, false)
 	}

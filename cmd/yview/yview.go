@@ -90,7 +90,7 @@ func (c *YviewConfig) justShowAll(db *yogadb.FlexDB, dbPath string) {
 	db.View(func(roDB *yogadb.ReadOnlyTx) error {
 		it := roDB.NewIter()
 
-		for it.SeekToFirst(); it.Valid(); it.Next() {
+		for it.SeekFirst(); it.Valid(); it.Next() {
 			kv := it.KV()
 			if kv != nil {
 				value, err := it.FetchV()

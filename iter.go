@@ -1305,13 +1305,13 @@ func (it *Iter) seekLE(target string, strict bool) {
 	it.valueResolved = true
 }
 
-// SeekToFirst positions the iterator at the first key.
-func (it *Iter) SeekToFirst() {
+// SeekFirst positions the iterator at the first key.
+func (it *Iter) SeekFirst() {
 	it.Seek("")
 }
 
-// SeekToLast positions the iterator at the last key.
-func (it *Iter) SeekToLast() {
+// SeekLast positions the iterator at the last key.
+func (it *Iter) SeekLast() {
 	if it.closed {
 		return
 	}

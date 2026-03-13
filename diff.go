@@ -43,11 +43,11 @@ func FirstDiff(dbA, dbB *FlexDB) string {
 
 	itA := roA.NewIter()
 	defer itA.Close()
-	itA.SeekToFirst()
+	itA.SeekFirst()
 
 	itB := roB.NewIter()
 	defer itB.Close()
-	itB.SeekToFirst()
+	itB.SeekFirst()
 
 	var i int64
 	for ; i < smaller; i++ {

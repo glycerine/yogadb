@@ -502,7 +502,7 @@ func TestFlexDB_EmptyDB(t *testing.T) {
 
 	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
-		it.SeekToFirst()
+		it.SeekFirst()
 		if it.Valid() {
 			t.Fatalf("iterator on empty DB should not be valid, got key %q", it.Key())
 		}
@@ -911,7 +911,7 @@ func TestFlexDB_DescendAll_big(t *testing.T) {
 
 	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
-		it.SeekToLast()
+		it.SeekLast()
 		count := 0
 		for it.Valid() {
 			if it.Key() != string(keys[count]) {

@@ -64,7 +64,7 @@ func Benchmark_Iter_YogaDB_Ascend(b *testing.B) {
 		t0 := time.Now()
 		db.View(func(roDB *ReadOnlyTx) error {
 			it := roDB.NewIter()
-			it.SeekToFirst()
+			it.SeekFirst()
 			count := 0
 			for it.Valid() {
 				count++
@@ -118,7 +118,7 @@ func Benchmark_Iter_YogaDB_Descend(b *testing.B) {
 		t0 := time.Now()
 		db.View(func(roDB *ReadOnlyTx) error {
 			it := roDB.NewIter()
-			it.SeekToLast()
+			it.SeekLast()
 			count := 0
 			for it.Valid() {
 				count++

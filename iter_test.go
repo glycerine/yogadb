@@ -20,7 +20,7 @@ func TestFlexDB_IteratorBasic(t *testing.T) {
 
 	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
-		it.SeekToFirst()
+		it.SeekFirst()
 		defer it.Close()
 
 		want := []string{"apple", "banana", "cherry", "date"}
@@ -84,7 +84,7 @@ func TestFlexDB_IteratorAfterSync(t *testing.T) {
 
 	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
-		it.SeekToFirst()
+		it.SeekFirst()
 		defer it.Close()
 
 		sort.Strings(keys)
@@ -118,7 +118,7 @@ func TestFlexDB_ManyKeysIterator(t *testing.T) {
 
 	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
-		it.SeekToFirst()
+		it.SeekFirst()
 		defer it.Close()
 
 		sort.Strings(keys)
@@ -293,7 +293,7 @@ func TestFlexDB_IteratorPrev(t *testing.T) {
 
 	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
-		it.SeekToLast()
+		it.SeekLast()
 		defer it.Close()
 
 		var keys []string
@@ -987,7 +987,7 @@ func TestFlexDB_IteratorDeleteDuringForward(t *testing.T) {
 	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
 		defer it.Close()
-		it.SeekToFirst()
+		it.SeekFirst()
 
 		var got []string
 		for it.Valid() {
@@ -1016,7 +1016,7 @@ func TestFlexDB_IteratorDeleteCurrentAndNext(t *testing.T) {
 	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
 		defer it.Close()
-		it.SeekToFirst()
+		it.SeekFirst()
 
 		var got []string
 		for it.Valid() {
@@ -1047,7 +1047,7 @@ func TestFlexDB_IteratorDeleteAllForward(t *testing.T) {
 
 	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
-		it.SeekToFirst()
+		it.SeekFirst()
 
 		var deleted []string
 		for it.Valid() {
@@ -1082,7 +1082,7 @@ func TestFlexDB_IteratorPutDuringForward(t *testing.T) {
 	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
 		defer it.Close()
-		it.SeekToFirst()
+		it.SeekFirst()
 
 		var got []string
 		for it.Valid() {
@@ -1111,7 +1111,7 @@ func TestFlexDB_IteratorDeleteDuringBackward(t *testing.T) {
 	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
 		defer it.Close()
-		it.SeekToLast()
+		it.SeekLast()
 
 		var got []string
 		for it.Valid() {
@@ -1141,7 +1141,7 @@ func TestFlexDB_IteratorDeleteOldTimestamps(t *testing.T) {
 	cutoff := "2025-"
 	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
-		it.SeekToFirst()
+		it.SeekFirst()
 		for it.Valid() {
 			if it.Key() < cutoff {
 				if err := rwDB.Delete(it.Key()); err != nil {
@@ -1179,7 +1179,7 @@ func TestFlexDB_IteratorMutateAfterSync(t *testing.T) {
 	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
 		defer it.Close()
-		it.SeekToFirst()
+		it.SeekFirst()
 
 		var got []string
 		for it.Valid() {
@@ -1206,14 +1206,14 @@ func TestFlexDB_IteratorEmptyDB(t *testing.T) {
 		it := roDB.NewIter()
 		defer it.Close()
 
-		it.SeekToFirst()
+		it.SeekFirst()
 		if it.Valid() {
-			t.Fatal("SeekToFirst on empty DB should be invalid")
+			t.Fatal("SeekFirst on empty DB should be invalid")
 		}
 
-		it.SeekToLast()
+		it.SeekLast()
 		if it.Valid() {
-			t.Fatal("SeekToLast on empty DB should be invalid")
+			t.Fatal("SeekLast on empty DB should be invalid")
 		}
 
 		it.Seek("x")
@@ -1258,7 +1258,7 @@ func TestFlexDB_IteratorDeleteAllBackward(t *testing.T) {
 
 	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
-		it.SeekToLast()
+		it.SeekLast()
 
 		var got []string
 		for it.Valid() {
@@ -1299,7 +1299,7 @@ func TestFlexDB_IteratorHasInlineValue(t *testing.T) {
 	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		defer it.Close()
-		it.SeekToFirst()
+		it.SeekFirst()
 
 		// First key: "large" (alphabetically first)
 		if !it.Valid() || it.Key() != "large" {
@@ -1379,7 +1379,7 @@ func TestIterKV_ViewBasic(t *testing.T) {
 	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		defer it.Close()
-		it.SeekToFirst()
+		it.SeekFirst()
 
 		var keys []string
 		for it.Valid() {
@@ -1413,7 +1413,7 @@ func TestIterKV_UpdateMutate(t *testing.T) {
 	db.Update(func(rwDB *WriteTx) error {
 		it := rwDB.NewIter()
 		defer it.Close()
-		it.SeekToFirst()
+		it.SeekFirst()
 
 		for it.Valid() {
 			kv := it.KV()
@@ -1450,7 +1450,7 @@ func TestIterKV_NilOnInvalid(t *testing.T) {
 		}
 
 		// After seek on empty DB
-		it.SeekToFirst()
+		it.SeekFirst()
 		if kv := it.KV(); kv != nil {
 			t.Fatalf("KV() should be nil on empty DB, got key=%q", kv.Key)
 		}
@@ -1469,7 +1469,7 @@ func TestIterKV_LargeValue(t *testing.T) {
 	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		defer it.Close()
-		it.SeekToFirst()
+		it.SeekFirst()
 
 		// First key: "bigkey"
 		if !it.Valid() {
@@ -1519,7 +1519,7 @@ func TestIterKV_AfterSync(t *testing.T) {
 	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		defer it.Close()
-		it.SeekToFirst()
+		it.SeekFirst()
 
 		var keys []string
 		for it.Valid() {
