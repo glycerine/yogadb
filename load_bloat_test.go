@@ -170,6 +170,7 @@ go test -v -tags memfs -run TestLoadBloat_SpaceAmplification
 */
 
 /* // SLOTTED_PAGE_KB = 64
+
 go test -v -tags memfs -run TestLoadBloat_SpaceAmplification
 === RUN   TestLoadBloat_SpaceAmplification
     load_bloat_test.go:30: loaded 434733 keys from assets/
@@ -178,13 +179,13 @@ go test -v -tags memfs -run TestLoadBloat_SpaceAmplification
     load_bloat_test.go:67: total disk size after load: 71342262 bytes (68.04 MB)
     load_bloat_test.go:68: space amplification: 3.13x raw data
     load_bloat_test.go:69: metrics: live=67043328, free=65536, blocks=16
-    load_bloat_test.go:81:   FLEXTREE.PAGES                     262144 bytes (0.25 MB)
-    load_bloat_test.go:81:   FLEXSPACE.REDO.LOG                  61452 bytes (0.06 MB)
-    load_bloat_test.go:81:   FLEXDB.MEMWAL                          20 bytes (0.00 MB)
     load_bloat_test.go:81:   LARGE.VLOG                        3844246 bytes (3.67 MB)
     load_bloat_test.go:81:   FLEXSPACE.KV.SLOT_BLOCKS         67108864 bytes (64.00 MB)
     load_bloat_test.go:81:   FLEXTREE.COMMIT                     65536 bytes (0.06 MB)
+    load_bloat_test.go:81:   FLEXTREE.PAGES                     262144 bytes (0.25 MB)
+    load_bloat_test.go:81:   FLEXSPACE.REDO.LOG                  61452 bytes (0.06 MB)
+    load_bloat_test.go:81:   FLEXDB.MEMWAL                          20 bytes (0.00 MB)
     load_bloat_test.go:96: key count in DB: 434672 (unique input: 434672, total input: 434733)
-    load_bloat_test.go:113: WARNING: space amplification 3.13x exceeds 3x target (SLOTTED_PAGE_KB=64)
---- PASS: TestLoadBloat_SpaceAmplification (2.22s)
+    load_bloat_test.go:113: ERROR: space amplification 3.13x exceeds 3x target (SLOTTED_PAGE_KB=64)
+--- FAIL: TestLoadBloat_SpaceAmplification (2.17s)
 */
