@@ -1809,7 +1809,7 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 	for i := range ff.bm.buf {
 		ff.bm.buf[i] = 0
 	}
-	bmInit(ff.bm, ff.tree)
+	bmInit(ff.bm, ff.tree, ff.fdKV128blocks)
 
 	// After vacuum, data is compacted sequentially from offset 0. The last
 	// block may be partially filled. Override bmInit's block selection to

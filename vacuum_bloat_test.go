@@ -126,16 +126,20 @@ func TestVacuumThenOverwrite_DiskSizeBounded(t *testing.T) {
 		m := db.SessionMetrics()
 		uc := atomic.LoadInt64(&db.ff.updateCount)
 		ug := atomic.LoadInt64(&db.ff.updateGarbageBytes)
+		ic := atomic.LoadInt64(&db.ff.insertCount)
+		ib := atomic.LoadInt64(&db.ff.insertBytes)
 		atomic.StoreInt64(&db.ff.updateCount, 0)
 		atomic.StoreInt64(&db.ff.updateGarbageBytes, 0)
+		atomic.StoreInt64(&db.ff.insertCount, 0)
+		atomic.StoreInt64(&db.ff.insertBytes, 0)
 		sz := mustDirSize(fs, dir)
 		if r == 0 {
-			t.Logf("Round 0 (baseline): %d bytes, live=%d, free=%d, blocks=%d, ffUpdates=%d, ffGarbage=%d",
-				sz, m.KVBlocksTotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksInUse, uc, ug)
+			t.Logf("Round 0 (baseline): %d bytes, live=%d, free=%d, blocks=%d, ffUpdates=%d, ffGarbage=%d, ffInserts=%d, ffInsertBytes=%d",
+				sz, m.KVBlocksTotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksInUse, uc, ug, ic, ib)
 		} else {
-			t.Logf("Round %d: %d bytes (%.2fx), live=%d, free=%d, blocks=%d, ffUpdates=%d, ffGarbage=%d",
+			t.Logf("Round %d: %d bytes (%.2fx), live=%d, free=%d, blocks=%d, ffUpdates=%d, ffGarbage=%d, ffInserts=%d, ffInsertBytes=%d",
 				r, sz, float64(sz)/float64(sizeAfterRound0),
-				m.KVBlocksTotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksInUse, uc, ug)
+				m.KVBlocksTotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksInUse, uc, ug, ic, ib)
 		}
 
 		errs := db.CheckIntegrity()

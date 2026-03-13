@@ -266,10 +266,15 @@ func bmCreate(ff *FlexSpace) *blockManager {
 }
 
 // bmInit reconstructs the block manager state by scanning the FlexTree extents.
-func bmInit(bm *blockManager, tree *FlexTree) {
+func bmInit(bm *blockManager, tree *FlexTree, fd ...vfs.File) {
 	bm.blkdist[0] = FLEXSPACE_BLOCK_COUNT
 	bm.freeBlocks = FLEXSPACE_BLOCK_COUNT
 	maxBlkid := uint64(0)
+
+	// Track the highest physical end offset within each block so we
+	// can resume writing at the tail of a partially-filled block
+	// instead of always allocating a new empty one.
+	var blkHighWater [FLEXSPACE_BLOCK_COUNT]uint64
 
 	nodeID := tree.LeafHead
 	for !nodeID.IsIllegal() {
@@ -293,16 +298,52 @@ func bmInit(bm *blockManager, tree *FlexTree) {
 					maxBlkid = blkid
 				}
 				bm.updateBlkUsage(blkid, int32(inBlock))
+				endInBlock := (poff + inBlock) - (blkid << FLEXSPACE_BLOCK_BITS)
+				if endInBlock > blkHighWater[blkid] {
+					blkHighWater[blkid] = endInBlock
+				}
 				poff += inBlock
 				remaining -= inBlock
 			}
 		}
 		nodeID = le.Next
 	}
-	// isGC=true to avoid recursive GC call during initialization
-	bm.blkid = bm.findEmptyBlock(maxBlkid, true)
-	bm.blkoff = 0
-	bm.flushedOff = 0
+
+	// Find the best block to continue writing in: prefer a partially-filled
+	// block with the most remaining space over allocating a new empty one.
+	// This avoids the pathology where a handful of small ff.Update calls
+	// after reopen allocate a new 4 MB block each time.
+	bestBlk := uint64(0)
+	bestFree := uint64(0)
+	foundPartial := false
+	for bid := uint64(0); bid <= maxBlkid; bid++ {
+		hw := blkHighWater[bid]
+		if hw > 0 && hw < FLEXSPACE_BLOCK_SIZE {
+			free := FLEXSPACE_BLOCK_SIZE - hw
+			if free > bestFree {
+				bestFree = free
+				bestBlk = bid
+				foundPartial = true
+			}
+		}
+	}
+
+	if foundPartial {
+		bm.blkid = bestBlk
+		bm.blkoff = blkHighWater[bestBlk]
+		bm.flushedOff = blkHighWater[bestBlk]
+		// Load existing data into the write buffer so that bm.read()
+		// and bm.flush() work correctly for the partial block.
+		if len(fd) > 0 && fd[0] != nil {
+			blkStart := int64(bestBlk << FLEXSPACE_BLOCK_BITS)
+			fd[0].ReadAt(bm.buf[:bm.blkoff], blkStart)
+		}
+	} else {
+		// isGC=true to avoid recursive GC call during initialization
+		bm.blkid = bm.findEmptyBlock(maxBlkid, true)
+		bm.blkoff = 0
+		bm.flushedOff = 0
+	}
 }
 
 // ======================== FlexSpace ========================
@@ -374,6 +415,8 @@ type FlexSpace struct {
 	// Debug counters for bloat investigation (accessed atomically)
 	updateCount        int64
 	updateGarbageBytes int64
+	insertCount        int64
+	insertBytes        int64
 }
 
 // ======================== Log helpers ========================
@@ -581,7 +624,7 @@ func OpenFlexSpaceCoW(path string, omitRedoLog bool, fs vfs.FS) (*FlexSpace, err
 
 	// Initialize block manager
 	ff.bm = bmCreate(ff)
-	bmInit(ff.bm, ff.tree)
+	bmInit(ff.bm, ff.tree, ff.fdKV128blocks)
 
 	// Initialize GC context
 	ff.gc.loff = 0
@@ -805,6 +848,8 @@ func (ff *FlexSpace) insertR(buf []byte, loff, length uint64, commit bool) (int,
 
 // Insert inserts len bytes at loff, shifting all subsequent extents right.
 func (ff *FlexSpace) Insert(buf []byte, loff, length uint64) (int, error) {
+	atomic.AddInt64(&ff.insertCount, 1)
+	atomic.AddInt64(&ff.insertBytes, int64(length))
 	return ff.insertR(buf, loff, length, true)
 }
 
