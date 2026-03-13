@@ -108,7 +108,7 @@ func (c *YviewConfig) justShowAll(db *yogadb.FlexDB, dbPath string) {
 				}
 
 				if c.ShowHlc {
-					buf = append(buf, []byte(fmt.Sprintf("[Hlc %v][%v]", kv.Hlc, nice(time.Unix(0, int64(kv.Hlc)))))...)
+					buf = append(buf, []byte(fmt.Sprintf("%v [%v] ", nice9(time.Unix(0, int64(kv.Hlc))), kv.Hlc))...)
 				}
 
 				buf = append(buf, key...)
