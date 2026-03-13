@@ -146,3 +146,26 @@ All passing. Here's a summary of what was done:
  Worked for 4m 53s
 commit atop of 516234f
 ------------
+
+All pass. To summarize the two fixes:
+
+Fix 1 - VacuumKV cross-block extent (db.go ~line 1709): VacuumKV 
+wrote extents sequentially without checking 4 MB
+block boundaries. An extent could straddle two blocks, corrupting 
+blkusage[] tracking. Fixed by skipping to the next
+block boundary when an extent won't fit.
+  
+Fix 2 - bmInit partial-block reuse (flexspace.go bmInit): 
+After close+reopen, bmInit always picked a new empty block
+to start writing. Even a handful of small ff.Update calls (from 
+HLC delta changes) would allocate an entire new 4 MB
+block, adding ~4 MB of "free" space per session. Fixed by 
+tracking the high-water mark within each block during the
+tree walk and continuing in the partially-filled block with 
+the most remaining space, loading its existing data into
+the write buffer.
+
+Debug counters (updateCount, updateGarbageBytes, insertCount, insertBytes) 
+remain on FlexSpace and are incremented on every Update/Insert call.
+Print statements are commented out but easily re-enabled.
+

@@ -4452,9 +4452,11 @@ func (db *FlexDB) doFlush() {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 
-	defer func() {
-		vv("end of doFlush: sessionMetrics() = '%v'", db.writeLockHeldSessionMetrics())
-	}()
+	if false {
+		defer func() {
+			vv("end of doFlush: sessionMetrics() = '%v'", db.writeLockHeldSessionMetrics())
+		}()
+	}
 
 	wasActive := db.activeMT
 	if db.memtables[wasActive].empty {
