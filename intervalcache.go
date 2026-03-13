@@ -416,8 +416,8 @@ func (p *intervalCachePartition) loadInterval(fce *intervalCacheEntry, anchor *d
 			src = nil // corrupt page, skip
 		}
 	}
-	// All KV128_BLOCKS data should be slotted page format.
-	// kv128 format is no longer written to KV128_BLOCKS.
+	// All KV.SLOT_BLOCKS data should be slotted page format.
+	// kv128 format is no longer written to KV.SLOT_BLOCKS.
 	if len(src) > 0 {
 		panicf("loadInterval: unexpected non-slotted data at loff=%d, %d trailing bytes, first 16 bytes: %x",
 			anchorLoff, len(src), src[:min(len(src), 16)])

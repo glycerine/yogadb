@@ -565,7 +565,7 @@ func TestFlexspace_FilesCreated(t *testing.T) {
 
 	//vv("contents = %v", mustListDir(dir))
 
-	for _, name := range []string{"FLEXSPACE.KV128_BLOCKS", "FLEXTREE.COMMIT", "FLEXSPACE.REDO.LOG"} {
+	for _, name := range []string{"FLEXSPACE.KV.SLOT_BLOCKS", "FLEXTREE.COMMIT", "FLEXSPACE.REDO.LOG"} {
 		p := filepath.Join(dir, name)
 		if _, err := fs.Stat(p); err != nil {
 			t.Errorf("expected file %s: %v", name, err)
@@ -762,7 +762,7 @@ func TestFlexspace_BlockRecycling(t *testing.T) {
 // ======================== Fix B: Trailing Block Truncation ========================
 
 // TestFlexspace_TruncateTrailingBlocks verifies that after collapsing trailing
-// data, sync shrinks the FLEXSPACE.KV128_BLOCKS file.
+// data, sync shrinks the FLEXSPACE.KV.SLOT_BLOCKS file.
 //
 // Strategy: fill 4 complete blocks (32 × 128KB each), then collapse the
 // trailing 2 blocks and verify the file shrinks.
@@ -799,7 +799,7 @@ func TestFlexspace_TruncateTrailingBlocks(t *testing.T) {
 	}
 
 	// File should span multiple blocks.
-	dataPath := filepath.Join(dir, "FLEXSPACE.KV128_BLOCKS")
+	dataPath := filepath.Join(dir, "FLEXSPACE.KV.SLOT_BLOCKS")
 	fi, err := fs.Stat(dataPath)
 	if err != nil {
 		t.Fatalf("Stat: %v", err)

@@ -11,7 +11,7 @@ import (
 
 // TestVacuumThenOverwrite_DiskSizeBounded reproduces a space amplification
 // regression: after VacuumVLOG + VacuumKV, reloading the same keys causes
-// KV128_BLOCKS to grow by ~4 MB per load instead of staying constant.
+// KV.SLOT_BLOCKS to grow by ~4 MB per load instead of staying constant.
 //
 // The pattern is: load keys (some with VLOG-sized values) -> close -> reopen ->
 // VacuumVLOG -> VacuumKV -> reload same keys N times -> check disk size.

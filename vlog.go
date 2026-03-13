@@ -27,7 +27,7 @@ package yogadb
 // When dedup reuses an old VPtr, the HLC stored in the VLOG entry header
 // becomes stale - it reflects the original write, not the latest overwrite.
 // This is intentional and correct. The AUTHORITATIVE HLC for any key-value
-// pair lives in the KV128 encoding in FLEXSPACE.KV128_BLOCKS (and in the
+// pair lives in the KV128 encoding in FLEXSPACE.KV.SLOT_BLOCKS (and in the
 // memtable/WAL before flush). The VLOG header HLC is NOT authoritative.
 // It is only consulted by VacuumVLOG when rewriting entries, at which point
 // the KV128's HLC should be used instead. This design avoids bloating the
@@ -193,7 +193,7 @@ func (vl *valueLog) appendAndSync(value []byte, hlc HLC, skipSync bool) (VPtr, e
 //
 // See "HLC STALENESS IN VLOG HEADERS" comment at the top of this file:
 // when dedup reuses an old VPtr, the VLOG header HLC becomes stale.
-// The authoritative HLC lives in KV128_BLOCKS / memtable / WAL.
+// The authoritative HLC lives in KV.SLOT_BLOCKS / memtable / WAL.
 func (vl *valueLog) appendDedupAndSync(value []byte, hlc HLC, oldVP VPtr, skipSync bool) (VPtr, bool, error) {
 	newB3 := blake3checksum32(value)
 

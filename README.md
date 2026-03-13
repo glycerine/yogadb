@@ -315,7 +315,7 @@ Current write path:
 File layout:
 
 FlexDB dir/
-├── FLEXSPACE.KV128_BLOCKS <- All KV data (random pread/pwrite, grows)
+├── FLEXSPACE.KV.SLOT_BLOCKS <- All KV data (random pread/pwrite, grows)
 ├── FLEXSPACE.REDO.LOG     <- Redo log (append-only)
 ├── FLEXTREE.COMMIT        <- CoW commit records (append-only, 64KB)
 ├── FLEXTREE.PAGES         <- CoW pages (random read/write, 1024-byte pages)
@@ -528,9 +528,9 @@ File: flexspace.go
 
   | Line | Operation | File Desc | Size | Type | Context |
   |------|-----------|-----------|------|------|---------|
-  | 198  | WriteAt   | fd (KV128_BLOCKS) | VAR  | KV128_BLOCKS | nextBlock() flush 4MB block |
-  | 207  | Sync      | fd (KV128_BLOCKS) | -    | SYNC | blockMgr.flush() |
-  | 313  | WriteAt   | logFD     | VAR  | KV128_BLOCKS | logSync() append log buffer |
+  | 198  | WriteAt   | fd (KV.SLOT_BLOCKS) | VAR  | KV.SLOT_BLOCKS | nextBlock() flush 4MB block |
+  | 207  | Sync      | fd (KV.SLOT_BLOCKS) | -    | SYNC | blockMgr.flush() |
+  | 313  | WriteAt   | logFD     | VAR  | KV.SLOT_BLOCKS | logSync() append log buffer |
   | 317  | Sync      | logFD     | -    | SYNC | logSync() fsync log |
   | 322  | Truncate  | logFD     | 0    | TRUNC| logTruncate() reset |
   | 329  | WriteAt   | logFD     | 8B   | FLEXTREE.COMMIT | writeLogVersion() header |
@@ -546,7 +546,7 @@ File: flexspace.go
 
   | Line | Operation | File Desc | Size | Type | Context |
   |------|-----------|-----------|------|------|---------|
-  | 1095 | Write     | logFD     | VAR  | KV128_BLOCKS | logFlushLocked() WAL append |
+  | 1095 | Write     | logFD     | VAR  | KV.SLOT_BLOCKS | logFlushLocked() WAL append |
   | 1108 | Truncate  | logFD     | 0    | TRUNC| logTruncate() reset WAL |
   | 1111 | WriteAt   | logFD     | 8B   | FLEXTREE.COMMIT | logTruncate() timestamp |
 
@@ -602,12 +602,12 @@ File: flexspace.go
     └─> FlexDB.flush()
         └─> FlexSpace.Write(flattened_memtable_kvs)
             └─> flexspace.go:719 blockManager.write()
-                └─> flexspace.go:198 WriteAt(fd, KV128_BLOCKS) [KV128_BLOCKS WRITE 2]
+                └─> flexspace.go:198 WriteAt(fd, KV.SLOT_BLOCKS) [KV.SLOT_BLOCKS WRITE 2]
             └─> flexspace.go:721 logWrite(flexOpTreeInsert)
                 └─> [appends 16-byte entry to logBuf]
         └─> FlexSpace.Sync() [if logFull]
             └─> flexspace.go:313 WriteAt(logFD, REDO.LOG) [REDO.LOG WRITE 3]
-            └─> flexspace.go:207 Sync(fd, KV128_BLOCKS) [SYNC 1]
+            └─> flexspace.go:207 Sync(fd, KV.SLOT_BLOCKS) [SYNC 1]
             └─> flexspace.go:317 Sync(logFD) [SYNC 2]
 
   Checkpoint: FlexSpace.Sync() when log exceeds 2 GB
@@ -639,7 +639,7 @@ File: flexspace.go
      - Buffered; flushed when buffer >= 4 MB
      - WRITE COUNT: ~1020 bytes (amortized across batch)
 
-  2. FlexSpace -> KV128_BLOCKS block:
+  2. FlexSpace -> KV.SLOT_BLOCKS block:
      - Data write: 1024 bytes (to 4 MB block)
      - LogOp entry: 16 bytes
      - WRITE COUNT: 1024 bytes data + 16 bytes log
@@ -657,7 +657,7 @@ File: flexspace.go
 
   Total for one 1 KB operation:
   - WAL: 1020 bytes
-  - KV128_BLOCKS: 1024 bytes
+  - KV.SLOT_BLOCKS: 1024 bytes
   - REDO.LOG: 16 bytes
   - Checkpoint: amortized 30-50 bytes (infrequent)
   - ≈ 2060+ bytes per 1000 bytes data = 2x+ amplification minimum
@@ -674,7 +674,7 @@ File: flexspace.go
 
   Total for one 1 KB operation:
   - WAL: 1020 bytes
-  - KV128_BLOCKS: 1024 bytes
+  - KV.SLOT_BLOCKS: 1024 bytes
   - REDO.LOG: 16 bytes
   - CoW: 1024 bytes (node) + 64 bytes (FLEXTREE.COMMIT) if dirty
   - ≈ 3148+ bytes per 1000 bytes data = 3x+ amplification
@@ -691,7 +691,7 @@ File: flexspace.go
   2. pages.go:411 - Internal page write
      Counter: bytes += 1024
 
-  3. flexspace.go:198 - KV128_BLOCKS block write
+  3. flexspace.go:198 - KV.SLOT_BLOCKS block write
      Counter: bytes += bm.blkoff
 
   4. flexspace.go:313 - REDO.LOG buffer write
@@ -707,7 +707,7 @@ File: flexspace.go
      Counter: bytes += 64
 
   Total formula:
-  WA = (CoW_pages + REDO.LOG_buffer + KV128_BLOCKS + WAL_buffer) / original_kv_size
+  WA = (CoW_pages + REDO.LOG_buffer + KV.SLOT_BLOCKS + WAL_buffer) / original_kv_size
 
   ================================================================
 
@@ -746,13 +746,13 @@ Layer 2: FlexSpace Log-Structured (flexspace.go)
 ┌──────┬───────────┬─────────────┬──────────┬───────┬───────────────────┐
 │ Line │ Operation │     FD      │   Size   │ Type  │      Context      │
 ├──────┼───────────┼─────────────┼──────────┼───────┼───────────────────┤
-│ 198  │ WriteAt   │ fd (KV128_BLOCKS)   │ variable │ Data  │ 4MB block flush   │
+│ 198  │ WriteAt   │ fd (KV.SLOT_BLOCKS)   │ variable │ Data  │ 4MB block flush   │
 ├──────┼───────────┼─────────────┼──────────┼───────┼───────────────────┤
 │ 313  │ WriteAt   │ logFD (REDO.LOG) │ variable │ Data  │ Log buffer append │
 ├──────┼───────────┼─────────────┼──────────┼───────┼───────────────────┤
 │ 329  │ WriteAt   │ logFD (REDO.LOG) │ 8B       │ Meta  │ Version header    │
 ├──────┼───────────┼─────────────┼──────────┼───────┼───────────────────┤
-│ 207  │ Sync      │ fd (KV128_BLOCKS)   │ -        │ Sync  │ Block flush sync  │
+│ 207  │ Sync      │ fd (KV.SLOT_BLOCKS)   │ -        │ Sync  │ Block flush sync  │
 ├──────┼───────────┼─────────────┼──────────┼───────┼───────────────────┤
 │ 317  │ Sync      │ logFD (REDO.LOG) │ -        │ Sync  │ Log flush sync    │
 ├──────┼───────────┼─────────────┼──────────┼───────┼───────────────────┤
@@ -777,7 +777,7 @@ CoW Mode:
 - FLEXTREE.PAGES - 1024-byte pages (one per tree node)
 - FLEXTREE.COMMIT - 64-byte commit records (append-only)
 - REDO.LOG - 8-byte header + 16-byte redo entries
-- KV128_BLOCKS - 4 MB blocks
+- KV.SLOT_BLOCKS - 4 MB blocks
 
 FlexDB:
 - MEMWAL1, MEMWAL2 - memtable WALs (one per memtable)
@@ -789,7 +789,7 @@ For a single 1 KB write:
 
 Put(key, value)
   ├─ Memtable WAL write: ~1020 bytes (KV128 encoded)
-  ├─ FlexSpace KV128_BLOCKS block: 1024 bytes (to 4 MB block)
+  ├─ FlexSpace KV.SLOT_BLOCKS block: 1024 bytes (to 4 MB block)
   ├─ FlexSpace REDO.LOG entry: 16 bytes
   ├─ Tree checkpoint (CoW): 1024 bytes (node) + 64 bytes (FLEXTREE.COMMIT)
   └─ Tree checkpoint (greenpack): 30-50 bytes (amortized)
@@ -803,7 +803,7 @@ Complete mapping for instrumentation:
 1. /Users/me/go/src/github.com/glycerine/yogadb/pages.go:373 - CoW leaf write
 2. /Users/me/go/src/github.com/glycerine/yogadb/pages.go:411 - CoW internal write
 3. /Users/me/go/src/github.com/glycerine/yogadb/pages.go:332 - FLEXTREE.COMMIT commit
-4. /Users/me/go/src/github.com/glycerine/yogadb/flexspace.go:198 - KV128_BLOCKS block write
+4. /Users/me/go/src/github.com/glycerine/yogadb/flexspace.go:198 - KV.SLOT_BLOCKS block write
 5. /Users/me/go/src/github.com/glycerine/yogadb/flexspace.go:313 - REDO.LOG buffer write
 6. /Users/me/go/src/github.com/glycerine/yogadb/db.go:1095 - Memtable WAL write
 
@@ -833,7 +833,7 @@ B. final write amplification work, summary of changes
   - Added sync/atomic import
   - Added DataBytesWritten int64 and LogBytesWritten int64 counter fields to FlexSpace struct
   - Instrumented 3 write sites:
-    - KV128_BLOCKS block flush (variable size up to 4MB)
+    - KV.SLOT_BLOCKS block flush (variable size up to 4MB)
     - Redo REDO.LOG write (variable size)
     - Log version header write (8 bytes)
 
@@ -864,7 +864,7 @@ call VacuumKV and/or VacuumVLOG when they wish.
 ~~~
 ## Context
 
-YogaDB's FlexSpace GC is currently synchronous and demand-driven: it only runs when a write needs a new block and free blocks < 64. For workloads with heavy overwrites/deletes, fragmentation accumulates in `FLEXSPACE.KV128_BLOCKS` without being reclaimed until critically low on blocks. Adding a simple opt-in flag to run GC at every Sync/flush boundary when garbage exceeds a threshold.
+YogaDB's FlexSpace GC is currently synchronous and demand-driven: it only runs when a write needs a new block and free blocks < 64. For workloads with heavy overwrites/deletes, fragmentation accumulates in `FLEXSPACE.KV.SLOT_BLOCKS` without being reclaimed until critically low on blocks. Adding a simple opt-in flag to run GC at every Sync/flush boundary when garbage exceeds a threshold.
 
 ## Approach: Piggyback on Sync/Flush (Mode A only)
 

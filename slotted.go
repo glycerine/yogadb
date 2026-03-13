@@ -74,7 +74,8 @@ import (
 	"strings"
 )
 
-// slottedPageMagic is a 16-byte signature at the start of every slotted page.
+// slottedPageMagic is a 16-byte signature at the start of
+// every slotted page in KV.SLOT_BLOCKS.
 // Derived from base64url("JFfXCmE-0VK1McB3uOIvlPQ3H8fxowydbRK0UddtmCkg")[:16].
 var slottedPageMagic = [16]byte{
 	0x24, 0x57, 0xd7, 0x0a, 0x61, 0x3e, 0xd1, 0x52,
@@ -82,7 +83,7 @@ var slottedPageMagic = [16]byte{
 }
 
 // kv128ExtentMagic is a 16-byte signature written at the start of kv128-format
-// extents in KV128_BLOCKS. Derived from base64url("xKts5aFDwMqctYg9tsZimUeKBkETaJZpe3SliPNMbqQc")[:16].
+// extents in KV.SLOT_BLOCKS. Derived from base64url("xKts5aFDwMqctYg9tsZimUeKBkETaJZpe3SliPNMbqQc")[:16].
 var kv128ExtentMagic = [16]byte{
 	0xc4, 0xab, 0x6c, 0xe5, 0xa1, 0x43, 0xc0, 0xca,
 	0x9c, 0xb5, 0x88, 0x3d, 0xb6, 0xc6, 0x62, 0x99,

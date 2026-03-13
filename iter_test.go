@@ -594,7 +594,7 @@ func mustCheckIntegrity(t *testing.T, db *FlexDB) {
 
 // ====================== VacuumKV tests ======================
 
-// TestFlexDB_VacuumKV_Basic tests that VacuumKV reclaims dead FLEXSPACE.KV128_BLOCKS space
+// TestFlexDB_VacuumKV_Basic tests that VacuumKV reclaims dead FLEXSPACE.KV.SLOT_BLOCKS space
 // when keys are overwritten.
 func TestFlexDB_VacuumKV_Basic(t *testing.T) {
 	fs, dir := newTestFS(t)
@@ -621,11 +621,11 @@ func TestFlexDB_VacuumKV_Basic(t *testing.T) {
 	db.Sync()
 
 	// Record file size before vacuum.
-	ffPath := filepath.Join(dir, "FLEXSPACE.KV128_BLOCKS")
-	//ffPath := filepath.Join(dir, "FLEXSPACE", "FLEXSPACE.KV128_BLOCKS")
+	ffPath := filepath.Join(dir, "FLEXSPACE.KV.SLOT_BLOCKS")
+	//ffPath := filepath.Join(dir, "FLEXSPACE", "FLEXSPACE.KV.SLOT_BLOCKS")
 	fi, err := fs.Stat(ffPath)
 	if err != nil {
-		t.Fatalf("Stat FLEXSPACE.KV128_BLOCKS: %v", err)
+		t.Fatalf("Stat FLEXSPACE.KV.SLOT_BLOCKS: %v", err)
 	}
 	sizeBeforeVacuum := fi.Size()
 
@@ -814,7 +814,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 // TestFlexDB_VacuumKV_Twice tests that calling VacuumKV twice in a row
 // (with no writes in between) does not produce an EOF error. This is a
 // regression test for a bug where VacuumKV did not truncate the
-// FLEXSPACE.KV128_BLOCKS file after rewriting, leaving stale high-offset
+// FLEXSPACE.KV.SLOT_BLOCKS file after rewriting, leaving stale high-offset
 // poff values that a second vacuum would try to read past the new
 // (smaller) file boundary.
 func TestFlexDB_VacuumKV_Twice(t *testing.T) {

@@ -227,7 +227,7 @@ func (tx *WriteTx) GetKV(key string) (kv *KVcloser, err error) {
 //
 // Values of any size are accepted. Values > vlogInlineThreshold (64 bytes) are
 // stored in the VLOG file; smaller values are stored inline in
-// the FLEXSPACE.KV128_BLOCKS file with the keys.
+// the FLEXSPACE.KV.SLOT_BLOCKS file with the keys.
 //
 // Large values are written exactly once: to the VLOG. The WAL stores only
 // the VPtr (16 bytes), not the full value.

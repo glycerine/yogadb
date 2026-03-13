@@ -397,7 +397,7 @@ func TestFlexDB_VLOG_DedupSameValue(t *testing.T) {
 
 	// Verify all values are correct AND that the HLC has advanced.
 	// Even though the VLOG entry is reused, the KV's authoritative HLC
-	// (stored in KV128_BLOCKS / memtable) must reflect the latest write.
+	// (stored in KV.SLOT_BLOCKS / memtable) must reflect the latest write.
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("dedup_%04d", i)
 		mustGet(t, db, key, makeTestValue(200+i))

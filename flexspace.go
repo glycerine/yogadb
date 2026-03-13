@@ -356,11 +356,11 @@ func bmInit(bm *blockManager, tree *FlexTree, fd ...vfs.File) {
 // guarantee single user at a time; e.g. via FlexDB.ffMu.
 //
 // The main data file within the FLEXSPACE directory, the file
-// that holds all the keys + small values is "FLEXSPACE.KV128_BLOCKS".
+// that holds all the keys + small values is "FLEXSPACE.KV.SLOT_BLOCKS".
 //
 // Here's how the block management works:
 //
-// The FLEXSPACE.KV128_BLOCKS file is divided into 4 MB blocks. The block
+// The FLEXSPACE.KV.SLOT_BLOCKS file is divided into 4 MB blocks. The block
 // manager (blockManager) keeps one 4 MB in-memory write buffer and
 // appends data into it sequentially:
 //
@@ -384,7 +384,7 @@ func bmInit(bm *blockManager, tree *FlexTree, fd ...vfs.File) {
 // rewriting their live extents into the current write
 // block, then freeing the old block.
 //
-// So "block-managed" means the FLEXSPACE.KV128_BLOCKS file is a pool of 4 MB blocks
+// So "block-managed" means the FLEXSPACE.KV.SLOT_BLOCKS file is a pool of 4 MB blocks
 // with an append-only write cursor, a FlexTree for logical -> physical
 // mapping, and a GC that reclaims fragmented blocks. It's
 // essentially a log-structured store at the block level - writes
@@ -393,7 +393,7 @@ type FlexSpace struct {
 	Path          string
 	vfs           vfs.FS
 	tree          *FlexTree
-	fdKV128blocks vfs.File // data file, "FLEXSPACE.KV128_BLOCKS"
+	fdKV128blocks vfs.File // data file, "FLEXSPACE.KV.SLOT_BLOCKS"
 	redoLogFD     vfs.File // redo log file, "FLEXSPACE.REDO.LOG".
 	logBuf        []byte   // in-memory log buffer (cap = FLEXSPACE_LOG_MEM_CAP)
 	logBufSize    uint32
@@ -409,7 +409,7 @@ type FlexSpace struct {
 	omitRedoLog bool // when true, skip redo log writes and SyncCoW on every Sync
 
 	// Write-byte counters (accessed atomically)
-	KV128BytesWritten   int64 // FLEXSPACE.KV128_BLOCKS file bytes written
+	KV128BytesWritten   int64 // FLEXSPACE.KV.SLOT_BLOCKS file bytes written
 	REDOLogBytesWritten int64 // redo LOG bytes written
 
 	// Debug counters for bloat investigation (accessed atomically)
@@ -534,7 +534,7 @@ func (ff *FlexSpace) logRedo() {
 
 // OpenFlexSpaceCoW opens or creates a FlexSpace using CoW page-based persistence
 // for the FlexTree instead of greenpack full-tree serialization.
-// The directory will contain: FLEXSPACE.KV128_BLOCKS, FLEXTREE.COMMIT, FLEXTREE.PAGES, FLEXSPACE.REDO.LOG.
+// The directory will contain: FLEXSPACE.KV.SLOT_BLOCKS, FLEXTREE.COMMIT, FLEXTREE.PAGES, FLEXSPACE.REDO.LOG.
 // When omitRedoLog is true, redo log writes are skipped and SyncCoW is called on every Sync.
 func OpenFlexSpaceCoW(path string, omitRedoLog bool, fs vfs.FS) (*FlexSpace, error) {
 	//vv("OpenFlexSpaceCoW with fs = '%#v'", fs)
@@ -554,15 +554,15 @@ func OpenFlexSpaceCoW(path string, omitRedoLog bool, fs vfs.FS) (*FlexSpace, err
 	}
 
 	// Clean up stale vacuum file from a previous interrupted VacuumKV.
-	fs.Remove(filepath.Join(path, "FLEXSPACE.KV128_BLOCKS.vacuum"))
+	fs.Remove(filepath.Join(path, "FLEXSPACE.KV.SLOT_BLOCKS.vacuum"))
 
 	// Open the data file
-	dataPath := filepath.Join(path, "FLEXSPACE.KV128_BLOCKS")
+	dataPath := filepath.Join(path, "FLEXSPACE.KV.SLOT_BLOCKS")
 	//fd, err := fs.OpenFile(dataPath, os.O_RDWR|os.O_CREATE, 0644)
 	fd, err := fs.OpenReadWrite(dataPath, vfs.WriteCategoryUnspecified)
 
 	if err != nil {
-		return nil, fmt.Errorf("flexspace: open FLEXSPACE.KV128_BLOCKS: %w", err)
+		return nil, fmt.Errorf("flexspace: open FLEXSPACE.KV.SLOT_BLOCKS: %w", err)
 	}
 	fd.Sync()
 	ff.fdKV128blocks = fd
@@ -666,7 +666,7 @@ func (ff *FlexSpace) Close() (kvBlocksOnDiskFootprintBytes int64) {
 	return
 }
 
-// truncateTrailingBlocks shrinks FLEXSPACE.KV128_BLOCKS by removing empty blocks at the end.
+// truncateTrailingBlocks shrinks FLEXSPACE.KV.SLOT_BLOCKS by removing empty blocks at the end.
 func (ff *FlexSpace) truncateTrailingBlocks() {
 	// Find the highest block with non-zero usage
 	highBlock := int64(-1)

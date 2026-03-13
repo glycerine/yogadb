@@ -588,7 +588,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	// After pre-allocation stabilizes at round 1, 8 more rounds of
 	// overwrites should NOT cause significant disk growth.
 	// The only expected growth is the redo log (~21 KB/round = ~170 KB).
-	// KV128_BLOCKS file should stay the same size.
+	// KV.SLOT_BLOCKS file should stay the same size.
 	// Allow 1.5x as the bound (generous for redo log growth).
 	maxAcceptable := int64(float64(sizeAfterRound1) * 1.5)
 	if sizeAfterAllRounds > maxAcceptable {
@@ -774,7 +774,7 @@ func TestGC_ReplaceWithLargerValue_Splits(t *testing.T) {
 // linearly with each overwrite round. Each Update (collapse + insert)
 // writes log entries that accumulate within a session.
 //
-// This test also verifies KV128_BLOCKS file doesn't grow after
+// This test also verifies KV.SLOT_BLOCKS file doesn't grow after
 // the block pre-allocation stabilizes (round 1 onward).
 func TestGC_OverwriteSameKeys_RedoLogGrows(t *testing.T) {
 	fs, dir := newTestFS(t)
@@ -807,8 +807,8 @@ func TestGC_OverwriteSameKeys_RedoLogGrows(t *testing.T) {
 	db.Sync()
 
 	redoLogSize1 := mustFileSize(fs, filepath.Join(dir, "FLEXSPACE.REDO.LOG"))
-	kv128Size1 := mustFileSize(fs, filepath.Join(dir, "FLEXSPACE.KV128_BLOCKS"))
-	t.Logf("Round 1 (baseline): REDO.LOG=%d, KV128_BLOCKS=%d", redoLogSize1, kv128Size1)
+	kv128Size1 := mustFileSize(fs, filepath.Join(dir, "FLEXSPACE.KV.SLOT_BLOCKS"))
+	t.Logf("Round 1 (baseline): REDO.LOG=%d, KV.SLOT_BLOCKS=%d", redoLogSize1, kv128Size1)
 
 	// Rounds 2-9
 	const rounds = 9
@@ -821,15 +821,15 @@ func TestGC_OverwriteSameKeys_RedoLogGrows(t *testing.T) {
 	}
 
 	redoLogSizeN := mustFileSize(fs, filepath.Join(dir, "FLEXSPACE.REDO.LOG"))
-	kv128SizeN := mustFileSize(fs, filepath.Join(dir, "FLEXSPACE.KV128_BLOCKS"))
-	t.Logf("Round %d: REDO.LOG=%d (%.1fx vs r1), KV128_BLOCKS=%d (%.2fx vs r1)",
+	kv128SizeN := mustFileSize(fs, filepath.Join(dir, "FLEXSPACE.KV.SLOT_BLOCKS"))
+	t.Logf("Round %d: REDO.LOG=%d (%.1fx vs r1), KV.SLOT_BLOCKS=%d (%.2fx vs r1)",
 		rounds,
 		redoLogSizeN, float64(redoLogSizeN)/float64(redoLogSize1),
 		kv128SizeN, float64(kv128SizeN)/float64(kv128Size1))
 
-	// KV128_BLOCKS should NOT grow after pre-alloc stabilizes.
+	// KV.SLOT_BLOCKS should NOT grow after pre-alloc stabilizes.
 	if kv128SizeN > kv128Size1+int64(FLEXSPACE_BLOCK_SIZE) {
-		t.Errorf("KV128_BLOCKS grew unexpectedly after pre-alloc: round1=%d, round%d=%d",
+		t.Errorf("KV.SLOT_BLOCKS grew unexpectedly after pre-alloc: round1=%d, round%d=%d",
 			kv128Size1, rounds, kv128SizeN)
 	}
 
@@ -942,7 +942,7 @@ func TestGC_BlockUsageTracking_UpdatePath(t *testing.T) {
 //
 // Each session: open DB -> write N keys -> sync -> close.
 // Between sessions the redo log is truncated (by Close), so only
-// KV128_BLOCKS, FLEXTREE.PAGES, and FLEXTREE.COMMIT matter.
+// KV.SLOT_BLOCKS, FLEXTREE.PAGES, and FLEXTREE.COMMIT matter.
 func TestGC_CrossSession_DiskGrowth(t *testing.T) {
 	fs, dir := newTestFS(t)
 
@@ -982,7 +982,7 @@ func TestGC_CrossSession_DiskGrowth(t *testing.T) {
 		db.Close()
 
 		sizes[s] = mustDirSize(fs, dir)
-		kv128Sizes[s] = mustFileSize(fs, filepath.Join(dir, "FLEXSPACE.KV128_BLOCKS"))
+		kv128Sizes[s] = mustFileSize(fs, filepath.Join(dir, "FLEXSPACE.KV.SLOT_BLOCKS"))
 		pagesSizes[s] = mustFileSize(fs, filepath.Join(dir, "FLEXTREE.PAGES"))
 
 		t.Logf("Session %d: dir=%d, KV128=%d, PAGES=%d | blkUsage=%d, usedBlks=%d, freeBlks=%d, writeBlk=%d",
@@ -1023,15 +1023,15 @@ func TestGC_CrossSession_DiskGrowth(t *testing.T) {
 	t.Logf("")
 	t.Logf("=== Cross-session growth (session 1 -> %d) ===", sessions-1)
 	t.Logf("  Dir size:     %d -> %d (%.2fx)", sizes[1], sizes[sessions-1], growth)
-	t.Logf("  KV128_BLOCKS: %d -> %d (%.2fx)", kv128Sizes[1], kv128Sizes[sessions-1], kv128Growth)
+	t.Logf("  KV.SLOT_BLOCKS: %d -> %d (%.2fx)", kv128Sizes[1], kv128Sizes[sessions-1], kv128Growth)
 	t.Logf("  PAGES:        %d -> %d (%.2fx)", pagesSizes[1], pagesSizes[sessions-1],
 		float64(pagesSizes[sessions-1])/float64(pagesSizes[1]))
 
-	// Assert: KV128_BLOCKS should not grow linearly with sessions.
+	// Assert: KV.SLOT_BLOCKS should not grow linearly with sessions.
 	// If block reuse across sessions works, it should stay roughly constant.
 	// Allow 2x as generous bound.
 	if kv128Growth > 2.0 {
-		t.Errorf("KV128_BLOCKS grew %.2fx across %d sessions (want <=2x): %d -> %d",
+		t.Errorf("KV.SLOT_BLOCKS grew %.2fx across %d sessions (want <=2x): %d -> %d",
 			kv128Growth, sessions-1, kv128Sizes[1], kv128Sizes[sessions-1])
 	}
 
@@ -1067,7 +1067,7 @@ func TestGC_CrossSession_BlockReuse(t *testing.T) {
 		db.Close()
 	}
 
-	kv128After0 := mustFileSize(fs, filepath.Join(dir, "FLEXSPACE.KV128_BLOCKS"))
+	kv128After0 := mustFileSize(fs, filepath.Join(dir, "FLEXSPACE.KV.SLOT_BLOCKS"))
 
 	// Sessions 1-6: reopen and overwrite all keys.
 	const sessions = 6
@@ -1119,8 +1119,8 @@ func TestGC_CrossSession_BlockReuse(t *testing.T) {
 		db.Close()
 	}
 
-	kv128AfterAll := mustFileSize(fs, filepath.Join(dir, "FLEXSPACE.KV128_BLOCKS"))
-	t.Logf("KV128_BLOCKS: after session 0 = %d, after session %d = %d",
+	kv128AfterAll := mustFileSize(fs, filepath.Join(dir, "FLEXSPACE.KV.SLOT_BLOCKS"))
+	t.Logf("KV.SLOT_BLOCKS: after session 0 = %d, after session %d = %d",
 		kv128After0, sessions, kv128AfterAll)
 
 	// The key observation from this test is in the per-session logs above:
@@ -1168,7 +1168,7 @@ func TestGC_CrossSession_ManyReopens_SameDataset(t *testing.T) {
 		db.Close()
 
 		dirSizes[s] = mustDirSize(fs, dir)
-		kv128Sizes[s] = mustFileSize(fs, filepath.Join(dir, "FLEXSPACE.KV128_BLOCKS"))
+		kv128Sizes[s] = mustFileSize(fs, filepath.Join(dir, "FLEXSPACE.KV.SLOT_BLOCKS"))
 
 		t.Logf("Session %2d: dir=%8d  KV128=%8d", s, dirSizes[s], kv128Sizes[s])
 	}
@@ -1209,7 +1209,7 @@ func TestGC_CrossSession_ManyReopens_SameDataset(t *testing.T) {
 	// The ideal is 1.0x - identical data rewritten yields no growth.
 	// With block-granularity overhead, allow up to 2x.
 	if kv128Growth > 2.0 {
-		t.Errorf("KV128_BLOCKS grew %.2fx over %d sessions of identical data - block reuse not working across sessions",
+		t.Errorf("KV.SLOT_BLOCKS grew %.2fx over %d sessions of identical data - block reuse not working across sessions",
 			kv128Growth, sessions)
 	}
 	if growth > 2.0 {

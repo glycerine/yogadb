@@ -8,7 +8,7 @@ import (
 // TestVacuumVLOG_ThenVacuumKV verifies that VacuumVLOG rewrites intervals
 // containing VPtrs in slotted page format, and then VacuumKV can
 // successfully compact the result. Both vacuums use slotted page format
-// exclusively for KV128_BLOCKS.
+// exclusively for KV.SLOT_BLOCKS.
 func TestVacuumVLOG_ThenVacuumKV(t *testing.T) {
 	fs, dir := newTestFS(t)
 
@@ -53,7 +53,7 @@ func TestVacuumVLOG_ThenVacuumKV(t *testing.T) {
 	}
 	t.Logf("VacuumVLOG: %v", stats)
 
-	// VacuumKV compacts KV128_BLOCKS. This calls rebuildAnchorsFromTags
+	// VacuumKV compacts KV.SLOT_BLOCKS. This calls rebuildAnchorsFromTags
 	// which reads the first key from slotted page extents.
 	stats2, err := db2.VacuumKV()
 	if err != nil {

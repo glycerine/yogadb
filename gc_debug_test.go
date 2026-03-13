@@ -58,7 +58,7 @@ func TestGC_DebugDiskGrowth(t *testing.T) {
 		for i := range db.ff.bm.blkusage {
 			totalBlkUsage += int64(db.ff.bm.blkusage[i])
 		}
-		kv128Info, _ := fs.Stat(filepath.Join(dir, "FLEXSPACE.KV128_BLOCKS"))
+		kv128Info, _ := fs.Stat(filepath.Join(dir, "FLEXSPACE.KV.SLOT_BLOCKS"))
 		kv128Size := int64(0)
 		if kv128Info != nil {
 			kv128Size = kv128Info.Size()

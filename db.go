@@ -118,7 +118,7 @@ func (s *Batch) Commit(doFsync bool) (interv HLCInterval, err error) {
 // CommitGetMetrics does Commit, and then returns metrics on the
 // flex space for garbage collection and write-amplification study purposes;
 // hence it is slower. It does a linear scan through all the
-// FLEXSPACE.KV128_BLOCKS to see how much free space could be reclaimed.
+// FLEXSPACE.KV.SLOT_BLOCKS to see how much free space could be reclaimed.
 func (s *Batch) CommitGetMetrics(doFsync bool) (HLCInterval, *Metrics, error) {
 	return s.commitMaybeMetrics(doFsync, true)
 }
@@ -1021,7 +1021,7 @@ func (db *FlexDB) Close() *Metrics {
 type Metrics struct {
 	Session                   bool
 	LiveKeyCount              int64
-	KV128BytesWritten         int64 // FlexSpace FLEXSPACE.KV128_BLOCKS file
+	KV128BytesWritten         int64 // FlexSpace FLEXSPACE.KV.SLOT_BLOCKS file
 	MemWALBytesWritten        int64 // FlexDB WAL (FLEXDB.MEMWAL)
 	REDOLogBytesWritten       int64 // FLEXSPACE.REDO.LOG
 	FlexTreePagesBytesWritten int64 // CoW FLEXTREE.PAGES + FLEXTREE.COMMIT
@@ -1045,7 +1045,7 @@ type Metrics struct {
 	// (they are already free for reuse).
 	TotalFreeBytesInBlocks int64
 
-	// BlocksInUse shows how many 4MB blocks FLEXSPACE.KV128_BLOCKS is using.
+	// BlocksInUse shows how many 4MB blocks FLEXSPACE.KV.SLOT_BLOCKS is using.
 	BlocksInUse int64
 
 	// BlocksWithLowUtilization is the count of non-empty blocks whose
@@ -1057,7 +1057,7 @@ type Metrics struct {
 	// as tracked by the block manager.
 	KVBlocksTotalLiveBytes int64
 
-	// KVBlocksOnDiskFootprintBytes is the on-disk footprint of bytes for FLEXSPACE.KV128_BLOCKS.
+	// KVBlocksOnDiskFootprintBytes is the on-disk footprint of bytes for FLEXSPACE.KV.SLOT_BLOCKS.
 	KVBlocksOnDiskFootprintBytes int64
 
 	// VlogOnDiskFootprintBytes is the on-disk footprints for LARGE.VLOG.
@@ -1090,7 +1090,7 @@ func (z *Metrics) String() (r string) {
 	r += fmt.Sprintf("    TotalLogical BytesWrit: %v\n", formatInt64Under(z.totalLogicalBytesWrit))
 	r += fmt.Sprintf("   TotalPhysical BytesWrit: %v\n", formatInt64Under(z.totalPhysicalBytesWrit))
 	r += fmt.Sprintf("       CumulativeWriteAmp: %0.3f\n", z.CumulativeWriteAmp)
-	r += fmt.Sprintf("\n   --- free space / block utilization in FLEXSPACE.KV128_BLOCKS ---  \n")
+	r += fmt.Sprintf("\n   --- free space / block utilization in FLEXSPACE.KV.SLOT_BLOCKS ---  \n")
 	r += fmt.Sprintf("    KVBlocksTotalLiveBytes: %v (%0.2f MB)\n", formatInt64Under(z.KVBlocksTotalLiveBytes), float64(z.KVBlocksTotalLiveBytes)/(1<<20))
 	r += fmt.Sprintf("    TotalFreeBytesInBlocks: %v (%0.2f MB)\n", formatInt64Under(z.TotalFreeBytesInBlocks), float64(z.TotalFreeBytesInBlocks)/(1<<20))
 	r += fmt.Sprintf("      FLEXSPACE_BLOCK_SIZE: %0.2f MB\n", float64(FLEXSPACE_BLOCK_SIZE)/(1<<20))
@@ -1105,7 +1105,7 @@ func (z *Metrics) String() (r string) {
 	}
 	r += fmt.Sprintf("\n   -------- on disk big files summary --------  \n")
 
-	r += fmt.Sprintf(" FLEXSPACE.KV128_BLOCKS: %7.3f MB (%15s bytes)\n", float64(z.KVBlocksOnDiskFootprintBytes)/(1<<20), formatInt64Under(z.KVBlocksOnDiskFootprintBytes))
+	r += fmt.Sprintf(" FLEXSPACE.KV.SLOT_BLOCKS: %7.3f MB (%15s bytes)\n", float64(z.KVBlocksOnDiskFootprintBytes)/(1<<20), formatInt64Under(z.KVBlocksOnDiskFootprintBytes))
 	r += fmt.Sprintf("             LARGE.VLOG: %7.3f MB (%15s bytes)\n", float64(z.VlogOnDiskFootprintBytes)/(1<<20), formatInt64Under(z.VlogOnDiskFootprintBytes))
 
 	r += "}\n"
@@ -1247,7 +1247,7 @@ func (db *FlexDB) CumulativeMetrics() *Metrics {
 
 	m := &Metrics{}
 
-	// FLEXSPACE.KV128_BLOCKS file: total FlexSpace data on disk.
+	// FLEXSPACE.KV.SLOT_BLOCKS file: total FlexSpace data on disk.
 	if fi, err := db.ff.fdKV128blocks.Stat(); err == nil {
 		m.KV128BytesWritten = fi.Size()
 	}
@@ -1528,12 +1528,12 @@ func (z *VacuumKVStats) String() (r string) {
 	return
 }
 
-// VacuumKV reclaims dead FLEXSPACE.KV128_BLOCKS space by rewriting all live extents
+// VacuumKV reclaims dead FLEXSPACE.KV.SLOT_BLOCKS space by rewriting all live extents
 // sequentially to a new file and replacing the old file. This is an exclusive
 // operation that acquires topMutRW.
 //
 // Crash safety: if the process crashes before the rename completes, the old
-// FLEXSPACE.KV128_BLOCKS and old FlexTree remain intact. The stale .vacuum file (if
+// FLEXSPACE.KV.SLOT_BLOCKS and old FlexTree remain intact. The stale .vacuum file (if
 // present) is harmless and will be overwritten on the next vacuum.
 //
 // VacuumKV does a one-time compaction of already-bloated databases. Algorithm:
@@ -1543,7 +1543,7 @@ func (z *VacuumKVStats) String() (r string) {
 //	Collapse the zero-padding in reverse loff order
 //
 // 2. Walk FlexTree leaf linked list, read/rewrite all live extents sequentially to a .vacuum file
-// 3. Close old fd, rename .vacuum -> FLEXSPACE.KV128_BLOCKS, reopen
+// 3. Close old fd, rename .vacuum -> FLEXSPACE.KV.SLOT_BLOCKS, reopen
 // 4. Rebuild block manager, checkpoint FlexTree
 // 5. Rebuild anchor tree from FlexTree tags (replaces stale anchor loffs)
 // 6. Clean up stale .vacuum files on OpenFlexSpaceCoW
@@ -1583,7 +1583,7 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 	}
 
 	// Create new file.
-	dataPath := filepath.Join(ff.Path, "FLEXSPACE.KV128_BLOCKS")
+	dataPath := filepath.Join(ff.Path, "FLEXSPACE.KV.SLOT_BLOCKS")
 	vacuumPath := dataPath + ".vacuum"
 	//newFD, err := db.vfs.OpenFile(vacuumPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
 	newFD, err := db.vfs.OpenReadWrite(vacuumPath, vfs.WriteCategoryUnspecified)
@@ -1852,7 +1852,7 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 	// ---- Check 1: File stat ----
 	fi, err := ff.fdKV128blocks.Stat()
 	if err != nil {
-		addErr("file_stat", fmt.Sprintf("cannot stat FLEXSPACE.KV128_BLOCKS: %v", err), true)
+		addErr("file_stat", fmt.Sprintf("cannot stat FLEXSPACE.KV.SLOT_BLOCKS: %v", err), true)
 		return errs
 	}
 	fileSize := fi.Size()
@@ -2083,7 +2083,7 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 				}
 			}
 
-			// All KV128_BLOCKS data should be slotted page format.
+			// All KV.SLOT_BLOCKS data should be slotted page format.
 			if len(src) > 0 {
 				addErr("unexpected_format",
 					fmt.Sprintf("anchor %d (key=%q): %d unexpected non-slotted trailing bytes at byte %d of %d, first bytes: %x",
@@ -2207,7 +2207,7 @@ func recoverIterIOErr(errp *error) {
 //
 // Values of any size are accepted. Values > vlogInlineThreshold (64 bytes) are
 // stored in the VLOG file; smaller values are stored inline in
-// the FLEXSPACE.KV128_BLOCKS file with the keys.
+// the FLEXSPACE.KV.SLOT_BLOCKS file with the keys.
 //
 // Large values are written exactly once: to the VLOG. The WAL stores only
 // the VPtr (16 bytes), not the full value.
@@ -2972,15 +2972,15 @@ func (db *FlexDB) writeLockHeldDeleteAll() error {
 	// 3. Destroy interval cache.
 	db.cache.destroyAll()
 
-	// 4. Close FlexSpace (closes KV128_BLOCKS, REDO.LOG, CoW files).
+	// 4. Close FlexSpace (closes KV.SLOT_BLOCKS, REDO.LOG, CoW files).
 	db.ff.Close()
 
 	// 5. Remove FlexSpace data files and reopen fresh.
 	fs := db.vfs
 	path := db.Path
 	filesToRemove := []string{
-		"FLEXSPACE.KV128_BLOCKS",
-		"FLEXSPACE.KV128_BLOCKS.vacuum",
+		"FLEXSPACE.KV.SLOT_BLOCKS",
+		"FLEXSPACE.KV.SLOT_BLOCKS.vacuum",
 		"FLEXSPACE.REDO.LOG",
 		"FLEXTREE.PAGES",
 		"FLEXTREE.COMMIT",
@@ -3305,7 +3305,7 @@ func (db *FlexDB) decodeIntervalDirect(anchor *dbAnchor, anchorLoff uint64) ([]K
 			src = nil
 		}
 	}
-	// All KV128_BLOCKS data should be slotted page format.
+	// All KV.SLOT_BLOCKS data should be slotted page format.
 	if len(src) > 0 {
 		panicf("decodeIntervalDirect: unexpected non-slotted data at loff=%d, %d trailing bytes, first 16 bytes: %x",
 			anchorLoff, len(src), src[:min(len(src), 16)])
@@ -4151,10 +4151,10 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte, panicOnFailure boo
 		return KV{Key: key}, true
 	}
 
-	// kv128 format is no longer written to KV128_BLOCKS.
+	// kv128 format is no longer written to KV.SLOT_BLOCKS.
 	alwaysPrintf("flexdbReadKVFromHandler: unexpected format at loff=%d magic=%x (expected slotted page)", fh.Loff(), magic[:])
 	if panicOnFailure {
-		panicf("flexdbReadKVFromHandler: unexpected format at loff=%d magic=%x (expected slotted page, kv128 no longer supported in KV128_BLOCKS)", fh.Loff(), magic[:])
+		panicf("flexdbReadKVFromHandler: unexpected format at loff=%d magic=%x (expected slotted page, kv128 no longer supported in KV.SLOT_BLOCKS)", fh.Loff(), magic[:])
 	}
 	return KV{}, false
 }
