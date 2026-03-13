@@ -1705,6 +1705,15 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 
 			newLen := uint32(len(writeBuf))
 
+			// Ensure the extent does not cross a block boundary.
+			// The block manager expects all extents to reside within
+			// a single 4 MB block. If the extent would cross, skip
+			// to the start of the next block.
+			blkEnd := ((writeOffset >> FLEXSPACE_BLOCK_BITS) + 1) << FLEXSPACE_BLOCK_BITS
+			if writeOffset+uint64(newLen) > blkEnd {
+				writeOffset = blkEnd
+			}
+
 			// Write sequentially to new file.
 			_, writeErr := newFD.WriteAt(writeBuf, int64(writeOffset))
 			if writeErr != nil {
