@@ -122,8 +122,9 @@ type valueLog struct {
 	tail     int64      // next write offset (also = file size)
 	compress string     // "s2" or "none"
 
-	// Write-byte counter (accessed atomically)
-	VLOGBytesWritten int64
+	// Write-byte counters (accessed atomically)
+	VLOGBytesWritten  int64
+	CompressSavedBytes int64 // uncompressed - onDisk (negative if s2 expands)
 }
 
 // openValueLog opens or creates the VLOG file.
@@ -206,6 +207,7 @@ func (vl *valueLog) appendLockedWithHash(value []byte, hlc HLC, b3 []byte) (VPtr
 		return VPtr{}, fmt.Errorf("vlog: write at %d: %w", offset, err)
 	}
 	atomic.AddInt64(&vl.VLOGBytesWritten, int64(entrySize))
+	atomic.AddInt64(&vl.CompressSavedBytes, int64(len(value))-int64(onDiskLen))
 	vl.tail = offset + int64(entrySize)
 
 	return VPtr{

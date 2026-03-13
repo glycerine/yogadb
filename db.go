@@ -1038,6 +1038,7 @@ type Metrics struct {
 	REDOLogBytesWritten       int64 // FLEXSPACE.REDO.LOG
 	FlexTreePagesBytesWritten int64 // CoW FLEXTREE.PAGES + FLEXTREE.COMMIT
 	VLOGBytesWritten          int64 // VLOG value log
+	VLOGCompressSavedBytes    int64 // bytes saved by s2 compression (uncompressed - onDisk)
 	LogicalBytesWritten       int64 // user payload (key + value)
 	TotalBytesWritten         int64 // sum of all physical writes
 
@@ -1095,6 +1096,7 @@ func (z *Metrics) String() (r string) {
 	r += fmt.Sprintf("      REDOLog BytesWritten: %v\n", formatInt64Under(z.REDOLogBytesWritten))
 	r += fmt.Sprintf("FlexTreePages BytesWritten: %v\n", formatInt64Under(z.FlexTreePagesBytesWritten))
 	r += fmt.Sprintf("   LARGE.VLOG BytesWritten: %v\n", formatInt64Under(z.VLOGBytesWritten))
+	r += fmt.Sprintf("   VLOG CompressSavedBytes: %v\n", formatInt64Under(z.VLOGCompressSavedBytes))
 	r += fmt.Sprintf("      Logical BytesWritten: %v\n", formatInt64Under(z.LogicalBytesWritten))
 	r += fmt.Sprintf("        Total BytesWritten: %v\n", formatInt64Under(z.TotalBytesWritten))
 	r += fmt.Sprintf("                 WriteAmp: %0.3f\n", z.WriteAmp)
@@ -1143,6 +1145,7 @@ func (db *FlexDB) writeLockHeldSessionMetrics() *Metrics {
 	}
 	if db.vlog != nil {
 		m.VLOGBytesWritten = atomic.LoadInt64(&db.vlog.VLOGBytesWritten)
+		m.VLOGCompressSavedBytes = atomic.LoadInt64(&db.vlog.CompressSavedBytes)
 	}
 	m.TotalBytesWritten = m.KV128BytesWritten + m.MemWALBytesWritten +
 		m.REDOLogBytesWritten + m.FlexTreePagesBytesWritten + m.VLOGBytesWritten
@@ -1221,6 +1224,7 @@ func (db *FlexDB) writeLockHeldFinalMetrics(kvFoot, vlogFoot int64) *Metrics {
 	}
 	if db.vlog != nil {
 		m.VLOGBytesWritten = atomic.LoadInt64(&db.vlog.VLOGBytesWritten)
+		m.VLOGCompressSavedBytes = atomic.LoadInt64(&db.vlog.CompressSavedBytes)
 	}
 	m.TotalBytesWritten = m.KV128BytesWritten + m.MemWALBytesWritten +
 		m.REDOLogBytesWritten + m.FlexTreePagesBytesWritten + m.VLOGBytesWritten
