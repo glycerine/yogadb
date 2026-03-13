@@ -9,18 +9,35 @@ package yogadb
 // On-disk layout:
 //   {db_dir}/VLOG - append-only file of value entries
 //
-// Each VLOG entry (56-byte header + N-byte value):
-//   [4 bytes]  hdrCRC  - CRC32C of bytes 4..56 (HLC + length + valCRC + blake3)
-//   [8 bytes]  HLC timestamp (big-endian int64 - preserves sort order in byte scans)
-//   [8 bytes]  value length (little-endian uint64 - supports values up to int64 max)
-//   [4 bytes]  valCRC  - CRC32C of the N value bytes that follow
-//   [32 bytes] blake3  - Blake3 cryptographic checksum of the value bytes
-//   [N bytes]  raw value bytes
+// Each VLOG entry (72-byte header + N-byte value):
+//   [4 bytes]  hdrCRC         offset 0  - CRC32C of bytes 4..72
+//   [8 bytes]  HLC            offset 4  - big-endian int64 timestamp
+//   [8 bytes]  uncompressedLen offset 12 - little-endian uint64
+//   [8 bytes]  flags          offset 20 - little-endian uint64 (see below)
+//   [8 bytes]  onDiskLen      offset 28 - little-endian uint64 (== N)
+//   [4 bytes]  valCRC         offset 36 - CRC32C of the N value bytes
+//   [32 bytes] blake3         offset 40 - blake3 of UNCOMPRESSED value bytes
+//   [N bytes]  value bytes    offset 72 - raw or s2-compressed
+//
+// The VLOG is fully self-describing: both the uncompressed and on-disk
+// (compressed) lengths are in the header. No external data (VPtr, KV structs)
+// is needed to parse or recover an entry. On-disk entry size = 72 + onDiskLen.
+//
+// Flags field:
+//   flags & 1  =>  uncompressed (value bytes are raw, onDiskLen == uncompressedLen)
+//   flags & 2  =>  s2 compressed (value bytes are s2-encoded)
+//   Flags value 0 is invalid/reserved.
+//
+// Field semantics with compression:
+//   uncompressedLen: always the original value byte count before compression
+//   onDiskLen:       byte count of value data following the header (== N)
+//   valCRC:          CRC32C of the on-disk value bytes (compressed bytes when s2)
+//   blake3:          hash of UNCOMPRESSED value bytes (preserves dedup correctness)
 //
 // The blake3 checksum enables cheap dedup: before appending a new VLOG entry,
-// we can read just the 56-byte header of the old entry and compare blake3
-// checksums. If they match (and lengths match), the value is unchanged and
-// we can skip the VLOG write entirely, reusing the old VPtr.
+// we can read just the 72-byte header of the old entry and compare blake3
+// checksums and uncompressed lengths. If they match, the value is unchanged
+// and we can skip the VLOG write entirely, reusing the old VPtr.
 //
 // IMPORTANT: HLC STALENESS IN VLOG HEADERS
 //
@@ -33,11 +50,11 @@ package yogadb
 // the KV128's HLC should be used instead. This design avoids bloating the
 // VLOG with duplicate value bytes just because the HLC changed.
 //
-// The two-CRC design allows validating the header (HLC + length + blake3)
-// without reading the value bytes.
+// The two-CRC design allows validating the header without reading the value bytes.
 //
 // The KV encoding in FlexSpace stores a "value pointer" (VPtr) instead of inline
 // value bytes when the value is in VLOG. VPtr is 16 bytes: 8-byte offset + 8-byte length.
+// VPtr.Length stores the on-disk length (same as onDiskLen in the header).
 
 import (
 	"encoding/binary"
@@ -48,6 +65,7 @@ import (
 	"sync/atomic"
 
 	"github.com/glycerine/vfs"
+	"github.com/klauspost/compress/s2"
 )
 
 const (
@@ -57,8 +75,28 @@ const (
 	// amplification (large values written once to VLOG, never rewritten).
 	vlogInlineThreshold = 64
 
-	// VLOG entry header: 4-byte hdrCRC + 8-byte HLC + 8-byte length + 4-byte valCRC + 32-byte blake3 = 56 bytes
-	vlogEntryHeaderSize = 56
+	// VLOG entry header layout (72 bytes):
+	//   [0:4]   hdrCRC          (4B)
+	//   [4:12]  HLC             (8B)
+	//   [12:20] uncompressedLen (8B)
+	//   [20:28] flags           (8B)
+	//   [28:36] onDiskLen       (8B)
+	//   [36:40] valCRC          (4B)
+	//   [40:72] blake3          (32B)
+	vlogEntryHeaderSize = 72
+
+	// Header field offsets.
+	vlogOffHdrCRC    = 0
+	vlogOffHLC       = 4
+	vlogOffLen       = 12 // uncompressed length
+	vlogOffFlags     = 20
+	vlogOffOnDiskLen = 28 // on-disk (compressed) length
+	vlogOffValCRC    = 36
+	vlogOffBlake3    = 40
+
+	// Flags values.
+	vlogFlagUncompressed = 1
+	vlogFlagS2           = 2
 
 	// VPtr size in kv128 encoding: 8-byte offset + 8-byte length
 	vptrSize = 16
@@ -67,7 +105,7 @@ const (
 // VPtr is a pointer to a value stored in the VLOG file.
 type VPtr struct {
 	Offset uint64 // byte offset in VLOG file
-	Length uint64 // value length in bytes
+	Length uint64 // on-disk value length in bytes (== onDiskLen in header)
 }
 
 func (vp VPtr) encode(buf []byte) {
@@ -84,17 +122,19 @@ func decodeVPtr(buf []byte) VPtr {
 
 // valueLog is an append-only log for storing large values.
 type valueLog struct {
-	vfs  vfs.FS
-	fd   vfs.File
-	mu   sync.Mutex // protects writes (appends are serialized)
-	tail int64      // next write offset (also = file size)
+	vfs      vfs.FS
+	fd       vfs.File
+	mu       sync.Mutex // protects writes (appends are serialized)
+	tail     int64      // next write offset (also = file size)
+	compress string     // "s2" or "none"
 
 	// Write-byte counter (accessed atomically)
 	VLOGBytesWritten int64
 }
 
 // openValueLog opens or creates the VLOG file.
-func openValueLog(path string, fs vfs.FS) (*valueLog, error) {
+// compress is "s2" (default when "") or "none".
+func openValueLog(path string, fs vfs.FS, compress string) (*valueLog, error) {
 	//fd, err := fs.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
 	fd, err := fs.OpenReadWrite(path, vfs.WriteCategoryUnspecified)
 
@@ -106,10 +146,14 @@ func openValueLog(path string, fs vfs.FS) (*valueLog, error) {
 		fd.Close()
 		return nil, fmt.Errorf("vlog: stat %s: %w", path, err)
 	}
+	if compress == "" {
+		compress = "s2"
+	}
 	return &valueLog{
-		vfs:  fs,
-		fd:   fd,
-		tail: fi.Size(),
+		vfs:      fs,
+		fd:       fd,
+		tail:     fi.Size(),
+		compress: compress,
 	}, nil
 }
 
@@ -123,8 +167,6 @@ func (vl *valueLog) append(value []byte, hlc HLC) (VPtr, error) {
 }
 
 // appendLocked appends a value while mu is already held.
-// On-disk format: [4B hdrCRC][8B HLC][8B length][4B valCRC][32B blake3][NB value]
-// hdrCRC covers bytes 4..56 (HLC + length + valCRC + blake3).
 func (vl *valueLog) appendLocked(value []byte, hlc HLC) (VPtr, error) {
 	return vl.appendLockedWithHash(value, hlc, nil)
 }
@@ -132,25 +174,41 @@ func (vl *valueLog) appendLocked(value []byte, hlc HLC) (VPtr, error) {
 // appendLockedWithHash is like appendLocked but accepts a pre-computed blake3
 // hash to avoid recomputing it when the caller already has it (e.g., dedup path).
 func (vl *valueLog) appendLockedWithHash(value []byte, hlc HLC, b3 []byte) (VPtr, error) {
-	vlen := uint64(len(value))
-	entrySize := vlogEntryHeaderSize + int(vlen)
+	uncompressedLen := uint64(len(value))
 
-	// Build entry: [hdrCRC][HLC][length][valCRC][blake3][value...]
+	// Compress or store raw based on vl.compress setting.
+	var onDiskValue []byte
+	var flags uint64
+	switch vl.compress {
+	case "none":
+		onDiskValue = value
+		flags = vlogFlagUncompressed
+	default: // "s2"
+		onDiskValue = s2.Encode(nil, value)
+		flags = vlogFlagS2
+	}
+	onDiskLen := uint64(len(onDiskValue))
+
+	entrySize := vlogEntryHeaderSize + int(onDiskLen)
+
+	// Build entry: [hdrCRC][HLC][uncompressedLen][flags][onDiskLen][valCRC][blake3][value...]
 	buf := make([]byte, entrySize)
-	binary.BigEndian.PutUint64(buf[4:12], uint64(hlc))
-	binary.LittleEndian.PutUint64(buf[12:20], vlen)
-	copy(buf[vlogEntryHeaderSize:], value)
-	// valCRC covers the value bytes.
+	binary.BigEndian.PutUint64(buf[vlogOffHLC:vlogOffHLC+8], uint64(hlc))
+	binary.LittleEndian.PutUint64(buf[vlogOffLen:vlogOffLen+8], uncompressedLen)
+	binary.LittleEndian.PutUint64(buf[vlogOffFlags:vlogOffFlags+8], flags)
+	binary.LittleEndian.PutUint64(buf[vlogOffOnDiskLen:vlogOffOnDiskLen+8], onDiskLen)
+	copy(buf[vlogEntryHeaderSize:], onDiskValue)
+	// valCRC covers the on-disk value bytes (compressed or raw).
 	valCRC := crc32.Checksum(buf[vlogEntryHeaderSize:], crc32cTable)
-	binary.LittleEndian.PutUint32(buf[20:24], valCRC)
-	// blake3 checksum of value bytes.
+	binary.LittleEndian.PutUint32(buf[vlogOffValCRC:vlogOffValCRC+4], valCRC)
+	// blake3 checksum of UNCOMPRESSED value bytes.
 	if b3 == nil {
 		b3 = blake3checksum32(value)
 	}
-	copy(buf[24:56], b3)
-	// hdrCRC covers bytes 4..56 (HLC + length + valCRC + blake3).
-	hdrCRC := crc32.Checksum(buf[4:56], crc32cTable)
-	binary.LittleEndian.PutUint32(buf[0:4], hdrCRC)
+	copy(buf[vlogOffBlake3:vlogOffBlake3+32], b3)
+	// hdrCRC covers bytes 4..72 (everything after hdrCRC itself).
+	hdrCRC := crc32.Checksum(buf[4:vlogEntryHeaderSize], crc32cTable)
+	binary.LittleEndian.PutUint32(buf[vlogOffHdrCRC:vlogOffHdrCRC+4], hdrCRC)
 
 	offset := vl.tail
 	_, err := vl.fd.WriteAt(buf, offset)
@@ -162,7 +220,7 @@ func (vl *valueLog) appendLockedWithHash(value []byte, hlc HLC, b3 []byte) (VPtr
 
 	return VPtr{
 		Offset: uint64(offset),
-		Length: vlen,
+		Length: onDiskLen,
 	}, nil
 }
 
@@ -184,12 +242,9 @@ func (vl *valueLog) appendAndSync(value []byte, hlc HLC, skipSync bool) (VPtr, e
 }
 
 // appendDedupAndSync checks if the new value matches the old VLOG entry at
-// oldVP (by comparing blake3 checksums of the 56-byte headers). If the value
-// is unchanged, it returns the old VPtr without writing anything. Otherwise
-// it appends the new value normally.
-//
-// The caller provides the pre-computed blake3 of the new value to avoid
-// computing it twice (once here, once in appendLocked).
+// oldVP (by comparing blake3 checksums and uncompressed lengths from the
+// 72-byte headers). If the value is unchanged, it returns the old VPtr
+// without writing anything. Otherwise it appends the new value normally.
 //
 // See "HLC STALENESS IN VLOG HEADERS" comment at the top of this file:
 // when dedup reuses an old VPtr, the VLOG header HLC becomes stale.
@@ -200,11 +255,12 @@ func (vl *valueLog) appendDedupAndSync(value []byte, hlc HLC, oldVP VPtr, skipSy
 	vl.mu.Lock()
 	defer vl.mu.Unlock()
 
-	// Check if old entry has the same blake3. Length match is implied by
-	// the caller only calling us when oldVP.Length == len(value).
+	// Compare uncompressed lengths from the header (not VPtr.Length which
+	// is the on-disk/compressed length). This makes dedup work correctly
+	// across compressed and uncompressed entries.
 	if oldVP.Length > 0 {
-		oldB3, err := vl.readBlake3(oldVP)
-		if err == nil && equal32(newB3, oldB3[:]) {
+		oldUncompLen, oldB3, err := vl.readBlake3AndLen(oldVP)
+		if err == nil && oldUncompLen == uint64(len(value)) && equal32(newB3, oldB3[:]) {
 			// Value unchanged - reuse old VPtr, skip VLOG write.
 			return oldVP, true, nil
 		}
@@ -242,10 +298,10 @@ func (vl *valueLog) appendBatchDedupAndSync(values [][]byte, hlcs []HLC, oldVPs 
 	wrote := false
 
 	for i, v := range values {
-		// Try dedup if we have an old VPtr with matching length.
-		if oldVPs[i].Length == uint64(len(v)) && oldVPs[i].Length > 0 {
-			oldB3, err := vl.readBlake3(oldVPs[i])
-			if err == nil && equal32(b3s[i], oldB3[:]) {
+		// Try dedup: compare uncompressed lengths from headers.
+		if oldVPs[i].Length > 0 {
+			oldUncompLen, oldB3, err := vl.readBlake3AndLen(oldVPs[i])
+			if err == nil && oldUncompLen == uint64(len(v)) && equal32(b3s[i], oldB3[:]) {
 				ptrs[i] = oldVPs[i]
 				dedupHits++
 				continue
@@ -301,8 +357,9 @@ func equal32(a []byte, b []byte) bool {
 	return true
 }
 
-// read reads a value from the VLOG at the given VPtr.
-// Thread-safe (uses pread).
+// read reads a value from the VLOG at the given VPtr, decompressing if needed.
+// The header contains both uncompressed and on-disk lengths, so the VLOG is
+// fully self-describing. Thread-safe (uses pread).
 func (vl *valueLog) read(vp VPtr) ([]byte, error) {
 	entrySize := vlogEntryHeaderSize + int(vp.Length)
 	buf := make([]byte, entrySize)
@@ -312,28 +369,54 @@ func (vl *valueLog) read(vp VPtr) ([]byte, error) {
 		return nil, fmt.Errorf("vlog: read at offset %d len %d: %w", vp.Offset, vp.Length, err)
 	}
 
-	// Verify length field.
-	storedLen := binary.LittleEndian.Uint64(buf[12:20])
-	if storedLen != vp.Length {
-		return nil, fmt.Errorf("vlog: length mismatch at offset %d: stored %d, expected %d", vp.Offset, storedLen, vp.Length)
-	}
-	// Verify hdrCRC (covers bytes 4..56: HLC + length + valCRC + blake3).
-	storedHdrCRC := binary.LittleEndian.Uint32(buf[0:4])
-	computedHdrCRC := crc32.Checksum(buf[4:56], crc32cTable)
+	// Verify hdrCRC (covers bytes 4..72).
+	storedHdrCRC := binary.LittleEndian.Uint32(buf[vlogOffHdrCRC : vlogOffHdrCRC+4])
+	computedHdrCRC := crc32.Checksum(buf[4:vlogEntryHeaderSize], crc32cTable)
 	if computedHdrCRC != storedHdrCRC {
 		return nil, fmt.Errorf("vlog: header CRC mismatch at offset %d: stored %08x, computed %08x", vp.Offset, storedHdrCRC, computedHdrCRC)
 	}
-	// Verify valCRC (covers the N value bytes at buf[56:]).
-	storedValCRC := binary.LittleEndian.Uint32(buf[20:24])
+
+	// Parse header fields.
+	uncompressedLen := binary.LittleEndian.Uint64(buf[vlogOffLen : vlogOffLen+8])
+	flags := binary.LittleEndian.Uint64(buf[vlogOffFlags : vlogOffFlags+8])
+	onDiskLen := binary.LittleEndian.Uint64(buf[vlogOffOnDiskLen : vlogOffOnDiskLen+8])
+
+	// Cross-check header's onDiskLen against VPtr.Length.
+	if onDiskLen != vp.Length {
+		return nil, fmt.Errorf("vlog: onDiskLen mismatch at offset %d: header %d, vptr %d", vp.Offset, onDiskLen, vp.Length)
+	}
+
+	// Verify valCRC (covers the on-disk value bytes).
+	storedValCRC := binary.LittleEndian.Uint32(buf[vlogOffValCRC : vlogOffValCRC+4])
 	computedValCRC := crc32.Checksum(buf[vlogEntryHeaderSize:], crc32cTable)
 	if computedValCRC != storedValCRC {
 		return nil, fmt.Errorf("vlog: value CRC mismatch at offset %d: stored %08x, computed %08x", vp.Offset, storedValCRC, computedValCRC)
 	}
 
-	value := buf[vlogEntryHeaderSize:]
+	onDiskValue := buf[vlogEntryHeaderSize:]
+	var value []byte
 
-	// Verify blake3 checksum of value bytes matches stored blake3.
-	storedB3 := buf[24:56]
+	switch {
+	case flags&vlogFlagS2 != 0:
+		// s2 compressed - decompress.
+		value, err = s2.Decode(nil, onDiskValue)
+		if err != nil {
+			return nil, fmt.Errorf("vlog: s2 decompress at offset %d: %w", vp.Offset, err)
+		}
+		if uint64(len(value)) != uncompressedLen {
+			return nil, fmt.Errorf("vlog: decompressed length mismatch at offset %d: got %d, header says %d", vp.Offset, len(value), uncompressedLen)
+		}
+	case flags&vlogFlagUncompressed != 0:
+		if onDiskLen != uncompressedLen {
+			return nil, fmt.Errorf("vlog: uncompressed entry has mismatched lengths at offset %d: onDisk %d, uncompressed %d", vp.Offset, onDiskLen, uncompressedLen)
+		}
+		value = onDiskValue
+	default:
+		return nil, fmt.Errorf("vlog: invalid flags %d at offset %d", flags, vp.Offset)
+	}
+
+	// Verify blake3 checksum of UNCOMPRESSED value bytes.
+	storedB3 := buf[vlogOffBlake3 : vlogOffBlake3+32]
 	computedB3 := blake3checksum32(value)
 	if !equal32(storedB3, computedB3) {
 		return nil, fmt.Errorf("vlog: blake3 mismatch at offset %d", vp.Offset)
@@ -342,27 +425,37 @@ func (vl *valueLog) read(vp VPtr) ([]byte, error) {
 	return value, nil
 }
 
-// readBlake3 reads just the 56-byte header of a VLOG entry and returns the
+// readBlake3AndLen reads just the 72-byte header of a VLOG entry and returns
+// the uncompressed length and 32-byte blake3 checksum without reading the
+// value bytes. This is used for dedup checks.
+func (vl *valueLog) readBlake3AndLen(vp VPtr) (uncompressedLen uint64, b3 [32]byte, err error) {
+	var hdr [vlogEntryHeaderSize]byte
+
+	_, err = vl.fd.ReadAt(hdr[:], int64(vp.Offset))
+	if err != nil {
+		err = fmt.Errorf("vlog: readBlake3AndLen at offset %d: %w", vp.Offset, err)
+		return
+	}
+
+	// Verify hdrCRC before trusting the header bytes.
+	storedHdrCRC := binary.LittleEndian.Uint32(hdr[vlogOffHdrCRC : vlogOffHdrCRC+4])
+	computedHdrCRC := crc32.Checksum(hdr[4:vlogEntryHeaderSize], crc32cTable)
+	if computedHdrCRC != storedHdrCRC {
+		err = fmt.Errorf("vlog: readBlake3AndLen hdrCRC mismatch at offset %d", vp.Offset)
+		return
+	}
+
+	uncompressedLen = binary.LittleEndian.Uint64(hdr[vlogOffLen : vlogOffLen+8])
+	copy(b3[:], hdr[vlogOffBlake3:vlogOffBlake3+32])
+	return
+}
+
+// readBlake3 reads just the 72-byte header of a VLOG entry and returns the
 // 32-byte blake3 checksum without reading the value bytes. This is used for
 // dedup checks: if the blake3 of the new value matches, we can skip the write.
 func (vl *valueLog) readBlake3(vp VPtr) ([32]byte, error) {
-	var hdr [vlogEntryHeaderSize]byte
-	var b3 [32]byte
-
-	_, err := vl.fd.ReadAt(hdr[:], int64(vp.Offset))
-	if err != nil {
-		return b3, fmt.Errorf("vlog: readBlake3 at offset %d: %w", vp.Offset, err)
-	}
-
-	// Verify hdrCRC before trusting the blake3 bytes.
-	storedHdrCRC := binary.LittleEndian.Uint32(hdr[0:4])
-	computedHdrCRC := crc32.Checksum(hdr[4:56], crc32cTable)
-	if computedHdrCRC != storedHdrCRC {
-		return b3, fmt.Errorf("vlog: readBlake3 hdrCRC mismatch at offset %d", vp.Offset)
-	}
-
-	copy(b3[:], hdr[24:56])
-	return b3, nil
+	_, b3, err := vl.readBlake3AndLen(vp)
+	return b3, err
 }
 
 // sync fsyncs the VLOG file.

@@ -18,6 +18,7 @@ require (
 	github.com/google/btree v1.1.3
 	github.com/puzpuzpuz/xsync/v3 v3.5.1
 	github.com/tidwall/btree v1.8.1
+	github.com/klauspost/compress v1.18.4
 	go.etcd.io/bbolt v1.4.3
 )
 
@@ -43,7 +44,6 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/golang/snappy v0.0.5-0.20231225225746-43d5d4cd4e0e // indirect
-	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect

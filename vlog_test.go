@@ -510,3 +510,141 @@ func TestFlexDB_VLOG_DedupBatch(t *testing.T) {
 
 	db.Close()
 }
+
+// TestFlexDB_VLOG_S2CompressedRoundTrip verifies that s2-compressed VLOG
+// entries are written and read back correctly (default Config.Compress="").
+func TestFlexDB_VLOG_S2CompressedRoundTrip(t *testing.T) {
+	fs, dir := newTestFS(t)
+	db := openTestDBAt(fs, t, dir, nil) // default = s2 compression
+
+	val := makeTestValue(4096) // large enough to compress well
+	mustPut(t, db, "s2key", val)
+	db.Sync()
+	mustGet(t, db, "s2key", val)
+
+	// Vptr.Length should be less than uncompressed length because s2 compresses.
+	kv, err := db.GetKV("s2key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !kv.HasVPtr() {
+		t.Fatal("expected VPtr for large value")
+	}
+	if kv.Vptr.Length >= uint64(len(val)) {
+		t.Errorf("expected compressed on-disk length < %d, got %d", len(val), kv.Vptr.Length)
+	}
+	kv.Close()
+
+	db.Close()
+
+	// Reopen and verify persistence.
+	db2 := openTestDBAt(fs, t, dir, nil)
+	defer db2.Close()
+	mustGet(t, db2, "s2key", val)
+}
+
+// TestFlexDB_VLOG_NoCompressFlag verifies that Compress="none" stores values
+// uncompressed (Vptr.Length == uncompressed length).
+func TestFlexDB_VLOG_NoCompressFlag(t *testing.T) {
+	fs, dir := newTestFS(t)
+	cfg := &Config{Compress: "none", FS: fs}
+	db := openTestDBAt(fs, t, dir, cfg)
+
+	val := makeTestValue(4096)
+	mustPut(t, db, "rawkey", val)
+	db.Sync()
+	mustGet(t, db, "rawkey", val)
+
+	kv, err := db.GetKV("rawkey")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !kv.HasVPtr() {
+		t.Fatal("expected VPtr for large value")
+	}
+	if kv.Vptr.Length != uint64(len(val)) {
+		t.Errorf("expected on-disk length == %d for uncompressed, got %d", len(val), kv.Vptr.Length)
+	}
+	kv.Close()
+
+	db.Close()
+
+	// Reopen and verify persistence.
+	db2 := openTestDBAt(fs, t, dir, cfg)
+	defer db2.Close()
+	mustGet(t, db2, "rawkey", val)
+}
+
+// TestFlexDB_VLOG_DedupAcrossCompressed verifies that blake3 dedup works
+// correctly with s2 compression (blake3 is over uncompressed data).
+func TestFlexDB_VLOG_DedupAcrossCompressed(t *testing.T) {
+	fs, dir := newTestFS(t)
+	db := openTestDBAt(fs, t, dir, nil) // s2 compression
+
+	val := makeTestValue(512)
+	mustPut(t, db, "dkey", val)
+	db.Sync()
+
+	sizeAfterFirst := db.vlog.size()
+
+	// Overwrite with same value - dedup should prevent VLOG growth.
+	mustPut(t, db, "dkey", val)
+	db.Sync()
+
+	sizeAfterSecond := db.vlog.size()
+	if sizeAfterSecond != sizeAfterFirst {
+		t.Fatalf("VLOG grew from %d to %d on identical overwrite with compression; dedup failed",
+			sizeAfterFirst, sizeAfterSecond)
+	}
+
+	mustGet(t, db, "dkey", val)
+	db.Close()
+}
+
+// TestFlexDB_VLOG_VacuumWithCompression verifies VacuumVLOG rewrites entries
+// with the 64-byte header and s2 compression.
+func TestFlexDB_VLOG_VacuumWithCompression(t *testing.T) {
+	fs, dir := newTestFS(t)
+	db := openTestDBAt(fs, t, dir, nil) // s2 compression
+
+	// Write 10 values.
+	for i := 0; i < 10; i++ {
+		mustPut(t, db, fmt.Sprintf("vk%02d", i), makeTestValue(200+i))
+	}
+	db.Sync()
+
+	// Overwrite 5 to create dead entries.
+	for i := 0; i < 5; i++ {
+		mustPut(t, db, fmt.Sprintf("vk%02d", i), makeTestValue(300+i))
+	}
+	db.Sync()
+
+	sizeBeforeVacuum := db.vlog.size()
+	stats, err := db.VacuumVLOG()
+	if err != nil {
+		t.Fatalf("VacuumVLOG: %v", err)
+	}
+	if stats.NewVLOGSize >= sizeBeforeVacuum {
+		t.Errorf("VacuumVLOG did not reclaim space: before %d, after %d", sizeBeforeVacuum, stats.NewVLOGSize)
+	}
+
+	// Verify all live values.
+	for i := 0; i < 5; i++ {
+		mustGet(t, db, fmt.Sprintf("vk%02d", i), makeTestValue(300+i))
+	}
+	for i := 5; i < 10; i++ {
+		mustGet(t, db, fmt.Sprintf("vk%02d", i), makeTestValue(200+i))
+	}
+
+	db.Close()
+
+	// Reopen and verify.
+	db2 := openTestDBAt(fs, t, dir, nil)
+	defer db2.Close()
+	for i := 0; i < 5; i++ {
+		mustGet(t, db2, fmt.Sprintf("vk%02d", i), makeTestValue(300+i))
+	}
+	for i := 5; i < 10; i++ {
+		mustGet(t, db2, fmt.Sprintf("vk%02d", i), makeTestValue(200+i))
+	}
+}

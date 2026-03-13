@@ -383,7 +383,7 @@ func TestSlottedPage_DumpWithVLog(t *testing.T) {
 	fs, dir := newTestFS(t)
 	vlogPath := filepath.Join(dir, "LARGE.VLOG")
 
-	vlog, err := openValueLog(vlogPath, fs)
+	vlog, err := openValueLog(vlogPath, fs, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +464,7 @@ func TestSlottedPage_DumpWithVLog_LargeValueTruncated(t *testing.T) {
 	fs, dir := newTestFS(t)
 	vlogPath := filepath.Join(dir, "LARGE.VLOG")
 
-	vlog, err := openValueLog(vlogPath, fs)
+	vlog, err := openValueLog(vlogPath, fs, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +498,7 @@ func TestSlottedPage_DumpWithVLog_BadVPtr(t *testing.T) {
 	vlogPath := filepath.Join(dir, "LARGE.VLOG")
 
 	// Create an empty VLOG - any read will fail.
-	vlog, err := openValueLog(vlogPath, fs)
+	vlog, err := openValueLog(vlogPath, fs, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -607,6 +607,12 @@ type Config struct {
 	// the entire fuzz worker subprocess if they panic (the test's recover()
 	// only catches panics on the test goroutine, not background goroutines).
 	DisableBackgroundFlush bool
+
+	// Compress sets the VLOG compression algorithm. Valid values:
+	//   ""     - default, same as "s2"
+	//   "s2"   - s2 compression (fast, ~2x ratio)
+	//   "none" - no compression
+	Compress string
 }
 
 // PiggybackGCStats tracks statistics for piggyback GC runs.
@@ -878,7 +884,7 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	var vl *valueLog
 	if !cfg.DisableVLOG {
 		vlogPath := filepath.Join(path, "LARGE.VLOG")
-		vl, err = openValueLog(vlogPath, fs)
+		vl, err = openValueLog(vlogPath, fs, cfg.Compress)
 		if err != nil {
 			ff.Close()
 			walFD.Close()
@@ -1389,7 +1395,7 @@ func (db *FlexDB) VacuumVLOG() (*VacuumVLOGStats, error) {
 
 	// Create new VLOG file.
 	newPath := filepath.Join(db.Path, "VLOG.new")
-	newVL, err := openValueLog(newPath, db.vfs)
+	newVL, err := openValueLog(newPath, db.vfs, db.cfg.Compress)
 	if err != nil {
 		return stats, fmt.Errorf("vacuum: open new VLOG: %w", err)
 	}
@@ -2994,7 +3000,7 @@ func (db *FlexDB) writeLockHeldDeleteAll() error {
 		db.vlog.sync()
 		db.vlog.close()
 		fs.Remove(filepath.Join(path, "LARGE.VLOG"))
-		vl, err := openValueLog(filepath.Join(path, "LARGE.VLOG"), fs)
+		vl, err := openValueLog(filepath.Join(path, "LARGE.VLOG"), fs, db.cfg.Compress)
 		if err != nil {
 			return fmt.Errorf("yogadb: DeleteAll: reopen VLOG: %w", err)
 		}
