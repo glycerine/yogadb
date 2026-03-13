@@ -104,7 +104,7 @@ const (
 	// MAX_KEY_BYTES is the maximum key size in bytes that a slotted page
 	// can hold. Derived from SLOTTED_PAGE_KB to ensure at least one key
 	// always fits in a page.
-	MAX_KEY_BYTES = SLOTTED_PAGE_KB * 512 // 32768 bytes
+	MAX_KEY_BYTES = SLOTTED_PAGE_KB * 512
 
 	slottedPageMagicSize  = 16
 	slottedPageHeaderSize = 27 // 16 magic + 1 unsorted + 2 count + 8 baseHLC
