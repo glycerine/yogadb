@@ -45,41 +45,44 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 			data = data[:100]
 		}
 
-		// lazily log to real file on disk if we fatal out.
-		home := os.Getenv("HOME")
-		if home == "" {
-			t.Fatalf("could not get env HOME")
-		}
 		runID := cryRand15B()
-		durlogDir := home + "/anchorfuzz"
-		durlogPath := durlogDir + "/anchor_drift_log"
-		err := os.MkdirAll(durlogDir, 0755)
-		if err != nil {
-			t.Fatalf("could not create logging output dir '%v': '%v'", durlogDir, err)
-		}
-		var durlog *os.File
 
-		mklog := func() {
-			var err error
-			durlog, err = os.OpenFile(durlogPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+		if false {
+			// lazily log to real file on disk if we fatal out.
+			home := os.Getenv("HOME")
+			if home == "" {
+				t.Fatalf("could not get env HOME")
+			}
+			durlogDir := home + "/anchorfuzz"
+			durlogPath := durlogDir + "/anchor_drift_log"
+			err := os.MkdirAll(durlogDir, 0755)
 			if err != nil {
-				t.Fatalf("could not create logging output file '%v': '%v'", durlogPath, err)
+				t.Fatalf("could not create logging output dir '%v': '%v'", durlogDir, err)
 			}
-			ourStdout = durlog // vv, alwaysPrintf go here.
-			vv("anchor_drift_fuzzing started runID='%v'", runID)
+			var durlog *os.File
+
+			mklog := func() {
+				var err error
+				durlog, err = os.OpenFile(durlogPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+				if err != nil {
+					t.Fatalf("could not create logging output file '%v': '%v'", durlogPath, err)
+				}
+				ourStdout = durlog // vv, alwaysPrintf go here.
+				vv("anchor_drift_fuzzing started runID='%v'", runID)
+			}
+			defer func() {
+				if durlog != nil {
+					vv("anchor_drift_fuzzing ending runID='%v'", runID)
+					durlog.Close()
+				}
+			}()
+			mklog()
 		}
-		defer func() {
-			if durlog != nil {
-				vv("anchor_drift_fuzzing ending runID='%v'", runID)
-				durlog.Close()
-			}
-		}()
-		mklog()
 		fatalf := func(format string, a ...interface{}) {
-			if durlog == nil {
-				mklog()
-			}
-			vv(format, a...)
+			//if durlog == nil {
+			//	mklog()
+			//}
+			//vv(format, a...)
 			t.Fatalf(format, a...)
 		}
 
