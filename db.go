@@ -4242,7 +4242,10 @@ func (db *FlexDB) recovery() {
 // are logged and the caller handles the ok=false return (used during
 // crash recovery where incomplete WAL replay may leave partial extents).
 func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte, panicOnFailure bool) (KV, bool) {
-	// Read enough for the 16-byte magic prefix.
+	// NOTE: FlexSpaceHandler.Read does NOT advance the handler position.
+	// We must call fh.Forward() after each Read to advance past consumed bytes.
+
+	// Read the 16-byte magic prefix.
 	var magic [slottedPageMagicSize]byte
 	n, err := fh.Read(magic[:], slottedPageMagicSize)
 	if n < slottedPageMagicSize || err != nil {
@@ -4254,8 +4257,9 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte, panicOnFailure boo
 	}
 
 	if slottedPageHasMagic(magic[:]) {
-		// Slotted page format. Read header(27) + first entry's 4B slot + 10B varint max.
-		// We need to read the full header to get keyLen, then key bytes.
+		// Slotted page format: the header includes the magic, so we read
+		// from the start of the extent (no Forward needed - Read is non-advancing
+		// and we want to re-read from offset 0 including the magic).
 		needHeader := slottedPageHeaderSize + 4 + binary.MaxVarintLen64
 		if needHeader > len(buf) {
 			alwaysPrintf("flexdbReadKVFromHandler: buf too small for slotted header at loff=%d need=%d bufLen=%d", fh.Loff(), needHeader, len(buf))
@@ -4305,7 +4309,10 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte, panicOnFailure boo
 
 	if magic == kv128ExtentMagic {
 		// kv128 extent format: 16-byte magic prefix followed by kv128-encoded data.
-		// Read enough for the kv128 size prefix (varints) after the magic.
+		// Advance past the magic so the next Read gets the actual kv128 data.
+		fh.Forward(slottedPageMagicSize)
+
+		// Read enough for the kv128 size prefix (varints).
 		var kv128hdr [16]byte
 		hn, herr := fh.Read(kv128hdr[:], 16)
 		if hn < 1 || herr != nil {
@@ -4323,7 +4330,8 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte, panicOnFailure boo
 			}
 			return KV{}, false
 		}
-		// Re-read from the start of the kv128 data (after the 16-byte magic).
+		// Read the full first kv128 entry (Read is non-advancing, so this
+		// re-reads from the same position as kv128hdr above, which is correct).
 		rn, rerr := fh.Read(buf[:size], uint64(size))
 		if rn != size || rerr != nil {
 			alwaysPrintf("flexdbReadKVFromHandler: kv128 read fail at loff=%d n=%d size=%d err=%v", fh.Loff(), rn, size, rerr)
