@@ -26,8 +26,8 @@ const (
 	pageTypeLeaf     = 0x01
 	pageTypeInternal = 0x02
 
-	cowMetaSize      = 128
-	cowMetaMagic     = "FTCOW003"
+	cowMetaSize      = 136
+	cowMetaMagic     = "FTCOW004"
 	cowMetaAllocSize = 64 << 10 // 64 KB pre-allocation for FLEXTREE.COMMIT file
 )
 
@@ -52,6 +52,8 @@ type cowMeta struct {
 	LiveKeys      int64 // total live (non-tombstone) keys
 	LiveBigKeys   int64 // keys with values in VLOG (HasVPtr=true)
 	LiveSmallKeys int64 // keys with inline values
+
+	totalCompressSavedBytes int64 // cumulative bytes saved by VLOG s2 compression
 }
 
 func encodeCowMeta(buf *[cowMetaSize]byte, m *cowMeta) {
@@ -71,35 +73,37 @@ func encodeCowMeta(buf *[cowMetaSize]byte, m *cowMeta) {
 	binary.LittleEndian.PutUint64(buf[100:108], uint64(m.LiveKeys))
 	binary.LittleEndian.PutUint64(buf[108:116], uint64(m.LiveBigKeys))
 	binary.LittleEndian.PutUint64(buf[116:124], uint64(m.LiveSmallKeys))
-	crc := crc32.Checksum(buf[:124], crc32cTable)
-	binary.LittleEndian.PutUint32(buf[124:128], crc)
+	binary.LittleEndian.PutUint64(buf[124:132], uint64(m.totalCompressSavedBytes))
+	crc := crc32.Checksum(buf[:132], crc32cTable)
+	binary.LittleEndian.PutUint32(buf[132:136], crc)
 }
 
 func decodeCowMeta(buf *[cowMetaSize]byte) (*cowMeta, error) {
 	if string(buf[0:8]) != cowMetaMagic {
 		return nil, fmt.Errorf("cow: bad FLEXTREE.COMMIT magic")
 	}
-	crc := crc32.Checksum(buf[:124], crc32cTable)
-	stored := binary.LittleEndian.Uint32(buf[124:128])
+	crc := crc32.Checksum(buf[:132], crc32cTable)
+	stored := binary.LittleEndian.Uint32(buf[132:136])
 	if crc != stored {
 		return nil, fmt.Errorf("cow: FLEXTREE.COMMIT CRC mismatch: computed %08x, stored %08x", crc, stored)
 	}
 	m := &cowMeta{
-		FormatMajor:            binary.LittleEndian.Uint64(buf[8:16]),
-		FormatMinor:            binary.LittleEndian.Uint64(buf[16:24]),
-		Version:                binary.LittleEndian.Uint64(buf[24:32]),
-		RootSlotID:             int64(binary.LittleEndian.Uint64(buf[32:40])),
-		MaxSlotID:              int64(binary.LittleEndian.Uint64(buf[40:48])),
-		NodeCount:              binary.LittleEndian.Uint64(buf[48:56]),
-		MaxLoff:                binary.LittleEndian.Uint64(buf[56:64]),
-		MaxExtentSz:            binary.LittleEndian.Uint32(buf[64:68]),
-		NodesFileCap:           int64(binary.LittleEndian.Uint64(buf[68:76])),
-		totalLogicalBytesWrit:  int64(binary.LittleEndian.Uint64(buf[76:84])),
-		totalPhysicalBytesWrit: int64(binary.LittleEndian.Uint64(buf[84:92])),
-		MaxHLC:                 int64(binary.LittleEndian.Uint64(buf[92:100])),
-		LiveKeys:               int64(binary.LittleEndian.Uint64(buf[100:108])),
-		LiveBigKeys:            int64(binary.LittleEndian.Uint64(buf[108:116])),
-		LiveSmallKeys:          int64(binary.LittleEndian.Uint64(buf[116:124])),
+		FormatMajor:             binary.LittleEndian.Uint64(buf[8:16]),
+		FormatMinor:             binary.LittleEndian.Uint64(buf[16:24]),
+		Version:                 binary.LittleEndian.Uint64(buf[24:32]),
+		RootSlotID:              int64(binary.LittleEndian.Uint64(buf[32:40])),
+		MaxSlotID:               int64(binary.LittleEndian.Uint64(buf[40:48])),
+		NodeCount:               binary.LittleEndian.Uint64(buf[48:56]),
+		MaxLoff:                 binary.LittleEndian.Uint64(buf[56:64]),
+		MaxExtentSz:             binary.LittleEndian.Uint32(buf[64:68]),
+		NodesFileCap:            int64(binary.LittleEndian.Uint64(buf[68:76])),
+		totalLogicalBytesWrit:   int64(binary.LittleEndian.Uint64(buf[76:84])),
+		totalPhysicalBytesWrit:  int64(binary.LittleEndian.Uint64(buf[84:92])),
+		MaxHLC:                  int64(binary.LittleEndian.Uint64(buf[92:100])),
+		LiveKeys:                int64(binary.LittleEndian.Uint64(buf[100:108])),
+		LiveBigKeys:             int64(binary.LittleEndian.Uint64(buf[108:116])),
+		LiveSmallKeys:           int64(binary.LittleEndian.Uint64(buf[116:124])),
+		totalCompressSavedBytes: int64(binary.LittleEndian.Uint64(buf[124:132])),
 	}
 	return m, nil
 }
@@ -355,12 +359,13 @@ func (t *FlexTree) SyncCoW() error {
 		MaxLoff:                t.MaxLoff,
 		MaxExtentSz:            t.MaxExtentSize,
 		NodesFileCap:           t.nodesFileCap,
-		totalLogicalBytesWrit:  t.totalLogicalBytesWrit,
-		totalPhysicalBytesWrit: t.totalPhysicalBytesWrit,
-		MaxHLC:                 t.MaxHLC,
-		LiveKeys:               t.liveKeys,
-		LiveBigKeys:            t.liveBigKeys,
-		LiveSmallKeys:          t.liveSmallKeys,
+		totalLogicalBytesWrit:   t.totalLogicalBytesWrit,
+		totalPhysicalBytesWrit:  t.totalPhysicalBytesWrit,
+		totalCompressSavedBytes: t.totalCompressSavedBytes,
+		MaxHLC:                  t.MaxHLC,
+		LiveKeys:                t.liveKeys,
+		LiveBigKeys:             t.liveBigKeys,
+		LiveSmallKeys:           t.liveSmallKeys,
 	}
 	var metaBuf [cowMetaSize]byte
 	encodeCowMeta(&metaBuf, &meta)
@@ -547,6 +552,7 @@ func OpenFlexTreeCoW(dirPath string, fs vfs.FS) (*FlexTree, error) {
 	t.metaNextOff = metaOff + cowMetaSize // resume appending after the latest record
 	t.totalLogicalBytesWrit = meta.totalLogicalBytesWrit
 	t.totalPhysicalBytesWrit = meta.totalPhysicalBytesWrit
+	t.totalCompressSavedBytes = meta.totalCompressSavedBytes
 	t.MaxHLC = meta.MaxHLC
 	t.liveKeys = meta.LiveKeys
 	t.liveBigKeys = meta.LiveBigKeys

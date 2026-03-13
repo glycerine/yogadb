@@ -663,8 +663,9 @@ type FlexDB struct {
 
 	// Cumulative counters loaded from cowMeta on open.
 	// Current total = base + session delta.
-	totalLogicalBase  int64
-	totalPhysicalBase int64
+	totalLogicalBase        int64
+	totalPhysicalBase       int64
+	totalCompressSavedBase  int64
 
 	// (iterator support - pfSpans are embedded in Iter, no free list needed)
 
@@ -932,6 +933,7 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	// Load cumulative counters from the last cowMeta commit.
 	db.totalLogicalBase = ff.tree.totalLogicalBytesWrit
 	db.totalPhysicalBase = ff.tree.totalPhysicalBytesWrit
+	db.totalCompressSavedBase = ff.tree.totalCompressSavedBytes
 
 	// Restore HLC to be strictly higher than any previously used value.
 	if ff.tree.MaxHLC > 0 {
@@ -1201,10 +1203,20 @@ func (db *FlexDB) sessionPhysicalBytes() int64 {
 func (db *FlexDB) persistCounters() {
 	db.ff.tree.totalLogicalBytesWrit = db.totalLogicalBytesWrit()
 	db.ff.tree.totalPhysicalBytesWrit = db.totalPhysicalBytesWrit()
+	db.ff.tree.totalCompressSavedBytes = db.totalCompressSavedBytes()
 	db.ff.tree.MaxHLC = int64(db.hlc.CreateSendOrLocalEvent())
 	db.ff.tree.liveKeys = db.liveKeys
 	db.ff.tree.liveBigKeys = db.liveBigKeys
 	db.ff.tree.liveSmallKeys = db.liveSmallKeys
+}
+
+// totalCompressSavedBytes returns the cumulative bytes saved by VLOG s2
+// compression across all sessions, including the current one.
+func (db *FlexDB) totalCompressSavedBytes() int64 {
+	if db.vlog != nil {
+		return db.totalCompressSavedBase + atomic.LoadInt64(&db.vlog.CompressSavedBytes)
+	}
+	return db.totalCompressSavedBase
 }
 
 // finalMetrics builds a Metrics snapshot after the final sync in Close().
@@ -1296,6 +1308,7 @@ func (db *FlexDB) CumulativeMetrics() *Metrics {
 	if db.vlog != nil {
 		m.VLOGBytesWritten = db.vlog.size()
 	}
+	m.VLOGCompressSavedBytes = db.totalCompressSavedBytes()
 
 	// LogicalBytesWritten: FlexSpace MaxLoff is the total kv128-encoded
 	// data size across all sessions-the best cumulative approximation
@@ -1700,6 +1713,7 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 	// Copy cumulative counters so they survive vacuum.
 	newTree.totalLogicalBytesWrit = oldTree.totalLogicalBytesWrit
 	newTree.totalPhysicalBytesWrit = oldTree.totalPhysicalBytesWrit
+	newTree.totalCompressSavedBytes = oldTree.totalCompressSavedBytes
 	newTree.PersistentVersion = oldTree.PersistentVersion
 	newTree.MaxHLC = oldTree.MaxHLC
 	newTree.liveKeys = oldTree.liveKeys
@@ -3034,6 +3048,7 @@ func (db *FlexDB) writeLockHeldDeleteAll() error {
 	// 7. Reset counters.
 	db.totalLogicalBase = 0
 	db.totalPhysicalBase = 0
+	db.totalCompressSavedBase = 0
 	atomic.StoreInt64(&db.LogicalBytesWritten, 0)
 	atomic.StoreInt64(&db.MemWALBytesWritten, 0)
 	db.liveKeys = 0

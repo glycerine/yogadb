@@ -213,9 +213,10 @@ type FlexTree struct {
 	FlexTreePagesBytesWritten int64 // FLEXTREE.PAGES + FLEXTREE.COMMIT bytes written to disk
 
 	// Cumulative counters persisted in cowMeta (set by FlexDB before SyncCoW)
-	totalLogicalBytesWrit  int64 // cumulative user payload bytes (key+value)
-	totalPhysicalBytesWrit int64 // cumulative total bytes written to all files
-	MaxHLC                 int64 // highest HLC ever assigned; restored on reopen
+	totalLogicalBytesWrit   int64 // cumulative user payload bytes (key+value)
+	totalPhysicalBytesWrit  int64 // cumulative total bytes written to all files
+	totalCompressSavedBytes int64 // cumulative bytes saved by VLOG s2 compression
+	MaxHLC                  int64 // highest HLC ever assigned; restored on reopen
 
 	// Live key counters, persisted via cowMeta so OpenFlexDB avoids a full scan.
 	liveKeys      int64
