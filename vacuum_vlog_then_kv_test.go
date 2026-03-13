@@ -5,15 +5,10 @@ import (
 	"testing"
 )
 
-// TestVacuumVLOG_ThenVacuumKV reproduces a crash where VacuumVLOG rewrites
-// intervals containing VPtrs from slotted page format to kv128 format
-// (with kv128ExtentMagic prefix), and then VacuumKV's rebuildAnchorsFromTags
-// fails to read the first key from those kv128 extents.
-//
-// Reproducer: load_yogadb loads ~434K keys with values large enough for VLOG,
-// then yvac runs VacuumVLOG followed by VacuumKV. The VacuumKV panics in
-// flexdbReadKVFromHandler because FlexSpaceHandler.Read is non-advancing
-// and the kv128 magic is re-read instead of the actual kv128 data.
+// TestVacuumVLOG_ThenVacuumKV verifies that VacuumVLOG rewrites intervals
+// containing VPtrs in slotted page format, and then VacuumKV can
+// successfully compact the result. Both vacuums use slotted page format
+// exclusively for KV128_BLOCKS.
 func TestVacuumVLOG_ThenVacuumKV(t *testing.T) {
 	fs, dir := newTestFS(t)
 
@@ -51,8 +46,7 @@ func TestVacuumVLOG_ThenVacuumKV(t *testing.T) {
 	// Reopen (recovery path).
 	db2 := openTestDBAt(fs, t, dir, cfg)
 
-	// VacuumVLOG rewrites intervals with VPtrs from slotted page
-	// to kv128 format (with kv128ExtentMagic prefix).
+	// VacuumVLOG rewrites intervals with updated VPtrs in slotted page format.
 	stats, err := db2.VacuumVLOG()
 	if err != nil {
 		t.Fatalf("VacuumVLOG: %v", err)
@@ -60,7 +54,7 @@ func TestVacuumVLOG_ThenVacuumKV(t *testing.T) {
 	t.Logf("VacuumVLOG: %v", stats)
 
 	// VacuumKV compacts KV128_BLOCKS. This calls rebuildAnchorsFromTags
-	// which must correctly read the first key from kv128 extents.
+	// which reads the first key from slotted page extents.
 	stats2, err := db2.VacuumKV()
 	if err != nil {
 		t.Fatalf("VacuumKV: %v", err)

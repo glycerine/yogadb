@@ -416,25 +416,11 @@ func (p *intervalCachePartition) loadInterval(fce *intervalCacheEntry, anchor *d
 			src = nil // corrupt page, skip
 		}
 	}
-	// Decode remaining kv128 entries.
+	// All KV128_BLOCKS data should be slotted page format.
+	// kv128 format is no longer written to KV128_BLOCKS.
 	if len(src) > 0 {
-		if kv128HasMagic(src) {
-			src = src[slottedPageMagicSize:]
-		} else {
-			alwaysPrintf("loadInterval: unknown format at loff=%d, first 16 bytes: %x", anchorLoff, src[:min(len(src), 16)])
-			panicf("loadInterval: unknown format at loff=%d, expected kv128ExtentMagic prefix", anchorLoff)
-		}
-		for len(src) > 0 {
-			kv, size, ok := kv128Decode(src)
-			if !ok {
-				break
-			}
-			fce.kvs = append(fce.kvs, kv)
-			fce.fps = append(fce.fps, fingerprint(kvCRC32(kv.Key)))
-			fce.size += kvSizeApprox(&kv)
-			fce.count++
-			src = src[size:]
-		}
+		panicf("loadInterval: unexpected non-slotted data at loff=%d, %d trailing bytes, first 16 bytes: %x",
+			anchorLoff, len(src), src[:min(len(src), 16)])
 	}
 
 	// If unsorted, sort and dedup.

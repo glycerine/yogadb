@@ -169,3 +169,91 @@ Debug counters (updateCount, updateGarbageBytes, insertCount, insertBytes)
 remain on FlexSpace and are incremented on every Update/Insert call.
 Print statements are commented out but easily re-enabled.
 
+----
+
+# Plan: Eliminate kv128 format from KV128_BLOCKS
+
+## Context
+
+KV128_BLOCKS currently contains two on-disk formats: slotted pages and kv128 (with kv128ExtentMagic prefix). The kv128 format only enters KV128_BLOCKS via VacuumVLOG, which re-encodes intervals after updating VPtrs. All normal write paths (putPassthroughInitial, putPassthroughR, treeInsertAnchor, flushDirtyPages, flushDirtyEntry) already use slotted page format. Having two formats creates complexity in every read path (loadInterval, decodeIntervalDirect, flexdbReadKVFromHandler, VacuumKV, CheckIntegrity) and caused the bloat regression (format mismatch -> ff.Update garbage).
+
+The MEMWAL continues to use kv128 encoding (no magic prefix) - that is unaffected.
+
+## Approach
+
+**Change VacuumVLOG to write slotted page format instead of kv128.**
+
+The one concern: kv128 is open-ended (no size limit), while slotted pages have a target size. However, VacuumVLOG replaces VPtrs (8-byte offset + 8-byte length = 16 bytes) with... new VPtrs (same 16 bytes). The interval size doesn't change. The only size change is the format overhead difference between kv128 and slotted page encoding of the same KVs. Since slotted pages already handle VPtrs natively (slottedValInfoVPtr sentinel), this is safe.
+
+For intervals that would exceed slottedPageMaxSize after re-encoding as slotted page: use slottedPageEncode (tight, no padding) which has no size limit - it just produces a page without zero-padding.
+
+### Step 1 - VacuumVLOG: write slotted page instead of kv128
+
+**db.go VacuumVLOG (~line 1517-1523):**
+```
+// OLD:
+buf := db.itvbuf[:0]
+buf = append(buf, kv128ExtentMagic[:]...)
+for i := 0; i < fce.count; i++ {
+    buf = kv128Encode(buf, fce.kvs[i])
+}
+
+// NEW:
+buf := slottedPageEncode(fce.kvs[:fce.count])
+```
+
+NOTE: Step 1 has already been applied to the code.
+
+### Step 2 - Simplify read paths (remove kv128 detection from KV128_BLOCKS reads)
+
+Remove kv128ExtentMagic handling from:
+- `loadInterval` (intervalcache.go ~line 421-436)
+- `decodeIntervalDirect` (db.go ~line 3495-3507)
+- `flexdbReadKVFromHandler` (db.go ~line 4290-4320)
+- `VacuumKV` read path (db.go ~line 1695-1704) - already handles slotted pages
+- `CheckIntegrity` (db.go) - if it has kv128 detection
+
+For safety, replace kv128 detection with a panic("unexpected kv128 format in KV128_BLOCKS") so old-format databases fail loudly rather than silently.
+
+### Step 3 - Update tests
+
+- Update `TestVacuumVLOG_ThenVacuumKV` to verify slotted page format after vacuum
+- Verify `TestVacuumThenOverwrite_DiskSizeBounded` still passes (should improve since no format mismatch)
+- Run full test suite
+
+## Files to modify
+
+- `db.go` - VacuumVLOG write path, decodeIntervalDirect, flexdbReadKVFromHandler, CheckIntegrity
+- `intervalcache.go` - loadInterval read path
+- `vacuum_vlog_then_kv_test.go` - verify format after vacuum
+
+## Verification
+
+```bash
+go test -tags memfs -timeout 300s -count=1 ./...
+go test -run TestVacuumThenOverwrite_DiskSizeBounded -v -count=1 -timeout 600s
+go test -run TestVacuumVLOG_ThenVacuumKV -v -count=1 -timeout 60s
+```
+
+
+All tests pass. Here's a summary of the changes:
+
+  Step 1 (already done): VacuumVLOG already uses slottedPageEncode at db.go:1521.
+
+  Step 2 - Replaced kv128 read paths with panics on unexpected format:
+
+  - intervalcache.go:419-438 (loadInterval): Replaced kv128 decode loop with a panic if non-slotted trailing data is
+  found.
+  - db.go:3492-3507 (decodeIntervalDirect): Same replacement.
+  - db.go:4321-4369 (flexdbReadKVFromHandler): Removed the entire kv128 extent handling block (40+ lines). Unknown
+  magic now always produces an error/panic.
+  - db.go:2148-2178 (CheckIntegrity): Replaced kv128 decode loop with an error report for unexpected non-slotted
+  trailing bytes.
+
+  Step 3 - Updated test comments in vacuum_vlog_then_kv_test.go to reflect that both vacuums now use slotted page
+  format exclusively.
+
+  The kv128 encode/decode functions themselves remain - they're still used by MEMWAL (memtable.go:66, db.go:250) and
+  WAL replay (logRedo at db.go:4400), plus unit tests in db_test.go.
+
+---------

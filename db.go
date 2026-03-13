@@ -1514,13 +1514,11 @@ func (db *FlexDB) VacuumVLOG() (*VacuumVLOGStats, error) {
 				stats.EntriesCopied++
 			}
 
-			// Re-encode the entire interval and rewrite in FlexSpace.
-			// Prepend 16-byte kv128ExtentMagic so the format is identifiable.
-			buf := db.itvbuf[:0]
-			buf = append(buf, kv128ExtentMagic[:]...)
-			for i := 0; i < fce.count; i++ {
-				buf = kv128Encode(buf, fce.kvs[i])
-			}
+			// Re-encode the entire interval as a slotted page and rewrite
+			// in FlexSpace. Using slotted page format (same as all other
+			// write paths) avoids the kv128/slotted format mismatch that
+			// caused bloat on subsequent loads.
+			buf := slottedPageEncode(fce.kvs[:fce.count])
 			newPSize := uint32(len(buf))
 			db.ff.Update(buf, anchorLoff, uint64(newPSize), uint64(anchor.psize))
 			if newPSize != anchor.psize {
@@ -2147,36 +2145,11 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 				}
 			}
 
-			// Decode remaining kv128 entries
+			// All KV128_BLOCKS data should be slotted page format.
 			if len(src) > 0 {
-				if kv128HasMagic(src) {
-					src = src[slottedPageMagicSize:]
-				} else {
-					addErr("kv128_magic",
-						fmt.Sprintf("anchor %d (key=%q): unknown format after slotted page at byte %d of %d, first bytes: %x",
-							anchorCount, anchor.key, int(psize)-len(src), psize, src[:min(len(src), 16)]), false)
-					src = nil
-				}
-				for len(src) > 0 {
-					kv, sz, ok := kv128Decode(src)
-					if !ok {
-						addErr("kv128_decode",
-							fmt.Sprintf("anchor %d (key=%q): kv128Decode failed at byte %d of %d (decoded %d KVs so far)",
-								anchorCount, anchor.key, int(psize)-len(src), psize, kvCount), false)
-						break
-					}
-					kvCount++
-					prevKey = kv.Key
-					hasPrev = true
-					checkVlogBlake3(&kv, anchorCount, anchor.key)
-					src = src[sz:]
-				}
-			}
-
-			if len(src) != 0 {
-				addErr("kv128_trailing",
-					fmt.Sprintf("anchor %d (key=%q): %d trailing bytes after decoding %d KVs",
-						anchorCount, anchor.key, len(src), kvCount), false)
+				addErr("unexpected_format",
+					fmt.Sprintf("anchor %d (key=%q): %d unexpected non-slotted trailing bytes at byte %d of %d, first bytes: %x",
+						anchorCount, anchor.key, len(src), int(psize)-len(src), psize, src[:min(len(src), 16)]), false)
 			}
 		}
 	}
@@ -3491,21 +3464,10 @@ func (db *FlexDB) decodeIntervalDirect(anchor *dbAnchor, anchorLoff uint64) ([]K
 			src = nil
 		}
 	}
+	// All KV128_BLOCKS data should be slotted page format.
 	if len(src) > 0 {
-		if kv128HasMagic(src) {
-			src = src[slottedPageMagicSize:]
-		} else {
-			alwaysPrintf("decodeIntervalDirect: unknown format at loff=%d, first 16 bytes: %x", anchorLoff, src[:min(len(src), 16)])
-			panicf("decodeIntervalDirect: unknown format at loff=%d, expected kv128ExtentMagic prefix", anchorLoff)
-		}
-		for len(src) > 0 {
-			kv, size, ok := kv128Decode(src)
-			if !ok {
-				break
-			}
-			kvs = append(kvs, kv)
-			src = src[size:]
-		}
+		panicf("decodeIntervalDirect: unexpected non-slotted data at loff=%d, %d trailing bytes, first 16 bytes: %x",
+			anchorLoff, len(src), src[:min(len(src), 16)])
 	}
 
 	if anchor.unsorted > 0 && len(kvs) > 1 {
@@ -4320,53 +4282,10 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte, panicOnFailure boo
 		return KV{Key: key}, true
 	}
 
-	if magic == kv128ExtentMagic {
-		// kv128 extent format: 16-byte magic prefix followed by kv128-encoded data.
-		// Advance past the magic so the next Read gets the actual kv128 data.
-		fh.Forward(slottedPageMagicSize)
-
-		// Read enough for the kv128 size prefix (varints).
-		var kv128hdr [16]byte
-		hn, herr := fh.Read(kv128hdr[:], 16)
-		if hn < 1 || herr != nil {
-			alwaysPrintf("flexdbReadKVFromHandler: kv128 header read fail at loff=%d n=%d err=%v", fh.Loff(), hn, herr)
-			if panicOnFailure {
-				panicf("flexdbReadKVFromHandler: kv128 header read fail at loff=%d n=%d err=%v", fh.Loff(), hn, herr)
-			}
-			return KV{}, false
-		}
-		size, ok := kv128SizePrefix(kv128hdr[:])
-		if !ok || size > len(buf) {
-			alwaysPrintf("flexdbReadKVFromHandler: kv128 format fail at loff=%d ok=%v size=%d bufLen=%d header=%x", fh.Loff(), ok, size, len(buf), kv128hdr[:])
-			if panicOnFailure {
-				panicf("flexdbReadKVFromHandler: kv128 format fail at loff=%d ok=%v size=%d bufLen=%d header=%x", fh.Loff(), ok, size, len(buf), kv128hdr[:])
-			}
-			return KV{}, false
-		}
-		// Read the full first kv128 entry (Read is non-advancing, so this
-		// re-reads from the same position as kv128hdr above, which is correct).
-		rn, rerr := fh.Read(buf[:size], uint64(size))
-		if rn != size || rerr != nil {
-			alwaysPrintf("flexdbReadKVFromHandler: kv128 read fail at loff=%d n=%d size=%d err=%v", fh.Loff(), rn, size, rerr)
-			if panicOnFailure {
-				panicf("flexdbReadKVFromHandler: kv128 read fail at loff=%d n=%d size=%d err=%v", fh.Loff(), rn, size, rerr)
-			}
-			return KV{}, false
-		}
-		kv, _, ok2 := kv128Decode(buf[:size])
-		if !ok2 {
-			alwaysPrintf("flexdbReadKVFromHandler: kv128Decode fail at loff=%d", fh.Loff())
-			if panicOnFailure {
-				panicf("flexdbReadKVFromHandler: kv128Decode fail at loff=%d", fh.Loff())
-			}
-		}
-		return kv, ok2
-	}
-
-	// Unknown format - neither slotted page magic nor kv128 extent magic.
-	alwaysPrintf("flexdbReadKVFromHandler: unknown format at loff=%d magic=%x", fh.Loff(), magic[:])
+	// kv128 format is no longer written to KV128_BLOCKS.
+	alwaysPrintf("flexdbReadKVFromHandler: unexpected format at loff=%d magic=%x (expected slotted page)", fh.Loff(), magic[:])
 	if panicOnFailure {
-		panicf("flexdbReadKVFromHandler: unknown format at loff=%d magic=%x (neither slotted page nor kv128 extent)", fh.Loff(), magic[:])
+		panicf("flexdbReadKVFromHandler: unexpected format at loff=%d magic=%x (expected slotted page, kv128 no longer supported in KV128_BLOCKS)", fh.Loff(), magic[:])
 	}
 	return KV{}, false
 }
