@@ -29,6 +29,7 @@ import (
 // ====================== Constants ======================
 
 const (
+	// MaxKeySize is actually 16 bytes smaller (really the limit is 4080 bytes).
 	MaxKeySize                        = 4096
 	flexMemSparseIndexTreeLeafCap     = 100                   // 100                   // (5s benchtime) 122=>5.888; 100=>5.477; 80=>8.557; 90=>5.165,6.598,7.288; 95=>5.675; 85=>8.322; 110=>6.070; 120=>5.308; 150=>5.582; 100=>5.638
 	flexMemSparseIndexTreeInternalCap = 40                    // was 40;

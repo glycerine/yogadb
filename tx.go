@@ -416,7 +416,7 @@ func (tx *WriteTx) DescendRange(lessOrEqual, greaterThan string, iter func(key s
 
 var _ ReadOnlyDB = (*ReadOnlyTx)(nil)
 
-// ReadOnlyDTx provides read-only access to the database within a View
+// ReadOnlyTx provides read-only access to the database within a View
 // transaction. Methods must not be used after the callback returns.
 type ReadOnlyTx struct{ txBase }
 
