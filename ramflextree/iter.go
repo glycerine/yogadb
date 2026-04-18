@@ -908,16 +908,7 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 			continue // skip tombstone, seek past it
 		}
 
-		if bestKV.HasVPtr() {
-			return []byte(minKey), nil, bestKV.Hlc, true, bestKV.Vptr, true
-		}
-		val, err := db.resolveVPtr(bestKV)
-		if err != nil {
-			target = minKey
-			strict = true
-			continue
-		}
-		return []byte(minKey), dupBytes(val), bestKV.Hlc, false, VPtr{}, true
+		return []byte(minKey), dupBytes(bestKV.Value), bestKV.Hlc, false, VPtr{}, true
 	}
 }
 
@@ -1096,16 +1087,7 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, f
 			continue
 		}
 
-		if bestKV.HasVPtr() {
-			return &KV{Key: minKey, Hlc: bestKV.Hlc, Vptr: bestKV.Vptr}, true
-		}
-		val, err := db.resolveVPtr(bestKV)
-		if err != nil {
-			target = minKey
-			strict = true
-			continue
-		}
-		return &KV{Key: minKey, Value: dupBytes(val), Hlc: bestKV.Hlc}, true
+		return &KV{Key: minKey, Value: dupBytes(bestKV.Value), Hlc: bestKV.Hlc}, true
 	}
 }
 
@@ -1130,11 +1112,6 @@ func (it *Iter) flexSpaceOnlySeekGE(target string, strict bool) (kv *KV, found b
 			continue
 		}
 		found = true
-		if kv.HasVPtr() {
-			return
-		}
-		// Lazy value: store direct reference into cache memory (GC-safe).
-		// The actual copy into valBuf is deferred to Value().
 		return
 	}
 	return
@@ -1237,20 +1214,7 @@ func (db *FlexDB) mergedSeekLE(target string, strict bool) (kv *KV, found bool) 
 			continue
 		}
 		found = true
-		if bestKV.HasVPtr() {
-			kv = &KV{}
-			*kv = bestKV
-			kv.Key = maxKey
-			kv.Value = nil
-			return
-		}
-		val, err := db.resolveVPtr(bestKV)
-		if err != nil {
-			target = maxKey
-			strict = true
-			continue
-		}
-		kv = &KV{Key: maxKey, Value: dupBytes(val), Hlc: bestKV.Hlc}
+		kv = &KV{Key: maxKey, Value: dupBytes(bestKV.Value), Hlc: bestKV.Hlc}
 		return
 	}
 }
