@@ -498,7 +498,7 @@ func (tree *FlexTree) GrandparentNode(path *FlexTreePath) (ie *InternalNode) {
 // system... but meh. It's usually fragile to get into
 // the business of creating your own memory manager.
 func NewFlexTree() *FlexTree {
-	return &FlexTree{
+	t := &FlexTree{
 		MaxExtentSize: DefaultFlexTreeMaxExtentSizeLimit,
 
 		InternalArena: make([]InternalNode, 0, 128<<10),
@@ -508,6 +508,13 @@ func NewFlexTree() *FlexTree {
 		FreeInternals: make([]int32, 0, 16<<10),
 		FreeLeaves:    make([]int32, 0, 16<<10),
 	}
+	// Allocate the root leaf node so the tree is ready for inserts.
+	root := t.AllocLeaf()
+	root.Dirty = true
+	t.NodeCount++
+	t.Root = root.NodeID
+	t.LeafHead = root.NodeID
+	return t
 }
 
 // AllocLeaf grabs a slot, preferring recycled nodes from the free list.

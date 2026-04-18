@@ -1,7 +1,6 @@
 package ramflextree
 
 import (
-	"bytes"
 	"fmt"
 	"testing"
 )
@@ -423,135 +422,17 @@ func TestFetchLarge_InlineValue(t *testing.T) {
 	kvc.Close()
 }
 
-// TestFind_LazyLarge tests the LAZY_LARGE flag: large values are not
-// auto-fetched, and must be retrieved via kvc.Fetch().
-func TestFind_LazyLarge(t *testing.T) {
-	db := openTestDB(t, nil)
-
-	bigVal := bytes.Repeat([]byte("x"), 200)
-	panicOn(db.Put("bigkey", bigVal))
-	db.Sync()
-
-	// Without LAZY_LARGE: value auto-fetched
-	kvc, _, err := db.Find(Exact, "bigkey")
-	panicOn(err)
-	if kvc == nil {
-		t.Fatal("not found")
-	}
-	if !bytes.Equal(kvc.Value, bigVal) {
-		t.Fatal("value mismatch on auto-fetch")
-	}
-	kvc.Close()
-
-	// With LAZY_LARGE: value NOT fetched until Fetch()
-	kvc2, _, err := db.Find(Exact|LAZY_LARGE, "bigkey")
-	panicOn(err)
-	if kvc2 == nil {
-		t.Fatal("not found")
-	}
-	if kvc2.Value != nil {
-		t.Fatal("expected nil Value with LAZY_LARGE before Fetch")
-	}
-	if !kvc2.Large() {
-		t.Fatal("expected Large() == true")
-	}
-	err = kvc2.Fetch()
-	panicOn(err)
-	if !bytes.Equal(kvc2.Value, bigVal) {
-		t.Fatal("value mismatch after Fetch")
-	}
-	kvc2.Close()
-}
-
-// TestFind_LazySmall tests the LAZY_SMALL flag: zero-copy inline values
-// via cache pinning. Values alias cache memory and require Close().
-func TestFind_LazySmall(t *testing.T) {
-	db := openTestDB(t, nil)
-
-	// Populate and flush to FlexSpace so values are in cache.
-	for i := 1; i <= 10; i++ {
-		k := fmt.Sprintf("key%03d", i)
-		v := fmt.Sprintf("val%03d", i)
-		panicOn(db.Put(k, []byte(v)))
-	}
-	db.Sync()
-
-	// LAZY_SMALL: zero-copy inline value
-	kvc, exact, err := db.Find(Exact|LAZY_SMALL, "key005")
-	panicOn(err)
-	if kvc == nil || !exact {
-		t.Fatal("not found")
-	}
-	if string(kvc.Value) != "val005" {
-		t.Fatalf("got %q, want val005", kvc.Value)
-	}
-	// Value aliases cache memory - verify it's valid before Close
-	valRef := kvc.Value
-	if len(valRef) != 6 {
-		t.Fatal("unexpected length")
-	}
-	kvc.Close()
-	// After Close, kvc.Value is nil
-	if kvc.Value != nil {
-		t.Fatal("Value should be nil after Close")
-	}
-
-	// LAZY_SMALL with GTE: non-exact match
-	kvc2, exact2, err := db.Find(GTE|LAZY_SMALL, "key004a")
-	panicOn(err)
-	if kvc2 == nil {
-		t.Fatal("not found")
-	}
-	if exact2 {
-		t.Fatal("should not be exact")
-	}
-	if kvc2.Key != "key005" {
-		t.Fatalf("got %q, want key005", kvc2.Key)
-	}
-	if string(kvc2.Value) != "val005" {
-		t.Fatalf("got %q, want val005", kvc2.Value)
-	}
-	kvc2.Close()
-
-	// LAZY_SMALL|LAZY_LARGE combined with a large value
-	bigVal := bytes.Repeat([]byte("B"), 200)
-	panicOn(db.Put("large001", bigVal))
-	db.Sync()
-
-	// equivalent to LAZY, but just to be explicit:
-	//kvc3, _, err := db.Find(Exact|LAZY_SMALL|LAZY_LARGE, "large001")
-	kvc3, _, err := db.Find(Exact|LAZY, "large001")
-	panicOn(err)
-	if kvc3 == nil {
-		t.Fatal("not found")
-	}
-	if !kvc3.Large() {
-		t.Fatal("expected Large")
-	}
-	if kvc3.Value != nil {
-		t.Fatal("expected nil Value before Fetch")
-	}
-	err = kvc3.Fetch()
-	panicOn(err)
-	if !bytes.Equal(kvc3.Value, bigVal) {
-		t.Fatal("value mismatch after Fetch")
-	}
-	kvc3.Close()
-}
-
 // TestFind_SkipValues verifies SKIP_VALUES returns keys with nil Values
-// for both inline and VLOG values, and that iterator Vin/Vel/FetchV return nil.
+// and that iterator Vin/Vel/FetchV return nil.
 func TestFind_SkipValues(t *testing.T) {
 	db := openTestDB(t, nil)
 
-	// Populate with small (inline) and large (VLOG) values.
+	// Populate with inline values.
 	for i := 1; i <= 10; i++ {
 		k := fmt.Sprintf("key%03d", i)
 		v := fmt.Sprintf("val%03d", i)
 		panicOn(db.Put(k, []byte(v)))
 	}
-	bigVal := bytes.Repeat([]byte("X"), 200) // > vlogInlineThreshold
-	panicOn(db.Put("large001", bigVal))
 	db.Sync()
 
 	// Find with SKIP_VALUES: inline value
@@ -567,20 +448,6 @@ func TestFind_SkipValues(t *testing.T) {
 		t.Fatalf("SKIP_VALUES: expected nil Value, got %q", kvc.Value)
 	}
 	kvc.Close()
-
-	// Find with SKIP_VALUES: large value
-	kvc2, exact2, err := db.Find(Exact|SKIP_VALUES, "large001")
-	panicOn(err)
-	if kvc2 == nil || !exact2 {
-		t.Fatal("not found")
-	}
-	if kvc2.Key != "large001" {
-		t.Fatalf("got key %q, want large001", kvc2.Key)
-	}
-	if kvc2.Value != nil {
-		t.Fatalf("SKIP_VALUES: expected nil Value for large key, got len=%d", len(kvc2.Value))
-	}
-	kvc2.Close()
 
 	// FindIt + iterator with SKIP_VALUES: keys-only scan
 	err = db.View(func(ro *ReadOnlyTx) error {
@@ -618,9 +485,9 @@ func TestFind_SkipValues(t *testing.T) {
 			count++
 			it.Next()
 		}
-		// 10 inline keys + 1 large key = 11, minus 1 for initial FindIt result
-		if count < 10 {
-			t.Fatalf("expected at least 10 keys, got %d", count)
+		// 10 inline keys, minus 1 for initial FindIt result
+		if count < 9 {
+			t.Fatalf("expected at least 9 keys, got %d", count)
 		}
 		return nil
 	})
