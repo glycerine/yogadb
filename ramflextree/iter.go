@@ -1587,9 +1587,6 @@ func (it *Iter) GetAnySize() (key string, val []byte, found bool, err error) {
 		it.valueResolved = true
 	}
 	val = it.pKV.Value
-	if it.pKV.HasVPtr() {
-		val, err = it.FetchV()
-	}
 	return
 }
 
@@ -1649,7 +1646,7 @@ func (it *Iter) Vel() (val []byte, empty, large bool) {
 	if it.skipValues {
 		return
 	}
-	large = it.pKV.HasVPtr()
+	// large is always false in ramflextree (no VLOG)
 	if !it.valueResolved && it.pKV.Value != nil {
 		it.valBuf = reuseAppend(it.valBuf, it.pKV.Value)
 		it.pKV.Value = it.valBuf
@@ -1667,15 +1664,9 @@ func (it *Iter) Hlc() HLC {
 	return it.pKV.Hlc
 }
 
-// Large returns false if the current value is stored inline
-// (small value). When true, the value is stored in the VLOG and
-// must be fetched via FetchV(). Iteration remains
-// cheap until you really need to see the large value.
+// Large always returns false in ramflextree (no VLOG).
 func (it *Iter) Large() bool {
-	if it.pKV == nil {
-		return false
-	}
-	return it.pKV.HasVPtr()
+	return false
 }
 
 // FetchV fetches the current iterator value
@@ -1688,10 +1679,7 @@ func (it *Iter) FetchV() ([]byte, error) {
 	if !it.valid || it.pKV == nil || it.skipValues {
 		return nil, nil
 	}
-	if !it.pKV.HasVPtr() {
-		return it.pKV.Value, nil
-	}
-	return it.db.resolveVPtr(KV{Vptr: it.pKV.Vptr})
+	return it.pKV.Value, nil
 }
 
 // ====================== Callback-based iteration ======================
@@ -1702,14 +1690,7 @@ func (it *Iter) iterResolvedValue() []byte {
 	if it.pKV == nil || it.skipValues {
 		return nil
 	}
-	if !it.pKV.HasVPtr() {
-		return it.pKV.Value
-	}
-	val, err := it.db.resolveVPtr(KV{Vptr: it.pKV.Vptr})
-	if err != nil {
-		return nil
-	}
-	return val
+	return it.pKV.Value
 }
 
 // Ascend/Descend/AscendRange/DescendRange are available as methods

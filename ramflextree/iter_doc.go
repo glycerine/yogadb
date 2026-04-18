@@ -108,4 +108,4 @@
 // again, but we are already beating Bolt by 2x (why bother with 3x; it
 // is available if you need it though) and we want to balance reads against
 // insertion efficiency/on-disk space consumption.
-package yogadb
+package ramflextree
