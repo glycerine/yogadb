@@ -4,3 +4,5 @@ load_yogadb/bench.db
 load_yogadb/load_yogadb
 *.db
 *.prof
+yogadb.test
+ramflextree.test
