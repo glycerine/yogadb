@@ -699,8 +699,8 @@ func slottedPageDumpImpl(src []byte, vlog *valueLog) string {
 						valDesc += fmt.Sprintf(" ERR:%s", err)
 					} else {
 						preview := string(data)
-						if len(preview) > 60 {
-							preview = preview[:57] + "..."
+						if len(preview) > 68 {
+							preview = preview[:65] + "..."
 						}
 						valDesc += fmt.Sprintf(" => %dB %q", len(data), preview)
 					}

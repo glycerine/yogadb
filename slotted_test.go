@@ -390,8 +390,11 @@ func TestSlottedPage_DumpWithVLog(t *testing.T) {
 	defer vlog.close()
 
 	// Write two values to the VLOG.
-	largeVal1 := []byte("this-is-a-large-value-stored-in-vlog-number-one")
-	largeVal2 := []byte("second-large-value-for-vlog-testing-hello-world")
+	// hmm.. these are not over 64 bytes!
+	//largeVal1 := []byte("this-is-a-large-value-stored-in-vlog-number-one")
+	//largeVal2 := []byte("second-large-value-for-vlog-testing-hello-world")
+	largeVal1 := []byte("this-is-a-large-value-stored-in-vlog-number-one901234567890123456")
+	largeVal2 := []byte("second-large-value-for-vlog-testing-hello-world901234567890123456")
 
 	vp1, err := vlog.append(largeVal1, 100)
 	if err != nil {
@@ -455,8 +458,9 @@ func TestSlottedPage_DumpWithVLog(t *testing.T) {
 	if !strings.Contains(outWithVLog, string(largeVal2)) {
 		t.Errorf("resolved value 2 not in output:\n%s", outWithVLog)
 	}
-	if !strings.Contains(outWithVLog, fmt.Sprintf("%dB", len(largeVal1))) {
-		t.Error("missing byte count for resolved value 1")
+	needle := fmt.Sprintf("%dB", len(largeVal1))
+	if !strings.Contains(outWithVLog, needle) {
+		t.Errorf("missing byte count for resolved value 1 (needle == '%v'; haystack='%v'", needle, outWithVLog)
 	}
 }
 
