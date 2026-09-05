@@ -49,8 +49,6 @@ const (
 
 	// see memtable.go for memtable
 	memtableFlushTime = 5 * time.Second
-
-	flexdbWALHeaderSize = 12 // 8-byte timestamp + 4-byte CRC32C
 )
 
 var sep = string(os.PathSeparator)
@@ -79,10 +77,14 @@ func (s *Batch) Set(key string, value []byte) (err error) {
 	}
 
 	// String keys are immutable - no copy needed.
-	// Value is []byte, so we must copy it.
+	// Nil and empty values are the same zero-length live value.
+	var valueCopy []byte
+	if len(value) > 0 {
+		valueCopy = append([]byte{}, value...)
+	}
 	s.puts = append(s.puts, &KV{
 		Key:   key,
-		Value: append([]byte{}, value...),
+		Value: valueCopy,
 	})
 	return nil
 }
@@ -279,8 +281,9 @@ func (s *Batch) Close() {
 // ====================== KV type ======================
 
 // KV is a key-value pair. Tombstones are marked by Vptr.Length == tombstoneVPtrLength.
-// A nil Value with Vptr.Length == 0 is a live key with nil value (just a
-// key that is present but has no value; this is fine).
+// A zero-length Value with Vptr.Length == 0 is a live key with no value bytes.
+// Nil and empty value slices are intentionally equivalent; only Delete writes
+// the tombstone sentinel.
 //
 // When Vptr.Length > vlogInlineThreshold (== 64), the value is stored in the VLOG file
 // and Vptr contains the location. Use kv.HasVPtr() to test this.
@@ -378,11 +381,8 @@ func kv128Encode(buf []byte, kv KV) []byte {
 
 	recordStart := len(buf)
 
-	// if we have kv.Value set at all, then assume this is the actual value and take its length.
-	// tests need this.
-	vn := len(kv.Value)
-	if vn > 0 {
-		kv.Vptr.Length = uint64(vn)
+	if !kv.isTombstone() && !kv.HasVPtr() {
+		kv.Vptr = VPtr{Length: uint64(len(kv.Value))}
 	}
 
 	var vptrBuf [vptrSize]byte
@@ -427,40 +427,48 @@ func kv128EncodedSize(kv KV) int {
 }
 
 func kv128Decode(src []byte) (kv KV, n int, ok bool) {
+	if len(src) < vptrSize {
+		return
+	}
+	kv.Vptr = decodeVPtr(src[:vptrSize])
 
-	kv.Vptr = decodeVPtr(src[:16])
-
-	klen, kn := binary.Uvarint(src[16:])
+	klen64, kn := binary.Uvarint(src[vptrSize:])
 	if kn <= 0 {
 		return
 	}
-	hdr := 16 + kn // header includes the Vptr 16 bytes and the key length.
-	kv.Key = string(src[hdr : hdr+int(klen)])
+	maxInt := int(^uint(0) >> 1)
+	if klen64 > uint64(maxInt-vptrSize-kn-8-4) {
+		return
+	}
+	klen := int(klen64)
+	hdr := vptrSize + kn // header includes the Vptr bytes and the key length.
 
 	vn := kv.Vptr.Length
 	if vn == rawVlenTombstone || vn == 0 || vn > vlogInlineThreshold {
-		// tombstone or empty value or VLOG pointer
-		total := hdr + int(klen) + 8
+		// tombstone, zero-length value, or VLOG pointer
+		total := hdr + klen + 8
 		if len(src) < total+4 {
 			return
 		}
 		if crc32.Checksum(src[:total], crc32cTable) != binary.LittleEndian.Uint32(src[total:total+4]) {
 			return
 		}
+		kv.Key = string(src[hdr : hdr+klen])
 		kv.Hlc = HLC(binary.BigEndian.Uint64(src[total-8 : total]))
 		return kv, total + 4, true
 	}
 	// INVAR: we have inline value bytes of length vn
 	vlen := int(vn)
-	total := hdr + int(klen) + vlen + 8
+	total := hdr + klen + vlen + 8
 	if len(src) < total+4 {
 		return
 	}
 	if crc32.Checksum(src[:total], crc32cTable) != binary.LittleEndian.Uint32(src[total:total+4]) {
 		return
 	}
+	kv.Key = string(src[hdr : hdr+klen])
 	kv.Value = make([]byte, vlen)
-	copy(kv.Value, src[hdr+int(klen):hdr+int(klen)+vlen])
+	copy(kv.Value, src[hdr+klen:hdr+klen+vlen])
 	kv.Hlc = HLC(binary.BigEndian.Uint64(src[total-8 : total]))
 	return kv, total + 4, true
 }
@@ -468,22 +476,31 @@ func kv128Decode(src []byte) (kv KV, n int, ok bool) {
 // kv128SizePrefix reads just the varint header to determine the total encoded size
 // (including the trailing 4-byte CRC32C).
 func kv128SizePrefix(src []byte) (int, bool) {
-	if len(src) < 28 { // 16 + 8 + 4 is smallest possible 0 char key and no value.
+	if len(src) < vptrSize+1 {
 		return 0, false
 	}
-	vptr := decodeVPtr(src[:16])
+	vptr := decodeVPtr(src[:vptrSize])
 
-	klen, kn := binary.Uvarint(src[16:])
+	klen64, kn := binary.Uvarint(src[vptrSize:])
 	if kn <= 0 {
 		return 0, false
 	}
+	maxInt := int(^uint(0) >> 1)
+	base := vptrSize + kn + 8 + 4
+	if klen64 > uint64(maxInt-base) {
+		return 0, false
+	}
+	klen := int(klen64)
 	vn := vptr.Length
 
 	if vn == rawVlenTombstone || vn == 0 || vn > vlogInlineThreshold {
 		// no inline value bytes
-		return vptrSize + kn + int(klen) + 8 + 4, true
+		return base + klen, true
 	}
-	return vptrSize + kn + int(klen) + int(vn) + 8 + 4, true
+	if vn > uint64(maxInt-base-klen) {
+		return 0, false
+	}
+	return base + klen + int(vn), true
 }
 
 func varintSize(v uint64) int {
@@ -569,7 +586,7 @@ type Config struct {
 	// fraction is counted. Default 0.25 (25%) when zero.
 	LowBlockUtilizationPct float64
 
-	// OmitMemWalFsync true means we do not durably fdatasync the MEMWAL1/2 files.
+	// OmitMemWalFsync true means we do not durably fdatasync FLEXDB.MEMWAL.
 	// This is useful for batch loading a lot of data quickly, and then doing
 	// one fsync at the end for durability. The proviso of course is that
 	// if your process crashes you have no intermediate state and have to
@@ -859,7 +876,7 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 		return nil, fmt.Errorf("flexdb: open flexspace: %w", err)
 	}
 
-	// Open WAL file (single MEMWAL; legacy dual MEMWAL1/MEMWAL2 replayed below).
+	// Open the single 20-byte-header MEMWAL.
 	walPath := filepath.Join(path, "FLEXDB.MEMWAL")
 	walFD, err := fs.OpenReadWrite(walPath, vfs.WriteCategoryUnspecified)
 	if err != nil {
@@ -927,9 +944,16 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	// Create fresh sparse index tree
 	db.tree = memSparseIndexTreeCreate()
 
-	// Recovery or fresh DB
+	// Restore live key counters before replay. If recovery applies WAL records,
+	// it recomputes these counters from the recovered FlexSpace.
+	db.liveKeys = ff.tree.liveKeys
+	db.liveBigKeys = ff.tree.liveBigKeys
+	db.liveSmallKeys = ff.tree.liveSmallKeys
+
+	// Recovery or fresh DB.
 	ffSize := ff.Size()
-	if ffSize > 0 {
+	walSize := db.mt.memWalSize()
+	if ffSize > 0 || walSize > memWalHeaderSize {
 		db.recovery()
 	} else {
 		// Tag loff=0 as the first anchor (but FlexSpace is empty, so SetTag may be a no-op)
@@ -940,11 +964,6 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	// Reset WAL (always use 20-byte versioned header for consistent disk format)
 	ts := uint64(time.Now().UnixNano())
 	db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
-
-	// Restore live key counters from persisted cowMeta.
-	db.liveKeys = ff.tree.liveKeys
-	db.liveBigKeys = ff.tree.liveBigKeys
-	db.liveSmallKeys = ff.tree.liveSmallKeys
 
 	// Start flush worker goroutine (unless disabled for fuzz testing).
 	if !db.cfg.DisableBackgroundFlush {
@@ -2246,8 +2265,10 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, doDelete bool) erro
 	hlcVal := db.hlc.CreateSendOrLocalEvent()
 
 	// String keys are immutable - no defensive copy needed.
-	// Value is []byte, so we must copy it.
-	if value != nil {
+	// Nil and empty values are the same zero-length live value.
+	if len(value) == 0 {
+		value = nil
+	} else {
 		value = append([]byte{}, value...)
 	}
 
@@ -2655,7 +2676,7 @@ func (db *FlexDB) GetKV(key string) (kv *KVcloser, err error) {
 }
 
 // Get retrieves the value for key. Returns nil, false if not found.
-// Get can return nil, true if a nil value was stored with the key.
+// Get returns nil, true for a live key with zero value bytes.
 // Get is value size agnostic. It returns large and small values
 // immediately. This is tested at, for example, gc_test.go
 // Test_GC1K_write_1k_keys_with_large_values.
@@ -2675,8 +2696,8 @@ func (db *FlexDB) Get(key string) (value []byte, found bool, err error) {
 			if err != nil {
 				return nil, false, err
 			}
-			if val == nil {
-				return nil, true, nil // live key, nil value
+			if len(val) == 0 {
+				return nil, true, nil
 			}
 			out := make([]byte, len(val))
 			copy(out, val)
@@ -2703,8 +2724,8 @@ func (db *FlexDB) someLockHeldGet(key string) ([]byte, bool, error) {
 			if err != nil {
 				return nil, false, err
 			}
-			if val == nil {
-				return nil, true, nil // live key, nil value
+			if len(val) == 0 {
+				return nil, true, nil
 			}
 			out := make([]byte, len(val))
 			copy(out, val)
@@ -3459,8 +3480,8 @@ func (db *FlexDB) getPassthrough(key string) ([]byte, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	if val == nil {
-		return nil, true, nil // live key, nil value
+	if len(val) == 0 {
+		return nil, true, nil
 	}
 	out := make([]byte, len(val))
 	copy(out, val)
@@ -3994,11 +4015,9 @@ func (db *FlexDB) recovery() {
 	defer db.topMutRW.Unlock()
 
 	ffSize := db.ff.Size()
-	if ffSize == 0 {
-		return
+	if ffSize > 0 {
+		db.rebuildAnchorsFromTags(false)
 	}
-
-	db.rebuildAnchorsFromTags(false)
 
 	// Replay WAL.
 	treeVer := db.ff.tree.PersistentVersion
@@ -4014,6 +4033,8 @@ func (db *FlexDB) recovery() {
 	}
 	if walSize > walHdr && !skipWal {
 		db.logRedo(db.mt.memWalFD, walSize)
+		db.recomputeKeyCountsLocked()
+		db.persistCounters()
 	}
 
 	db.ff.Sync()
@@ -4100,44 +4121,58 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte, panicOnFailure boo
 	return KV{}, false
 }
 
-// logRedo replays a WAL log file, applying operations to FlexSpace.
-// We are called in one place, inside FlexDB.recovery(), with db.mt.memWalFD for fd:
-// db.go:4016 		db.logRedo(db.mt.memWalFD, walSize)
-// which
-// is written in memtable.go:118
+// logRedo replays the current 20-byte-header MEMWAL, applying kv128 records to
+// FlexSpace. A torn tail stops replay at the last complete, CRC-valid record.
 func (db *FlexDB) logRedo(fd vfs.File, fileSize int64) {
-	buf := make([]byte, 2*MaxKeySize)
-	var nh memSparseIndexTreeHandler
-
-	// header is 20 bytes. (See memtable.go:120)
-	var hdrBuf [20]byte
-	n, err := fd.ReadAt(hdrBuf[:], 0)
-	panicOn(err)
-
-	var offset int64 = 20
-	if n >= 20 && crc32.Checksum(hdrBuf[:16], crc32cTable) == binary.LittleEndian.Uint32(hdrBuf[16:20]) {
-		// good: 20-byte header seen.
-	} else {
-		panicf("short read, could not logRedo WAL for FlexSpace file: '%v'", fd.Name())
+	if fileSize == 0 {
+		return
+	}
+	if fileSize < memWalHeaderSize {
+		panicf("flexdb: logRedo: short WAL header in %s: size=%d, want at least %d", fd.Name(), fileSize, memWalHeaderSize)
 	}
 
+	var hdrBuf [memWalHeaderSize]byte
+	n, err := fd.ReadAt(hdrBuf[:], 0)
+	if err != nil || n != memWalHeaderSize {
+		panicf("flexdb: logRedo: read WAL header from %s: n=%d err=%v", fd.Name(), n, err)
+	}
+	if !memWalHeaderValid(hdrBuf[:]) {
+		panicf("flexdb: logRedo: corrupt 20-byte WAL header in %s", fd.Name())
+	}
+
+	probe := make([]byte, vptrSize+binary.MaxVarintLen64)
+	var nh memSparseIndexTreeHandler
+
+	offset := int64(memWalHeaderSize)
 	for offset < fileSize {
-		// Read first few bytes to determine size
-		n, err := fd.ReadAt(buf[:28], offset)
-		if n < 4 || err != nil {
+		remaining := fileSize - offset
+		probeLen := len(probe)
+		if remaining < int64(probeLen) {
+			probeLen = int(remaining)
+		}
+		n, err := fd.ReadAt(probe[:probeLen], offset)
+		if n < probeLen || err != nil {
+			vv("flexdb: logRedo: truncated size prefix at offset %d (n=%d need=%d): %v", offset, n, probeLen, err)
 			break
 		}
-		size, ok := kv128SizePrefix(buf[:n])
-		if !ok || size > len(buf) {
+		size, ok := kv128SizePrefix(probe[:n])
+		if !ok || size <= 0 {
+			vv("flexdb: logRedo: invalid kv128 size prefix at offset %d", offset)
 			break
 		}
-		n, err = fd.ReadAt(buf[:size], offset)
+		if int64(size) > remaining {
+			vv("flexdb: logRedo: truncated kv128 record at offset %d (size=%d remaining=%d)", offset, size, remaining)
+			break
+		}
+		rec := make([]byte, size)
+		n, err = fd.ReadAt(rec, offset)
 		if n != size || err != nil {
 			vv("flexdb: logRedo: truncated at offset %d (n=%d size=%d): %v", offset, n, size, err)
 			break
 		}
-		kv, _, ok2 := kv128Decode(buf[:size])
+		kv, _, ok2 := kv128Decode(rec)
 		if !ok2 {
+			vv("flexdb: logRedo: kv128 decode failed at offset %d size=%d", offset, size)
 			break
 		}
 		if err := db.putPassthrough(kv, &nh); err != nil {

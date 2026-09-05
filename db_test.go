@@ -2417,26 +2417,26 @@ func TestLen(t *testing.T) {
 	})
 }
 
-func TestFlexDB_NilValuePreservation(t *testing.T) {
+func TestFlexDB_ZeroLengthValueEquivalence(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 
-	// Put with nil value - should store a live key, NOT delete
 	err := db.Put("setkey", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Get should return (nil, true, nil) - found, with nil value
 	val, found, err := db.Get("setkey")
 	panicOn(err)
 	if !found {
-		t.Fatal("nil-value key should be found")
+		t.Fatal("zero-length key should be found")
+	}
+	if len(val) != 0 {
+		t.Fatalf("expected zero-length value, got %q", val)
 	}
 	if val != nil {
-		t.Fatalf("expected nil value, got %v", val)
+		t.Fatalf("expected canonical nil slice for zero-length value, got %#v", val)
 	}
 
-	// Len should count it
 	if db.Len() != 1 {
 		t.Fatalf("expected Len=1, got %d", db.Len())
 	}
@@ -2447,7 +2447,6 @@ func TestFlexDB_NilValuePreservation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Should be gone
 	_, found, err = db.Get("setkey")
 	panicOn(err)
 	if found {
@@ -2457,7 +2456,6 @@ func TestFlexDB_NilValuePreservation(t *testing.T) {
 		t.Fatalf("expected Len=0, got %d", db.Len())
 	}
 
-	// Put nil again, Sync, and read back from FlexSpace
 	err = db.Put("setkey2", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -2470,13 +2468,15 @@ func TestFlexDB_NilValuePreservation(t *testing.T) {
 	val, found, err = db.Get("setkey2")
 	panicOn(err)
 	if !found {
-		t.Fatal("nil-value key should survive Sync")
+		t.Fatal("zero-length key should survive Sync")
+	}
+	if len(val) != 0 {
+		t.Fatalf("expected zero-length value after Sync, got %q", val)
 	}
 	if val != nil {
-		t.Fatalf("expected nil value after Sync, got %v", val)
+		t.Fatalf("expected canonical nil slice after Sync, got %#v", val)
 	}
 
-	// Verify empty-value []byte{} also works and is distinct conceptually
 	err = db.Put("emptykey", []byte{})
 	if err != nil {
 		t.Fatal(err)
@@ -2486,7 +2486,12 @@ func TestFlexDB_NilValuePreservation(t *testing.T) {
 	if !found {
 		t.Fatal("empty-value key should be found")
 	}
-	// Both nil and empty return len=0, but both are live
+	if len(val) != 0 {
+		t.Fatalf("expected []byte{} to read back as a zero-length value, got %q", val)
+	}
+	if val != nil {
+		t.Fatalf("expected []byte{} to read back as canonical nil, got %#v", val)
+	}
 	if db.Len() != 2 {
 		t.Fatalf("expected Len=2, got %d", db.Len())
 	}

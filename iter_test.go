@@ -1362,8 +1362,8 @@ func TestFlexDB_IteratorHasInlineValue(t *testing.T) {
 		if string(val) != "" {
 			t.Fatalf("FetchV for inline: got %q, want empty string", val)
 		}
-		if v, empty, large := it.Vel(); v == nil || empty || large {
-			t.Fatal("Vel() should return (nil, true, false) for small emtpy values")
+		if v, empty, large := it.Vel(); v != nil || !empty || large {
+			t.Fatal("Vel() should return (nil, true, false) for small empty values")
 		}
 		return nil
 	})

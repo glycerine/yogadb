@@ -1695,6 +1695,7 @@ func (it *Iter) Vel() (val []byte, empty, large bool) {
 		it.valueResolved = true
 	}
 	val = it.pKV.Value
+	empty = !large && len(val) == 0
 	return
 }
 

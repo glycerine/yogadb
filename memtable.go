@@ -17,8 +17,9 @@ type memtable struct {
 	// backing in memory B-tree (was skiplist in C).
 	bt *btree.BTreeG[KV]
 
-	memWalFD  vfs.File // FLEXDB.MEMWAL1 or FLEXDB.MEMWAL2
-	memWalBuf []byte
+	memWalFD          vfs.File // FLEXDB.MEMWAL
+	memWalBuf         []byte
+	memWalWriteOffset int64
 
 	memWalMut sync.Mutex
 	size      int64 // approximate bytes in this memtable
@@ -31,10 +32,11 @@ type memtable struct {
 func newMemtable(memWalFD vfs.File) *memtable {
 	return &memtable{
 		// default degree is 32, to change it:
-		bt:        btree.NewBTreeGOptions[KV](kvLess, btree.Options{Degree: 32}),
-		memWalFD:  memWalFD,
-		memWalBuf: make([]byte, 0, memtableWalBufCap),
-		empty:     true,
+		bt:                btree.NewBTreeGOptions[KV](kvLess, btree.Options{Degree: 32}),
+		memWalFD:          memWalFD,
+		memWalBuf:         make([]byte, 0, memtableWalBufCap),
+		memWalWriteOffset: memWalHeaderSize,
+		empty:             true,
 	}
 }
 
@@ -76,8 +78,12 @@ func (m *memtable) logFlushLocked() {
 	if len(m.memWalBuf) == 0 {
 		return
 	}
-	nw, err := m.memWalFD.Write(m.memWalBuf)
+	nw, err := m.memWalFD.WriteAt(m.memWalBuf, m.memWalWriteOffset)
 	panicOn(err) // TODO handle file system out of space/disk error.
+	if nw != len(m.memWalBuf) {
+		panicf("memtable WAL short write: wrote %d bytes, want %d", nw, len(m.memWalBuf))
+	}
+	m.memWalWriteOffset += int64(nw)
 	if m.memWalBytesWritten != nil {
 		atomic.AddInt64(m.memWalBytesWritten, int64(nw))
 	}
@@ -104,50 +110,54 @@ func (m *memtable) logSync() {
 }
 
 func (m *memtable) logTimestamp() uint64 {
-	var buf [20]byte
+	var buf [memWalHeaderSize]byte
 	n, _ := m.memWalFD.ReadAt(buf[:], 0)
-	// Try 20-byte format first: [8 ts][8 ver][4 CRC(0:16)]
-	if n >= 20 && crc32.Checksum(buf[:16], crc32cTable) == binary.LittleEndian.Uint32(buf[16:20]) {
+	if n == memWalHeaderSize && memWalHeaderValid(buf[:]) {
 		return binary.BigEndian.Uint64(buf[:8])
 	}
 	return 0
+}
+
+const memWalHeaderSize = 20
+
+func memWalHeaderValid(buf []byte) bool {
+	return len(buf) >= memWalHeaderSize &&
+		crc32.Checksum(buf[:16], crc32cTable) == binary.LittleEndian.Uint32(buf[16:20])
 }
 
 // logTruncateWithVersion writes a 20-byte header including tree version.
 // Format: [8-byte timestamp BE][8-byte treeVersion LE][4-byte CRC32C(first 16 bytes)]
 func (m *memtable) logTruncateWithVersion(timestamp, treeVersion uint64) {
 	panicOn(m.memWalFD.Truncate(0))
-	var buf [20]byte
+	var buf [memWalHeaderSize]byte
 	binary.BigEndian.PutUint64(buf[:8], timestamp)
 	binary.LittleEndian.PutUint64(buf[8:16], treeVersion)
 	binary.LittleEndian.PutUint32(buf[16:20], crc32.Checksum(buf[:16], crc32cTable))
-	_, err := m.memWalFD.WriteAt(buf[:], 0)
+	nw, err := m.memWalFD.WriteAt(buf[:], 0)
 	panicOn(err)
+	if nw != len(buf) {
+		panicf("memtable WAL header short write: wrote %d bytes, want %d", nw, len(buf))
+	}
+	m.memWalWriteOffset = memWalHeaderSize
 	if m.memWalBytesWritten != nil {
-		atomic.AddInt64(m.memWalBytesWritten, 20)
+		atomic.AddInt64(m.memWalBytesWritten, memWalHeaderSize)
 	}
 }
 
 // logTreeVersion returns the tree PersistentVersion from a 20-byte WAL header.
-// Returns 0 for old 12-byte format or corrupt headers.
+// Returns 0 for a missing or corrupt 20-byte header.
 func (m *memtable) logTreeVersion() uint64 {
-	var buf [20]byte
+	var buf [memWalHeaderSize]byte
 	n, _ := m.memWalFD.ReadAt(buf[:], 0)
-	if n >= 20 && crc32.Checksum(buf[:16], crc32cTable) == binary.LittleEndian.Uint32(buf[16:20]) {
+	if n == memWalHeaderSize && memWalHeaderValid(buf[:]) {
 		return binary.LittleEndian.Uint64(buf[8:16])
 	}
 	return 0
 }
 
 // memWalDataOffset returns the byte offset where KV entries start (after the header).
-// Detects 20-byte vs 12-byte header format.
 func (m *memtable) memWalDataOffset() int64 {
-	var buf [20]byte
-	n, _ := m.memWalFD.ReadAt(buf[:], 0)
-	if n >= 20 && crc32.Checksum(buf[:16], crc32cTable) == binary.LittleEndian.Uint32(buf[16:20]) {
-		return 20
-	}
-	return 12
+	return memWalHeaderSize
 }
 
 func (m *memtable) memWalSize() int64 {

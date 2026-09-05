@@ -127,29 +127,8 @@ func Test630_FlexDB_BatchMany(t *testing.T) {
 
 // was seeing some data loss on bench inject then output.
 //
-// Root cause: kv128 codec couldn't distinguish nil from empty
-//
-// The kv128Encode/kv128Decode pair used vlen=0 for
-// both tombstones (Value == nil) and empty values (Value == []byte{}).
-// After a round-trip through FlexSpace (flush + read-back),
-// empty values were silently converted to tombstones,
-// causing data loss.
-//
-// This was a pre-existing bug that affects db.Put(key, []byte{})
-// too - not just Batch. Any key-as-set-member pattern
-// (storing keys with empty values, as Pebble benchmarks commonly do)
-// would lose data after a memtable flush.
-//
-// Fix: shifted value length encoding
-//
-// The encoded rawVlen field now uses:
-// - rawVlen == 0 -> tombstone (Value = nil), no value bytes follow
-// - rawVlen == len(Value) + 1 -> value of length len(Value), followed by that many bytes
-//
-// So empty values encode as rawVlen=1 (with 0 data bytes), cleanly
-// distinguishing them from tombstones (rawVlen=0). All
-// four codec functions were updated: kv128Encode, kv128Decode,
-// kv128EncodedSize, kv128SizePrefix.
+// Empty and nil values are both live zero-length values. They must never
+// decode as tombstones; only Delete writes the tombstone sentinel.
 func Test640_FlexDB_Batch_NoDataLoss(t *testing.T) {
 	fs, dir := newTestFS(t)
 	if !fs.IsReal() {

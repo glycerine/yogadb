@@ -51,9 +51,10 @@ package yogadb
 // Entry Records (packed forward, one per entry):
 //   [2] keyLen      uint16 LE - key length in bytes
 //   [2] valInfo     uint16 LE - value descriptor:
-//     0x0000       = tombstone (0 value bytes)
+//     0x0000       = live key with zero-length value
+//     0xFFFE       = tombstone (0 value bytes)
 //     0xFFFF       = VPtr (16 value bytes: 8B offset + 8B length)
-//     1..0xFFFE   = inline value length (valInfo - 1)
+//     2..0xFFFD   = inline value length (valInfo - 2)
 //   [varint] HLC delta from baseHLC (uvarint, 1-10 bytes)
 //   [keyLen] key bytes
 //
@@ -113,7 +114,7 @@ const (
 	slottedPageCRCSize    = 4
 
 	// valInfo sentinels
-	slottedValInfoNilValue  = 0x0000 // live key, nil value
+	slottedValInfoNilValue  = 0x0000 // live key, zero-length value
 	slottedValInfoTombstone = 0xFFFE // deletion marker
 	slottedValInfoVPtr      = 0xFFFF // value in VLOG
 )
@@ -340,7 +341,7 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 			// tombstone: mark with sentinel, Value stays nil
 			kvs[i].Vptr.Length = tombstoneVPtrLength
 		} else if entries[i].valInfo == slottedValInfoNilValue {
-			// live key, nil value: Value stays nil, Vptr stays zero
+			// live key, zero-length value: Value stays nil, Vptr stays zero
 		} else if entries[i].valInfo == slottedValInfoVPtr {
 			kvs[i].Vptr = decodeVPtr(src[valStart:valEnd])
 		} else {
@@ -392,7 +393,7 @@ func slottedValInfo(kv KV) uint16 {
 	if kv.HasVPtr() {
 		return slottedValInfoVPtr
 	}
-	if kv.Value == nil {
+	if len(kv.Value) == 0 {
 		return slottedValInfoNilValue
 	}
 	return uint16(len(kv.Value) + 2)
@@ -669,7 +670,7 @@ func slottedPageDumpImpl(src []byte, vlog *valueLog) string {
 		var valDesc string
 		switch {
 		case e.valInfo == slottedValInfoNilValue:
-			valDesc = "nil-value"
+			valDesc = "zero-length"
 		case e.valInfo == slottedValInfoTombstone:
 			valDesc = "tombstone"
 		case e.valInfo == slottedValInfoVPtr:

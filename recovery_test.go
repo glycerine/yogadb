@@ -1,6 +1,7 @@
 package yogadb
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand"
 	randv2 "math/rand/v2"
@@ -264,6 +265,117 @@ func (s kvOpsSlice) String() string {
 }
 
 // ====================== Tests ======================
+
+func TestRecovery_LogRedoReplays20ByteKV128BatchCommit(t *testing.T) {
+	dir := "test_recovery_logredo_20byte_kv128_batch"
+	fs := vfs.NewCrashableMem()
+	panicOn(fs.MkdirAll(dir, 0755))
+
+	db, err := OpenFlexDB(dir, &Config{
+		FS:                     fs,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB: %v", err)
+	}
+	defer db.Close()
+
+	smallVal := []byte("small value only in the twenty byte WAL")
+	largeVal := bytes.Repeat([]byte("L"), vlogInlineThreshold+17)
+
+	b := db.NewBatch()
+	if err := b.Set("wal-small", smallVal); err != nil {
+		t.Fatalf("Batch.Set small: %v", err)
+	}
+	if err := b.Set("wal-large", largeVal); err != nil {
+		t.Fatalf("Batch.Set large: %v", err)
+	}
+	if err := b.Set("wal-nil", nil); err != nil {
+		t.Fatalf("Batch.Set nil: %v", err)
+	}
+	if err := b.Set("wal-empty", []byte{}); err != nil {
+		t.Fatalf("Batch.Set empty: %v", err)
+	}
+	if _, err := b.Commit(true); err != nil {
+		t.Fatalf("Batch.Commit(true): %v", err)
+	}
+
+	crashedFS := fs.CrashClone(vfs.CrashCloneCfg{UnsyncedDataPercent: 0})
+	db2, err := OpenFlexDB(dir, &Config{
+		FS:                     crashedFS,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB after crash: %v", err)
+	}
+	defer db2.Close()
+
+	got, found, err := db2.Get("wal-small")
+	if err != nil {
+		t.Fatalf("Get wal-small: %v", err)
+	}
+	if !found || !bytes.Equal(got, smallVal) {
+		t.Fatalf("wal-small after recovery: found=%v got=%q want=%q", found, got, smallVal)
+	}
+
+	got, found, err = db2.Get("wal-large")
+	if err != nil {
+		t.Fatalf("Get wal-large: %v", err)
+	}
+	if !found || !bytes.Equal(got, largeVal) {
+		t.Fatalf("wal-large after recovery: found=%v gotLen=%d wantLen=%d", found, len(got), len(largeVal))
+	}
+
+	got, found, err = db2.Get("wal-nil")
+	if err != nil {
+		t.Fatalf("Get wal-nil: %v", err)
+	}
+	if !found || got != nil {
+		t.Fatalf("wal-nil after recovery: found=%v got=%#v, want canonical nil zero-length value", found, got)
+	}
+
+	got, found, err = db2.Get("wal-empty")
+	if err != nil {
+		t.Fatalf("Get wal-empty: %v", err)
+	}
+	if !found || got != nil {
+		t.Fatalf("wal-empty after recovery: found=%v got=%#v, want canonical nil zero-length value", found, got)
+	}
+
+	if n := db2.Len(); n != 4 {
+		t.Fatalf("Len after WAL recovery = %d, want 4", n)
+	}
+}
+
+func TestRecovery_LogRedoRejectsLegacyTwelveByteHeader(t *testing.T) {
+	dir := "test_recovery_logredo_rejects_legacy_header"
+	fs := vfs.NewMem()
+	panicOn(fs.MkdirAll(dir, 0755))
+
+	fd, err := fs.OpenReadWrite(dir+"/FLEXDB.MEMWAL", vfs.WriteCategoryUnspecified)
+	if err != nil {
+		t.Fatalf("OpenReadWrite FLEXDB.MEMWAL: %v", err)
+	}
+	defer fd.Close()
+
+	oldHeader := make([]byte, 12)
+	nw, err := fd.WriteAt(oldHeader, 0)
+	if err != nil {
+		t.Fatalf("WriteAt legacy header: %v", err)
+	}
+	if nw != len(oldHeader) {
+		t.Fatalf("legacy header short write: wrote %d, want %d", nw, len(oldHeader))
+	}
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("logRedo accepted a 12-byte WAL header; want panic")
+		}
+	}()
+
+	var db FlexDB
+	db.logRedo(fd, int64(len(oldHeader)))
+}
 
 // TestRecovery_DurabilityAfterSync verifies invariant S1:
 // Put + Sync -> crash -> reopen -> all synced data present.
