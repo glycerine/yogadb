@@ -1995,14 +1995,12 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 			return
 		}
 		// read() verifies hdrCRC, valCRC, and blake3 of the value bytes.
-		if kv.Vptr.Length != tombstoneVPtrLength { // we will never read in length tombstoneVPtrLength (all bits set ^uint64(0))
-			_, err := db.vlog.read(kv.Vptr)
-			if err != nil {
-				addErr("vlog_blake3",
-					fmt.Sprintf("anchor %d (key=%q): KV %q VPtr{Off=%d,Len=%d}: %v",
-						anchorIdx, anchorKey, kv.Key, kv.Vptr.Offset, kv.Vptr.Length, err), false)
-				return
-			}
+		_, err := db.vlog.read(kv.Vptr)
+		if err != nil {
+			addErr("vlog_blake3",
+				fmt.Sprintf("anchor %d (key=%q): KV %q VPtr{Off=%d,Len=%d}: %v",
+					anchorIdx, anchorKey, kv.Key, kv.Vptr.Offset, kv.Vptr.Length, err), false)
+			return
 		}
 		vlogChecked++
 	}
