@@ -4000,7 +4000,7 @@ func (db *FlexDB) recovery() {
 
 	db.rebuildAnchorsFromTags(false)
 
-	// Replay WAL. Also replay legacy MEMWAL1/MEMWAL2 if present (migration).
+	// Replay WAL.
 	treeVer := db.ff.tree.PersistentVersion
 
 	// Replay current WAL (FLEXDB.MEMWAL).
@@ -4016,73 +4016,7 @@ func (db *FlexDB) recovery() {
 		db.logRedo(db.mt.memWalFD, walSize)
 	}
 
-	// Legacy migration: replay old MEMWAL1/MEMWAL2 if they exist.
-	db.replayLegacyWALs(treeVer)
-
 	db.ff.Sync()
-}
-
-// replayLegacyWALs replays the old dual-WAL files (FLEXDB.MEMWAL1/MEMWAL2)
-// if they exist, then removes them. This provides one-time migration from
-// the dual-MEMWAL format to the single-MEMWAL format.
-func (db *FlexDB) replayLegacyWALs(treeVer uint64) {
-	fs := db.vfs
-	path := db.Path
-
-	type legacyWAL struct {
-		path string
-		fd   vfs.File
-	}
-	var wals []legacyWAL
-	for _, name := range []string{"FLEXDB.MEMWAL1", "FLEXDB.MEMWAL2"} {
-		p := filepath.Join(path, name)
-		fd, err := fs.OpenReadWrite(p, vfs.WriteCategoryUnspecified)
-		if err != nil {
-			continue // file doesn't exist
-		}
-		wals = append(wals, legacyWAL{path: p, fd: fd})
-	}
-	if len(wals) == 0 {
-		return
-	}
-
-	// Build temporary memtable wrappers to use logTimestamp/logTreeVersion.
-	type walInfo struct {
-		mt   memtable
-		size int64
-		hdr  int64
-		skip bool
-		ts   uint64
-		lw   legacyWAL
-	}
-	var infos []walInfo
-	for _, lw := range wals {
-		m := memtable{memWalFD: lw.fd}
-		sz := m.memWalSize()
-		hdr := m.memWalDataOffset()
-		skip := false
-		if db.ff.omitRedoLog {
-			if v := m.logTreeVersion(); v > 0 && v <= treeVer {
-				skip = true
-			}
-		}
-		if sz > hdr && !skip {
-			infos = append(infos, walInfo{mt: m, size: sz, hdr: hdr, ts: m.logTimestamp(), lw: lw})
-		} else {
-			lw.fd.Close()
-			fs.Remove(lw.path)
-		}
-	}
-
-	// Sort by timestamp (older first) and replay.
-	sort.Slice(infos, func(i, j int) bool {
-		return infos[i].ts < infos[j].ts
-	})
-	for _, info := range infos {
-		db.logRedo(info.mt.memWalFD, info.size)
-		info.lw.fd.Close()
-		fs.Remove(info.lw.path)
-	}
 }
 
 // flexdbReadKVFromHandler reads the first KV (key only needed for anchor)
@@ -4167,16 +4101,24 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte, panicOnFailure boo
 }
 
 // logRedo replays a WAL log file, applying operations to FlexSpace.
+// We are called in one place, inside FlexDB.recovery(), with db.mt.memWalFD for fd:
+// db.go:4016 		db.logRedo(db.mt.memWalFD, walSize)
+// which
+// is written in memtable.go:118
 func (db *FlexDB) logRedo(fd vfs.File, fileSize int64) {
-	buf := make([]byte, MaxKeySize)
+	buf := make([]byte, 2*MaxKeySize)
 	var nh memSparseIndexTreeHandler
 
-	// Detect header size: try 20-byte format first, fall back to 12-byte
+	// header is 20 bytes. (See memtable.go:120)
 	var hdrBuf [20]byte
-	n, _ := fd.ReadAt(hdrBuf[:], 0)
-	offset := int64(12) // default: old 12-byte header
+	n, err := fd.ReadAt(hdrBuf[:], 0)
+	panicOn(err)
+
+	var offset int64 = 20
 	if n >= 20 && crc32.Checksum(hdrBuf[:16], crc32cTable) == binary.LittleEndian.Uint32(hdrBuf[16:20]) {
-		offset = 20 // new 20-byte header
+		// good: 20-byte header seen.
+	} else {
+		panicf("short read, could not logRedo WAL for FlexSpace file: '%v'", fd.Name())
 	}
 
 	for offset < fileSize {
