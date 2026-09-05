@@ -301,9 +301,15 @@ func equal32(a []byte, b []byte) bool {
 	return true
 }
 
+var ErrTomb = fmt.Errorf("error tombstone found")
+
 // read reads a value from the VLOG at the given VPtr.
 // Thread-safe (uses pread).
 func (vl *valueLog) read(vp VPtr) ([]byte, error) {
+	isTombstone := vp.Length == rawVlenTombstone
+	if isTombstone {
+		return nil, ErrTomb
+	}
 	entrySize := vlogEntryHeaderSize + int(vp.Length)
 	buf := make([]byte, entrySize)
 
@@ -312,10 +318,7 @@ func (vl *valueLog) read(vp VPtr) ([]byte, error) {
 		return nil, fmt.Errorf("vlog: read at offset %d len %d: %w", vp.Offset, vp.Length, err)
 	}
 
-	if vp.Length == rawVlenTombstone {
-
-	} else {
-
+	if !isTombstone {
 		// Verify length field.
 		storedLen := binary.LittleEndian.Uint64(buf[12:20])
 		if storedLen != vp.Length {

@@ -540,6 +540,9 @@ func dupBytes(b []byte) []byte {
 	return dup
 }
 
+// note: DisableVLOG bool is not supported any longer. This options was
+// removed from the Config.
+
 // Config allows configuration of a FlexDB.
 type Config struct {
 	CacheMB uint64 // default 32 (for 32 MB)
@@ -552,10 +555,6 @@ type Config struct {
 	// is used (or MemVFS if NoDisk is true). Allows injecting a
 	// custom VFS for testing (e.g. fault injection).
 	FS vfs.FS
-
-	// DisableVLOG disables the value log. When true, all values are stored
-	// inline in FlexSpace regardless of size (original behavior).
-	//DisableVLOG bool
 
 	// OmitFlexSpaceOpsRedoLog skips FlexSpace redo-log writes and instead
 	// calls SyncCoW() on every Sync(). This eliminates ~0.86x write
@@ -1313,6 +1312,10 @@ func (db *FlexDB) resolveVPtr(kv KV) ([]byte, error) {
 	if !kv.HasVPtr() {
 		return kv.Value, nil
 	}
+	if kv.Vptr.Length == rawVlenTombstone {
+		return nil, ErrTomb
+	}
+
 	if db.vlog == nil {
 		return nil, fmt.Errorf("flexdb: VPtr but VLOG is nil")
 	}
@@ -4178,7 +4181,7 @@ func (db *FlexDB) logRedo(fd vfs.File, fileSize int64) {
 
 	for offset < fileSize {
 		// Read first few bytes to determine size
-		n, err := fd.ReadAt(buf[:4], offset)
+		n, err := fd.ReadAt(buf[:28], offset)
 		if n < 4 || err != nil {
 			break
 		}
