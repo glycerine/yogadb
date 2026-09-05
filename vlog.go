@@ -64,6 +64,12 @@ const (
 	vptrSize = 16
 )
 
+func init() {
+	if vlogInlineThreshold < tombstoneVPtrLength {
+		panicf("vlogInlineThreshold(%v) must be >= tombstoneVPtrLength(%v): otherwise a tombstone marker will get confused with an actual vlog length value!", vlogInlineThreshold, tombstoneVPtrLength)
+	}
+}
+
 // VPtr is a pointer to a value stored in the VLOG file.
 type VPtr struct {
 	Offset uint64 // byte offset in VLOG file

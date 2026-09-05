@@ -278,7 +278,7 @@ func (s *Batch) Close() {
 
 // ====================== KV type ======================
 
-// KV is a key-value pair. Tombstones are marked by Vptr.Length == tombstoneVPtrLength == 1
+// KV is a key-value pair. Tombstones are marked by Vptr.Length == tombstoneVPtrLength.
 // A nil Value with Vptr.Length == 0 is a live key with nil value (just a
 // key that is present but has no value; this is fine).
 //
@@ -302,16 +302,18 @@ type KV struct {
 	Key   string
 	Value []byte
 
-	// Vptr.Length==0 means inline/nil. In this case, Vptr.Offset can be repurposed.
-	// Vptr.Length==1 means tombstone.
-	// Vptr.Length > vlogInlineThreshold(64) means VLOG pointer.
+	// Vptr.Length == 0 means inline/nil. In this case, and when Vptr.Length < 64,
+	//                  Vptr.Offset can be repurposed; e.g. for type information.
+	//                  However the KV128 encoding would need to be updated for that.
+	// Vptr.Length == tombstoneVPtrLength(64) means tombstone.
+	// Vptr.Length >  vlogInlineThreshold(64) means real VLOG pointer.
 	Vptr VPtr
 
 	Hlc HLC // hybrid logical clock timestamp. LSN like per mini batch, but has big gaps.
 }
 
 // HasVPtr returns true if the value is stored in the VLOG file.
-// Real VLOG entries always have Length > tombstoneVPtrLength.
+// Real VLOG entries always have Length > vlogInlineThreshold(64).
 func (kv *KV) HasVPtr() bool { return kv.Vptr.Length > vlogInlineThreshold }
 
 func (z *KV) String() (r string) {
@@ -338,7 +340,7 @@ func kvLess(a, b KV) bool { return a.Key < b.Key }
 func kvSizeApprox(kv *KV) int { return 24 + len(kv.Key) + len(kv.Value) }
 
 // isTombstone returns true if this KV is a deletion marker.
-// A tombstone is marked by the sentinel VPtr.Length == tombstoneVPtrLength == 1.
+// A tombstone is marked by the sentinel VPtr.Length == tombstoneVPtrLength.
 func (kv *KV) isTombstone() bool {
 	return kv.Vptr.Length == tombstoneVPtrLength
 }
@@ -368,8 +370,13 @@ const rawVlenTombstone = ^uint64(1) // 0xFFFF FFFF FFFF FFFE - sentinel for tomb
 
 // tombstoneVPtrLength is the sentinel value stored in VPtr.Length
 // to mark a KV as a tombstone. Real VLOG entries always have
-// Length > vlogInlineThreshold (64), so 1 is safe.
-const tombstoneVPtrLength uint64 = 1
+// Length > vlogInlineThreshold (64), so 64 is safe.
+// We used to use 1. But it is easier to test < 64 to mean inline,
+// and have all of 0-63 to flag other conditions. We only use 0 for
+// inline at the moment, but that could change in the future: we
+// might want to designate "typed inline with 1, and have Vptr.Offset
+// indicate the type of the inline value", for example.
+const tombstoneVPtrLength uint64 = 64
 
 func kv128Encode(buf []byte, kv KV) []byte {
 	recordStart := len(buf)
@@ -379,7 +386,7 @@ func kv128Encode(buf []byte, kv KV) []byte {
 		n += binary.PutUvarint(hdr[n:], rawVlenTombstone) // tombstone sentinel
 	} else if kv.HasVPtr() {
 		n += binary.PutUvarint(hdr[n:], rawVlenVPtr) // VLOG pointer sentinel
-	} else if kv.Value == nil {
+	} else if kv.Value == nil || len(kv.Value) == 0 {
 		n += binary.PutUvarint(hdr[n:], 0) // live nil value
 	} else {
 		n += binary.PutUvarint(hdr[n:], uint64(len(kv.Value)+2)) // inline: len+2
