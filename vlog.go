@@ -64,12 +64,6 @@ const (
 	vptrSize = 16
 )
 
-func init() {
-	if vlogInlineThreshold < tombstoneVPtrLength {
-		panicf("vlogInlineThreshold(%v) must be >= tombstoneVPtrLength(%v): otherwise a tombstone marker will get confused with an actual vlog length value!", vlogInlineThreshold, tombstoneVPtrLength)
-	}
-}
-
 // VPtr is a pointer to a value stored in the VLOG file.
 type VPtr struct {
 	Offset uint64 // byte offset in VLOG file
@@ -318,10 +312,15 @@ func (vl *valueLog) read(vp VPtr) ([]byte, error) {
 		return nil, fmt.Errorf("vlog: read at offset %d len %d: %w", vp.Offset, vp.Length, err)
 	}
 
-	// Verify length field.
-	storedLen := binary.LittleEndian.Uint64(buf[12:20])
-	if storedLen != vp.Length {
-		return nil, fmt.Errorf("vlog: length mismatch at offset %d: stored %d, expected %d", vp.Offset, storedLen, vp.Length)
+	if vp.Length == rawVlenTombstone {
+
+	} else {
+
+		// Verify length field.
+		storedLen := binary.LittleEndian.Uint64(buf[12:20])
+		if storedLen != vp.Length {
+			return nil, fmt.Errorf("vlog: length mismatch at offset %d: stored %d, expected %d", vp.Offset, storedLen, vp.Length)
+		}
 	}
 	// Verify hdrCRC (covers bytes 4..56: HLC + length + valCRC + blake3).
 	storedHdrCRC := binary.LittleEndian.Uint32(buf[0:4])

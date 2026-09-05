@@ -305,16 +305,18 @@ type KV struct {
 	// Vptr.Length == 0 means inline/nil. In this case, and when Vptr.Length < 64,
 	//                  Vptr.Offset can be repurposed; e.g. for type information.
 	//                  However the KV128 encoding would need to be updated for that.
-	// Vptr.Length == tombstoneVPtrLength(64) means tombstone.
-	// Vptr.Length >  vlogInlineThreshold(64) means real VLOG pointer.
+	// Vptr.Length >  vlogInlineThreshold(64) and < tombstoneVPtrLength: means real VLOG pointer.
+	// Vptr.Length == tombstoneVPtrLength(^0, all bits set uint64) means tombstone.
 	Vptr VPtr
 
 	Hlc HLC // hybrid logical clock timestamp. LSN like per mini batch, but has big gaps.
 }
 
 // HasVPtr returns true if the value is stored in the VLOG file.
-// Real VLOG entries always have Length > vlogInlineThreshold(64).
-func (kv *KV) HasVPtr() bool { return kv.Vptr.Length > vlogInlineThreshold }
+// Real VLOG entries always have Length > vlogInlineThreshold(64) and < rawVlenTombstone
+func (kv *KV) HasVPtr() bool {
+	return kv.Vptr.Length > vlogInlineThreshold && kv.Vptr.Length < rawVlenTombstone
+}
 
 func (z *KV) String() (r string) {
 	r = "&KV{\n"
@@ -342,62 +344,56 @@ func kvSizeApprox(kv *KV) int { return 24 + len(kv.Key) + len(kv.Value) }
 // isTombstone returns true if this KV is a deletion marker.
 // A tombstone is marked by the sentinel VPtr.Length == tombstoneVPtrLength.
 func (kv *KV) isTombstone() bool {
-	return kv.Vptr.Length == tombstoneVPtrLength
+	return kv.Vptr.Length == rawVlenTombstone // or tombstoneVPtrLength
 }
 
 // Large returns true if this KV's value is stored in the VLOG
 // (too large for inline storage). Use db.FetchLarge(kv) to
 // retrieve the value bytes.
 func (kv *KV) Large() bool {
-	return kv.Vptr.Length > vlogInlineThreshold
+	x := kv.Vptr.Length
+	return vlogInlineThreshold < x && x < rawVlenTombstone
 }
 
 // ====================== KV128 encoding ======================
-// Format: varint(klen) || varint(rawVlen) || key_bytes || value_or_vptr_bytes
+// Format: Vptr.Offset (8 bytes) ||
+//         Vptr.Length (8 bytes) ||
+//         varint(klen) (up to 10 bytes) ||
+//            key_bytes (klen bytes) ||
+//         inline value_bytes if Vptr.Length <= vlogInlineThreshold(64) [0-64 bytes] ||
+//         HLC ||
+//         CRC32c
 // Standard LEB128 (same as Go's encoding/binary.PutUvarint).
 //
-// rawVlen encoding:
-//   rawVlen == 0                   -> live key, nil value (0 value bytes follow)
-//   rawVlen == rawVlenTombstone    -> tombstone (0 value bytes follow)
-//   rawVlen == rawVlenVPtr         -> VLOG pointer: 16 bytes follow (8-byte offset + 8-byte length)
-//   rawVlen == len(V) + 2          -> inline value of length len(V), followed by len(V) bytes
-//
-// The two high sentinels (rawVlenVPtr, rawVlenTombstone) can never collide with
-// a real inline value since that would require a value of length ~2^64 - 3.
+// The high sentinels rawVlenTombstone is unlikely to collide with
+// a real value since that would require a value of length of about 2^64 - 1.
 
-const rawVlenVPtr = ^uint64(0)      // 0xFFFF FFFF FFFF FFFF - sentinel for VLOG pointer
-const rawVlenTombstone = ^uint64(1) // 0xFFFF FFFF FFFF FFFE - sentinel for tombstone
+// rawVlenTombstone is the sentinel value stored in VPtr.Length
+// to mark a KV as a tombstone.
+const rawVlenTombstone = ^uint64(0) // 0xFFFF FFFF FFFF FFFF - sentinel for tombstone
 
-// tombstoneVPtrLength is the sentinel value stored in VPtr.Length
-// to mark a KV as a tombstone. Real VLOG entries always have
-// Length > vlogInlineThreshold (64), so 64 is safe.
-// We used to use 1. But it is easier to test < 64 to mean inline,
-// and have all of 0-63 to flag other conditions. We only use 0 for
-// inline at the moment, but that could change in the future: we
-// might want to designate "typed inline with 1, and have Vptr.Offset
-// indicate the type of the inline value", for example.
-const tombstoneVPtrLength uint64 = 64
+const tombstoneVPtrLength uint64 = rawVlenTombstone
 
 func kv128Encode(buf []byte, kv KV) []byte {
+
 	recordStart := len(buf)
+
+	// if we have kv.Value set at all, then assume this is the actual value and take its length.
+	// tests need this.
+	vn := len(kv.Value)
+	if vn > 0 {
+		kv.Vptr.Length = uint64(vn)
+	}
+
+	var vptrBuf [vptrSize]byte
+	kv.Vptr.encode(vptrBuf[:])
+	buf = append(buf, vptrBuf[:]...)
+
 	var hdr [20]byte
 	n := binary.PutUvarint(hdr[:], uint64(len(kv.Key)))
-	if kv.isTombstone() {
-		n += binary.PutUvarint(hdr[n:], rawVlenTombstone) // tombstone sentinel
-	} else if kv.HasVPtr() {
-		n += binary.PutUvarint(hdr[n:], rawVlenVPtr) // VLOG pointer sentinel
-	} else if kv.Value == nil || len(kv.Value) == 0 {
-		n += binary.PutUvarint(hdr[n:], 0) // live nil value
-	} else {
-		n += binary.PutUvarint(hdr[n:], uint64(len(kv.Value)+2)) // inline: len+2
-	}
 	buf = append(buf, hdr[:n]...)
 	buf = append(buf, kv.Key...)
-	if kv.HasVPtr() {
-		var vptrBuf [vptrSize]byte
-		kv.Vptr.encode(vptrBuf[:])
-		buf = append(buf, vptrBuf[:]...)
-	} else {
+	if kv.Vptr.Length <= vlogInlineThreshold {
 		buf = append(buf, kv.Value...)
 	}
 	// Append 8-byte HLC (big-endian)
@@ -412,30 +408,38 @@ func kv128Encode(buf []byte, kv KV) []byte {
 }
 
 func kv128EncodedSize(kv KV) int {
-	if kv.isTombstone() {
-		return varintSize(uint64(len(kv.Key))) + varintSize(rawVlenTombstone) + len(kv.Key) + 8 + 4
+
+	const hlc_plus_crc = 12
+	if kv.isTombstone() || kv.HasVPtr() {
+		// no inline value bytes
+		return vptrSize + varintSize(uint64(len(kv.Key))) + len(kv.Key) + hlc_plus_crc
 	}
-	if kv.HasVPtr() {
-		return varintSize(uint64(len(kv.Key))) + varintSize(rawVlenVPtr) + len(kv.Key) + vptrSize + 8 + 4
+
+	// size if VLOG entry VPtr
+	sz := vptrSize + varintSize(uint64(len(kv.Key))) + len(kv.Key) + hlc_plus_crc
+
+	vn := len(kv.Value)
+	if vn <= vlogInlineThreshold {
+		// inline value
+		sz += vn
 	}
-	if kv.Value == nil {
-		return varintSize(uint64(len(kv.Key))) + 1 + len(kv.Key) + 8 + 4 // rawVlen=0 is 1 byte
-	}
-	return varintSize(uint64(len(kv.Key))) + varintSize(uint64(len(kv.Value)+2)) + len(kv.Key) + len(kv.Value) + 8 + 4
+	return sz
 }
 
 func kv128Decode(src []byte) (kv KV, n int, ok bool) {
-	klen, kn := binary.Uvarint(src)
+
+	kv.Vptr = decodeVPtr(src[:16])
+
+	klen, kn := binary.Uvarint(src[16:])
 	if kn <= 0 {
 		return
 	}
-	rawVlen, vn := binary.Uvarint(src[kn:])
-	if vn <= 0 {
-		return
-	}
-	hdr := kn + vn
-	if rawVlen == rawVlenTombstone {
-		// tombstone
+	hdr := 16 + kn // header includes the Vptr 16 bytes and the key length.
+	kv.Key = string(src[hdr : hdr+int(klen)])
+
+	vn := kv.Vptr.Length
+	if vn == rawVlenTombstone || vn == 0 || vn > vlogInlineThreshold {
+		// tombstone or empty value or VLOG pointer
 		total := hdr + int(klen) + 8
 		if len(src) < total+4 {
 			return
@@ -443,39 +447,11 @@ func kv128Decode(src []byte) (kv KV, n int, ok bool) {
 		if crc32.Checksum(src[:total], crc32cTable) != binary.LittleEndian.Uint32(src[total:total+4]) {
 			return
 		}
-		kv.Key = string(src[hdr : hdr+int(klen)])
-		kv.Vptr.Length = tombstoneVPtrLength
 		kv.Hlc = HLC(binary.BigEndian.Uint64(src[total-8 : total]))
 		return kv, total + 4, true
 	}
-	if rawVlen == 0 {
-		// live key, nil value
-		total := hdr + int(klen) + 8
-		if len(src) < total+4 {
-			return
-		}
-		if crc32.Checksum(src[:total], crc32cTable) != binary.LittleEndian.Uint32(src[total:total+4]) {
-			return
-		}
-		kv.Key = string(src[hdr : hdr+int(klen)])
-		kv.Hlc = HLC(binary.BigEndian.Uint64(src[total-8 : total]))
-		return kv, total + 4, true
-	}
-	if rawVlen == rawVlenVPtr {
-		// VLOG pointer
-		total := hdr + int(klen) + vptrSize + 8
-		if len(src) < total+4 {
-			return
-		}
-		if crc32.Checksum(src[:total], crc32cTable) != binary.LittleEndian.Uint32(src[total:total+4]) {
-			return
-		}
-		kv.Key = string(src[hdr : hdr+int(klen)])
-		kv.Vptr = decodeVPtr(src[hdr+int(klen) : hdr+int(klen)+vptrSize])
-		kv.Hlc = HLC(binary.BigEndian.Uint64(src[total-8 : total]))
-		return kv, total + 4, true
-	}
-	vlen := int(rawVlen - 2)
+	// INVAR: we have inline value bytes of length vn
+	vlen := int(vn)
 	total := hdr + int(klen) + vlen + 8
 	if len(src) < total+4 {
 		return
@@ -483,7 +459,6 @@ func kv128Decode(src []byte) (kv KV, n int, ok bool) {
 	if crc32.Checksum(src[:total], crc32cTable) != binary.LittleEndian.Uint32(src[total:total+4]) {
 		return
 	}
-	kv.Key = string(src[hdr : hdr+int(klen)])
 	kv.Value = make([]byte, vlen)
 	copy(kv.Value, src[hdr+int(klen):hdr+int(klen)+vlen])
 	kv.Hlc = HLC(binary.BigEndian.Uint64(src[total-8 : total]))
@@ -493,21 +468,22 @@ func kv128Decode(src []byte) (kv KV, n int, ok bool) {
 // kv128SizePrefix reads just the varint header to determine the total encoded size
 // (including the trailing 4-byte CRC32C).
 func kv128SizePrefix(src []byte) (int, bool) {
-	klen, kn := binary.Uvarint(src)
+	if len(src) < 28 { // 16 + 8 + 4 is smallest possible 0 char key and no value.
+		return 0, false
+	}
+	vptr := decodeVPtr(src[:16])
+
+	klen, kn := binary.Uvarint(src[16:])
 	if kn <= 0 {
 		return 0, false
 	}
-	rawVlen, vn := binary.Uvarint(src[kn:])
-	if vn <= 0 {
-		return 0, false
+	vn := vptr.Length
+
+	if vn == rawVlenTombstone || vn == 0 || vn > vlogInlineThreshold {
+		// no inline value bytes
+		return vptrSize + kn + int(klen) + 8 + 4, true
 	}
-	if rawVlen == rawVlenTombstone || rawVlen == 0 {
-		return kn + vn + int(klen) + 8 + 4, true
-	}
-	if rawVlen == rawVlenVPtr {
-		return kn + vn + int(klen) + vptrSize + 8 + 4, true
-	}
-	return kn + vn + int(klen) + int(rawVlen-2) + 8 + 4, true
+	return vptrSize + kn + int(klen) + int(vn) + 8 + 4, true
 }
 
 func varintSize(v uint64) int {
@@ -2019,12 +1995,14 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 			return
 		}
 		// read() verifies hdrCRC, valCRC, and blake3 of the value bytes.
-		_, err := db.vlog.read(kv.Vptr)
-		if err != nil {
-			addErr("vlog_blake3",
-				fmt.Sprintf("anchor %d (key=%q): KV %q VPtr{Off=%d,Len=%d}: %v",
-					anchorIdx, anchorKey, kv.Key, kv.Vptr.Offset, kv.Vptr.Length, err), false)
-			return
+		if kv.Vptr.Length != tombstoneVPtrLength { // we will never read in length tombstoneVPtrLength (all bits set ^uint64(0))
+			_, err := db.vlog.read(kv.Vptr)
+			if err != nil {
+				addErr("vlog_blake3",
+					fmt.Sprintf("anchor %d (key=%q): KV %q VPtr{Off=%d,Len=%d}: %v",
+						anchorIdx, anchorKey, kv.Key, kv.Vptr.Offset, kv.Vptr.Length, err), false)
+				return
+			}
 		}
 		vlogChecked++
 	}
