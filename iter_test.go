@@ -494,7 +494,7 @@ func TestFlexDB_HLC_DedupByHLC(t *testing.T) {
 // TestFlexDB_HLC_Persistence verifies HLC survives Sync + Close + reopen via kv128 on disk.
 func TestFlexDB_HLC_Persistence(t *testing.T) {
 	dir := t.TempDir()
-	db, err := OpenFlexDB(dir, &Config{DisableVLOG: true})
+	db, err := OpenFlexDB(dir, &Config{}) // DisableVLOG: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +528,7 @@ func TestFlexDB_HLC_Persistence(t *testing.T) {
 	db.Close()
 
 	// Reopen and verify values are intact (HLC is in kv128 on disk).
-	db2, err := OpenFlexDB(dir, &Config{DisableVLOG: true})
+	db2, err := OpenFlexDB(dir, &Config{}) // DisableVLOG: true})
 	if err != nil {
 		t.Fatal(err)
 	}

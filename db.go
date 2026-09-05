@@ -555,7 +555,7 @@ type Config struct {
 
 	// DisableVLOG disables the value log. When true, all values are stored
 	// inline in FlexSpace regardless of size (original behavior).
-	DisableVLOG bool
+	//DisableVLOG bool
 
 	// OmitFlexSpaceOpsRedoLog skips FlexSpace redo-log writes and instead
 	// calls SyncCoW() on every Sync(). This eliminates ~0.86x write
@@ -874,15 +874,16 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 
 	// Open VLOG (value log for large values) unless disabled.
 	var vl *valueLog
-	if !cfg.DisableVLOG {
-		vlogPath := filepath.Join(path, "LARGE.VLOG")
-		vl, err = openValueLog(vlogPath, fs)
-		if err != nil {
-			ff.Close()
-			walFD.Close()
-			return nil, fmt.Errorf("flexdb: open VLOG: %w", err)
-		}
+
+	//if !cfg.DisableVLOG {
+	vlogPath := filepath.Join(path, "LARGE.VLOG")
+	vl, err = openValueLog(vlogPath, fs)
+	if err != nil {
+		ff.Close()
+		walFD.Close()
+		return nil, fmt.Errorf("flexdb: open VLOG: %w", err)
 	}
+	//}
 
 	// Sync the parent directory so that newly created files are durable.
 	// Without this, a crash could lose the directory entries even though
