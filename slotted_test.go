@@ -2,6 +2,7 @@ package yogadb
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -137,6 +138,45 @@ func TestSlottedPage_InlineVtypOnlyCostsSpaceWhenNonzero(t *testing.T) {
 
 	if typedSize != plainSize+8 {
 		t.Fatalf("nonzero inline Vtyp size = %d, want plain size %d + 8", typedSize, plainSize)
+	}
+}
+
+func TestSlottedPage_VPtrVtypStoredOnlyInEntry(t *testing.T) {
+	const vtyp uint64 = 0x8877665544332211
+	vtypBytes := make([]byte, 8)
+	putUint64(vtypBytes, vtyp)
+	kv := KV{
+		Key:   "big",
+		Value: vtypBytes,
+		Vptr:  VPtr{Offset: 0x0102030405060708, Length: vlogInlineThreshold + 1},
+		Hlc:   1,
+	}
+
+	encoded := slottedPageEncode([]KV{kv})
+	entryOff := slottedPageHeaderSize
+	if keyLen := int(binary.LittleEndian.Uint16(encoded[entryOff:])); keyLen != len(kv.Key) {
+		t.Fatalf("keyLen = %d, want %d", keyLen, len(kv.Key))
+	}
+	valInfo := binary.LittleEndian.Uint16(encoded[entryOff+2:])
+	if valInfo != slottedValInfoVPtrWithVtyp {
+		t.Fatalf("valInfo = %#x, want %#x", valInfo, slottedValInfoVPtrWithVtyp)
+	}
+	if got := binary.LittleEndian.Uint64(encoded[entryOff+4:]); got != vtyp {
+		t.Fatalf("entry Vtyp = %#x, want %#x; Vtyp must be stored in the entry record", got, vtyp)
+	}
+	if got := slottedValInfoToLen(valInfo); got != vptrSize {
+		t.Fatalf("value bytes for VPtr+Vtyp = %d, want only the %d-byte VPtr", got, vptrSize)
+	}
+
+	decoded, _, err := slottedPageDecode(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := decoded[0].Vtyp(); got != vtyp {
+		t.Fatalf("decoded Vtyp = %#x, want %#x", got, vtyp)
+	}
+	if decoded[0].Vptr != kv.Vptr {
+		t.Fatalf("decoded Vptr = %+v, want %+v", decoded[0].Vptr, kv.Vptr)
 	}
 }
 

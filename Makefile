@@ -22,4 +22,4 @@ fuzz:
 	go test -fuzz FuzzSparseIndexTree -fuzztime 5m -run=xxx -tags memfs || true
 	go test -fuzz FuzzFlexSpace -fuzztime 30m -run=xxx -timeout 35m -tags memfs || true
 	go test -fuzz FuzzRecoveryFlexSpace -fuzztime 30m -run=xxx -timeout 35m -tags memfs || true
-
+	go test -fuzz FuzzFlexDBVtypRoundTrip -fuzztime 1m -run=xxx -timeout 1m -tags memfs || true

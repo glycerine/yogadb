@@ -39,7 +39,7 @@ package yogadb
 //
 //  ---------------------------------------------------------------------
 // |Header | Entry Records ->>>                           |free  |<<- Values| CRC32C|
-// | 27B   | N x [keyLen valInfo inlineVtyp? hlcDelta key] |space |          |  4B   |
+// | 27B   | N x [keyLen valInfo entryVtyp? hlcDelta key] |space |          |  4B   |
 //  ---------------------------------------------------------------------
 //
 // Header (27 bytes):
@@ -53,18 +53,18 @@ package yogadb
 //   [2] valInfo     uint16 LE - value descriptor:
 //     0x0000        = live key with zero-length value and Vtyp == 0
 //     0x0002..0x0042 = inline value length (valInfo - 2) and Vtyp == 0
-//     0x8000        = live key with zero-length value and nonzero inline Vtyp
-//     0x8002..0x8042 = inline value length (valInfo&^0x8000 - 2) and nonzero inline Vtyp
-//     0xFFFD        = VPtr plus nonzero Vtyp (24 value bytes: 16B VPtr + 8B Vtyp)
+//     0x8000        = live key with zero-length value and nonzero Vtyp
+//     0x8002..0x8042 = inline value length (valInfo&^0x8000 - 2) and nonzero Vtyp
+//     0xFFFD        = VPtr plus nonzero Vtyp
 //     0xFFFE        = tombstone (0 value bytes)
 //     0xFFFF        = VPtr with Vtyp == 0 (16 value bytes: 8B offset + 8B length)
-//   [8] inlineVtyp  uint64 LE - present only for inline values with nonzero Vtyp
+//   [8] entryVtyp   uint64 LE - present for any live value with nonzero Vtyp
 //   [varint] HLC delta from baseHLC (uvarint, 1-10 bytes)
 //   [keyLen] key bytes
 //
 // Values region: values packed contiguously from the back (before CRC).
-//   A 0xFFFD VPtr-with-Vtyp value stores the 16-byte VPtr followed by
-//   Vtyp in the same 8-byte representation used by KV.Value for large values.
+//   VPtr entries store only the 16-byte VPtr. Nonzero Vtyp is always stored
+//   in the entry record; Vtyp == 0 is elided.
 //   Value[0] is closest to CRC, value[N-1] is closest to the entries.
 //   Value[i] offset = totalSize - 4 - sum(valBytes[0..i])
 //
@@ -122,7 +122,7 @@ const (
 	// valInfo sentinels and flags
 	slottedValInfoNilValue       = 0x0000 // live key, zero-length value, no Vtyp
 	slottedValInfoInlineVtypFlag = 0x8000 // inline value carries an 8-byte nonzero Vtyp in the entry record
-	slottedValInfoVPtrWithVtyp   = 0xFFFD // VPtr followed by 8-byte nonzero Vtyp in the values region
+	slottedValInfoVPtrWithVtyp   = 0xFFFD // VPtr with an 8-byte nonzero Vtyp in the entry record
 	slottedValInfoTombstone      = 0xFFFE // deletion marker
 	slottedValInfoVPtr           = 0xFFFF // value in VLOG, no Vtyp
 )
@@ -175,7 +175,7 @@ func slottedPageEncodeInto(kvs []KV, unsorted uint8, targetSize int) []byte {
 	}
 
 	// Compute entry record sizes and total values size.
-	// Each entry record = 2B keyLen + 2B valInfo + optional 8B inline
+	// Each entry record = 2B keyLen + 2B valInfo + optional 8B
 	// Vtyp + varint(HLC delta) + keyLen bytes.
 	var hlcBuf [binary.MaxVarintLen64]byte
 	totalEntriesSize := 0
@@ -183,7 +183,7 @@ func slottedPageEncodeInto(kvs []KV, unsorted uint8, targetSize int) []byte {
 	for i := 0; i < count; i++ {
 		delta := uint64(kvs[i].Hlc - baseHLC)
 		varintLen := binary.PutUvarint(hlcBuf[:], delta)
-		totalEntriesSize += 4 + slottedInlineVtypBytes(kvs[i]) + varintLen + len(kvs[i].Key)
+		totalEntriesSize += 4 + slottedEntryVtypBytes(kvs[i]) + varintLen + len(kvs[i].Key)
 		totalValsSize += slottedValBytes(kvs[i])
 	}
 
@@ -219,8 +219,8 @@ func slottedPageEncodeInto(kvs []KV, unsorted uint8, targetSize int) []byte {
 		vi := slottedValInfo(kvs[i])
 		binary.LittleEndian.PutUint16(buf[entryOff+2:entryOff+4], vi)
 		entryOff += 4
-		if slottedValInfoHasInlineVtyp(vi) {
-			binary.LittleEndian.PutUint64(buf[entryOff:entryOff+8], kvs[i].Vptr.Offset)
+		if slottedValInfoHasEntryVtyp(vi) {
+			binary.LittleEndian.PutUint64(buf[entryOff:entryOff+8], kvs[i].Vtyp())
 			entryOff += 8
 		}
 		delta := uint64(kvs[i].Hlc - baseHLC)
@@ -272,11 +272,11 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 
 	// Scan entry records to extract keys, keyLens, valInfos, and HLC deltas.
 	type entryMeta struct {
-		keyLen     uint16
-		valInfo    uint16
-		inlineVtyp uint64
-		hlc        HLC
-		keyOff     int // offset of key bytes within src
+		keyLen    uint16
+		valInfo   uint16
+		entryVtyp uint64
+		hlc       HLC
+		keyOff    int // offset of key bytes within src
 	}
 	entries := make([]entryMeta, count)
 
@@ -289,11 +289,11 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 		entries[i].keyLen = binary.LittleEndian.Uint16(src[off : off+2])
 		entries[i].valInfo = binary.LittleEndian.Uint16(src[off+2 : off+4])
 		off += 4
-		if slottedValInfoHasInlineVtyp(entries[i].valInfo) {
+		if slottedValInfoHasEntryVtyp(entries[i].valInfo) {
 			if off+8 > len(src) {
-				return nil, 0, fmt.Errorf("slotted page: truncated inline vtyp at entry %d", i)
+				return nil, 0, fmt.Errorf("slotted page: truncated entry vtyp at entry %d", i)
 			}
-			entries[i].inlineVtyp = binary.LittleEndian.Uint64(src[off : off+8])
+			entries[i].entryVtyp = binary.LittleEndian.Uint64(src[off : off+8])
 			off += 8
 		}
 
@@ -365,15 +365,15 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 			kvs[i].Vptr.Length = tombstoneVPtrLength
 		} else if baseValInfo == slottedValInfoNilValue {
 			// live key, zero-length value: Value stays nil, Vptr stays zero
-			kvs[i].Vptr.Offset = entries[i].inlineVtyp
+			kvs[i].Vptr.Offset = entries[i].entryVtyp
 		} else if baseValInfo == slottedValInfoVPtr {
 			kvs[i].Vptr = decodeVPtr(src[valStart : valStart+vptrSize])
 		} else if baseValInfo == slottedValInfoVPtrWithVtyp {
 			kvs[i].Vptr = decodeVPtr(src[valStart : valStart+vptrSize])
 			kvs[i].Value = make([]byte, 8)
-			copy(kvs[i].Value, src[valStart+vptrSize:valEnd])
+			putUint64(kvs[i].Value, entries[i].entryVtyp)
 		} else {
-			kvs[i].Vptr.Offset = entries[i].inlineVtyp
+			kvs[i].Vptr.Offset = entries[i].entryVtyp
 			kvs[i].Vptr.Length = uint64(vl)
 			kvs[i].Value = make([]byte, vl)
 			copy(kvs[i].Value, src[valStart:valEnd])
@@ -447,6 +447,10 @@ func slottedValInfoHasInlineVtyp(vi uint16) bool {
 	}
 }
 
+func slottedValInfoHasEntryVtyp(vi uint16) bool {
+	return vi == slottedValInfoVPtrWithVtyp || slottedValInfoHasInlineVtyp(vi)
+}
+
 func slottedValInfoBase(vi uint16) uint16 {
 	if slottedValInfoHasInlineVtyp(vi) {
 		return vi &^ slottedValInfoInlineVtypFlag
@@ -454,8 +458,8 @@ func slottedValInfoBase(vi uint16) uint16 {
 	return vi
 }
 
-func slottedInlineVtypBytes(kv KV) int {
-	if kv.isTombstone() || kv.HasVPtr() || kv.Vptr.Offset == 0 {
+func slottedEntryVtypBytes(kv KV) int {
+	if kv.isTombstone() || kv.Vtyp() == 0 {
 		return 0
 	}
 	return 8
@@ -467,9 +471,6 @@ func slottedValBytes(kv KV) int {
 		return 0
 	}
 	if kv.HasVPtr() {
-		if kv.Vtyp() != 0 {
-			return vptrSize + 8
-		}
 		return vptrSize
 	}
 	return len(kv.Value)
@@ -481,12 +482,6 @@ func slottedValBytesOf(kv KV) []byte {
 		return nil
 	}
 	if kv.HasVPtr() {
-		if vtyp := kv.Vtyp(); vtyp != 0 {
-			var buf [vptrSize + 8]byte
-			kv.Vptr.encode(buf[:vptrSize])
-			putUint64(buf[vptrSize:], vtyp)
-			return buf[:]
-		}
 		var buf [vptrSize]byte
 		kv.Vptr.encode(buf[:])
 		return buf[:]
@@ -512,7 +507,7 @@ func slottedPageFirstKey(src []byte) (string, bool) {
 	keyLen := int(binary.LittleEndian.Uint16(src[off : off+2]))
 	valInfo := binary.LittleEndian.Uint16(src[off+2 : off+4])
 	off += 4 // skip keyLen + valInfo
-	if slottedValInfoHasInlineVtyp(valInfo) {
+	if slottedValInfoHasEntryVtyp(valInfo) {
 		if off+8 > len(src) {
 			return "", false
 		}
@@ -539,7 +534,7 @@ func slottedValInfoToLen(vi uint16) int {
 		return vptrSize
 	}
 	if vi == slottedValInfoVPtrWithVtyp {
-		return vptrSize + 8
+		return vptrSize
 	}
 	base := slottedValInfoBase(vi)
 	if base == slottedValInfoNilValue {
@@ -576,7 +571,7 @@ func slottedPageComputeSize(kvs []KV) int {
 	for i := 0; i < len(kvs); i++ {
 		delta := uint64(kvs[i].Hlc - baseHLC)
 		varintLen := binary.PutUvarint(hlcBuf[:], delta)
-		totalEntriesSize += 4 + slottedInlineVtypBytes(kvs[i]) + varintLen + len(kvs[i].Key)
+		totalEntriesSize += 4 + slottedEntryVtypBytes(kvs[i]) + varintLen + len(kvs[i].Key)
 		totalValsSize += slottedValBytes(kvs[i])
 	}
 	return slottedPageHeaderSize + totalEntriesSize + totalValsSize + slottedPageCRCSize
@@ -609,14 +604,14 @@ func slottedPageWouldFit(kvs []KV, count int, newKV KV, replaceIdx int, targetSi
 		}
 		delta := uint64(kv.Hlc - baseHLC)
 		varintLen := binary.PutUvarint(hlcBuf[:], delta)
-		totalEntriesSize += 4 + slottedInlineVtypBytes(kv) + varintLen + len(kv.Key)
+		totalEntriesSize += 4 + slottedEntryVtypBytes(kv) + varintLen + len(kv.Key)
 		totalValsSize += slottedValBytes(kv)
 	}
 	if replaceIdx < 0 {
 		// inserting new entry (not replacing)
 		delta := uint64(newKV.Hlc - baseHLC)
 		varintLen := binary.PutUvarint(hlcBuf[:], delta)
-		totalEntriesSize += 4 + slottedInlineVtypBytes(newKV) + varintLen + len(newKV.Key)
+		totalEntriesSize += 4 + slottedEntryVtypBytes(newKV) + varintLen + len(newKV.Key)
 		totalValsSize += slottedValBytes(newKV)
 	}
 
@@ -682,11 +677,11 @@ func slottedPageDumpImpl(src []byte, vlog *valueLog) string {
 
 	// Scan entry records.
 	type entryInfo struct {
-		keyLen     uint16
-		valInfo    uint16
-		inlineVtyp uint64
-		hlc        HLC
-		keyOff     int
+		keyLen    uint16
+		valInfo   uint16
+		entryVtyp uint64
+		hlc       HLC
+		keyOff    int
 	}
 	entries := make([]entryInfo, 0, count)
 	off := slottedPageHeaderSize
@@ -701,12 +696,12 @@ func slottedPageDumpImpl(src []byte, vlog *valueLog) string {
 		e.keyLen = binary.LittleEndian.Uint16(src[off : off+2])
 		e.valInfo = binary.LittleEndian.Uint16(src[off+2 : off+4])
 		off += 4
-		if slottedValInfoHasInlineVtyp(e.valInfo) {
+		if slottedValInfoHasEntryVtyp(e.valInfo) {
 			if off+8 > totalSize {
 				scanOK = false
 				break
 			}
-			e.inlineVtyp = binary.LittleEndian.Uint64(src[off : off+8])
+			e.entryVtyp = binary.LittleEndian.Uint64(src[off : off+8])
 			off += 8
 		}
 		delta, n := binary.Uvarint(src[off:])
@@ -776,12 +771,12 @@ func slottedPageDumpImpl(src []byte, vlog *valueLog) string {
 			// We'd need to compute this entry's value offset to show details,
 			// so do a forward scan of value sizes.
 		case baseValInfo == slottedValInfoVPtrWithVtyp:
-			valDesc = "vptr+vtyp"
+			valDesc = "vptr"
 		default:
 			valDesc = fmt.Sprintf("val=%dB", slottedValInfoToLen(e.valInfo))
 		}
-		if slottedValInfoHasInlineVtyp(e.valInfo) && e.inlineVtyp != 0 {
-			valDesc += fmt.Sprintf(" vtyp=%d", e.inlineVtyp)
+		if slottedValInfoHasEntryVtyp(e.valInfo) && e.entryVtyp != 0 {
+			valDesc += fmt.Sprintf(" vtyp=%d", e.entryVtyp)
 		}
 
 		// For vptr entries, try to show offset/length and optionally resolve value.
@@ -797,7 +792,7 @@ func slottedPageDumpImpl(src []byte, vlog *valueLog) string {
 				vp := decodeVPtr(src[vStart : vStart+vptrSize])
 				valDesc = fmt.Sprintf("vptr(off=%d,len=%d)", vp.Offset, vp.Length)
 				if baseValInfo == slottedValInfoVPtrWithVtyp {
-					valDesc += fmt.Sprintf(" vtyp=%d", getUint64(src[vStart+vptrSize:vStart+vLen]))
+					valDesc += fmt.Sprintf(" vtyp=%d", e.entryVtyp)
 				}
 				if vlog != nil {
 					data, err := vlog.read(vp)

@@ -164,7 +164,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 
 				key := fmt.Sprintf("k%04d", keyIdx)
 				val := makeFuzzValue(valSize, valSeed)
-				err := db.Put(key, []byte(val))
+				err := db.Put(key, []byte(val), 0)
 				if err != nil {
 					fatalf("Put(%q): %v", key, err)
 				}
@@ -201,7 +201,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 				for j := 0; j < count; j++ {
 					key := fmt.Sprintf("k%04d", (startIdx+j)%64)
 					val := makeFuzzValue(30, startIdx+j)
-					err := db.Put(key, []byte(val))
+					err := db.Put(key, []byte(val), 0)
 					if err != nil {
 						fatalf("Put(%q): %v", key, err)
 					}
@@ -224,7 +224,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 						break
 					}
 					val := makeFuzzValue(newSize, j+newSize)
-					err := db.Put(key, []byte(val))
+					err := db.Put(key, []byte(val), 0)
 					if err != nil {
 						fatalf("Put(%q): %v", key, err)
 					}
@@ -275,7 +275,7 @@ func FuzzAnchorTreeDrift(f *testing.F) {
 				}
 				// Verify all synced keys survived recovery.
 				for key, wantVal := range kv.all() {
-					gotVal, ok, gerr := db.Get(key)
+					gotVal, ok, _, gerr := db.Get(key)
 					panicOn(gerr)
 					if !ok {
 						fatalf("after reopen: Get(%q) not found", key)
