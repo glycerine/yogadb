@@ -3,6 +3,7 @@ package yogadb
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"testing"
 )
@@ -16,6 +17,44 @@ func makeTestValue(size int) string {
 		b[i] = byte('A' + (i % 26))
 	}
 	return string(b)
+}
+
+func TestValueLogReadRejectsInvalidVPtrsBeforeAllocation(t *testing.T) {
+	fs, dir := newTestFS(t)
+	vl, err := openValueLog(filepath.Join(dir, "LARGE.VLOG"), fs)
+	if err != nil {
+		t.Fatalf("openValueLog: %v", err)
+	}
+	defer vl.close()
+
+	maxInt := int(^uint(0) >> 1)
+	cases := []struct {
+		name       string
+		vp         VPtr
+		wantErrSub string
+	}{
+		{name: "zero inline length", vp: VPtr{Length: 0}, wantErrSub: "invalid VPtr length"},
+		{name: "inline threshold length", vp: VPtr{Length: vlogInlineThreshold}, wantErrSub: "invalid VPtr length"},
+		{name: "tombstone", vp: VPtr{Length: rawVlenTombstone}, wantErrSub: "tombstone"},
+		{name: "impossible allocation length", vp: VPtr{Length: uint64(maxInt)}, wantErrSub: "too large"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("valueLog.read panicked for %s VPtr: %v", tc.name, r)
+				}
+			}()
+			_, err := vl.read(tc.vp)
+			if err == nil {
+				t.Fatalf("valueLog.read(%#v) error = nil, want %q", tc.vp, tc.wantErrSub)
+			}
+			if !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("valueLog.read(%#v) error = %v, want substring %q", tc.vp, err, tc.wantErrSub)
+			}
+		})
+	}
 }
 
 // TestFlexDB_VLOG_SmallInlineLargeVLOG verifies that small values stay inline

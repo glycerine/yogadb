@@ -29,8 +29,10 @@ import (
 // ====================== Constants ======================
 
 const (
-	// MaxKeySize is actually 16 bytes smaller (really the limit is 4080 bytes).
-	MaxKeySize                        = 4096
+	// MaxKeySize is the maximum accepted user key length in bytes.
+	// It is derived from slotted-page capacity so a single key can always fit
+	// in a FlexSpace interval with zero-length, small inline, or VLOG values.
+	MaxKeySize                        = MAX_KEY_BYTES
 	flexMemSparseIndexTreeLeafCap     = 100                   // 100                   // (5s benchtime) 122=>5.888; 100=>5.477; 80=>8.557; 90=>5.165,6.598,7.288; 95=>5.675; 85=>8.322; 110=>6.070; 120=>5.308; 150=>5.582; 100=>5.638
 	flexMemSparseIndexTreeInternalCap = 40                    // was 40;
 	flexdbSparseIntervalCount         = 1000                  //2000(6.3); 100(8.974); 1000(5.894, 5.6) ; 1500(7.993), 4000(10.35), 500(7.142);                  // with flexdbUnsortedWriteQuota=6;              // old:500=>15.77 ; 2000=>14.64 ; 1000=>16.4; 3000=>14.53; 2000=>14.24; 200=>16.68; 4000(2000 flexdbUnsortedWriteQuota)=>
@@ -58,6 +60,7 @@ var sep = string(os.PathSeparator)
 type Batch struct {
 	db   *FlexDB
 	puts []*KV
+	err  error
 }
 
 // NewBatch returns an empty new Batch.
@@ -72,8 +75,11 @@ func (db *FlexDB) NewBatch() (b *Batch) {
 // original memory is safe to be re-used by the
 // caller immediately after Set returns.
 func (s *Batch) Set(key string, value []byte) (err error) {
-	if key == "" {
-		return ErrKeyEmpty
+	if err := validateUserKey(key); err != nil {
+		if s.err == nil {
+			s.err = err
+		}
+		return err
 	}
 
 	// String keys are immutable - no copy needed.
@@ -91,6 +97,12 @@ func (s *Batch) Set(key string, value []byte) (err error) {
 
 // Delete marks key for deletion in this batch.
 func (s *Batch) Delete(key string) {
+	if err := validateUserKey(key); err != nil {
+		if s.err == nil {
+			s.err = err
+		}
+		return
+	}
 	s.puts = append(s.puts, &KV{
 		Key:  key,
 		Vptr: VPtr{Length: tombstoneVPtrLength},
@@ -131,6 +143,20 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
+
+	if s.err != nil {
+		err := s.err
+		s.puts = nil
+		s.err = nil
+		return HLCInterval{}, nil, err
+	}
+
+	for _, kv := range s.puts {
+		if err := validateUserKey(kv.Key); err != nil {
+			s.puts = nil
+			return HLCInterval{}, nil, err
+		}
+	}
 
 	if len(s.puts) == 0 {
 		if wantMetrics {
@@ -203,6 +229,13 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		}
 	}
 
+	for _, kv := range s.puts {
+		if err := validateKV128RecordSize(*kv); err != nil {
+			s.puts = nil
+			return HLCInterval{}, nil, err
+		}
+	}
+
 	// Bypass the transaction system entirely - no COW snapshots, no ffMu.RLock,
 	// no write buffer btree. Instead, insert directly into the memtable and
 	// batch WAL writes under a single mt.memWalMut hold.
@@ -270,12 +303,14 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 // Reset forgets any existing queued up puts.
 func (s *Batch) Reset() {
 	s.puts = nil
+	s.err = nil
 }
 
 // Close forgets any existing queued up puts, and
 // frees any other resources associated with the Batch.
 func (s *Batch) Close() {
 	s.puts = nil
+	s.err = nil
 }
 
 // ====================== KV type ======================
@@ -954,7 +989,14 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	ffSize := ff.Size()
 	walSize := db.mt.memWalSize()
 	if ffSize > 0 || walSize > memWalHeaderSize {
-		db.recovery()
+		if err := db.recovery(); err != nil {
+			ff.Close()
+			walFD.Close()
+			if vl != nil {
+				vl.close()
+			}
+			return nil, err
+		}
 	} else {
 		// Tag loff=0 as the first anchor (but FlexSpace is empty, so SetTag may be a no-op)
 		tag := flexdbTagGenerate(true, 0)
@@ -2211,6 +2253,32 @@ func (db *FlexDB) writeLockHeldSync() error {
 
 var ErrKeyEmpty = fmt.Errorf("key cannot be the empty string")
 
+func validateUserKey(key string) error {
+	if key == "" {
+		return ErrKeyEmpty
+	}
+	if len(key) > MaxKeySize {
+		return fmt.Errorf("flexdb: key too large (max %d bytes)", MaxKeySize)
+	}
+	return nil
+}
+
+func validateKV128RecordSize(kv KV) error {
+	if err := validateUserKey(kv.Key); err != nil {
+		return err
+	}
+	if !kv.isTombstone() && !kv.HasVPtr() && len(kv.Value) > vlogInlineThreshold {
+		return fmt.Errorf("flexdb: inline value too large without VLOG (max %d bytes)", vlogInlineThreshold)
+	}
+	if size := kv128EncodedSize(kv); size >= memtableWalBufCap {
+		return fmt.Errorf("flexdb: KV too large for WAL record (size %d, max %d bytes)", size, memtableWalBufCap-1)
+	}
+	if size := slottedPageComputeSize([]KV{kv}); size > slottedPageMaxSize {
+		return fmt.Errorf("flexdb: KV too large for slotted page (size %d, max %d bytes)", size, slottedPageMaxSize)
+	}
+	return nil
+}
+
 // recoverIterIOErr is deferred in Find/Get/Update/View to convert
 // iterIOErr panics (FlexSpace I/O failures) into returned errors.
 func recoverIterIOErr(errp *error) {
@@ -2238,9 +2306,6 @@ func recoverIterIOErr(errp *error) {
 // the rate of fsyncs and trade that against their durability
 // requirements.
 func (db *FlexDB) Put(key string, value []byte) error {
-	if key == "" {
-		return ErrKeyEmpty
-	}
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 	return db.writeLockHeldPut(key, value, false)
@@ -2252,12 +2317,8 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, doDelete bool) erro
 		return fmt.Errorf("flexdb: cannot supply a value and also delete it")
 	}
 
-	if len(key)+16 >= MaxKeySize {
-		return fmt.Errorf("flexdb: key too large (max %d bytes)", MaxKeySize-16)
-	}
-	// For inline values (no VLOG), the old total size limit still applies.
-	if db.vlog == nil && len(key)+len(value)+16 >= MaxKeySize {
-		return fmt.Errorf("flexdb: KV too large (max %d bytes)", MaxKeySize)
+	if err := validateUserKey(key); err != nil {
+		return err
 	}
 	atomic.AddInt64(&db.LogicalBytesWritten, int64(len(key)+len(value)))
 
@@ -2289,6 +2350,10 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, doDelete bool) erro
 			return fmt.Errorf("flexdb: vlog append: %w", err)
 		}
 		kv = KV{Key: key, Vptr: vp, Hlc: hlcVal}
+	}
+
+	if err := validateKV128RecordSize(kv); err != nil {
+		return err
 	}
 
 	if db.mt.size >= memtableCap {
@@ -2740,9 +2805,6 @@ func (db *FlexDB) someLockHeldGet(key string) ([]byte, bool, error) {
 
 // Delete removes key from the store.
 func (db *FlexDB) Delete(key string) error {
-	if key == "" {
-		return ErrKeyEmpty
-	}
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 	return db.writeLockHeldPut(key, nil, true)
@@ -3398,8 +3460,8 @@ func (db *FlexDB) Merge(key string, fn func(oldVal []byte, exists bool) (newVal 
 // writeLockHeldMerge is the lock-held body of Merge.
 // Caller must hold topMutRW.Lock().
 func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool, doDelete bool)) error {
-	if len(key)+16 >= MaxKeySize {
-		return fmt.Errorf("flexdb: key too large for merge (max %d bytes)", MaxKeySize)
+	if err := validateUserKey(key); err != nil {
+		return err
 	}
 
 	// Phase 1: check memtable.
@@ -3442,11 +3504,6 @@ func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists b
 
 	if doDelete {
 		return db.writeLockHeldPut(key, nil, true)
-	}
-
-	// Validate size (only key limit applies when VLOG is enabled).
-	if db.vlog == nil && len(key)+len(newVal)+16 >= MaxKeySize {
-		return fmt.Errorf("flexdb: merged KV too large (max %d bytes)", MaxKeySize)
 	}
 
 	return db.writeLockHeldPut(key, newVal, false)
@@ -4010,7 +4067,7 @@ func (db *FlexDB) rebuildAnchorsFromTags(panicOnFailure bool) {
 	}
 }
 
-func (db *FlexDB) recovery() {
+func (db *FlexDB) recovery() error {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 
@@ -4032,12 +4089,15 @@ func (db *FlexDB) recovery() {
 		}
 	}
 	if walSize > walHdr && !skipWal {
-		db.logRedo(db.mt.memWalFD, walSize)
+		if err := db.logRedo(db.mt.memWalFD, walSize); err != nil {
+			return fmt.Errorf("flexdb: recovery: %w", err)
+		}
 		db.recomputeKeyCountsLocked()
 		db.persistCounters()
 	}
 
 	db.ff.Sync()
+	return nil
 }
 
 // flexdbReadKVFromHandler reads the first KV (key only needed for anchor)
@@ -4105,21 +4165,22 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte, panicOnFailure boo
 
 // logRedo replays the current 20-byte-header MEMWAL, applying kv128 records to
 // FlexSpace. A torn tail stops replay at the last complete, CRC-valid record.
-func (db *FlexDB) logRedo(fd vfs.File, fileSize int64) {
+// Complete malformed records are reported as corruption.
+func (db *FlexDB) logRedo(fd vfs.File, fileSize int64) error {
 	if fileSize == 0 {
-		return
+		return nil
 	}
 	if fileSize < memWalHeaderSize {
-		panicf("flexdb: logRedo: short WAL header in %s: size=%d, want at least %d", fd.Name(), fileSize, memWalHeaderSize)
+		return fmt.Errorf("flexdb: logRedo: short WAL header in %s: size=%d, want at least %d", fd.Name(), fileSize, memWalHeaderSize)
 	}
 
 	var hdrBuf [memWalHeaderSize]byte
 	n, err := fd.ReadAt(hdrBuf[:], 0)
 	if err != nil || n != memWalHeaderSize {
-		panicf("flexdb: logRedo: read WAL header from %s: n=%d err=%v", fd.Name(), n, err)
+		return fmt.Errorf("flexdb: logRedo: read WAL header from %s: n=%d err=%v", fd.Name(), n, err)
 	}
 	if !memWalHeaderValid(hdrBuf[:]) {
-		panicf("flexdb: logRedo: corrupt 20-byte WAL header in %s", fd.Name())
+		return fmt.Errorf("flexdb: logRedo: corrupt 20-byte WAL header in %s", fd.Name())
 	}
 
 	probe := make([]byte, vptrSize+binary.MaxVarintLen64)
@@ -4139,8 +4200,12 @@ func (db *FlexDB) logRedo(fd vfs.File, fileSize int64) {
 		}
 		size, ok := kv128SizePrefix(probe[:n])
 		if !ok || size <= 0 {
+			if remaining < int64(len(probe)) {
+				vv("flexdb: logRedo: torn kv128 size prefix at offset %d remaining=%d", offset, remaining)
+				break
+			}
 			vv("flexdb: logRedo: invalid kv128 size prefix at offset %d", offset)
-			break
+			return fmt.Errorf("flexdb: logRedo: corrupt kv128 size prefix at offset %d", offset)
 		}
 		if int64(size) > remaining {
 			vv("flexdb: logRedo: truncated kv128 record at offset %d (size=%d remaining=%d)", offset, size, remaining)
@@ -4155,14 +4220,15 @@ func (db *FlexDB) logRedo(fd vfs.File, fileSize int64) {
 		kv, _, ok2 := kv128Decode(rec)
 		if !ok2 {
 			vv("flexdb: logRedo: kv128 decode failed at offset %d size=%d", offset, size)
-			break
+			return fmt.Errorf("flexdb: logRedo: corrupt kv128 record at offset %d size=%d", offset, size)
 		}
 		if err := db.putPassthrough(kv, &nh); err != nil {
 			vv("flexdb: logRedo: putPassthrough error at offset %d: %v", offset, err)
-			break
+			return fmt.Errorf("flexdb: logRedo: replay at offset %d: %w", offset, err)
 		}
 		offset += int64(size)
 	}
+	return nil
 }
 
 // ====================== Flush worker ======================

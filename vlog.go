@@ -303,14 +303,27 @@ func equal32(a []byte, b []byte) bool {
 
 var ErrTomb = fmt.Errorf("error tombstone found")
 
+func validateVPtrForRead(vp VPtr) error {
+	if vp.Length == rawVlenTombstone {
+		return ErrTomb
+	}
+	if vp.Length <= vlogInlineThreshold {
+		return fmt.Errorf("vlog: invalid VPtr length %d: inline values are not stored in VLOG", vp.Length)
+	}
+	maxInt := int(^uint(0) >> 1)
+	maxValueLen := uint64(maxInt - vlogEntryHeaderSize)
+	if vp.Length > maxValueLen {
+		return fmt.Errorf("vlog: VPtr length too large: %d > %d", vp.Length, maxValueLen)
+	}
+	return nil
+}
+
 // read reads a value from the VLOG at the given VPtr.
 // Thread-safe (uses pread).
 func (vl *valueLog) read(vp VPtr) ([]byte, error) {
-	isTombstone := vp.Length == rawVlenTombstone
-	if isTombstone {
-		return nil, ErrTomb
+	if err := validateVPtrForRead(vp); err != nil {
+		return nil, err
 	}
-	// INVAR: !isTombstone
 
 	entrySize := vlogEntryHeaderSize + int(vp.Length)
 	buf := make([]byte, entrySize)

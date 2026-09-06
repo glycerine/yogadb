@@ -2,6 +2,7 @@ package yogadb
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -103,6 +104,68 @@ func mustMiss(t *testing.T, db *FlexDB, key string) {
 }
 
 // ====================== Tests ======================
+
+func TestFlexDB_WriteValidationRejectsEmptyKeysEverywhere(t *testing.T) {
+	wantErr := func(t *testing.T, name string, err error) {
+		t.Helper()
+		if !errors.Is(err, ErrKeyEmpty) {
+			t.Fatalf("%s error = %v, want ErrKeyEmpty", name, err)
+		}
+	}
+
+	t.Run("direct put", func(t *testing.T) {
+		db, _ := openTestDB(t, nil)
+		wantErr(t, "Put", db.Put("", []byte("value")))
+	})
+
+	t.Run("direct delete", func(t *testing.T) {
+		db, _ := openTestDB(t, nil)
+		wantErr(t, "Delete", db.Delete(""))
+	})
+
+	t.Run("batch set", func(t *testing.T) {
+		db, _ := openTestDB(t, nil)
+		batch := db.NewBatch()
+		wantErr(t, "Batch.Set", batch.Set("", []byte("value")))
+	})
+
+	t.Run("batch delete", func(t *testing.T) {
+		db, _ := openTestDB(t, nil)
+		batch := db.NewBatch()
+		batch.Delete("")
+		_, err := batch.Commit(false)
+		wantErr(t, "Batch.Delete Commit", err)
+	})
+
+	t.Run("write tx put", func(t *testing.T) {
+		db, _ := openTestDB(t, nil)
+		err := db.Update(func(tx *WriteTx) error {
+			return tx.Put("", []byte("value"))
+		})
+		wantErr(t, "WriteTx.Put", err)
+	})
+
+	t.Run("write tx delete", func(t *testing.T) {
+		db, _ := openTestDB(t, nil)
+		err := db.Update(func(tx *WriteTx) error {
+			return tx.Delete("")
+		})
+		wantErr(t, "WriteTx.Delete", err)
+	})
+
+	t.Run("merge", func(t *testing.T) {
+		db, _ := openTestDB(t, nil)
+		called := false
+		err := db.Merge("", func(oldVal []byte, exists bool) ([]byte, bool, bool) {
+			called = true
+			return []byte("value"), true, false
+		})
+		wantErr(t, "Merge", err)
+		if called {
+			t.Fatal("Merge callback was called for an invalid key")
+		}
+	})
+}
 
 // TestFlexDB_BasicMemtable tests Put/Get while data is still in memtable.
 func TestFlexDB_BasicMemtable(t *testing.T) {

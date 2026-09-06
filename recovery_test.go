@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	randv2 "math/rand/v2"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -266,6 +267,31 @@ func (s kvOpsSlice) String() string {
 
 // ====================== Tests ======================
 
+func writeRawMemWALForRecoveryTest(t *testing.T, fs vfs.FS, dir string, payload []byte) {
+	t.Helper()
+	fd, err := fs.OpenReadWrite(dir+"/FLEXDB.MEMWAL", vfs.WriteCategoryUnspecified)
+	if err != nil {
+		t.Fatalf("OpenReadWrite FLEXDB.MEMWAL: %v", err)
+	}
+	mt := newMemtable(fd)
+	mt.logTruncateWithVersion(uint64(time.Now().UnixNano()), 0)
+	if len(payload) > 0 {
+		n, err := fd.WriteAt(payload, memWalHeaderSize)
+		if err != nil {
+			t.Fatalf("WriteAt FLEXDB.MEMWAL payload: %v", err)
+		}
+		if n != len(payload) {
+			t.Fatalf("FLEXDB.MEMWAL payload short write: wrote %d, want %d", n, len(payload))
+		}
+	}
+	if err := fd.Sync(); err != nil {
+		t.Fatalf("Sync FLEXDB.MEMWAL: %v", err)
+	}
+	if err := fd.Close(); err != nil {
+		t.Fatalf("Close FLEXDB.MEMWAL: %v", err)
+	}
+}
+
 func TestRecovery_LogRedoReplays20ByteKV128BatchCommit(t *testing.T) {
 	dir := "test_recovery_logredo_20byte_kv128_batch"
 	fs := vfs.NewCrashableMem()
@@ -347,6 +373,61 @@ func TestRecovery_LogRedoReplays20ByteKV128BatchCommit(t *testing.T) {
 	}
 }
 
+func TestRecovery_LogRedoReplaysMaxKeyBoundaryRecords(t *testing.T) {
+	dir := "test_recovery_logredo_max_key_boundary"
+	fs := vfs.NewCrashableMem()
+	panicOn(fs.MkdirAll(dir, 0755))
+
+	db, err := OpenFlexDB(dir, &Config{
+		FS:                     fs,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB: %v", err)
+	}
+	defer db.Close()
+
+	cases := []struct {
+		name  string
+		key   string
+		value []byte
+	}{
+		{name: "zero", key: string(bytes.Repeat([]byte{'a'}, MaxKeySize)), value: nil},
+		{name: "small", key: string(bytes.Repeat([]byte{'b'}, MaxKeySize)), value: []byte("x")},
+		{name: "large", key: string(bytes.Repeat([]byte{'c'}, MaxKeySize)), value: bytes.Repeat([]byte("L"), vlogInlineThreshold+17)},
+	}
+
+	b := db.NewBatch()
+	for _, tc := range cases {
+		if err := b.Set(tc.key, tc.value); err != nil {
+			t.Fatalf("Batch.Set max key %s: %v", tc.name, err)
+		}
+	}
+	if _, err := b.Commit(true); err != nil {
+		t.Fatalf("Batch.Commit(true): %v", err)
+	}
+
+	crashedFS := fs.CrashClone(vfs.CrashCloneCfg{UnsyncedDataPercent: 0})
+	db2, err := OpenFlexDB(dir, &Config{
+		FS:                     crashedFS,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB after crash: %v", err)
+	}
+	defer db2.Close()
+
+	for _, tc := range cases {
+		got, found, err := db2.Get(tc.key)
+		if err != nil {
+			t.Fatalf("Get max key %s: %v", tc.name, err)
+		}
+		if !found || !bytes.Equal(got, tc.value) {
+			t.Fatalf("max key %s after recovery: found=%v gotLen=%d wantLen=%d", tc.name, found, len(got), len(tc.value))
+		}
+	}
+}
+
 func TestRecovery_LogRedoRejectsLegacyTwelveByteHeader(t *testing.T) {
 	dir := "test_recovery_logredo_rejects_legacy_header"
 	fs := vfs.NewMem()
@@ -367,14 +448,69 @@ func TestRecovery_LogRedoRejectsLegacyTwelveByteHeader(t *testing.T) {
 		t.Fatalf("legacy header short write: wrote %d, want %d", nw, len(oldHeader))
 	}
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("logRedo accepted a 12-byte WAL header; want panic")
-		}
-	}()
-
 	var db FlexDB
-	db.logRedo(fd, int64(len(oldHeader)))
+	err = db.logRedo(fd, int64(len(oldHeader)))
+	if err == nil {
+		t.Fatal("logRedo accepted a 12-byte WAL header; want error")
+	}
+	if !strings.Contains(err.Error(), "short WAL header") {
+		t.Fatalf("logRedo legacy header error = %v, want short WAL header error", err)
+	}
+}
+
+func TestRecovery_LogRedoAllowsTornTailButReportsCorruptCompleteRecord(t *testing.T) {
+	t.Run("torn tail", func(t *testing.T) {
+		dir := "test_recovery_logredo_torn_tail"
+		fs := vfs.NewMem()
+		panicOn(fs.MkdirAll(dir, 0755))
+
+		good := kv128Encode(nil, KV{Key: "good", Value: []byte("value"), Hlc: HLC(1)})
+		torn := kv128Encode(nil, KV{Key: "tail", Value: []byte("ignored"), Hlc: HLC(2)})
+		payload := append(append([]byte{}, good...), torn[:len(torn)-1]...)
+		writeRawMemWALForRecoveryTest(t, fs, dir, payload)
+
+		db, err := OpenFlexDB(dir, &Config{
+			FS:                     fs,
+			DisableBackgroundFlush: true,
+		})
+		if err != nil {
+			t.Fatalf("OpenFlexDB with torn WAL tail: %v", err)
+		}
+		defer db.Close()
+
+		got, found, err := db.Get("good")
+		if err != nil {
+			t.Fatalf("Get good: %v", err)
+		}
+		if !found || string(got) != "value" {
+			t.Fatalf("good after torn-tail recovery: found=%v got=%q", found, got)
+		}
+		if _, found, err := db.Get("tail"); err != nil || found {
+			t.Fatalf("tail after torn-tail recovery: found=%v err=%v, want miss", found, err)
+		}
+	})
+
+	t.Run("complete CRC-bad record", func(t *testing.T) {
+		dir := "test_recovery_logredo_corrupt_complete_record"
+		fs := vfs.NewMem()
+		panicOn(fs.MkdirAll(dir, 0755))
+
+		corrupt := kv128Encode(nil, KV{Key: "bad", Value: []byte("value"), Hlc: HLC(1)})
+		corrupt[len(corrupt)-1] ^= 0x80
+		writeRawMemWALForRecoveryTest(t, fs, dir, corrupt)
+
+		db, err := OpenFlexDB(dir, &Config{
+			FS:                     fs,
+			DisableBackgroundFlush: true,
+		})
+		if err == nil {
+			db.Close()
+			t.Fatal("OpenFlexDB accepted a complete CRC-bad WAL record; want corruption error")
+		}
+		if !strings.Contains(err.Error(), "corrupt") {
+			t.Fatalf("OpenFlexDB error = %v, want corruption error", err)
+		}
+	})
 }
 
 func TestRecovery_BackgroundFlushPersistsDirtyCacheBeforeWALReset(t *testing.T) {
