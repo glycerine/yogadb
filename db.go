@@ -94,7 +94,7 @@ func (s *Batch) Set(key string, value []byte, vtyp uint64) (err error) {
 	}
 	// Note the strangeness! We
 	// store vtyp type information in Offset even for large values, before
-	// we have written to the VLOG at all!
+	// we have written to the VLOG at all(!)
 	pkv.Vptr.Offset = vtyp
 	pkv.Vptr.Length = uint64(len(value))
 	s.puts = append(s.puts, pkv)
