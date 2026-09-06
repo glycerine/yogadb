@@ -54,7 +54,8 @@ func (bf *bruteForce) findPos(loff uint64) int {
 }
 
 func (bf *bruteForce) isExtentSequential(ext *bruteForceExtent, loff, poff uint64, length uint32) bool {
-	return ext.Poff+uint64(ext.Len) == poff &&
+	return ext.Tag == 0 &&
+		ext.Poff+uint64(ext.Len) == poff &&
 		ext.Loff+uint64(ext.Len) == loff &&
 		ext.Len+length <= bf.MaxExtentSize
 }

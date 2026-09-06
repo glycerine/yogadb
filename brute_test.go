@@ -1048,3 +1048,25 @@ func TestBruteForce_TagSplitInvariants(t *testing.T) {
 		t.Fatalf("PQuery(99) = %d, want 1099", bf.PQuery(99))
 	}
 }
+
+func TestBruteForce_TaggedExtentDoesNotMergeWithUntaggedSequentialAppend(t *testing.T) {
+	const maxExtentSize = 256
+	bf := openBruteForce(maxExtentSize)
+
+	if rc := bf.InsertWTag(0, 1000, 10, 0xBEEF); rc != 0 {
+		t.Fatalf("InsertWTag rc=%d, want 0", rc)
+	}
+	if rc := bf.Insert(10, 1010, 5); rc != 0 {
+		t.Fatalf("Insert rc=%d, want 0", rc)
+	}
+
+	if len(bf.Extents) != 2 {
+		t.Fatalf("tagged extent merged with untagged append: got %d extents: %#v", len(bf.Extents), bf.Extents)
+	}
+	if bf.Extents[0] != (bruteForceExtent{Loff: 0, Len: 10, Poff: 1000, Tag: 0xBEEF}) {
+		t.Fatalf("first extent = %#v, want tagged [0,10) -> 1000", bf.Extents[0])
+	}
+	if bf.Extents[1] != (bruteForceExtent{Loff: 10, Len: 5, Poff: 1010, Tag: 0}) {
+		t.Fatalf("second extent = %#v, want untagged [10,15) -> 1010", bf.Extents[1])
+	}
+}
