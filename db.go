@@ -224,9 +224,14 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 			}
 			for j, idx := range largeIndices {
 				e := s.puts[idx]
+				vtyp := e.Vptr.Offset
 				// Key stays same.
 				e.Value = nil
 				e.Vptr = ptrs[j]
+				if vtyp != 0 {
+					e.Value = make([]byte, 8)
+					putUint64(e.Value, vtyp)
+				}
 				// Hlc stays same.
 			}
 		}
