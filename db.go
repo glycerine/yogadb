@@ -340,11 +340,25 @@ func (s *Batch) Close() {
 // we can get compile time safety, cache speed, and the benefits of
 // immutability by making Key a string.
 type KV struct {
-	Key   string
+	Key string
+
+	// Important encoding INVARIANTS for the uint64 Vtyp: to avoid
+	// going over the cache-line friendly 64-byte size of struct KV,
+	// the Vtype information is encoded in two different ways,
+	// depending on the size of the Value.
+	//
+	// When Vptr.Length <= vlogInlineThreshold(64), then the .Value field holds the inline
+	// value, and Vptr.Offset holds the Vtyp, and Vptr.Length == len(KV.Value).
+	//
+	// When vlogInlineThreshold(64) < Vptr.Length < tombstoneVPtrLength(^0; a.k.a. rawVlenTombstone),
+	// then KV.Value holds the 8 bytes of the uint64 Vtyp (value type).
+	//
+	// The important new rule is that you must key off the Vptr.Length before you know
+	// how to interpret the Value field at all.
 	Value []byte
 
-	// Vptr.Length <= vlogInlineThreshold(64) means inline/nil. In this case,
-	//                  Vptr.Offset can be repurposed; e.g. for type information.
+	// Vptr.Length <= vlogInlineThreshold(64) means inline Value. In this case,
+	//                  Vptr.Offset is re-purposed used for Vtyp (value type uint64 information)
 	// Vptr.Length >  vlogInlineThreshold(64) and < tombstoneVPtrLength: means real VLOG pointer.
 	// Vptr.Length == tombstoneVPtrLength(^0, all bits set uint64) means tombstone.
 	Vptr VPtr
@@ -368,6 +382,10 @@ func (kv *KV) Vtyp() uint64 {
 		return 0
 	}
 	if kv.Vptr.Length > vlogInlineThreshold {
+		if len(kv.Value) != 8 {
+			// allow typ 0 to not be skipped on disk.
+			return 0
+		}
 		return getUint64(kv.Value)
 	}
 	return kv.Vptr.Offset
@@ -1394,7 +1412,10 @@ func (db *FlexDB) resolveVPtr(kv KV) (val []byte, vtyp uint64, err error) {
 	if db.vlog == nil {
 		return nil, 0, fmt.Errorf("flexdb: VPtr but VLOG is nil")
 	}
-	vtyp = getUint64(kv.Value)
+	// allow kv.Value to be skipped for vtyp 0 on disk.
+	if len(kv.Value) == 8 {
+		vtyp = getUint64(kv.Value)
+	}
 	val, err = db.vlog.read(kv.Vptr)
 	return
 }
@@ -2372,8 +2393,10 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, vtyp uint64, doDele
 		}
 		kv = KV{Key: key, Vptr: vp, Hlc: hlcVal}
 		// type info goes into Value field for large values.
-		kv.Value = make([]byte, 8)
-		putUint64(kv.Value, vtyp)
+		if vtyp != 0 {
+			kv.Value = make([]byte, 8)
+			putUint64(kv.Value, vtyp)
+		}
 	}
 
 	if err := validateKV128RecordSize(kv); err != nil {
