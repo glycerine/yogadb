@@ -670,6 +670,31 @@ func TestEndianMatchesC(t *testing.T) {
 	}
 }
 
+func TestFlexTree_TaggedExtentDoesNotMergeWithUntaggedSequentialAppend(t *testing.T) {
+	fs, dir := newTestFS(t)
+	ft, err := OpenFlexTreeCoW(dir, fs)
+	panicOn(err)
+	ft.MaxExtentSize = 256
+
+	if rc := ft.InsertWTag(0, 1000, 10, 0xBEEF); rc != 0 {
+		t.Fatalf("InsertWTag rc=%d, want 0", rc)
+	}
+	if rc := ft.Insert(10, 1010, 5); rc != 0 {
+		t.Fatalf("Insert rc=%d, want 0", rc)
+	}
+
+	exts := ft.allExtents()
+	if len(exts) != 2 {
+		t.Fatalf("tagged extent merged with untagged append: got %d extents: %#v", len(exts), exts)
+	}
+	if exts[0].Loff != 0 || exts[0].Len != 10 || exts[0].Poff != 1000 || exts[0].Tag != 0xBEEF {
+		t.Fatalf("first extent = %#v, want tagged [0,10) -> 1000", exts[0])
+	}
+	if exts[1].Loff != 10 || exts[1].Len != 5 || exts[1].Poff != 1010 || exts[1].Tag != 0 {
+		t.Fatalf("second extent = %#v, want untagged [10,15) -> 1010", exts[1])
+	}
+}
+
 /* the C to check that we emulate the tag/poff bit packing correctly.
 #include <stdio.h>
 #include <stdint.h>

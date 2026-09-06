@@ -1044,7 +1044,8 @@ func (tree *FlexTree) splitLeafNode(n *LeafNode, path *FlexTreePath) {
 
 func (tree *FlexTree) isExtentSequential(ext *FlexTreeExtent, loff, poff uint64, length uint32) bool {
 	extPoff := ext.Poff()
-	return extPoff+uint64(ext.Len) == poff &&
+	return ext.Tag() == 0 &&
+		extPoff+uint64(ext.Len) == poff &&
 		uint64(ext.Loff)+uint64(ext.Len) == loff &&
 		ext.Len+length <= tree.MaxExtentSize &&
 		(extPoff/uint64(tree.MaxExtentSize)) == (poff/uint64(tree.MaxExtentSize))
