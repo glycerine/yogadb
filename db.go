@@ -3046,47 +3046,35 @@ func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey string, begInclusive
 		return true // empty FlexSpace
 	}
 
-	// First anchor with a real key gives us the minimum FlexSpace key.
-	node := t.leafHead
-	firstKeyChecked := false
-	for node != nil && !firstKeyChecked {
+	// Anchor keys are interval lower bounds, and the empty-key sentinel can
+	// own the first real interval. Decode non-empty intervals so we check
+	// the actual minimum and maximum KV keys.
+	var flexMin, flexMax string
+	flexFound := false
+	for node := t.leafHead; node != nil; node = node.next {
+		nh := memSparseIndexTreeHandler{node: node}
+		memSparseIndexTreeHandlerInfoUpdate(&nh)
 		for i := 0; i < node.count; i++ {
 			a := node.anchors[i]
-			if a != nil && a.key != "" { // skip empty-key sentinel
-				if !inBounds(a.key) {
-					return false
-				}
-				firstKeyChecked = true
-				break
+			if a == nil || a.psize == 0 {
+				continue
 			}
-		}
-		if !firstKeyChecked {
-			node = node.next
+			kvs, err := db.decodeIntervalDirect(a, uint64(a.loff+nh.shift))
+			if err != nil {
+				return false
+			}
+			if len(kvs) == 0 {
+				continue
+			}
+			if !flexFound {
+				flexMin = kvs[0].Key
+				flexFound = true
+			}
+			flexMax = kvs[len(kvs)-1].Key
 		}
 	}
-
-	// Find the last interval and decode it to get the actual last key.
-	lastNode := t.leafHead
-	for lastNode.next != nil {
-		lastNode = lastNode.next
-	}
-	// Walk backward through the last leaf's anchors to find the last non-empty interval.
-	for i := lastNode.count - 1; i >= 0; i-- {
-		a := lastNode.anchors[i]
-		if a == nil || a.psize == 0 {
-			continue
-		}
-		nh := memSparseIndexTreeHandler{node: lastNode}
-		memSparseIndexTreeHandlerInfoUpdate(&nh)
-		kvs, err := db.decodeIntervalDirect(a, uint64(a.loff+nh.shift))
-		if err != nil || len(kvs) == 0 {
-			continue
-		}
-		lastKey := kvs[len(kvs)-1].Key
-		if !inBounds(lastKey) {
-			return false
-		}
-		break
+	if flexFound && (!inBounds(flexMin) || !inBounds(flexMax)) {
+		return false
 	}
 
 	return true
