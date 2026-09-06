@@ -2686,7 +2686,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 		if !zc.HasVPtr() && zc.Value != nil {
 			owned.Value = append([]byte{}, zc.Value...)
 		}
-		kvc = &KVcloser{KV: owned, db: db}
+		kvc = &KVcloser{KV: owned, db: db, Vtyp: vtyp}
 
 		// Auto-fetch large value unless LAZY_LARGE was requested
 		if !lazyLarge && kvc.HasVPtr() {

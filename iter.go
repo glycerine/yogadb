@@ -1687,6 +1687,15 @@ func (it *Iter) Key() string {
 	return it.pKV.Key
 }
 
+// Vtyp returns the value type (vtyp) stored with the key, if any.
+// If no vtyp was stored, or the iterator is invalid, the default 0 is returned.
+func (it *Iter) Vtyp() uint64 {
+	if it.pKV == nil {
+		return 0
+	}
+	return it.pKV.Vtyp()
+}
+
 // Vin returns the current value for _inline_ values. For large values
 // stored in VLOG, Vin returns nil. If you get back nil,
 // you must use Large() to check if the value is actually large, and

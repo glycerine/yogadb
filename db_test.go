@@ -73,6 +73,13 @@ func mustPut(t *testing.T, db *FlexDB, key, value string) {
 	}
 }
 
+func mustPutVtyp(t *testing.T, db *FlexDB, key, value string, vtyp uint64) {
+	t.Helper()
+	if err := db.Put(key, []byte(value), vtyp); err != nil {
+		t.Fatalf("Put(%q, %q, %v): %v", key, value, vtyp, err)
+	}
+}
+
 func mustDelete(t *testing.T, db *FlexDB, key string) {
 	t.Helper()
 	if err := db.Delete(key); err != nil {

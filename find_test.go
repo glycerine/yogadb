@@ -472,7 +472,7 @@ func TestFind_LazySmall(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		k := fmt.Sprintf("key%03d", i)
 		v := fmt.Sprintf("val%03d", i)
-		panicOn(db.Put(k, []byte(v), 0))
+		panicOn(db.Put(k, []byte(v), uint64(i)))
 	}
 	db.Sync()
 
@@ -484,6 +484,9 @@ func TestFind_LazySmall(t *testing.T) {
 	}
 	if string(kvc.Value) != "val005" {
 		t.Fatalf("got %q, want val005", kvc.Value)
+	}
+	if kvc.Vtyp != 5 {
+		t.Fatalf("Vtyp: got %v, want 5", kvc.Vtyp)
 	}
 	// Value aliases cache memory - verify it's valid before Close
 	valRef := kvc.Value
@@ -508,6 +511,9 @@ func TestFind_LazySmall(t *testing.T) {
 	if kvc2.Key != "key005" {
 		t.Fatalf("got %q, want key005", kvc2.Key)
 	}
+	if kvc2.Vtyp != 5 {
+		t.Fatalf("Vtyp: got %v, want 5", kvc2.Vtyp)
+	}
 	if string(kvc2.Value) != "val005" {
 		t.Fatalf("got %q, want val005", kvc2.Value)
 	}
@@ -515,7 +521,7 @@ func TestFind_LazySmall(t *testing.T) {
 
 	// LAZY_SMALL|LAZY_LARGE combined with a large value
 	bigVal := bytes.Repeat([]byte("B"), 200)
-	panicOn(db.Put("large001", bigVal, 0))
+	panicOn(db.Put("large001", bigVal, 100))
 	db.Sync()
 
 	// equivalent to LAZY, but just to be explicit:
@@ -531,6 +537,10 @@ func TestFind_LazySmall(t *testing.T) {
 	if kvc3.Value != nil {
 		t.Fatal("expected nil Value before Fetch")
 	}
+	if kvc3.Vtyp != 100 {
+		t.Fatalf("Vtyp: got %v, want 100", kvc3.Vtyp)
+	}
+
 	err = kvc3.Fetch()
 	panicOn(err)
 	if !bytes.Equal(kvc3.Value, bigVal) {
@@ -734,6 +744,6 @@ func populateFindTestDB(t *testing.T, db *FlexDB) {
 	for i := 1; i <= 10; i++ {
 		k := fmt.Sprintf("key%03d", i)
 		v := fmt.Sprintf("val%03d", i)
-		mustPut(t, db, k, v)
+		mustPutVtyp(t, db, k, v, uint64(i))
 	}
 }

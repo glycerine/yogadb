@@ -15,8 +15,8 @@ func TestFlexDB_IteratorBasic(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 
 	keys := []string{"banana", "apple", "cherry", "date"}
-	for _, k := range keys {
-		mustPut(t, db, k, "v:"+k)
+	for i, k := range keys {
+		mustPutVtyp(t, db, k, "v:"+k, uint64(i))
 	}
 
 	db.View(func(roDB *ReadOnlyTx) error {
@@ -25,12 +25,18 @@ func TestFlexDB_IteratorBasic(t *testing.T) {
 		defer it.Close()
 
 		want := []string{"apple", "banana", "cherry", "date"}
-		for _, wk := range want {
+		wantVtyp := []uint64{1, 0, 2, 3}
+		for k, wk := range want {
 			if !it.Valid() {
 				t.Fatalf("iterator ended early; want key %q", wk)
 			}
 			if it.Key() != wk {
 				t.Fatalf("Key() = %q, want %q", it.Key(), wk)
+			}
+			expectedVtyp := wantVtyp[k]
+			gotVtyp := it.Vtyp()
+			if gotVtyp != expectedVtyp {
+				t.Fatalf("got Vtyp() = %v, wanted %v", gotVtyp, expectedVtyp)
 			}
 			if string(it.Vin()) != "v:"+wk {
 				t.Fatalf("Value() = %q, want %q", it.Vin(), "v:"+wk)
