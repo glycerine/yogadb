@@ -3952,7 +3952,7 @@ func (db *FlexDB) rebuildAnchorsFromTags(panicOnFailure bool) {
 	db.tree = memSparseIndexTreeCreate()
 
 	var anchors []anchorInfo
-	kvbuf := make([]byte, MaxKeySize)
+	kvbuf := make([]byte, slottedPageMaxSize)
 	fh := db.ff.GetHandler(0)
 
 	for fh.Valid() && fh.Loff() < ffSize {
@@ -4066,41 +4066,23 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte, panicOnFailure boo
 		// Slotted page format: the header includes the magic, so we read
 		// from the start of the extent (no Forward needed - Read is non-advancing
 		// and we want to re-read from offset 0 including the magic).
-		needHeader := slottedPageHeaderSize + 4 + binary.MaxVarintLen64
-		if needHeader > len(buf) {
-			alwaysPrintf("flexdbReadKVFromHandler: buf too small for slotted header at loff=%d need=%d bufLen=%d", fh.Loff(), needHeader, len(buf))
+		extentBytes := int(fh.fp.node.Extents[fh.fp.Idx].Len - fh.fp.Diff)
+		readLen := min(len(buf), extentBytes)
+		needFirstKeyPrefix := slottedPageHeaderSize + 4 + 1
+		if readLen < needFirstKeyPrefix {
+			alwaysPrintf("flexdbReadKVFromHandler: slotted extent too small at loff=%d readLen=%d need=%d", fh.Loff(), readLen, needFirstKeyPrefix)
 			if panicOnFailure {
-				panicf("flexdbReadKVFromHandler: buf too small for slotted header at loff=%d need=%d bufLen=%d", fh.Loff(), needHeader, len(buf))
+				panicf("flexdbReadKVFromHandler: slotted extent too small at loff=%d readLen=%d need=%d", fh.Loff(), readLen, needFirstKeyPrefix)
 			}
 			return KV{}, false
 		}
-		nr, err2 := fh.Read(buf[:needHeader], uint64(needHeader))
-		if nr < slottedPageHeaderSize+4 || err2 != nil {
-			alwaysPrintf("flexdbReadKVFromHandler: slotted header read fail at loff=%d nr=%d err=%v", fh.Loff(), nr, err2)
+		nr, err2 := fh.Read(buf[:readLen], uint64(readLen))
+		if nr < needFirstKeyPrefix || err2 != nil {
+			alwaysPrintf("flexdbReadKVFromHandler: slotted first-key read fail at loff=%d nr=%d need=%d err=%v", fh.Loff(), nr, needFirstKeyPrefix, err2)
 			if panicOnFailure {
-				panicf("flexdbReadKVFromHandler: slotted header read fail at loff=%d nr=%d err=%v", fh.Loff(), nr, err2)
+				panicf("flexdbReadKVFromHandler: slotted first-key read fail at loff=%d nr=%d need=%d err=%v", fh.Loff(), nr, needFirstKeyPrefix, err2)
 			}
 			return KV{}, false
-		}
-		keyLen := int(binary.LittleEndian.Uint16(buf[slottedPageHeaderSize : slottedPageHeaderSize+2]))
-		needBytes := slottedPageHeaderSize + 4 + binary.MaxVarintLen64 + keyLen
-		if needBytes > len(buf) {
-			alwaysPrintf("flexdbReadKVFromHandler: buf too small at loff=%d needBytes=%d bufLen=%d keyLen=%d", fh.Loff(), needBytes, len(buf), keyLen)
-			if panicOnFailure {
-				panicf("flexdbReadKVFromHandler: buf too small at loff=%d needBytes=%d bufLen=%d keyLen=%d", fh.Loff(), needBytes, len(buf), keyLen)
-			}
-			return KV{}, false
-		}
-		if needBytes > nr {
-			nr2, err3 := fh.Read(buf[:needBytes], uint64(needBytes))
-			if nr2 < needBytes || err3 != nil {
-				alwaysPrintf("flexdbReadKVFromHandler: slotted data read fail at loff=%d nr=%d needBytes=%d err=%v", fh.Loff(), nr2, needBytes, err3)
-				if panicOnFailure {
-					panicf("flexdbReadKVFromHandler: slotted data read fail at loff=%d nr=%d needBytes=%d err=%v", fh.Loff(), nr2, needBytes, err3)
-				}
-				return KV{}, false
-			}
-			nr = nr2
 		}
 		key, ok := slottedPageFirstKey(buf[:nr])
 		if !ok {
@@ -4243,6 +4225,7 @@ func (db *FlexDB) doFlush() {
 
 	// Flush memtable to FlexSpace
 	db.flushMemtable()
+	db.cache.flushDirtyPages()
 	db.persistCounters()
 	db.ff.Sync()
 	db.maybePiggybackGC()
