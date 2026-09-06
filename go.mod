@@ -9,6 +9,7 @@ require (
 	4d63.com/tz v1.2.0
 	github.com/cockroachdb/pebble/v2 v2.1.4
 	github.com/cristalhq/base64 v0.1.2
+	github.com/glycerine/blake3 v1.5.2
 	github.com/glycerine/greenpack v0.541.0
 	github.com/glycerine/idem v0.20.7
 	github.com/glycerine/porcupine v1.2.8-jea
@@ -37,7 +38,6 @@ require (
 	github.com/cockroachdb/swiss v0.0.0-20251224182025-b0f6560f979b // indirect
 	github.com/cockroachdb/tokenbucket v0.0.0-20230807174530-cc333fc44b06 // indirect
 	github.com/getsentry/sentry-go v0.27.0 // indirect
-	github.com/glycerine/blake3 v1.5.2 // indirect
 	github.com/glycerine/fwd v1.1.4-beta.jea // indirect
 	github.com/glycerine/one_tree_rwmut v1.0.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
@@ -57,6 +57,6 @@ require (
 	github.com/rogpeppe/go-internal v1.13.1 // indirect
 	golang.org/x/exp v0.0.0-20230626212559-97b1e661b5df // indirect
 	golang.org/x/sys v0.38.0 // indirect
-	golang.org/x/text v0.31.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	google.golang.org/protobuf v1.36.7 // indirect
 )
