@@ -94,6 +94,32 @@ func TestSlottedPage_RoundTrip_VPtr(t *testing.T) {
 	}
 }
 
+func TestSlottedPage_RoundTrip_InlineVPtrMetadata(t *testing.T) {
+	kvs := []KV{
+		{Key: "empty", Vptr: VPtr{Offset: 0x11, Length: 0}, Hlc: 1},
+		{Key: "small", Value: []byte("inline"), Vptr: VPtr{Offset: 0x22334455, Length: 6}, Hlc: 2},
+		{Key: "big", Vptr: VPtr{Offset: 12345, Length: 67890}, Hlc: 3},
+	}
+
+	encoded := slottedPageEncode(kvs)
+	decoded, _, err := slottedPageDecode(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := range kvs {
+		if decoded[i].Key != kvs[i].Key {
+			t.Fatalf("decoded[%d].Key = %q, want %q", i, decoded[i].Key, kvs[i].Key)
+		}
+		if decoded[i].Vptr != kvs[i].Vptr {
+			t.Fatalf("decoded[%d].Vptr = %+v, want %+v", i, decoded[i].Vptr, kvs[i].Vptr)
+		}
+		if !bytes.Equal(decoded[i].Value, kvs[i].Value) {
+			t.Fatalf("decoded[%d].Value = %q, want %q", i, decoded[i].Value, kvs[i].Value)
+		}
+	}
+}
+
 func TestSlottedPage_RoundTrip_SameHLC(t *testing.T) {
 	// All same HLC -> all deltas are 0 -> minimal HLC region.
 	kvs := make([]KV, 100)

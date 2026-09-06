@@ -368,6 +368,7 @@ func TestFlexDB_kv128RoundTrip(t *testing.T) {
 		{Key: "", Value: []byte(""), Hlc: 0},
 		{Key: "a", Vptr: VPtr{Length: tombstoneVPtrLength}, Hlc: 999}, // tombstone
 		{Key: string(make([]byte, 100)), Value: make([]byte, 64), Hlc: 0x7FFFFFFFFFFFFFFF},
+		{Key: "inline-offset", Value: []byte("typed"), Vptr: VPtr{Offset: 0x12345678, Length: 5}, Hlc: 777},
 		// VPtr case with HLC
 		{Key: "big", Vptr: VPtr{Offset: 1024, Length: 256}, Hlc: 42},
 	}
@@ -400,6 +401,14 @@ func TestFlexDB_kv128RoundTrip(t *testing.T) {
 		if got.HasVPtr() && got.Vptr != kv.Vptr {
 			t.Fatalf("Vptr mismatch: got %+v, want %+v", got.Vptr, kv.Vptr)
 		}
+		if !kv.isTombstone() && !kv.HasVPtr() {
+			if got.Vptr.Offset != kv.Vptr.Offset {
+				t.Fatalf("inline Vptr.Offset mismatch: got %d, want %d", got.Vptr.Offset, kv.Vptr.Offset)
+			}
+			if got.Vptr.Length != uint64(len(kv.Value)) {
+				t.Fatalf("inline Vptr.Length = %d, want len(Value) %d", got.Vptr.Length, len(kv.Value))
+			}
+		}
 		// Also verify kv128SizePrefix
 		pfxSize, pfxOK := kv128SizePrefix(buf)
 		if !pfxOK {
@@ -409,6 +418,127 @@ func TestFlexDB_kv128RoundTrip(t *testing.T) {
 			t.Fatalf("kv128SizePrefix = %d, want %d", pfxSize, len(buf))
 		}
 	}
+}
+
+func TestFlexDB_GetKVReportsAccurateVptrLength(t *testing.T) {
+	fs, dir := newTestFS(t)
+	cfg := &Config{FS: fs}
+	db := openTestDBAt(fs, t, dir, cfg)
+
+	smallDirect := []byte("small-direct")
+	if err := db.Put("small-direct", smallDirect); err != nil {
+		t.Fatal(err)
+	}
+	kv, err := db.GetKV("small-direct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kv == nil {
+		t.Fatal("small-direct not found")
+	}
+	if kv.HasVPtr() {
+		t.Fatalf("small-direct should be inline, got Vptr %+v", kv.Vptr)
+	}
+	if kv.Vptr.Length != uint64(len(smallDirect)) {
+		t.Fatalf("direct memtable inline Vptr.Length = %d, want %d", kv.Vptr.Length, len(smallDirect))
+	}
+	kv.Close()
+
+	batch := db.NewBatch()
+	smallBatch := []byte("small-batch")
+	if err := batch.Set("small-batch", smallBatch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := batch.Commit(false); err != nil {
+		t.Fatal(err)
+	}
+	kv, err = db.GetKV("small-batch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kv == nil {
+		t.Fatal("small-batch not found")
+	}
+	if kv.HasVPtr() {
+		t.Fatalf("small-batch should be inline, got Vptr %+v", kv.Vptr)
+	}
+	if kv.Vptr.Length != uint64(len(smallBatch)) {
+		t.Fatalf("batch memtable inline Vptr.Length = %d, want %d", kv.Vptr.Length, len(smallBatch))
+	}
+	kv.Close()
+
+	if err := db.Put("nil-value", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Put("empty-value", []byte{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"nil-value", "empty-value"} {
+		kv, err = db.GetKV(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if kv == nil {
+			t.Fatalf("%s not found", key)
+		}
+		if kv.Value != nil {
+			t.Fatalf("%s Value = %q, want nil zero-length value", key, kv.Value)
+		}
+		if kv.Vptr.Length != 0 {
+			t.Fatalf("%s Vptr.Length = %d, want 0", key, kv.Vptr.Length)
+		}
+		kv.Close()
+	}
+
+	large := bytes.Repeat([]byte("x"), vlogInlineThreshold+17)
+	if err := db.Put("large-direct", large); err != nil {
+		t.Fatal(err)
+	}
+	kv, err = db.GetKV("large-direct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kv == nil {
+		t.Fatal("large-direct not found")
+	}
+	if !kv.HasVPtr() {
+		t.Fatalf("large-direct should have VPtr, got %+v", kv.Vptr)
+	}
+	if kv.Vptr.Length != uint64(len(large)) {
+		t.Fatalf("large-direct Vptr.Length = %d, want %d", kv.Vptr.Length, len(large))
+	}
+	kv.Close()
+
+	if err := db.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	kv, err = db.GetKV("small-direct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kv == nil {
+		t.Fatal("small-direct not found after sync")
+	}
+	if kv.Vptr.Length != uint64(len(smallDirect)) {
+		t.Fatalf("post-sync inline Vptr.Length = %d, want %d", kv.Vptr.Length, len(smallDirect))
+	}
+	kv.Close()
+
+	db.Close()
+	db = openTestDBAt(fs, t, dir, cfg)
+	defer db.Close()
+
+	kv, err = db.GetKV("small-direct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kv == nil {
+		t.Fatal("small-direct not found after reopen")
+	}
+	if kv.Vptr.Length != uint64(len(smallDirect)) {
+		t.Fatalf("reopened inline Vptr.Length = %d, want %d", kv.Vptr.Length, len(smallDirect))
+	}
+	kv.Close()
 }
 
 // TestFlexDB_kv128CRC32C verifies CRC32C detection of corrupted records.
@@ -1936,6 +2066,30 @@ func TestDeleteRange_AllGone(t *testing.T) {
 		}
 		mustGet(t, db2, "fresh", "start")
 	})
+}
+
+func TestDeleteRange_AllGoneFastPathChecksSentinelIntervalMinimum(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+	mustPut(t, db, "a", "1")
+	mustPut(t, db, "b", "2")
+	mustPut(t, db, "c", "3")
+	if err := db.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	n, allGone, err := db.DeleteRange(true, "c", "c", true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allGone {
+		t.Fatal("DeleteRange of only the last key took allGone fast path")
+	}
+	if n != 1 {
+		t.Fatalf("DeleteRange deleted %d keys, want 1", n)
+	}
+	mustGet(t, db, "a", "1")
+	mustGet(t, db, "b", "2")
+	mustMiss(t, db, "c")
 }
 
 // ====================== DeleteRange includeLarge Tests ======================

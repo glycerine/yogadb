@@ -74,7 +74,7 @@ func (db *FlexDB) NewBatch() (b *Batch) {
 // Set copies key and value internally, so the
 // original memory is safe to be re-used by the
 // caller immediately after Set returns.
-func (s *Batch) Set(key string, value []byte) (err error) {
+func (s *Batch) Set(key string, value []byte, vtyp uint64) (err error) {
 	if err := validateUserKey(key); err != nil {
 		if s.err == nil {
 			s.err = err
@@ -88,10 +88,13 @@ func (s *Batch) Set(key string, value []byte) (err error) {
 	if len(value) > 0 {
 		valueCopy = append([]byte{}, value...)
 	}
-	s.puts = append(s.puts, &KV{
+	pkv := &KV{
 		Key:   key,
 		Value: valueCopy,
-	})
+	}
+	pkv.Vptr.Offset = vtyp // store vtyp type information
+	pkv.Vptr.Length = uint64(len(value))
+	s.puts = append(s.puts, pkv)
 	return nil
 }
 
@@ -273,7 +276,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		}
 		db.adjustKeyCounters(oldState, newState)
 
-		encoded = kv128Encode(encoded[:0], *s.puts[idx])
+		encoded = kv128Encode(encoded[:0], *s.puts[idx]) // here
 		if len(mt.memWalBuf)+len(encoded) >= memtableWalBufCap {
 			mt.logFlushLocked()
 		}
@@ -340,9 +343,8 @@ type KV struct {
 	Key   string
 	Value []byte
 
-	// Vptr.Length == 0 means inline/nil. In this case, and when Vptr.Length < 64,
+	// Vptr.Length <= vlogInlineThreshold(64) means inline/nil. In this case,
 	//                  Vptr.Offset can be repurposed; e.g. for type information.
-	//                  However the KV128 encoding would need to be updated for that.
 	// Vptr.Length >  vlogInlineThreshold(64) and < tombstoneVPtrLength: means real VLOG pointer.
 	// Vptr.Length == tombstoneVPtrLength(^0, all bits set uint64) means tombstone.
 	Vptr VPtr
@@ -354,6 +356,21 @@ type KV struct {
 // Real VLOG entries always have Length > vlogInlineThreshold(64) and < rawVlenTombstone
 func (kv *KV) HasVPtr() bool {
 	return kv.Vptr.Length > vlogInlineThreshold && kv.Vptr.Length < rawVlenTombstone
+}
+
+// Vtyp extracts value-type information from the KV. Due to the
+// 64B size restriction on KV, we encode the vtyp in two different
+// ways depending on whether the value is inline (vtyp is in kv.Vptr.Offset)
+// or a large VLOG value (vtyp is in kv.Value which is exactly 8 bytes).
+// Tombstones always have a vtyp of 0.
+func (kv *KV) Vtyp() uint64 {
+	if kv.Vptr.Length == rawVlenTombstone {
+		return 0
+	}
+	if kv.Vptr.Length > vlogInlineThreshold {
+		return getUint64(kv.Value)
+	}
+	return kv.Vptr.Offset
 }
 
 func (z *KV) String() (r string) {
@@ -415,10 +432,6 @@ const tombstoneVPtrLength uint64 = rawVlenTombstone
 func kv128Encode(buf []byte, kv KV) []byte {
 
 	recordStart := len(buf)
-
-	if !kv.isTombstone() && !kv.HasVPtr() {
-		kv.Vptr = VPtr{Length: uint64(len(kv.Value))}
-	}
 
 	var vptrBuf [vptrSize]byte
 	kv.Vptr.encode(vptrBuf[:])
@@ -1367,20 +1380,23 @@ func (db *FlexDB) CumulativeMetrics() *Metrics {
 	return m
 }
 
-// resolveVPtr reads the value from the VLOG file for a KV that has HasVPtr set.
+// resolveVPtr reads the value from the VLOG file for a KV that has HasVPtr() true.
+// For small inline values where HasVPtr() is false, we return kv.Value.
 // Returns the resolved value bytes, or an error.
-func (db *FlexDB) resolveVPtr(kv KV) ([]byte, error) {
-	if !kv.HasVPtr() {
-		return kv.Value, nil
-	}
+func (db *FlexDB) resolveVPtr(kv KV) (val []byte, vtyp uint64, err error) {
 	if kv.Vptr.Length == rawVlenTombstone {
-		return nil, ErrTomb
+		return nil, 0, ErrTomb
+	}
+	if !kv.HasVPtr() {
+		return kv.Value, kv.Vptr.Offset, nil
 	}
 
 	if db.vlog == nil {
-		return nil, fmt.Errorf("flexdb: VPtr but VLOG is nil")
+		return nil, 0, fmt.Errorf("flexdb: VPtr but VLOG is nil")
 	}
-	return db.vlog.read(kv.Vptr)
+	vtyp = getUint64(kv.Value)
+	val, err = db.vlog.read(kv.Vptr)
+	return
 }
 
 // FetchLarge retrieves the value bytes for a KV whose value
@@ -1389,9 +1405,9 @@ func (db *FlexDB) resolveVPtr(kv KV) ([]byte, error) {
 // a fresh copy safe to retain.
 //
 // Goroutine safe. Acquires the read lock internally.
-func (db *FlexDB) FetchLarge(kv *KV) ([]byte, error) {
+func (db *FlexDB) FetchLarge(kv *KV) (val []byte, vtyp uint64, err error) {
 	if kv == nil {
-		return nil, fmt.Errorf("flexdb: FetchLarge called with nil KV")
+		return nil, 0, fmt.Errorf("flexdb: FetchLarge called with nil KV")
 	}
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
@@ -1400,9 +1416,9 @@ func (db *FlexDB) FetchLarge(kv *KV) ([]byte, error) {
 
 // lockHeldFetchLarge is the lock-held body of FetchLarge.
 // Caller must hold topMutRW.RLock() or topMutRW.Lock().
-func (db *FlexDB) lockHeldFetchLarge(kv *KV) ([]byte, error) {
+func (db *FlexDB) lockHeldFetchLarge(kv *KV) (val []byte, vtyp uint64, err error) {
 	if kv == nil {
-		return nil, fmt.Errorf("flexdb: FetchLarge called with nil KV")
+		return nil, 0, fmt.Errorf("flexdb: FetchLarge called with nil KV")
 	}
 	return db.resolveVPtr(*kv)
 }
@@ -2305,13 +2321,13 @@ func recoverIterIOErr(errp *error) {
 // completed a db.Sync() call. This allows the user to control
 // the rate of fsyncs and trade that against their durability
 // requirements.
-func (db *FlexDB) Put(key string, value []byte) error {
+func (db *FlexDB) Put(key string, value []byte, vtyp uint64) error {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
-	return db.writeLockHeldPut(key, value, false)
+	return db.writeLockHeldPut(key, value, vtyp, false)
 }
 
-func (db *FlexDB) writeLockHeldPut(key string, value []byte, doDelete bool) error {
+func (db *FlexDB) writeLockHeldPut(key string, value []byte, vtyp uint64, doDelete bool) error {
 
 	if doDelete && len(value) > 0 {
 		return fmt.Errorf("flexdb: cannot supply a value and also delete it")
@@ -2330,11 +2346,16 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, doDelete bool) erro
 	if len(value) == 0 {
 		value = nil
 	} else {
+		// make a copy we own.
 		value = append([]byte{}, value...)
 	}
 
 	// Build the KV for the memtable. Large values go to VLOG.
 	kv := KV{Key: key, Value: value, Hlc: hlcVal}
+	// // store vtyp type information
+	kv.Vptr.Offset = vtyp
+	kv.Vptr.Length = uint64(len(value))
+
 	if doDelete {
 		kv.Vptr.Length = tombstoneVPtrLength
 	}
@@ -2350,6 +2371,9 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, doDelete bool) erro
 			return fmt.Errorf("flexdb: vlog append: %w", err)
 		}
 		kv = KV{Key: key, Vptr: vp, Hlc: hlcVal}
+		// type info goes into Value field for large values.
+		kv.Value = make([]byte, 8)
+		putUint64(kv.Value, vtyp)
 	}
 
 	if err := validateKV128RecordSize(kv); err != nil {
@@ -2382,7 +2406,7 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, doDelete bool) erro
 
 	// WAL stores VPtr (not full value) for large values. Since LARGE.VLOG was
 	// fsynced above, the VPtr is safe to reference on crash recovery.
-	db.mt.logAppend(kv)
+	db.mt.logAppend(kv) // here, does kv128Encode
 
 	return nil
 }
@@ -2567,23 +2591,25 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 	if found {
 		zc := findBuildKV(it)
 		resultKey := zc.Key
+		vtyp := zc.Vtyp()
 
 		// Release iterator state early - we have what we need.
 		it.releaseIterState()
 
 		if skipValues {
-			kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: db}
+			kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: db, Vtyp: vtyp}
 			return
 		}
 
 		// LAZY_SMALL path: try zero-copy via cache pinning.
 		// Only works for inline values from FlexSpace (not memtable).
-		if lazySmall && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
+		if lazySmall && !it.valueResolved && !zc.HasVPtr() && len(zc.Value) > 0 {
 			kvc, err = db.findBuildKVZeroCopy(resultKey)
 			if err != nil {
 				return
 			}
 			if kvc != nil {
+				kvc.Vtyp = vtyp
 				return
 			}
 			// Fallback: key was in memtable or edge case. Copy below.
@@ -2599,7 +2625,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 
 		// Auto-fetch large value unless LAZY_LARGE was requested
 		if !lazyLarge && kvc.HasVPtr() {
-			val, fetchErr := db.resolveVPtr(kvc.KV)
+			val, _, fetchErr := db.resolveVPtr(kvc.KV)
 			if fetchErr != nil {
 				kvc = nil
 				err = fetchErr
@@ -2618,6 +2644,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 // value out, or else memory and resource leaks will ensue.
 type KVcloser struct {
 	KV
+	Vtyp      uint64
 	partition *intervalCachePartition // nil when no pin needed
 	entry     *intervalCacheEntry     // nil when no pin needed
 	db        *FlexDB
@@ -2681,11 +2708,14 @@ func (s *KVcloser) Fetch() error {
 	if !s.HasVPtr() {
 		return nil // inline value already present
 	}
-	val, err := s.db.FetchLarge(&s.KV)
+	val, vtyp, err := s.db.FetchLarge(&s.KV)
 	if err != nil {
 		return err
 	}
 	s.Value = val
+	if s.Vtyp != vtyp {
+		s.Vtyp = vtyp
+	}
 	return nil
 }
 
@@ -2723,12 +2753,14 @@ func (db *FlexDB) findBuildKVZeroCopy(key string) (*KVcloser, error) {
 	// Transfer cache entry ownership to KVcloser (don't release).
 	// fce.kvs[idx] is a value copy of the KV struct (64B), but
 	// the .Value []byte slice header still points into cache memory.
-	return &KVcloser{
+	kvc := &KVcloser{
 		KV:        fce.kvs[idx],
 		partition: partition,
 		entry:     fce,
 		db:        db,
-	}, nil
+	}
+	kvc.Vtyp = kvc.KV.Vtyp()
+	return kvc, nil
 }
 
 // GetKV is like Get but allows lazy loading of Large values;
@@ -2745,7 +2777,7 @@ func (db *FlexDB) GetKV(key string) (kv *KVcloser, err error) {
 // Get is value size agnostic. It returns large and small values
 // immediately. This is tested at, for example, gc_test.go
 // Test_GC1K_write_1k_keys_with_large_values.
-func (db *FlexDB) Get(key string) (value []byte, found bool, err error) {
+func (db *FlexDB) Get(key string) (value []byte, found bool, vtyp uint64, err error) {
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
 	defer recoverIterIOErr(&err)
@@ -2755,59 +2787,59 @@ func (db *FlexDB) Get(key string) (value []byte, found bool, err error) {
 		kv, ok := db.mt.get(key)
 		if ok {
 			if kv.isTombstone() {
-				return nil, false, nil // tombstone
+				return nil, false, 0, nil // tombstone
 			}
-			val, err := db.resolveVPtr(kv)
+			val, vtype, err := db.resolveVPtr(kv)
 			if err != nil {
-				return nil, false, err
+				return nil, false, 0, err
 			}
 			if len(val) == 0 {
-				return nil, true, nil
+				return nil, true, vtype, nil
 			}
 			out := make([]byte, len(val))
 			copy(out, val)
-			return out, true, nil
+			return out, true, vtype, nil
 		}
 	}
 
 	// Check FlexSpace via sparse index
-	val, found, err := db.getPassthrough(key)
-	return val, found, err
+	return db.getPassthrough(key)
 }
 
 // someLockHeldGet retrieves the value for key without acquiring topMutRW.
 // Caller must already hold topMutRW.Lock() or topMutRW.RLock().
-func (db *FlexDB) someLockHeldGet(key string) ([]byte, bool, error) {
+func (db *FlexDB) someLockHeldGet(key string) (val []byte, found bool, vtyp uint64, err error) {
 	// Check memtable
 	if !db.mt.empty {
 		kv, ok := db.mt.get(key)
 		if ok {
 			if kv.isTombstone() {
-				return nil, false, nil
+				return nil, false, 0, nil
 			}
-			val, err := db.resolveVPtr(kv)
+			val, vtyp, err = db.resolveVPtr(kv)
 			if err != nil {
-				return nil, false, err
+				return
 			}
 			if len(val) == 0 {
-				return nil, true, nil
+				val = nil
+				found = true
+				return
 			}
 			out := make([]byte, len(val))
 			copy(out, val)
-			return out, true, nil
+			return out, true, vtyp, nil
 		}
 	}
 
 	// Check FlexSpace via sparse index
-	val, found, err := db.getPassthrough(key)
-	return val, found, err
+	return db.getPassthrough(key)
 }
 
 // Delete removes key from the store.
 func (db *FlexDB) Delete(key string) error {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
-	return db.writeLockHeldPut(key, nil, true)
+	return db.writeLockHeldPut(key, nil, 0, true)
 }
 
 // DeleteRange deletes all keys in the range [begKey, endKey] with
@@ -2880,7 +2912,7 @@ func (db *FlexDB) writeLockHeldDeleteRange(includeLarge bool, begKey, endKey str
 			return true
 		})
 		for _, key := range keys {
-			if err := db.writeLockHeldPut(key, nil, true); err != nil {
+			if err := db.writeLockHeldPut(key, nil, 0, true); err != nil {
 				return n, false, err
 			}
 			n++
@@ -2933,7 +2965,7 @@ func (db *FlexDB) writeLockHeldClear(includeLarge bool) (allGone bool, err error
 			return true
 		})
 		for _, key := range keys {
-			if err := db.writeLockHeldPut(key, nil, true); err != nil {
+			if err := db.writeLockHeldPut(key, nil, 0, true); err != nil {
 				return false, err
 			}
 		}
@@ -3239,7 +3271,7 @@ func (db *FlexDB) deleteRangeFlexSpace(begKey, endKey string, begInclusive, endI
 
 				// Write tombstone. Track flushSeq to detect inline flush.
 				prevSeq := db.flushSeq
-				if err := db.writeLockHeldPut(kv.Key, nil, true); err != nil {
+				if err := db.writeLockHeldPut(kv.Key, nil, 0, true); err != nil {
 					return n, err
 				}
 				n++
@@ -3347,7 +3379,7 @@ func (db *FlexDB) deleteRangeFlexSpaceClearSmall() (int64, error) {
 				}
 
 				prevSeq := db.flushSeq
-				if err := db.writeLockHeldPut(kv.Key, nil, true); err != nil {
+				if err := db.writeLockHeldPut(kv.Key, nil, 0, true); err != nil {
 					return n, err
 				}
 				n++
@@ -3451,7 +3483,7 @@ func deleteRangeDedup(kvs []KV) []KV {
 //     value (though Get is simpler for that).
 //
 // .
-func (db *FlexDB) Merge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool, doDelete bool)) error {
+func (db *FlexDB) Merge(key string, fn func(oldVal []byte, exists bool, oldVtyp uint64) (newVal []byte, write bool, doDelete bool, newVtyp uint64)) error {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 	return db.writeLockHeldMerge(key, fn)
@@ -3459,7 +3491,7 @@ func (db *FlexDB) Merge(key string, fn func(oldVal []byte, exists bool) (newVal 
 
 // writeLockHeldMerge is the lock-held body of Merge.
 // Caller must hold topMutRW.Lock().
-func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool, doDelete bool)) error {
+func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists bool, oldVtyp uint64) (newVal []byte, write bool, doDelete bool, newVtyp uint64)) error {
 	if err := validateUserKey(key); err != nil {
 		return err
 	}
@@ -3467,15 +3499,19 @@ func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists b
 	// Phase 1: check memtable.
 	var oldVal []byte
 	var exists bool
+	var oldVtyp uint64
 
 	if !db.mt.empty {
 		kv, ok := db.mt.get(key)
 		if ok {
 			if !kv.isTombstone() {
-				val, err := db.resolveVPtr(kv)
+				oldVtyp = kv.Vptr.Offset
+				val, vtyp, err := db.resolveVPtr(kv)
 				if err == nil {
+					// large VLOG value.
 					oldVal = val
 					exists = true
+					oldVtyp = vtyp
 				}
 			}
 		}
@@ -3483,18 +3519,19 @@ func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists b
 
 	if !exists {
 		// Phase 2: check FlexSpace (getPassthrough already resolves VPtrs).
-		val, found, err := db.getPassthrough(key)
+		val, found, vtyp, err := db.getPassthrough(key)
 		if err != nil {
 			return fmt.Errorf("flexdb: merge getPassthrough: %w", err)
 		}
 		if found {
 			oldVal = val
 			exists = true
+			oldVtyp = vtyp
 		}
 	}
 
 	// Apply user merge function.
-	newVal, write, doDelete := fn(oldVal, exists)
+	newVal, write, doDelete, newVtyp := fn(oldVal, exists, oldVtyp)
 	if write && doDelete {
 		return fmt.Errorf("flexdb: Merge callback returned both doWrite=true and doDelete=true; these are mutually exclusive")
 	}
@@ -3503,17 +3540,17 @@ func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists b
 	}
 
 	if doDelete {
-		return db.writeLockHeldPut(key, nil, true)
+		return db.writeLockHeldPut(key, nil, 0, true)
 	}
 
-	return db.writeLockHeldPut(key, newVal, false)
+	return db.writeLockHeldPut(key, newVal, newVtyp, false)
 }
 
 // ====================== Passthrough operations ======================
 // These operate directly on FlexSpace + sparse index.
 // Caller must hold db.topMutRW. but is RLock sufficient? should be since we change nothing.
 
-func (db *FlexDB) getPassthrough(key string) ([]byte, bool, error) {
+func (db *FlexDB) getPassthrough(key string) (val []byte, found bool, vtyp uint64, err0 error) {
 	var nh memSparseIndexTreeHandler
 	db.tree.findAnchorPos(key, &nh)
 	anchor := nh.node.anchors[nh.idx]
@@ -3521,28 +3558,28 @@ func (db *FlexDB) getPassthrough(key string) ([]byte, bool, error) {
 	partition := db.cache.getPartition(anchor)
 	fce, err := partition.getEntry(anchor, anchorLoff, db)
 	if err != nil {
-		return nil, false, err
+		return nil, false, 0, err
 	}
 	defer partition.releaseEntry(fce)
 
 	idx, ok := intervalCacheEntryFindKeyEQ(fce, key)
 	if !ok {
-		return nil, false, nil
+		return nil, false, 0, nil
 	}
 	kv := fce.kvs[idx]
 	if kv.isTombstone() {
-		return nil, false, nil
+		return nil, false, 0, nil
 	}
-	val, err := db.resolveVPtr(kv)
-	if err != nil {
-		return nil, false, err
+	val, vtyp, err0 = db.resolveVPtr(kv)
+	if err0 != nil {
+		return nil, false, 0, err0
 	}
 	if len(val) == 0 {
-		return nil, true, nil
+		return nil, true, vtyp, nil
 	}
 	out := make([]byte, len(val))
 	copy(out, val)
-	return out, true, nil
+	return out, true, vtyp, nil
 }
 
 // getPassthroughKV returns the full KV (including HLC) from the passthrough layer.

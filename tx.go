@@ -9,7 +9,7 @@ package yogadb
 // It is nice for documention purposes though; to get an
 // overview of the available methods.
 type ReadOnlyDB interface {
-	Get(key string) ([]byte, bool, error)
+	Get(key string) ([]byte, bool, uint64, error)
 	GetKV(key string) (kv *KVcloser, err error)
 	Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error)
 	FindIt(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error, it *Iter)
@@ -91,16 +91,17 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 	if found {
 		zc := findBuildKV(it)
 		resultKey := zc.Key
+		vtyp := zc.Vtyp()
 
 		it.Close()
 
 		if skipValues {
-			kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: tx.db}
+			kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: tx.db, Vtyp: vtyp}
 			return
 		}
 
 		// LAZY_SMALL path: try zero-copy via cache pinning.
-		if lazySmall && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
+		if lazySmall && !it.valueResolved && !zc.HasVPtr() && len(zc.Value) > 0 {
 			kvc, err = tx.db.findBuildKVZeroCopy(resultKey)
 			if err != nil {
 				return
@@ -113,14 +114,14 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 		// Standard path: copy inline value.
 		owned := KV{Vptr: zc.Vptr, Hlc: zc.Hlc}
 		owned.Key = resultKey
-		if !zc.HasVPtr() && zc.Value != nil {
+		if !zc.HasVPtr() && len(zc.Value) > 0 {
 			owned.Value = append([]byte{}, zc.Value...)
 		}
-		kvc = &KVcloser{KV: owned, db: tx.db}
+		kvc = &KVcloser{KV: owned, db: tx.db, Vtyp: vtyp}
 
 		// Auto-fetch large value unless LAZY_LARGE was requested.
 		if !lazyLarge && kvc.HasVPtr() {
-			val, fetchErr := tx.db.resolveVPtr(kvc.KV)
+			val, _, fetchErr := tx.db.resolveVPtr(kvc.KV)
 			if fetchErr != nil {
 				kvc = nil
 				err = fetchErr
@@ -160,14 +161,15 @@ func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact
 	}
 	zc := findBuildKV(it)
 	resultKey := zc.Key
+	vtyp := zc.Vtyp()
 
 	if skipValues {
-		kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: tx.db}
+		kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: tx.db, Vtyp: vtyp}
 		return
 	}
 
 	// LAZY_SMALL path: try zero-copy via cache pinning.
-	if lazySmall && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
+	if lazySmall && !it.valueResolved && !zc.HasVPtr() && len(zc.Value) > 0 {
 		kvc, err = tx.db.findBuildKVZeroCopy(resultKey)
 		if err != nil {
 			return
@@ -180,14 +182,14 @@ func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact
 	// Standard path: copy inline value.
 	owned := KV{Vptr: zc.Vptr, Hlc: zc.Hlc}
 	owned.Key = resultKey
-	if !zc.HasVPtr() && zc.Value != nil {
+	if !zc.HasVPtr() && len(zc.Value) > 0 {
 		owned.Value = append([]byte{}, zc.Value...)
 	}
-	kvc = &KVcloser{KV: owned, db: tx.db}
+	kvc = &KVcloser{KV: owned, db: tx.db, Vtyp: vtyp}
 
 	// Auto-fetch large value unless LAZY_LARGE was requested.
 	if !lazyLarge && kvc.HasVPtr() {
-		val, fetchErr := tx.db.resolveVPtr(kvc.KV)
+		val, _, fetchErr := tx.db.resolveVPtr(kvc.KV)
 		if fetchErr != nil {
 			kvc = nil
 			err = fetchErr
@@ -212,7 +214,7 @@ var _ WritableDB = (*WriteTx)(nil)
 
 // Get retrieves the value for key. Returns (nil, false, nil) if not found
 // or deleted. The returned []byte is a copy, safe to retain.
-func (tx *WriteTx) Get(key string) (value []byte, found bool, err error) {
+func (tx *WriteTx) Get(key string) (value []byte, found bool, vtyp uint64, err error) {
 	return tx.db.someLockHeldGet(key)
 }
 
@@ -242,7 +244,7 @@ func (tx *WriteTx) Put(key string, value []byte) error {
 
 // Delete removes key from the store.
 func (tx *WriteTx) Delete(key string) error {
-	return tx.db.writeLockHeldPut(key, nil, true)
+	return tx.db.writeLockHeldPut(key, nil, 0, true)
 }
 
 // Sync flushes all in-memory data to disk and fsyncs.
@@ -275,7 +277,7 @@ func (tx *WriteTx) FindIt(smod SearchModifier, key string) (kvc *KVcloser, exact
 
 // FetchLarge retrieves the full value for a KV. For VLOG-stored
 // values it reads from disk; for inline values it returns kv.Value directly.
-func (tx *WriteTx) FetchLarge(kv *KV) ([]byte, error) {
+func (tx *WriteTx) FetchLarge(kv *KV) (val []byte, vtyp uint64, err error) {
 	return tx.db.lockHeldFetchLarge(kv)
 }
 
@@ -338,7 +340,7 @@ func (tx *WriteTx) Clear(includeLarge bool) (allGone bool, err error) {
 //     value (though Get is simpler for that).
 //
 // .
-func (tx *WriteTx) Merge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool, doDelete bool)) error {
+func (tx *WriteTx) Merge(key string, fn func(oldVal []byte, exists bool, oldVtyp uint64) (newVal []byte, write bool, doDelete bool, newVtype uint64)) error {
 	return tx.db.writeLockHeldMerge(key, fn)
 }
 
@@ -422,7 +424,7 @@ type ReadOnlyTx struct{ txBase }
 
 // Get retrieves the value for key. Returns (nil, false, nil) if not found
 // or deleted. The returned []byte is a copy, safe to retain.
-func (roTx *ReadOnlyTx) Get(key string) (value []byte, found bool, err error) {
+func (roTx *ReadOnlyTx) Get(key string) (value []byte, found bool, vtyp uint64, err error) {
 	return roTx.db.someLockHeldGet(key)
 }
 

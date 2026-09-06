@@ -920,7 +920,7 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 			strict = true
 			continue
 		}
-		return []byte(minKey), dupBytes(val), bestKV.Hlc, false, VPtr{}, true
+		return []byte(minKey), dupBytes(val), bestKV.Hlc, false, bestKV.Vptr, true
 	}
 }
 
@@ -1108,7 +1108,7 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, f
 			strict = true
 			continue
 		}
-		return &KV{Key: minKey, Value: dupBytes(val), Hlc: bestKV.Hlc}, true
+		return &KV{Key: minKey, Value: dupBytes(val), Vptr: bestKV.Vptr, Hlc: bestKV.Hlc}, true
 	}
 }
 
@@ -1253,7 +1253,7 @@ func (db *FlexDB) mergedSeekLE(target string, strict bool) (kv *KV, found bool) 
 			strict = true
 			continue
 		}
-		kv = &KV{Key: maxKey, Value: dupBytes(val), Hlc: bestKV.Hlc}
+		kv = &KV{Key: maxKey, Value: dupBytes(val), Vptr: bestKV.Vptr, Hlc: bestKV.Hlc}
 		return
 	}
 }
@@ -1724,14 +1724,19 @@ func (it *Iter) Large() bool {
 // bytes and any error from the VLOG read. If the value is
 // inline and not large, it will still be returned
 // (and the error will be nil).
-func (it *Iter) FetchV() ([]byte, error) {
+func (it *Iter) FetchV() (val []byte, vtyp uint64, err error) {
 	if !it.valid || it.pKV == nil || it.skipValues {
-		return nil, nil
+		return nil, 0, nil
+	}
+	if it.pKV.isTombstone() {
+		return nil, 0, ErrTomb
 	}
 	if !it.pKV.HasVPtr() {
-		return it.pKV.Value, nil
+		return it.pKV.Value, it.pKV.Vtyp(), nil
 	}
-	return it.db.resolveVPtr(KV{Vptr: it.pKV.Vptr})
+	// seems buggy: return it.db.resolveVPtr(KV{Vptr: it.pKV.Vptr})
+	// since resolveVPtr needs to see the kv.Vptr to distinguish large VLOG from inline Value.
+	return it.db.resolveVPtr(*it.pKV)
 }
 
 // ====================== Callback-based iteration ======================

@@ -38,8 +38,8 @@ package yogadb
 // On-disk layout:
 //
 //  ---------------------------------------------------------------------
-// |Header | Entry Records ->>>                |free  |<<- Values| CRC32C|
-// | 27B   | N × [keyLen valInfo hlcDelta key] |space |          |  4B   |
+// |Header | Entry Records ->>>                             |free  |<<- Values| CRC32C|
+// | 27B   | N x [keyLen valInfo inlineOffset? hlcDelta key] |space |          |  4B   |
 //  ---------------------------------------------------------------------
 //
 // Header (27 bytes):
@@ -55,6 +55,7 @@ package yogadb
 //     0xFFFE       = tombstone (0 value bytes)
 //     0xFFFF       = VPtr (16 value bytes: 8B offset + 8B length)
 //     2..0xFFFD   = inline value length (valInfo - 2)
+//   [8] inlineOffset uint64 LE - present only for inline values, including zero-length
 //   [varint] HLC delta from baseHLC (uvarint, 1-10 bytes)
 //   [keyLen] key bytes
 //
@@ -167,14 +168,15 @@ func slottedPageEncodeInto(kvs []KV, unsorted uint8, targetSize int) []byte {
 	}
 
 	// Compute entry record sizes and total values size.
-	// Each entry record = 2B keyLen + 2B valInfo + varint(HLC delta) + keyLen bytes
+	// Each entry record = 2B keyLen + 2B valInfo + optional 8B inline
+	// offset + varint(HLC delta) + keyLen bytes.
 	var hlcBuf [binary.MaxVarintLen64]byte
 	totalEntriesSize := 0
 	totalValsSize := 0
 	for i := 0; i < count; i++ {
 		delta := uint64(kvs[i].Hlc - baseHLC)
 		varintLen := binary.PutUvarint(hlcBuf[:], delta)
-		totalEntriesSize += 4 + varintLen + len(kvs[i].Key) // 4 = 2B keyLen + 2B valInfo
+		totalEntriesSize += 4 + slottedInlineOffsetBytes(kvs[i]) + varintLen + len(kvs[i].Key)
 		totalValsSize += slottedValBytes(kvs[i])
 	}
 
@@ -207,8 +209,13 @@ func slottedPageEncodeInto(kvs []KV, unsorted uint8, targetSize int) []byte {
 	entryOff := slottedPageHeaderSize
 	for i := 0; i < count; i++ {
 		binary.LittleEndian.PutUint16(buf[entryOff:entryOff+2], uint16(len(kvs[i].Key)))
-		binary.LittleEndian.PutUint16(buf[entryOff+2:entryOff+4], slottedValInfo(kvs[i]))
+		vi := slottedValInfo(kvs[i])
+		binary.LittleEndian.PutUint16(buf[entryOff+2:entryOff+4], vi)
 		entryOff += 4
+		if slottedValInfoHasInlineOffset(vi) {
+			binary.LittleEndian.PutUint64(buf[entryOff:entryOff+8], kvs[i].Vptr.Offset)
+			entryOff += 8
+		}
 		delta := uint64(kvs[i].Hlc - baseHLC)
 		n := binary.PutUvarint(buf[entryOff:], delta)
 		entryOff += n
@@ -258,10 +265,11 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 
 	// Scan entry records to extract keys, keyLens, valInfos, and HLC deltas.
 	type entryMeta struct {
-		keyLen  uint16
-		valInfo uint16
-		hlc     HLC
-		keyOff  int // offset of key bytes within src
+		keyLen       uint16
+		valInfo      uint16
+		inlineOffset uint64
+		hlc          HLC
+		keyOff       int // offset of key bytes within src
 	}
 	entries := make([]entryMeta, count)
 
@@ -274,6 +282,13 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 		entries[i].keyLen = binary.LittleEndian.Uint16(src[off : off+2])
 		entries[i].valInfo = binary.LittleEndian.Uint16(src[off+2 : off+4])
 		off += 4
+		if slottedValInfoHasInlineOffset(entries[i].valInfo) {
+			if off+8 > len(src) {
+				return nil, 0, fmt.Errorf("slotted page: truncated inline offset at entry %d", i)
+			}
+			entries[i].inlineOffset = binary.LittleEndian.Uint64(src[off : off+8])
+			off += 8
+		}
 
 		delta, n := binary.Uvarint(src[off:])
 		if n <= 0 {
@@ -342,9 +357,12 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 			kvs[i].Vptr.Length = tombstoneVPtrLength
 		} else if entries[i].valInfo == slottedValInfoNilValue {
 			// live key, zero-length value: Value stays nil, Vptr stays zero
+			kvs[i].Vptr.Offset = entries[i].inlineOffset
 		} else if entries[i].valInfo == slottedValInfoVPtr {
 			kvs[i].Vptr = decodeVPtr(src[valStart:valEnd])
 		} else {
+			kvs[i].Vptr.Offset = entries[i].inlineOffset
+			kvs[i].Vptr.Length = uint64(vl)
 			kvs[i].Value = make([]byte, vl)
 			copy(kvs[i].Value, src[valStart:valEnd])
 		}
@@ -399,6 +417,17 @@ func slottedValInfo(kv KV) uint16 {
 	return uint16(len(kv.Value) + 2)
 }
 
+func slottedValInfoHasInlineOffset(vi uint16) bool {
+	return vi != slottedValInfoTombstone && vi != slottedValInfoVPtr
+}
+
+func slottedInlineOffsetBytes(kv KV) int {
+	if kv.isTombstone() || kv.HasVPtr() {
+		return 0
+	}
+	return 8
+}
+
 // slottedValBytes returns the number of value bytes stored for a KV.
 func slottedValBytes(kv KV) int {
 	if kv.isTombstone() {
@@ -426,8 +455,8 @@ func slottedValBytesOf(kv KV) []byte {
 // slottedPageFirstKey extracts the first key from a slotted page without
 // fully decoding it. Used by recovery to reconstruct anchor keys.
 func slottedPageFirstKey(src []byte) (string, bool) {
-	// Need at least header + first entry's 4B slot header + 1B varint
-	if len(src) < slottedPageHeaderSize+5 {
+	// Need at least header + first entry's 4B slot header.
+	if len(src) < slottedPageHeaderSize+4 {
 		return "", false
 	}
 	if !slottedPageHasMagic(src) {
@@ -437,10 +466,16 @@ func slottedPageFirstKey(src []byte) (string, bool) {
 	if count == 0 {
 		return "", false
 	}
-	// First entry record starts at offset 12 (header size).
 	off := slottedPageHeaderSize
 	keyLen := int(binary.LittleEndian.Uint16(src[off : off+2]))
+	valInfo := binary.LittleEndian.Uint16(src[off+2 : off+4])
 	off += 4 // skip keyLen + valInfo
+	if slottedValInfoHasInlineOffset(valInfo) {
+		if off+8 > len(src) {
+			return "", false
+		}
+		off += 8
+	}
 	// Skip HLC delta varint.
 	_, n := binary.Uvarint(src[off:])
 	if n <= 0 {
@@ -489,7 +524,7 @@ func slottedPageComputeSize(kvs []KV) int {
 	for i := 0; i < len(kvs); i++ {
 		delta := uint64(kvs[i].Hlc - baseHLC)
 		varintLen := binary.PutUvarint(hlcBuf[:], delta)
-		totalEntriesSize += 4 + varintLen + len(kvs[i].Key)
+		totalEntriesSize += 4 + slottedInlineOffsetBytes(kvs[i]) + varintLen + len(kvs[i].Key)
 		totalValsSize += slottedValBytes(kvs[i])
 	}
 	return slottedPageHeaderSize + totalEntriesSize + totalValsSize + slottedPageCRCSize
@@ -522,14 +557,14 @@ func slottedPageWouldFit(kvs []KV, count int, newKV KV, replaceIdx int, targetSi
 		}
 		delta := uint64(kv.Hlc - baseHLC)
 		varintLen := binary.PutUvarint(hlcBuf[:], delta)
-		totalEntriesSize += 4 + varintLen + len(kv.Key)
+		totalEntriesSize += 4 + slottedInlineOffsetBytes(kv) + varintLen + len(kv.Key)
 		totalValsSize += slottedValBytes(kv)
 	}
 	if replaceIdx < 0 {
 		// inserting new entry (not replacing)
 		delta := uint64(newKV.Hlc - baseHLC)
 		varintLen := binary.PutUvarint(hlcBuf[:], delta)
-		totalEntriesSize += 4 + varintLen + len(newKV.Key)
+		totalEntriesSize += 4 + slottedInlineOffsetBytes(newKV) + varintLen + len(newKV.Key)
 		totalValsSize += slottedValBytes(newKV)
 	}
 
@@ -595,10 +630,11 @@ func slottedPageDumpImpl(src []byte, vlog *valueLog) string {
 
 	// Scan entry records.
 	type entryInfo struct {
-		keyLen  uint16
-		valInfo uint16
-		hlc     HLC
-		keyOff  int
+		keyLen       uint16
+		valInfo      uint16
+		inlineOffset uint64
+		hlc          HLC
+		keyOff       int
 	}
 	entries := make([]entryInfo, 0, count)
 	off := slottedPageHeaderSize
@@ -613,6 +649,14 @@ func slottedPageDumpImpl(src []byte, vlog *valueLog) string {
 		e.keyLen = binary.LittleEndian.Uint16(src[off : off+2])
 		e.valInfo = binary.LittleEndian.Uint16(src[off+2 : off+4])
 		off += 4
+		if slottedValInfoHasInlineOffset(e.valInfo) {
+			if off+8 > totalSize {
+				scanOK = false
+				break
+			}
+			e.inlineOffset = binary.LittleEndian.Uint64(src[off : off+8])
+			off += 8
+		}
 		delta, n := binary.Uvarint(src[off:])
 		if n <= 0 {
 			scanOK = false
@@ -680,6 +724,9 @@ func slottedPageDumpImpl(src []byte, vlog *valueLog) string {
 			// so do a forward scan of value sizes.
 		default:
 			valDesc = fmt.Sprintf("val=%dB", slottedValInfoToLen(e.valInfo))
+		}
+		if slottedValInfoHasInlineOffset(e.valInfo) && e.inlineOffset != 0 {
+			valDesc += fmt.Sprintf(" inline-off=%d", e.inlineOffset)
 		}
 
 		// For vptr entries, try to show offset/length and optionally resolve value.
