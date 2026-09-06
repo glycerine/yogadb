@@ -558,10 +558,10 @@ func TestFind_SkipValues(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		k := fmt.Sprintf("key%03d", i)
 		v := fmt.Sprintf("val%03d", i)
-		panicOn(db.Put(k, []byte(v), 0))
+		panicOn(db.Put(k, []byte(v), uint64(i)))
 	}
 	bigVal := bytes.Repeat([]byte("X"), 200) // > vlogInlineThreshold
-	panicOn(db.Put("large001", bigVal, 0))
+	panicOn(db.Put("large001", bigVal, 100))
 	db.Sync()
 
 	// Find with SKIP_VALUES: inline value
@@ -572,6 +572,9 @@ func TestFind_SkipValues(t *testing.T) {
 	}
 	if kvc.Key != "key005" {
 		t.Fatalf("got key %q, want key005", kvc.Key)
+	}
+	if kvc.Vtyp != 5 {
+		t.Fatalf("kvc.Vtyp: got %v, want 5", kvc.Vtyp)
 	}
 	if kvc.Value != nil {
 		t.Fatalf("SKIP_VALUES: expected nil Value, got %q", kvc.Value)
@@ -586,6 +589,9 @@ func TestFind_SkipValues(t *testing.T) {
 	}
 	if kvc2.Key != "large001" {
 		t.Fatalf("got key %q, want large001", kvc2.Key)
+	}
+	if kvc2.Vtyp != 100 {
+		t.Fatalf("Vtyp: got %v, want 100", kvc2.Vtyp)
 	}
 	if kvc2.Value != nil {
 		t.Fatalf("SKIP_VALUES: expected nil Value for large key, got len=%d", len(kvc2.Value))
@@ -604,6 +610,10 @@ func TestFind_SkipValues(t *testing.T) {
 		if kvc3.Value != nil {
 			t.Fatalf("FindIt SKIP_VALUES: expected nil Value, got %q", kvc3.Value)
 		}
+		if kvc3.Vtyp != 1 {
+			t.Fatalf("Vtyp: got %v, want 1", kvc3.Vtyp)
+		}
+
 		kvc3.Close()
 
 		// Iterate: all Vin/Vel/FetchV should return nil
@@ -614,6 +624,9 @@ func TestFind_SkipValues(t *testing.T) {
 			}
 			if it.Vin() != nil {
 				t.Fatalf("Vin should be nil with SKIP_VALUES, key=%s", it.Key())
+			}
+			if it.Vtyp() == 0 {
+				t.Fatalf("it.Vtyp() should not be 0, as we did set it above to non-zero for all.")
 			}
 			val, empty, large := it.Vel()
 			if val != nil {
