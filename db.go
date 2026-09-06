@@ -7,7 +7,7 @@ package yogadb
 // Architecture:
 //   Active Memtable (btree + WAL) -> (flush) -> FlexSpace
 //   Reads: check active memtable -> check inactive memtable -> check FlexSpace via sparse index
-//   Crash recovery: rebuild sparse index from FlexSpace tags, replay WAL logs
+//   Crash recovery: rebuild sparse index from FlexSpace tags, replay WAL logs.
 
 import (
 	"encoding/binary"
