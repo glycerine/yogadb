@@ -63,6 +63,8 @@ package yogadb
 //   [keyLen] key bytes
 //
 // Values region: values packed contiguously from the back (before CRC).
+//   A 0xFFFD VPtr-with-Vtyp value stores the 16-byte VPtr followed by
+//   Vtyp in the same 8-byte representation used by KV.Value for large values.
 //   Value[0] is closest to CRC, value[N-1] is closest to the entries.
 //   Value[i] offset = totalSize - 4 - sum(valBytes[0..i])
 //
@@ -541,6 +543,9 @@ func slottedValInfoToLen(vi uint16) int {
 	}
 	base := slottedValInfoBase(vi)
 	if base == slottedValInfoNilValue {
+		return 0
+	}
+	if base < 2 {
 		return 0
 	}
 	return int(base - 2)

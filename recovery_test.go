@@ -464,8 +464,10 @@ func TestRecovery_LogRedoAllowsTornTailButReportsCorruptCompleteRecord(t *testin
 		fs := vfs.NewMem()
 		panicOn(fs.MkdirAll(dir, 0755))
 
-		good := kv128Encode(nil, KV{Key: "good", Value: []byte("value"), Hlc: HLC(1)})
-		torn := kv128Encode(nil, KV{Key: "tail", Value: []byte("ignored"), Hlc: HLC(2)})
+		goodVal := []byte("value")
+		tornVal := []byte("ignored")
+		good := kv128Encode(nil, KV{Key: "good", Value: goodVal, Vptr: VPtr{Length: uint64(len(goodVal))}, Hlc: HLC(1)})
+		torn := kv128Encode(nil, KV{Key: "tail", Value: tornVal, Vptr: VPtr{Length: uint64(len(tornVal))}, Hlc: HLC(2)})
 		payload := append(append([]byte{}, good...), torn[:len(torn)-1]...)
 		writeRawMemWALForRecoveryTest(t, fs, dir, payload)
 
