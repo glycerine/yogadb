@@ -124,10 +124,10 @@ func main() {
 		// Add the key to the batch.
 		if dupKeyToVal {
 			// add key as value too, so that we can see our VLOG get used.
-			err = batch.Set(string(key), key)
+			err = batch.Set(string(key), key, 0)
 		} else {
 			//err = batch.Set(string(key), []byte{})
-			err = batch.Set(string(key), nil)
+			err = batch.Set(string(key), nil, 0)
 		}
 		panicOn(err)
 		seen++

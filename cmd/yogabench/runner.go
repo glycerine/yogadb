@@ -171,7 +171,7 @@ func parallelFill(db *yogadb.FlexDB, nKeys int64, nThreads int, klen, vlen int) 
 
 		for i := start; i < end; i++ {
 			k := string(hexKeyBuf(keyBuf, uint64(i), klen))
-			batch.Set(k, val)
+			batch.Set(k, val, 0)
 			success++
 
 			if (i-start+1)%batchCommitSize == 0 || i == end-1 {
@@ -201,7 +201,7 @@ func parallelFillBatch(db *yogadb.FlexDB, nKeys int64, nThreads int, klen, vlen 
 
 		for i := start; i < end; i++ {
 			k := string(hexKeyBuf(keyBuf, uint64(i), klen))
-			batch.Set(k, val)
+			batch.Set(k, val, 0)
 			success++
 
 			if (i-start+1)%batchSize == 0 || i == end-1 {

@@ -42,7 +42,7 @@ func runWriteBench(args []string) {
 			success := int64(0)
 			for i := int64(0); i < ops; i++ {
 				k := string(hexKeyBuf(keyBuf, zipf.Next(), p.KeyLen))
-				if err := db.Put(k, val); err == nil {
+				if err := db.Put(k, val, 0); err == nil {
 					success++
 				}
 			}
@@ -57,7 +57,7 @@ func runWriteBench(args []string) {
 			success := int64(0)
 			for i := int64(0); i < ops; i++ {
 				k := string(hexKeyBuf(keyBuf, czipf.Next(), p.KeyLen))
-				if err := db.Put(k, val); err == nil {
+				if err := db.Put(k, val, 0); err == nil {
 					success++
 				}
 			}

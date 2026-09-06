@@ -93,8 +93,9 @@ func (c *YviewConfig) justShowAll(db *yogadb.FlexDB, dbPath string) {
 		for it.SeekFirst(); it.Valid(); it.Next() {
 			kv := it.KV()
 			if kv != nil {
-				value, err := it.FetchV()
+				value, vtyp, err := it.FetchV()
 				panicOn(err)
+				_ = vtyp
 				key := kv.Key
 
 				keyb += int64(len(kv.Key))

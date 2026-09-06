@@ -76,7 +76,7 @@ func runLatencySet(db *yogadb.FlexDB, cf *CommonFlags, p DatasetProfile, maxKey 
 			for i := int64(0); i < opsPerThread; i++ {
 				k := string(hexKeyBuf(keyBuf, zipf.Next(), p.KeyLen))
 				t0 := time.Now()
-				db.Put(k, val)
+				db.Put(k, val, 0)
 				us := time.Since(t0).Microseconds()
 				if us < int64(latencyBuckets) {
 					hist[us].Add(1)

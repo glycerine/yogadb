@@ -110,7 +110,7 @@ func runYCSBBench(args []string) {
 					if roll < threshGet {
 						// GET
 						k := string(hexKeyBuf(keyBuf, readDist.Next(), p.KeyLen))
-						if _, found, _ := db.Get(k); found {
+						if _, found, _, _ := db.Get(k); found {
 							success++
 						}
 					} else if roll < threshScan {
@@ -133,14 +133,14 @@ func runYCSBBench(args []string) {
 					} else if roll < threshSet {
 						// SET
 						k := string(hexKeyBuf(keyBuf, writeDist.Next(), p.KeyLen))
-						if err := db.Put(k, val); err == nil {
+						if err := db.Put(k, val, 0); err == nil {
 							success++
 						}
 					} else {
 						// RMW (read-modify-write)
 						k := string(hexKeyBuf(keyBuf, writeDist.Next(), p.KeyLen))
-						err := db.Merge(k, func(oldVal []byte, exists bool) ([]byte, bool, bool) {
-							return val, true, false
+						err := db.Merge(k, func(oldVal []byte, exists bool, oldVtyp uint64) ([]byte, bool, bool, uint64) {
+							return val, true, false, oldVtyp
 						})
 						if err == nil {
 							success++

@@ -50,7 +50,7 @@ func runGCBench(args []string) {
 				success := int64(0)
 				for i := int64(0); i < ops; i++ {
 					k := string(hexKeyBuf(keyBuf, zipf.Next(), p.KeyLen))
-					if err := db.Put(k, val); err == nil {
+					if err := db.Put(k, val, 0); err == nil {
 						success++
 					}
 				}
@@ -65,7 +65,7 @@ func runGCBench(args []string) {
 				success := int64(0)
 				for i := int64(0); i < ops; i++ {
 					k := string(hexKeyBuf(keyBuf, czipf.Next(), p.KeyLen))
-					if err := db.Put(k, val); err == nil {
+					if err := db.Put(k, val, 0); err == nil {
 						success++
 					}
 				}
@@ -83,7 +83,7 @@ func openGCDB(dir string, cf *CommonFlags) (*yogadb.FlexDB, error) {
 	cfg := &yogadb.Config{
 		CacheMB:                    cf.CacheMB,
 		NoDisk:                     cf.NoDisk,
-		OmitMemWalFsync:           cf.OmitWALSync,
+		OmitMemWalFsync:            cf.OmitWALSync,
 		PiggybackGC_on_SyncOrFlush: true,
 		GCGarbagePct:               0.50,
 	}
