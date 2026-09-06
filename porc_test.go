@@ -72,7 +72,7 @@ func Test016_linz(t *testing.T) {
 		//vv("i=%v, jnode=%v, about to Read", i, jnode)
 
 		begtmRead := time.Now()
-		val, found, gerr := readers[jnode].db.Get(skey)
+		val, found, _, gerr := readers[jnode].db.Get(skey)
 		panicOn(gerr)
 		endtmRead := time.Now()
 
@@ -147,7 +147,7 @@ func Test016_linz(t *testing.T) {
 		// pick a writer, key, and value.
 		w := 0
 		key := "a"
-		err := readers[w].db.Put(key, v)
+		err := readers[w].db.Put(key, v, 0)
 		panicOn(err)
 		err = readers[w].db.Sync()
 		panicOn(err)

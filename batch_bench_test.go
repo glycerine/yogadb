@@ -48,7 +48,7 @@ func BenchmarkDeleteRange(b *testing.B) {
 				for i := 0; i < b.N; i++ {
 					batch := db.NewBatch()
 					for k := 0; k < totalKeys; k++ {
-						batch.Set(string(keys[k]), vals[k])
+						batch.Set(string(keys[k]), vals[k], 0)
 					}
 					batch.Commit(false)
 
@@ -85,7 +85,7 @@ func BenchmarkBatchPutDeleteCycle(b *testing.B) {
 				for k := 0; k < batchSize; k++ {
 					key := fmt.Sprintf("c%08d_%08d", i, k)
 					val := fmt.Sprintf("v%08d", k)
-					batch.Set(key, []byte(val))
+					batch.Set(key, []byte(val), 0)
 				}
 				if _, err := batch.Commit(false); err != nil {
 					b.Fatal(err)
@@ -237,7 +237,7 @@ func BenchmarkYogaDB_BigRandomRWBatch(b *testing.B) {
 							batch.Commit(eagerFsync)
 							needCommit = false
 						}
-						batch.Set(string(keys[ki]), keys[ki])
+						batch.Set(string(keys[ki]), keys[ki], 0)
 						ki++
 						needCommit = true
 					}
@@ -250,7 +250,7 @@ func BenchmarkYogaDB_BigRandomRWBatch(b *testing.B) {
 						b.ResetTimer()
 						t0 = time.Now()
 						for cid := range dup {
-							val, found, _ := db.Get(cid)
+							val, found, _, _ := db.Get(cid)
 							if !found {
 								// we might not write all now that b.N controls how many we write.
 								//b.Fatalf("why not found '%v'", cid)
@@ -319,7 +319,7 @@ func BenchmarkYogaDB_Put(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		db.Put(string(keys[i]), value)
+		db.Put(string(keys[i]), value, 0)
 	}
 	b.StopTimer()
 
@@ -520,7 +520,7 @@ func BenchmarkYogaDB_Batch(b *testing.B) {
 				for i := 0; i < b.N; i++ {
 					batch := db.NewBatch()
 					for j := 0; j < batchSize; j++ {
-						batch.Set(string(keys[ki]), value)
+						batch.Set(string(keys[ki]), value, 0)
 						ki++
 					}
 					batch.Commit(true)

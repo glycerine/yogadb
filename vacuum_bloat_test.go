@@ -62,7 +62,7 @@ func TestVacuumThenOverwrite_DiskSizeBounded(t *testing.T) {
 
 	batch := db.NewBatch()
 	for i, k := range keys {
-		if err := batch.Set(k, []byte(k)); err != nil {
+		if err := batch.Set(k, []byte(k), 0); err != nil {
 			t.Fatal(err)
 		}
 		if (i+1)%1000 == 0 {
@@ -107,7 +107,7 @@ func TestVacuumThenOverwrite_DiskSizeBounded(t *testing.T) {
 	for r := 0; r <= 4; r++ {
 		batch := db.NewBatch()
 		for i, k := range keys {
-			if err := batch.Set(k, []byte(k)); err != nil {
+			if err := batch.Set(k, []byte(k), 0); err != nil {
 				t.Fatalf("round %d Set(%q): %v", r, k, err)
 			}
 			if (i+1)%1000 == 0 {

@@ -13,7 +13,7 @@ type ReadOnlyDB interface {
 	GetKV(key string) (kv *KVcloser, err error)
 	Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error)
 	FindIt(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error, it *Iter)
-	FetchLarge(kv *KV) ([]byte, error)
+	FetchLarge(kv *KV) (val []byte, vtyp uint64, err error)
 	NewIter() *Iter
 	Ascend(pivot string, iter func(key string, value []byte) bool)
 	Descend(pivot string, iter func(key string, value []byte) bool)
@@ -37,11 +37,11 @@ type ReadOnlyDB interface {
 // overview of the available methods.
 type WritableDB interface {
 	ReadOnlyDB
-	Put(key string, value []byte) error
+	Put(key string, value []byte, vtyp uint64) error
 	Delete(key string) error
 	DeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error)
 	Clear(includeLarge bool) (allGone bool, err error)
-	Merge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool, doDelete bool)) error
+	Merge(key string, fn func(oldVal []byte, exists bool, oldVtyp uint64) (newVal []byte, write bool, doDelete bool, newVtyp uint64)) error
 	Sync() error
 }
 
@@ -238,8 +238,8 @@ func (tx *WriteTx) GetKV(key string) (kv *KVcloser, err error) {
 // completed a db.Sync() call. This allows the user to control
 // the rate of fsyncs and trade that against their durability
 // requirements.
-func (tx *WriteTx) Put(key string, value []byte) error {
-	return tx.db.writeLockHeldPut(key, value, false)
+func (tx *WriteTx) Put(key string, value []byte, vtyp uint64) error {
+	return tx.db.writeLockHeldPut(key, value, vtyp, false)
 }
 
 // Delete removes key from the store.
@@ -453,7 +453,7 @@ func (roTx *ReadOnlyTx) FindIt(smod SearchModifier, key string) (kvc *KVcloser, 
 
 // FetchLarge retrieves the full value for a KV. For VLOG-stored
 // values it reads from disk; for inline values it returns kv.Value directly.
-func (roTx *ReadOnlyTx) FetchLarge(kv *KV) ([]byte, error) {
+func (roTx *ReadOnlyTx) FetchLarge(kv *KV) (val []byte, vtyp uint64, err error) {
 	return roTx.db.lockHeldFetchLarge(kv)
 }
 

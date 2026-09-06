@@ -394,7 +394,7 @@ func TestFlexDB_HLC_PutMonotonic(t *testing.T) {
 	keys := []string{"aaa", "bbb", "ccc"}
 	hlcs := make([]HLC, len(keys))
 	for i, k := range keys {
-		err := db.Put(k, []byte("v"))
+		err := db.Put(k, []byte("v"), 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -421,9 +421,9 @@ func TestFlexDB_HLC_BatchInterval(t *testing.T) {
 
 	// Batch with unique keys - single-tick interval.
 	batch := db.NewBatch()
-	batch.Set("k1", []byte("v1"))
-	batch.Set("k2", []byte("v2"))
-	batch.Set("k3", []byte("v3"))
+	batch.Set("k1", []byte("v1"), 0)
+	batch.Set("k2", []byte("v2"), 0)
+	batch.Set("k3", []byte("v3"), 0)
 	iv, err := batch.Commit(false)
 	if err != nil {
 		t.Fatal(err)
@@ -437,9 +437,9 @@ func TestFlexDB_HLC_BatchInterval(t *testing.T) {
 
 	// Batch with a duplicate key - multi-tick interval.
 	batch2 := db.NewBatch()
-	batch2.Set("x1", []byte("v1"))
-	batch2.Set("x1", []byte("v2")) // duplicate triggers new tick
-	batch2.Set("x2", []byte("v3"))
+	batch2.Set("x1", []byte("v1"), 0)
+	batch2.Set("x1", []byte("v2"), 0) // duplicate triggers new tick
+	batch2.Set("x2", []byte("v3"), 0)
 	iv2, err := batch2.Commit(false)
 	if err != nil {
 		t.Fatal(err)
@@ -500,11 +500,11 @@ func TestFlexDB_HLC_Persistence(t *testing.T) {
 	}
 
 	// Put a few keys; they'll get HLCs.
-	err = db.Put("pk1", []byte("pv1"))
+	err = db.Put("pk1", []byte("pv1"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = db.Put("pk2", []byte("pv2"))
+	err = db.Put("pk2", []byte("pv2"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -534,12 +534,12 @@ func TestFlexDB_HLC_Persistence(t *testing.T) {
 	}
 	defer db2.Close()
 
-	val, ok, gerr := db2.Get("pk1")
+	val, ok, _, gerr := db2.Get("pk1")
 	panicOn(gerr)
 	if !ok || string(val) != "pv1" {
 		t.Fatalf("pk1: got %q, ok=%v", val, ok)
 	}
-	val, ok, gerr = db2.Get("pk2")
+	val, ok, _, gerr = db2.Get("pk2")
 	panicOn(gerr)
 	if !ok || string(val) != "pv2" {
 		t.Fatalf("pk2: got %q, ok=%v", val, ok)
@@ -555,7 +555,7 @@ func TestFlexDB_HLC_VLOGRoundTrip(t *testing.T) {
 	}
 
 	bigVal := makeTestValue(500) // 500 bytes, well above vlogInlineThreshold
-	err = db.Put("bigkey", []byte(bigVal))
+	err = db.Put("bigkey", []byte(bigVal), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -570,7 +570,7 @@ func TestFlexDB_HLC_VLOGRoundTrip(t *testing.T) {
 	}
 	defer db2.Close()
 
-	val, ok, gerr := db2.Get("bigkey")
+	val, ok, _, gerr := db2.Get("bigkey")
 	panicOn(gerr)
 	if !ok {
 		t.Fatal("bigkey not found after reopen")
@@ -742,7 +742,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 		for i := 0; i < nKeys; i++ {
 			key := fmt.Sprintf("k%06d", i)
 			val := []byte(fmt.Sprintf("v%06d", i))
-			if err := db.Put(key, val); err != nil {
+			if err := db.Put(key, val, 0); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -767,7 +767,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 		for i := 0; i < nKeys; i++ {
 			key := fmt.Sprintf("k%06d", i)
 			expected := fmt.Sprintf("v%06d", i)
-			got, ok, gerr := db.Get(key)
+			got, ok, _, gerr := db.Get(key)
 			panicOn(gerr)
 			if !ok {
 				t.Fatalf("session 2: key %q missing after vacuum", key)
@@ -798,7 +798,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 		for i := 0; i < nKeys; i++ {
 			key := fmt.Sprintf("k%06d", i)
 			expected := fmt.Sprintf("v%06d", i)
-			got, ok, gerr := db.Get(key)
+			got, ok, _, gerr := db.Get(key)
 			panicOn(gerr)
 			if !ok {
 				t.Fatalf("session 3: key %q missing", key)
@@ -1065,7 +1065,7 @@ func TestFlexDB_IteratorDeleteAllForward(t *testing.T) {
 	})
 
 	// DB should be empty
-	val, ok, gerr := db.Get("a")
+	val, ok, _, gerr := db.Get("a")
 	panicOn(gerr)
 	if ok {
 		t.Fatalf("expected empty DB, got key 'a' val=%q", val)
@@ -1089,7 +1089,7 @@ func TestFlexDB_IteratorPutDuringForward(t *testing.T) {
 			k := it.Key()
 			got = append(got, k)
 			if k == "c" {
-				if err := rwDB.Put("d", []byte("v:d")); err != nil {
+				if err := rwDB.Put("d", []byte("v:d"), 0); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1276,7 +1276,7 @@ func TestFlexDB_IteratorDeleteAllBackward(t *testing.T) {
 	})
 
 	// DB should be empty
-	val, ok, gerr := db.Get("c")
+	val, ok, _, gerr := db.Get("c")
 	panicOn(gerr)
 	if ok {
 		t.Fatalf("expected empty DB, got key 'c' val=%q", val)
@@ -1314,7 +1314,7 @@ func TestFlexDB_IteratorHasInlineValue(t *testing.T) {
 		if v, empty, large := it.Vel(); v != nil || empty || !large {
 			t.Fatal("Vel() should return (nil, false, true) for large values")
 		}
-		val, err := it.FetchV()
+		val, _, err := it.FetchV()
 		if err != nil {
 			t.Fatalf("FetchV: %v", err)
 		}
@@ -1333,7 +1333,7 @@ func TestFlexDB_IteratorHasInlineValue(t *testing.T) {
 		if string(it.Vin()) != "tiny" {
 			t.Fatalf("Value() = %q, want 'tiny'", it.Vin())
 		}
-		val, err = it.FetchV()
+		val, _, err = it.FetchV()
 		if err != nil {
 			t.Fatalf("FetchV for inline: %v", err)
 		}
@@ -1355,7 +1355,7 @@ func TestFlexDB_IteratorHasInlineValue(t *testing.T) {
 		if string(it.Vin()) != "" {
 			t.Fatalf("Value() = %q, want empty string", it.Vin())
 		}
-		val, err = it.FetchV()
+		val, _, err = it.FetchV()
 		if err != nil {
 			t.Fatalf("FetchV for inline: %v", err)
 		}
@@ -1488,7 +1488,7 @@ func TestIterKV_LargeValue(t *testing.T) {
 		}
 
 		// Use FetchLarge to get the actual value
-		val, err := roDB.FetchLarge(kv)
+		val, _, err := roDB.FetchLarge(kv)
 		if err != nil {
 			t.Fatal(err)
 		}

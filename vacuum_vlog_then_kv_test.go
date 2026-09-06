@@ -26,7 +26,7 @@ func TestVacuumVLOG_ThenVacuumKV(t *testing.T) {
 		key := fmt.Sprintf("loadkey_%06d", i)
 		// Value > 64 bytes to force VLOG usage for some entries.
 		val := key + "_" + makeTestValue(80)
-		err := batch.Set(key, []byte(val))
+		err := batch.Set(key, []byte(val), 0)
 		if err != nil {
 			t.Fatalf("batch.Set: %v", err)
 		}

@@ -413,7 +413,7 @@ func TestFetchLarge_InlineValue(t *testing.T) {
 		t.Fatal("expected inline value, got large")
 	}
 	// FetchLarge on an inline value should return the value.
-	val, err := db.FetchLarge(&kvc.KV)
+	val, _, err := db.FetchLarge(&kvc.KV)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +429,7 @@ func TestFind_LazyLarge(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 
 	bigVal := bytes.Repeat([]byte("x"), 200)
-	panicOn(db.Put("bigkey", bigVal))
+	panicOn(db.Put("bigkey", bigVal, 0))
 	db.Sync()
 
 	// Without LAZY_LARGE: value auto-fetched
@@ -472,7 +472,7 @@ func TestFind_LazySmall(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		k := fmt.Sprintf("key%03d", i)
 		v := fmt.Sprintf("val%03d", i)
-		panicOn(db.Put(k, []byte(v)))
+		panicOn(db.Put(k, []byte(v), 0))
 	}
 	db.Sync()
 
@@ -515,7 +515,7 @@ func TestFind_LazySmall(t *testing.T) {
 
 	// LAZY_SMALL|LAZY_LARGE combined with a large value
 	bigVal := bytes.Repeat([]byte("B"), 200)
-	panicOn(db.Put("large001", bigVal))
+	panicOn(db.Put("large001", bigVal, 0))
 	db.Sync()
 
 	// equivalent to LAZY, but just to be explicit:
@@ -548,10 +548,10 @@ func TestFind_SkipValues(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		k := fmt.Sprintf("key%03d", i)
 		v := fmt.Sprintf("val%03d", i)
-		panicOn(db.Put(k, []byte(v)))
+		panicOn(db.Put(k, []byte(v), 0))
 	}
 	bigVal := bytes.Repeat([]byte("X"), 200) // > vlogInlineThreshold
-	panicOn(db.Put("large001", bigVal))
+	panicOn(db.Put("large001", bigVal, 0))
 	db.Sync()
 
 	// Find with SKIP_VALUES: inline value
@@ -611,7 +611,7 @@ func TestFind_SkipValues(t *testing.T) {
 			}
 			_ = empty
 			_ = large
-			fv, fe := it.FetchV()
+			fv, _, fe := it.FetchV()
 			if fv != nil || fe != nil {
 				t.Fatalf("FetchV should be nil with SKIP_VALUES, key=%s", it.Key())
 			}
@@ -635,7 +635,7 @@ func TestLockedIter_PutGetDelete(t *testing.T) {
 
 	err := db.Update(func(rwDB *WriteTx) error {
 		// Get existing key.
-		val, ok, gerr := rwDB.Get("key005")
+		val, ok, _, gerr := rwDB.Get("key005")
 		panicOn(gerr)
 		if !ok {
 			t.Fatal("Get key005: not found")
@@ -645,12 +645,12 @@ func TestLockedIter_PutGetDelete(t *testing.T) {
 		}
 
 		// Put a new key.
-		if err := rwDB.Put("key005a", []byte("inserted")); err != nil {
+		if err := rwDB.Put("key005a", []byte("inserted"), 0); err != nil {
 			t.Fatal(err)
 		}
 
 		// Read-your-writes: Get the just-inserted key.
-		val2, ok2, gerr2 := rwDB.Get("key005a")
+		val2, ok2, _, gerr2 := rwDB.Get("key005a")
 		panicOn(gerr2)
 		if !ok2 {
 			t.Fatal("Get key005a: not found after Put")
@@ -665,7 +665,7 @@ func TestLockedIter_PutGetDelete(t *testing.T) {
 		}
 
 		// Read-your-writes: deleted key should be gone.
-		_, ok3, gerr3 := rwDB.Get("key003")
+		_, ok3, _, gerr3 := rwDB.Get("key003")
 		panicOn(gerr3)
 		if ok3 {
 			t.Fatal("Get key003: should not be found after Delete")
@@ -713,7 +713,7 @@ func TestLockedIter_Sync(t *testing.T) {
 		}
 
 		// After sync, data should still be retrievable.
-		val, ok, gerr := rwDB.Get("key007")
+		val, ok, _, gerr := rwDB.Get("key007")
 		panicOn(gerr)
 		if !ok {
 			t.Fatal("Get key007 after Sync: not found")

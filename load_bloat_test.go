@@ -45,7 +45,7 @@ func TestLoadBloat_SpaceAmplification(t *testing.T) {
 
 	batch := db.NewBatch()
 	for i, k := range keys {
-		if err := batch.Set(k, []byte(k)); err != nil {
+		if err := batch.Set(k, []byte(k), 0); err != nil {
 			t.Fatal(err)
 		}
 		if (i+1)%1000 == 0 {

@@ -324,6 +324,7 @@ func (vl *valueLog) read(vp VPtr) ([]byte, error) {
 	if err := validateVPtrForRead(vp); err != nil {
 		return nil, err
 	}
+	// INVAR: vp.Length != rawVlenTombstone, since validateVPtrForRead(vp) would have errored out.
 
 	entrySize := vlogEntryHeaderSize + int(vp.Length)
 	buf := make([]byte, entrySize)

@@ -19,9 +19,9 @@ func TestFlexDB_BatchBasic(t *testing.T) {
 	//vv("fs = '%#v'", fs)
 
 	batch := db.NewBatch()
-	batch.Set("k1", []byte("v1"))
-	batch.Set("k2", []byte("v2"))
-	batch.Set("k3", []byte("v3"))
+	batch.Set("k1", []byte("v1"), 0)
+	batch.Set("k2", []byte("v2"), 0)
+	batch.Set("k3", []byte("v3"), 0)
 	if _, err := batch.Commit(false); err != nil {
 		t.Fatal(err)
 	}
@@ -40,8 +40,8 @@ func TestFlexDB_BatchOverwrite(t *testing.T) {
 	mustPut(t, db, "k1", "original")
 
 	batch := db.NewBatch()
-	batch.Set("k1", []byte("updated"))
-	batch.Set("k1", []byte("final"))
+	batch.Set("k1", []byte("updated"), 0)
+	batch.Set("k1", []byte("final"), 0)
 	if _, err := batch.Commit(false); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestFlexDB_BatchPersistence(t *testing.T) {
 
 	batch := db.NewBatch()
 	for i := 0; i < 100; i++ {
-		batch.Set(fmt.Sprintf("key%03d", i), []byte(fmt.Sprintf("val%03d", i)))
+		batch.Set(fmt.Sprintf("key%03d", i), []byte(fmt.Sprintf("val%03d", i)), 0)
 	}
 	if _, err := batch.Commit(false); err != nil {
 		t.Fatal(err)
@@ -107,7 +107,7 @@ func Test630_FlexDB_BatchMany(t *testing.T) {
 	for i := 0; i < n; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		val := []byte(fmt.Sprintf("val%06d", i))
-		batch.Set(key, val)
+		batch.Set(key, val, 0)
 		nWrit += len(key) + len(val)
 	}
 	if _, err := batch.Commit(false); err != nil {
@@ -215,7 +215,7 @@ func batchLoadAndReadOut(fs vfs.FS, t *testing.T, db *FlexDB, dataPath string) e
 
 		// Add the key to the batch.
 		// nil is passed for WriteOptions because options are applied at Commit.
-		if err := batch.Set(string(key), []byte{}); err != nil {
+		if err := batch.Set(string(key), []byte{}, 0); err != nil {
 			panicOn(err)
 		}
 		currentBatchCount++
@@ -271,7 +271,7 @@ func batchLoadAndReadOut(fs vfs.FS, t *testing.T, db *FlexDB, dataPath string) e
 		alwaysPrintf("bad! nLeft = %v that were not gotten back out after being put in!", nLeft)
 		i := 0
 		for k := range verify {
-			_, inDB, _ := db.Get(k) // looks like none of them are in the db.
+			_, inDB, _, _ := db.Get(k) // looks like none of them are in the db.
 
 			fmt.Printf("in but not out [%02d]: '%v'  (inDB: %v)\n", i, k, inDB)
 			i++

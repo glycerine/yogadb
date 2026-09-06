@@ -172,8 +172,8 @@ func TestFlexDB_VLOG_Delete(t *testing.T) {
 func TestFlexDB_VLOG_Batch(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	b := db.NewBatch()
-	b.Set("small", []byte("tiny"))
-	b.Set("big", []byte(makeTestValue(200)))
+	b.Set("small", []byte("tiny"), 0)
+	b.Set("big", []byte(makeTestValue(200)), 0)
 	if _, err := b.Commit(false); err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestFlexDB_VLOG_Merge(t *testing.T) {
 	mustPut(t, db, "mkey", val)
 	db.Sync()
 
-	err := db.Merge("mkey", func(old []byte, exists bool) (newValue []byte, doWrite bool, doDelete bool) {
+	err := db.Merge("mkey", func(old []byte, exists bool, oldVtyp uint64) (newValue []byte, doWrite bool, doDelete bool, newVtyp uint64) {
 		if !exists {
 			t.Fatal("Merge: key should exist")
 		}
@@ -500,7 +500,7 @@ func TestFlexDB_VLOG_DedupBatch(t *testing.T) {
 	batch := db.NewBatch()
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("bdedup_%04d", i)
-		batch.Set(key, []byte(makeTestValue(150+i)))
+		batch.Set(key, []byte(makeTestValue(150+i)), 0)
 	}
 	batch.Commit(false)
 	db.Sync()
@@ -524,7 +524,7 @@ func TestFlexDB_VLOG_DedupBatch(t *testing.T) {
 	batch2 := db.NewBatch()
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("bdedup_%04d", i)
-		batch2.Set(key, []byte(makeTestValue(150+i)))
+		batch2.Set(key, []byte(makeTestValue(150+i)), 0)
 	}
 	batch2.Commit(false)
 	db.Sync()
