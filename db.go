@@ -2623,6 +2623,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 		zc := findBuildKV(it)
 		resultKey := zc.Key
 		vtyp := zc.Vtyp()
+		valueFromCache := it.valueNeedsCopy
 
 		// Release iterator state early - we have what we need.
 		it.releaseIterState()
@@ -2634,7 +2635,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 
 		// LAZY_SMALL path: try zero-copy via cache pinning.
 		// Only works for inline values from FlexSpace (not memtable).
-		if lazySmall && !it.valueResolved && !zc.HasVPtr() && len(zc.Value) > 0 {
+		if lazySmall && valueFromCache && !zc.HasVPtr() && len(zc.Value) > 0 {
 			kvc, err = db.findBuildKVZeroCopy(resultKey)
 			if err != nil {
 				return

@@ -1,6 +1,7 @@
 package yogadb
 
 import (
+	"bytes"
 	"fmt"
 	//"os"
 	"path/filepath"
@@ -102,6 +103,60 @@ func TestFlexDB_IteratorAfterSync(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestFlexDB_IteratorGetAnySizeDoesNotPoisonInlineCache(t *testing.T) {
+	db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
+
+	records := []dbVtypFuzzRecord{
+		{
+			key:   "inline/a",
+			value: bytes.Repeat([]byte{'a'}, 64),
+			vtyp:  0x1111,
+		},
+		{
+			key:   "inline/b",
+			value: bytes.Repeat([]byte{'b'}, 64),
+			vtyp:  0x2222,
+		},
+	}
+	for _, rec := range records {
+		if err := db.Put(rec.key, rec.value, rec.vtyp); err != nil {
+			t.Fatalf("Put(%q): %v", rec.key, err)
+		}
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	if err := db.View(func(roDB *ReadOnlyTx) error {
+		it := roDB.NewIter()
+		defer it.Close()
+		for it.SeekFirst(); it.Valid(); it.Next() {
+			if _, _, _, _, err := it.GetAnySize(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("View: %v", err)
+	}
+
+	for _, rec := range records {
+		got, found, gotVtyp, err := db.Get(rec.key)
+		if err != nil {
+			t.Fatalf("Get(%q): %v", rec.key, err)
+		}
+		if !found {
+			t.Fatalf("Get(%q): not found", rec.key)
+		}
+		if !bytes.Equal(got, rec.value) {
+			t.Fatalf("Get(%q) after iteration = %q, want %q", rec.key, got, rec.value)
+		}
+		if gotVtyp != rec.vtyp {
+			t.Fatalf("Get(%q) vtyp=%#x, want %#x", rec.key, gotVtyp, rec.vtyp)
+		}
+	}
 }
 
 // TestFlexDB_ManyKeysIterator inserts many keys and verifies iterator order.

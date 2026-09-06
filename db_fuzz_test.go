@@ -87,7 +87,7 @@ func assertDBVtypFuzzRecords(t *testing.T, db *FlexDB, records []dbVtypFuzzRecor
 			t.Fatalf("%s Get(%q): not found", phase, rec.key)
 		}
 		if !bytes.Equal(got, rec.value) {
-			t.Fatalf("%s Get(%q) value len=%d bytes, want len=%d", phase, rec.key, len(got), len(rec.value))
+			t.Fatalf("%s Get(%q) value=%q, want %q", phase, rec.key, got, rec.value)
 		}
 		if gotVtyp != rec.vtyp {
 			t.Fatalf("%s Get(%q) vtyp=%#x, want %#x", phase, rec.key, gotVtyp, rec.vtyp)
@@ -117,7 +117,7 @@ func assertDBVtypFuzzRecords(t *testing.T, db *FlexDB, records []dbVtypFuzzRecor
 				continue
 			}
 			if !bytes.Equal(got, want.value) {
-				t.Fatalf("%s iterator key %q value len=%d bytes, want len=%d", phase, key, len(got), len(want.value))
+				t.Fatalf("%s iterator key %q value=%q, want %q", phase, key, got, want.value)
 			}
 			if gotVtyp != want.vtyp {
 				t.Fatalf("%s iterator key %q vtyp=%#x, want %#x", phase, key, gotVtyp, want.vtyp)

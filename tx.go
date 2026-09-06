@@ -92,6 +92,7 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 		zc := findBuildKV(it)
 		resultKey := zc.Key
 		vtyp := zc.Vtyp()
+		valueFromCache := it.valueNeedsCopy
 
 		it.Close()
 
@@ -101,7 +102,7 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 		}
 
 		// LAZY_SMALL path: try zero-copy via cache pinning.
-		if lazySmall && !it.valueResolved && !zc.HasVPtr() && len(zc.Value) > 0 {
+		if lazySmall && valueFromCache && !zc.HasVPtr() && len(zc.Value) > 0 {
 			kvc, err = tx.db.findBuildKVZeroCopy(resultKey)
 			if err != nil {
 				return
@@ -162,6 +163,7 @@ func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact
 	zc := findBuildKV(it)
 	resultKey := zc.Key
 	vtyp := zc.Vtyp()
+	valueFromCache := it.valueNeedsCopy
 
 	if skipValues {
 		kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: tx.db, Vtyp: vtyp}
@@ -169,7 +171,7 @@ func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact
 	}
 
 	// LAZY_SMALL path: try zero-copy via cache pinning.
-	if lazySmall && !it.valueResolved && !zc.HasVPtr() && len(zc.Value) > 0 {
+	if lazySmall && valueFromCache && !zc.HasVPtr() && len(zc.Value) > 0 {
 		kvc, err = tx.db.findBuildKVZeroCopy(resultKey)
 		if err != nil {
 			return
