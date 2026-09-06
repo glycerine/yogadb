@@ -648,6 +648,10 @@ func (db *FlexDB) flexCursorNextInterval(fc *flexCursor) error {
 			// If evicted, anchor.fce is nil (or a new entry). Our refcnt
 			// bump on the old entry is harmless - just undo and fall back.
 			if anchor.loadFce() == fce && !fce.loading {
+				if fce.loadErr != nil {
+					partition.releaseEntry(fce)
+					return fce.loadErr
+				}
 				if fce.count == 0 {
 					partition.releaseEntry(fce)
 					anchorIdx++

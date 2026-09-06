@@ -54,10 +54,15 @@ func (bf *bruteForce) findPos(loff uint64) int {
 }
 
 func (bf *bruteForce) isExtentSequential(ext *bruteForceExtent, loff, poff uint64, length uint32) bool {
+	if bf.MaxExtentSize == 0 {
+		return false
+	}
+	maxExtentSize := uint64(bf.MaxExtentSize)
 	return ext.Tag == 0 &&
 		ext.Poff+uint64(ext.Len) == poff &&
 		ext.Loff+uint64(ext.Len) == loff &&
-		ext.Len+length <= bf.MaxExtentSize
+		ext.Len+length <= bf.MaxExtentSize &&
+		(ext.Poff/maxExtentSize) == (poff/maxExtentSize)
 }
 
 func (bf *bruteForce) insertR(loff, poff uint64, length uint32, tag uint16) int {

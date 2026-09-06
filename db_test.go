@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/glycerine/vfs"
@@ -102,6 +104,78 @@ func mustMiss(t *testing.T, db *FlexDB, key string) {
 	if ok {
 		t.Fatalf("Get(%q) = %q, want miss", key, val)
 	}
+}
+
+func firstFlexSpaceAnchor(t *testing.T, db *FlexDB) (*dbAnchor, uint64) {
+	t.Helper()
+	return nthFlexSpaceAnchor(t, db, 0)
+}
+
+func nthFlexSpaceAnchor(t *testing.T, db *FlexDB, want int) (*dbAnchor, uint64) {
+	t.Helper()
+
+	seen := 0
+	for node := db.tree.leafHead; node != nil; node = node.next {
+		nh := memSparseIndexTreeHandler{node: node}
+		memSparseIndexTreeHandlerInfoUpdate(&nh)
+		for i := 0; i < node.count; i++ {
+			a := node.anchors[i]
+			if a == nil || a.psize == 0 {
+				continue
+			}
+			if seen == want {
+				return a, uint64(a.loff + nh.shift)
+			}
+			seen++
+		}
+	}
+	t.Fatalf("FlexSpace anchor %d not found; only saw %d anchors", want, seen)
+	return nil, 0
+}
+
+func discardAllIntervalCacheForTest(db *FlexDB) {
+	for node := db.tree.leafHead; node != nil; node = node.next {
+		for i := 0; i < node.count; i++ {
+			anchor := node.anchors[i]
+			if anchor == nil {
+				continue
+			}
+			if fce := anchor.loadFce(); fce != nil {
+				fce.anchor = nil
+				anchor.storeFce(nil)
+			}
+		}
+	}
+	for i := range db.cache.partitions {
+		p := &db.cache.partitions[i]
+		p.mu.Lock()
+		p.tick = nil
+		p.size = 0
+		p.mu.Unlock()
+	}
+}
+
+func corruptFirstFlexSpaceIntervalCRC(t *testing.T, db *FlexDB) {
+	t.Helper()
+
+	anchor, absLoff := firstFlexSpaceAnchor(t, db)
+
+	buf := make([]byte, anchor.psize)
+	n, _, err := db.ff.ReadFragmentation(buf, absLoff, uint64(anchor.psize))
+	if err != nil {
+		t.Fatalf("ReadFragmentation anchor loff=%d psize=%d: %v", absLoff, anchor.psize, err)
+	}
+	if n != int(anchor.psize) {
+		t.Fatalf("ReadFragmentation anchor loff=%d read %d bytes, want %d", absLoff, n, anchor.psize)
+	}
+	if len(buf) < slottedPageCRCSize {
+		t.Fatalf("anchor psize=%d too small to corrupt CRC", len(buf))
+	}
+	buf[len(buf)-1] ^= 0x80
+	if err := db.ff.Overwrite(buf, absLoff, uint64(len(buf))); err != nil {
+		t.Fatalf("Overwrite corrupted interval loff=%d psize=%d: %v", absLoff, len(buf), err)
+	}
+	discardAllIntervalCacheForTest(db)
 }
 
 // ====================== Tests ======================
@@ -2094,6 +2168,225 @@ func TestDeleteRange_AllGoneFastPathChecksSentinelIntervalMinimum(t *testing.T) 
 	mustMiss(t, db, "c")
 }
 
+func TestDeleteRange_ReturnsFlexSpaceDecodeError(t *testing.T) {
+	db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
+	mustPut(t, db, "a", "1")
+	mustPut(t, db, "b", "2")
+	mustPut(t, db, "c", "3")
+	if err := db.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	corruptFirstFlexSpaceIntervalCRC(t, db)
+
+	n, allGone, err := db.DeleteRange(true, "a", "c", true, true)
+	if err == nil {
+		t.Fatalf("DeleteRange returned nil error after corrupted FlexSpace interval; n=%d allGone=%v", n, allGone)
+	}
+	if allGone {
+		t.Fatal("DeleteRange took allGone fast path after corrupted FlexSpace interval")
+	}
+}
+
+func TestFlexDB_GetReportsCorruptedSlottedInterval(t *testing.T) {
+	db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
+	mustPut(t, db, "a", "1")
+	mustPut(t, db, "b", "2")
+	if err := db.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	corruptFirstFlexSpaceIntervalCRC(t, db)
+
+	val, found, _, err := db.Get("a")
+	if err == nil {
+		t.Fatalf("Get returned nil error after corrupted FlexSpace interval; found=%v val=%q", found, val)
+	}
+}
+
+func TestFlexDB_GetLoadErrorReleasesCacheEntry(t *testing.T) {
+	db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
+	mustPut(t, db, "a", "1")
+	mustPut(t, db, "b", "2")
+	if err := db.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	anchor, _ := firstFlexSpaceAnchor(t, db)
+	origPsize := anchor.psize
+	discardAllIntervalCacheForTest(db)
+	anchor.psize = origPsize + 1
+	defer func() {
+		anchor.psize = origPsize
+		discardAllIntervalCacheForTest(db)
+	}()
+
+	_, found, _, err := db.Get("a")
+	if err == nil {
+		t.Fatalf("Get returned nil error after oversized anchor psize; found=%v", found)
+	}
+	fce := anchor.loadFce()
+	if fce == nil {
+		t.Fatal("expected failed load to leave a cache entry recording the load error")
+	}
+	if fce.loadErr == nil {
+		t.Fatal("failed load cache entry did not record loadErr")
+	}
+	if got := atomic.LoadInt32(&fce.refcnt); got != 0 {
+		t.Fatalf("failed load cache entry refcnt = %d, want 0 after Get returns error", got)
+	}
+}
+
+func TestFlexDB_IteratorReportsCachedLoadErrorOnForwardAdvance(t *testing.T) {
+	db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
+	val := bytes.Repeat([]byte("v"), int(vlogInlineThreshold))
+	for i := 0; i < 300; i++ {
+		key := fmt.Sprintf("k%04d", i)
+		if err := db.Put(key, val, 0); err != nil {
+			t.Fatalf("Put(%q): %v", key, err)
+		}
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _ = firstFlexSpaceAnchor(t, db)
+	badAnchor, _ := nthFlexSpaceAnchor(t, db, 1)
+	discardAllIntervalCacheForTest(db)
+
+	badErr := errors.New("cached load failure for test")
+	badPartition := db.cache.getPartition(badAnchor)
+	badFCE := &intervalCacheEntry{anchor: badAnchor, loadErr: badErr}
+	badPartition.mu.Lock()
+	badAnchor.storeFce(badFCE)
+	badPartition.insertIntoClock(badFCE)
+	badPartition.size += 32
+	badPartition.mu.Unlock()
+	defer discardAllIntervalCacheForTest(db)
+
+	err := db.View(func(ro *ReadOnlyTx) error {
+		it := ro.NewIter()
+		it.SeekFirst()
+		for it.Valid() {
+			it.Next()
+		}
+		return nil
+	})
+	if !errors.Is(err, badErr) {
+		t.Fatalf("iterator View error = %v, want cached load error %v", err, badErr)
+	}
+	if got := atomic.LoadInt32(&badFCE.refcnt); got != 0 {
+		t.Fatalf("cached load error entry refcnt = %d, want 0 after iterator returns error", got)
+	}
+}
+
+func TestFlexDB_SyncReturnsErrorWhenInitialFlexSpaceInsertFails(t *testing.T) {
+	fs, dir := newTestFS(t)
+	db, err := OpenFlexDB(dir, &Config{
+		FS:                     fs,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB: %v", err)
+	}
+
+	anchor := db.tree.root.anchors[0]
+	origLoff := anchor.loff
+	origPSize := anchor.psize
+	defer db.Close()
+	defer func() {
+		anchor.loff = origLoff
+		anchor.psize = origPSize
+		anchor.unsorted = 0
+		discardAllIntervalCacheForTest(db)
+		db.mt.bt.Clear()
+		db.mt.empty = true
+		db.mt.size = 0
+	}()
+
+	if err := db.Put("a", []byte("value"), 0); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	anchor.loff = 1 // makes putPassthroughInitial call ff.Insert past MaxLoff.
+	syncErr, panicked := func() (err error, panicked bool) {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("panic: %v", r)
+				panicked = true
+			}
+		}()
+		err = db.Sync()
+		return err, false
+	}()
+	if panicked {
+		t.Fatalf("Sync panicked after FlexSpace Insert failed; want returned error: %v", syncErr)
+	}
+	if syncErr == nil {
+		t.Fatal("Sync returned nil after FlexSpace Insert failed")
+	}
+	if !strings.Contains(syncErr.Error(), "putPassthroughInitial") ||
+		!strings.Contains(syncErr.Error(), "insert") {
+		t.Fatalf("Sync error = %v, want putPassthroughInitial insert context", syncErr)
+	}
+	if got := db.ff.Size(); got != 0 {
+		t.Fatalf("FlexSpace size = %d after failed initial insert, want 0", got)
+	}
+	if anchor.psize != origPSize {
+		t.Fatalf("anchor psize = %d after failed initial insert, want %d", anchor.psize, origPSize)
+	}
+	if fce := anchor.loadFce(); fce != nil && (fce.count != 0 || fce.dirty) {
+		t.Fatalf("failed initial insert left cache entry count=%d dirty=%v, want empty clean entry", fce.count, fce.dirty)
+	}
+}
+
+func TestFlexDB_VacuumVLOGReturnsFlexSpaceUpdateError(t *testing.T) {
+	fs, dir := newTestFS(t)
+	db, err := OpenFlexDB(dir, &Config{
+		FS:                     fs,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB: %v", err)
+	}
+
+	largeVal := bytes.Repeat([]byte("x"), int(vlogInlineThreshold)+1)
+	if err := db.Put("big", largeVal, 0); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	anchor, _ := firstFlexSpaceAnchor(t, db)
+	fce := anchor.loadFce()
+	if fce == nil || fce.count != 1 || !fce.kvs[0].HasVPtr() {
+		t.Fatalf("expected cached VLOG interval, fce=%#v", fce)
+	}
+	origPSize := anchor.psize
+	origKVs := append([]KV(nil), fce.kvs[:fce.count]...)
+	defer db.Close()
+	defer func() {
+		anchor.psize = origPSize
+		copy(fce.kvs, origKVs)
+		discardAllIntervalCacheForTest(db)
+	}()
+
+	anchor.psize = origPSize + 1 // cached load succeeds, but ff.Update is out of range.
+	stats, err := db.VacuumVLOG()
+	if err == nil {
+		t.Fatalf("VacuumVLOG returned nil after FlexSpace Update failed; stats=%v", stats)
+	}
+	if !strings.Contains(err.Error(), "vacuum: update FlexSpace") {
+		t.Fatalf("VacuumVLOG error = %v, want update FlexSpace context", err)
+	}
+	if stats.EntriesCopied != 0 || stats.IntervalsRewritten != 0 {
+		t.Fatalf("VacuumVLOG stats after failed update = copied %d rewritten %d, want 0/0",
+			stats.EntriesCopied, stats.IntervalsRewritten)
+	}
+	if got, want := fce.kvs[0].Vptr, origKVs[0].Vptr; got != want {
+		t.Fatalf("cached VPtr changed after failed VacuumVLOG update: got %+v want %+v", got, want)
+	}
+}
+
 // ====================== DeleteRange includeLarge Tests ======================
 
 func TestDeleteRange_SkipLargeValues(t *testing.T) {
@@ -2318,6 +2611,24 @@ func TestClear(t *testing.T) {
 		}
 		if string(val) != bigVal {
 			t.Fatalf("wrong value for 'y'")
+		}
+	})
+
+	t.Run("clear_small_returns_flexspace_decode_error", func(t *testing.T) {
+		db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
+		mustPut(t, db, "a", "small1")
+		mustPut(t, db, "b", "small2")
+		if err := db.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		corruptFirstFlexSpaceIntervalCRC(t, db)
+
+		allGone, err := db.Clear(false)
+		if err == nil {
+			t.Fatalf("Clear(false) returned nil error after corrupted FlexSpace interval; allGone=%v", allGone)
+		}
+		if allGone {
+			t.Fatal("Clear(false) returned allGone=true")
 		}
 	})
 

@@ -264,7 +264,12 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 			// Memtable full - flush inline.
 			mt.logFlushLocked()
 
-			db.flushMemtable()
+			if err := db.flushMemtable(); err != nil {
+				return HLCInterval{}, nil, fmt.Errorf("flexdb: batch flush memtable: %w", err)
+			}
+			if err := db.cache.flushDirtyPages(); err != nil {
+				return HLCInterval{}, nil, fmt.Errorf("flexdb: batch flush dirty pages: %w", err)
+			}
 			db.persistCounters()
 			db.ff.Sync()
 
@@ -1077,15 +1082,21 @@ func (db *FlexDB) Close() *Metrics {
 	// Flush any data that is still in the memtable.
 	if !db.mt.empty {
 		db.mt.logFlush()
-		db.flushMemtable()
-		db.cache.flushDirtyPages()
+		if err := db.flushMemtable(); err != nil {
+			panicf("Close flush memtable: %v", err)
+		}
+		if err := db.cache.flushDirtyPages(); err != nil {
+			panicf("Close flush dirty pages: %v", err)
+		}
 		db.persistCounters()
 		db.ff.Sync()
 		db.verifyAnchorTags()
 	} else {
 		// Even without new memtable data, flush any dirty cache entries
 		// that were modified earlier but not yet written.
-		db.cache.flushDirtyPages()
+		if err := db.cache.flushDirtyPages(); err != nil {
+			panicf("Close flush dirty pages: %v", err)
+		}
 		db.persistCounters()
 		db.ff.Sync()
 		db.verifyAnchorTags()
@@ -1489,7 +1500,9 @@ func (db *FlexDB) VacuumVLOG() (*VacuumVLOGStats, error) {
 	stats := &VacuumVLOGStats{}
 
 	// Flush memtable so all live VPtrs are in FlexSpace.
-	db.writeLockHeldSync()
+	if err := db.writeLockHeldSync(); err != nil {
+		return stats, fmt.Errorf("vacuum: sync before vacuum: %w", err)
+	}
 
 	// Exclusive access to FlexSpace and memtable by topMutRW
 
@@ -1535,13 +1548,16 @@ func (db *FlexDB) VacuumVLOG() (*VacuumVLOGStats, error) {
 				continue
 			}
 
-			// Copy live VPtr values to new VLOG and update VPtrs.
-			for i := 0; i < fce.count; i++ {
-				if !fce.kvs[i].HasVPtr() {
+			// Copy live VPtr values to new VLOG and update VPtrs in a temporary
+			// slice. The cache is updated only after FlexSpace accepts the rewrite.
+			updated := append([]KV(nil), fce.kvs[:fce.count]...)
+			intervalEntriesCopied := int64(0)
+			for i := 0; i < len(updated); i++ {
+				if !updated[i].HasVPtr() {
 					continue
 				}
 				// Read value from old VLOG.
-				val, err := db.vlog.read(fce.kvs[i].Vptr)
+				val, err := db.vlog.read(updated[i].Vptr)
 				if err != nil {
 					partition.releaseEntry(fce)
 					newVL.close()
@@ -1556,23 +1572,31 @@ func (db *FlexDB) VacuumVLOG() (*VacuumVLOGStats, error) {
 					db.vfs.Remove(newPath)
 					return stats, fmt.Errorf("vacuum: append new VLOG: %w", err)
 				}
-				fce.kvs[i].Vptr = newVP
-				stats.EntriesCopied++
+				updated[i].Vptr = newVP
+				intervalEntriesCopied++
 			}
 
 			// Re-encode the entire interval as a slotted page and rewrite
 			// in FlexSpace. Using slotted page format (same as all other
 			// write paths) avoids the kv128/slotted format mismatch that
 			// caused bloat on subsequent loads.
-			buf := slottedPageEncode(fce.kvs[:fce.count])
+			buf := slottedPageEncode(updated)
 			newPSize := uint32(len(buf))
-			db.ff.Update(buf, anchorLoff, uint64(newPSize), uint64(anchor.psize))
+			if _, err := db.ff.Update(buf, anchorLoff, uint64(newPSize), uint64(anchor.psize)); err != nil {
+				partition.releaseEntry(fce)
+				newVL.close()
+				db.vfs.Remove(newPath)
+				return stats, fmt.Errorf("vacuum: update FlexSpace anchor key=%q loff=%d oldPSize=%d newPSize=%d maxLoff=%d: %w",
+					anchor.key, anchorLoff, anchor.psize, newPSize, db.ff.tree.MaxLoff, err)
+			}
+			copy(fce.kvs[:fce.count], updated)
 			if newPSize != anchor.psize {
 				nh.idx = ai
 				nh.shiftUpPropagate(int64(newPSize) - int64(anchor.psize))
 				anchor.psize = newPSize
 			}
 			anchor.unsorted = 0
+			stats.EntriesCopied += intervalEntriesCopied
 			stats.IntervalsRewritten++
 			partition.releaseEntry(fce)
 		}
@@ -2261,8 +2285,12 @@ func (db *FlexDB) writeLockHeldSync() error {
 	} else {
 		db.mt.logSync() // flush + fdatasync. here in FlexDB.Sync()
 	}
-	db.flushMemtable()
-	db.cache.flushDirtyPages()
+	if err := db.flushMemtable(); err != nil {
+		return fmt.Errorf("flexdb: Sync flush memtable: %w", err)
+	}
+	if err := db.cache.flushDirtyPages(); err != nil {
+		return fmt.Errorf("flexdb: Sync flush dirty pages: %w", err)
+	}
 	db.persistCounters()
 	db.ff.Sync() // fsyncs FLEXSPACE.KV128.BLOCKS
 	db.maybePiggybackGC()
@@ -2414,7 +2442,12 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, vtyp uint64, doDele
 	if db.mt.size >= memtableCap {
 		// Inline flush when memtable is full.
 		db.mt.logFlush()
-		db.flushMemtable()
+		if err := db.flushMemtable(); err != nil {
+			return fmt.Errorf("flexdb: Put inline flush memtable: %w", err)
+		}
+		if err := db.cache.flushDirtyPages(); err != nil {
+			return fmt.Errorf("flexdb: Put inline flush dirty pages: %w", err)
+		}
 		db.persistCounters()
 		db.ff.Sync()
 
@@ -3262,8 +3295,8 @@ func (db *FlexDB) deleteRangeFlexSpace(begKey, endKey string, begInclusive, endI
 			// Decode interval directly from FlexSpace (no cache).
 			kvs, err := db.decodeIntervalDirect(anchor, uint64(anchor.loff+shift))
 			if err != nil {
-				anchorIdx++
-				continue
+				return n, fmt.Errorf("deleteRangeFlexSpace: decode interval key=%q loff=%d psize=%d: %w",
+					anchor.key, uint64(anchor.loff+shift), anchor.psize, err)
 			}
 
 			// Process each KV in this interval.
@@ -3380,8 +3413,8 @@ func (db *FlexDB) deleteRangeFlexSpaceClearSmall() (int64, error) {
 
 			kvs, err := db.decodeIntervalDirect(anchor, uint64(anchor.loff+shift))
 			if err != nil {
-				anchorIdx++
-				continue
+				return n, fmt.Errorf("deleteRangeFlexSpaceClearSmall: decode interval key=%q loff=%d psize=%d: %w",
+					anchor.key, uint64(anchor.loff+shift), anchor.psize, err)
 			}
 
 			for _, kv := range kvs {
@@ -3435,16 +3468,16 @@ func (db *FlexDB) decodeIntervalDirect(anchor *dbAnchor, anchorLoff uint64) ([]K
 	src := buf
 	if slottedPageIsSlotted(src) {
 		decoded, consumed, err := slottedPageDecode(src)
-		if err == nil {
-			kvs = append(kvs, decoded...)
-			src = src[consumed:]
-		} else {
-			src = nil
+		if err != nil {
+			return nil, fmt.Errorf("decodeIntervalDirect: slotted page decode loff=%d psize=%d: %w",
+				anchorLoff, anchor.psize, err)
 		}
+		kvs = append(kvs, decoded...)
+		src = src[consumed:]
 	}
 	// All KV.SLOT_BLOCKS data should be slotted page format.
 	if len(src) > 0 {
-		panicf("decodeIntervalDirect: unexpected non-slotted data at loff=%d, %d trailing bytes, first 16 bytes: %x",
+		return nil, fmt.Errorf("decodeIntervalDirect: unexpected non-slotted data at loff=%d, %d trailing bytes, first 16 bytes: %x",
 			anchorLoff, len(src), src[:min(len(src), 16)])
 	}
 
@@ -3578,6 +3611,7 @@ func (db *FlexDB) getPassthrough(key string) (val []byte, found bool, vtyp uint6
 	partition := db.cache.getPartition(anchor)
 	fce, err := partition.getEntry(anchor, anchorLoff, db)
 	if err != nil {
+		partition.releaseEntry(fce)
 		return nil, false, 0, err
 	}
 	defer partition.releaseEntry(fce)
@@ -3611,6 +3645,7 @@ func (db *FlexDB) getPassthroughKV(key string) (KV, bool, error) {
 	partition := db.cache.getPartition(anchor)
 	fce, err := partition.getEntry(anchor, anchorLoff, db)
 	if err != nil {
+		partition.releaseEntry(fce)
 		return KV{}, false, err
 	}
 	defer partition.releaseEntry(fce)
@@ -3637,12 +3672,19 @@ func (db *FlexDB) putPassthrough(kv KV, nh *memSparseIndexTreeHandler) error {
 
 	// First write to this anchor: allocate a fixed-size page via Insert.
 	if anchor.psize == 0 {
-		db.putPassthroughInitial(kv, nh, anchor, partition, fce)
+		err = db.putPassthroughInitial(kv, nh, anchor, partition, fce)
 	} else {
-		db.putPassthroughR(kv, nh, anchor, partition, fce)
+		err = db.putPassthroughR(kv, nh, anchor, partition, fce)
+	}
+	if err != nil {
+		partition.releaseEntry(fce)
+		return err
 	}
 	if fce.count >= flexdbSparseIntervalCount {
-		db.treeInsertAnchor(nh, partition, fce)
+		if err := db.treeInsertAnchor(nh, partition, fce); err != nil {
+			partition.releaseEntry(fce)
+			return err
+		}
 	}
 	partition.releaseEntry(fce)
 	return nil
@@ -3650,40 +3692,42 @@ func (db *FlexDB) putPassthrough(kv KV, nh *memSparseIndexTreeHandler) error {
 
 // putPassthroughInitial handles the first write to an anchor: allocates a
 // fixed-size slottedPageMaxSize page via ff.Insert and populates the cache.
-func (db *FlexDB) putPassthroughInitial(kv KV, nh *memSparseIndexTreeHandler, anchor *dbAnchor, partition *intervalCachePartition, fce *intervalCacheEntry) {
+func (db *FlexDB) putPassthroughInitial(kv KV, nh *memSparseIndexTreeHandler, anchor *dbAnchor, partition *intervalCachePartition, fce *intervalCacheEntry) error {
 	anchorLoff := uint64(anchor.loff + nh.shift)
 
-	// Insert into cache.
 	idx, eq := intervalCacheEntryFindKeyGE(fce, kv.Key)
-	if eq {
-		partition.cacheEntryReplace(fce, kv, idx)
-	} else {
-		partition.cacheEntryInsert(fce, kv, idx)
-	}
+	kvs, fps, size := intervalCacheEntryPreviewUpsert(fce, kv, idx, eq)
 
 	// Encode as tight (unpadded) page. Padding to slottedPageMaxSize is deferred
 	// until the first dirty flush that needs to grow the page, at which point
 	// flushDirtyPages uses ff.Update to resize to slottedPageMaxSize.
 	// This avoids ~47% space waste for pages that are never updated after initial flush.
-	buf := slottedPageEncode(fce.kvs[:fce.count])
+	buf := slottedPageEncode(kvs)
 	psize := uint32(len(buf))
 
-	db.ff.Insert(buf, anchorLoff, uint64(psize))
+	if _, err := db.ff.Insert(buf, anchorLoff, uint64(psize)); err != nil {
+		return fmt.Errorf("putPassthroughInitial insert anchor key=%q loff=%d psize=%d maxLoff=%d: %w",
+			anchor.key, anchorLoff, psize, db.ff.tree.MaxLoff, err)
+	}
+
+	tag := flexdbTagGenerate(true, 0)
+	if err := db.ff.SetTag(anchorLoff, tag); err != nil {
+		return fmt.Errorf("putPassthroughInitial set tag anchor key=%q loff=%d psize=%d maxLoff=%d: %w",
+			anchor.key, anchorLoff, psize, db.ff.tree.MaxLoff, err)
+	}
+
+	partition.replaceEntryContents(fce, kvs, fps, size)
 	nh.shiftUpPropagate(int64(psize))
 	anchor.psize = psize
 	anchor.unsorted = 0
 
-	tag := flexdbTagGenerate(true, 0)
-	if err := db.ff.SetTag(anchorLoff, tag); err != nil {
-		panicf("putPassthroughInitial: SetTag anchorLoff=%d: %v", anchorLoff, err)
-	}
-
 	if nh.node.parent != nil {
 		memSparseIndexTreeNodeRebase(nh.node)
 	}
+	return nil
 }
 
-func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *dbAnchor, partition *intervalCachePartition, fce *intervalCacheEntry) {
+func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *dbAnchor, partition *intervalCachePartition, fce *intervalCacheEntry) error {
 	idx, eq := intervalCacheEntryFindKeyGE(fce, kv.Key)
 
 	// Check if the new KV would fit. For pages smaller than slottedPageMaxSize
@@ -3704,34 +3748,49 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 			// inflate delta encoding). Instead of splitting (which would
 			// allocate a new 4MB block for a half-page of data), grow the
 			// page in-place via ff.Update (collapse old + insert new).
-			partition.cacheEntryReplace(fce, kv, idx)
-			newSize := slottedPageComputeSize(fce.kvs[:fce.count])
+			kvs, fps, size := intervalCacheEntryPreviewUpsert(fce, kv, idx, eq)
+			newSize := slottedPageComputeSize(kvs)
 			if newSize > int(anchor.psize) && newSize < 2*slottedPageMaxSize {
 				// Page genuinely grew - resize the extent in place.
-				buf := slottedPageEncode(fce.kvs[:fce.count])
+				buf := slottedPageEncode(kvs)
 				anchorLoff := uint64(anchor.loff + nh.shift)
 				//alwaysPrintf("putPassthroughR Update: oldPsize=%d newSize=%d key=%q",
 				//	anchor.psize, len(buf), kv.Key)
-				db.ff.Update(buf, anchorLoff, uint64(len(buf)), uint64(anchor.psize))
+				if _, err := db.ff.Update(buf, anchorLoff, uint64(len(buf)), uint64(anchor.psize)); err != nil {
+					return fmt.Errorf("putPassthroughR update anchor key=%q loff=%d oldPSize=%d newPSize=%d maxLoff=%d: %w",
+						anchor.key, anchorLoff, anchor.psize, len(buf), db.ff.tree.MaxLoff, err)
+				}
+				partition.replaceEntryContents(fce, kvs, fps, size)
 				nh.shiftUpPropagate(int64(len(buf)) - int64(anchor.psize))
 				anchor.psize = uint32(len(buf))
 				fce.dirty = false // just written
 				fce.dirtyNode = nil
 			} else if newSize >= 2*slottedPageMaxSize {
 				// Pathological growth - fall through to split.
-				db.treeInsertAnchor(nh, partition, fce)
+				snap := partition.snapshotEntry(fce)
+				partition.replaceEntryContents(fce, kvs, fps, size)
+				if err := db.treeInsertAnchor(nh, partition, fce); err != nil {
+					partition.restoreEntry(fce, snap)
+					return err
+				}
 				db.putPassthroughMarkDirty(nh, anchor, fce)
 			} else {
 				// Fits after replace (e.g., new value is smaller).
+				partition.replaceEntryContents(fce, kvs, fps, size)
 				db.putPassthroughMarkDirty(nh, anchor, fce)
 			}
-			return
+			return nil
 		}
 		// Inserting a new key - page genuinely full. Split.
-		partition.cacheEntryInsert(fce, kv, idx)
-		db.treeInsertAnchor(nh, partition, fce)
+		kvs, fps, size := intervalCacheEntryPreviewUpsert(fce, kv, idx, eq)
+		snap := partition.snapshotEntry(fce)
+		partition.replaceEntryContents(fce, kvs, fps, size)
+		if err := db.treeInsertAnchor(nh, partition, fce); err != nil {
+			partition.restoreEntry(fce, snap)
+			return err
+		}
 		db.putPassthroughMarkDirty(nh, anchor, fce)
-		return
+		return nil
 	}
 
 	// Update cache entry.
@@ -3743,6 +3802,7 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 
 	// Mark dirty - will be written to disk on Sync or eviction.
 	db.putPassthroughMarkDirty(nh, anchor, fce)
+	return nil
 }
 
 // putPassthroughMarkDirty marks fce as dirty so it will be written to disk
@@ -3753,13 +3813,14 @@ func (db *FlexDB) putPassthroughMarkDirty(nh *memSparseIndexTreeHandler, anchor 
 	anchor.unsorted = 0
 }
 
-func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *intervalCachePartition, fce *intervalCacheEntry) {
+func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *intervalCachePartition, fce *intervalCacheEntry) error {
 	anchor := nh.node.anchors[nh.idx]
 	anchorLoff := uint64(anchor.loff + nh.shift)
 
 	count := fce.count
 	rightCount := count / 2
 	leftCount := count - rightCount
+	oldPSize := anchor.psize
 
 	// Left half: encode and Update if psize changed.
 	var leftBuf []byte
@@ -3769,10 +3830,11 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 		leftBuf = slottedPageEncode(fce.kvs[:leftCount])
 	}
 	leftPSize := uint32(len(leftBuf))
-	if leftPSize != anchor.psize {
-		db.ff.Update(leftBuf, anchorLoff, uint64(leftPSize), uint64(anchor.psize))
-		nh.shiftUpPropagate(int64(leftPSize) - int64(anchor.psize))
-		anchor.psize = leftPSize
+	if leftPSize != oldPSize {
+		if _, err := db.ff.Update(leftBuf, anchorLoff, uint64(leftPSize), uint64(oldPSize)); err != nil {
+			return fmt.Errorf("treeInsertAnchor update left anchor key=%q loff=%d oldPSize=%d newPSize=%d maxLoff=%d: %w",
+				anchor.key, anchorLoff, oldPSize, leftPSize, db.ff.tree.MaxLoff, err)
+		}
 	}
 	// Left fce will be marked dirty by caller (putPassthroughMarkDirty or
 	// putPassthroughR's split path). Content written on flush.
@@ -3785,8 +3847,28 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 		rightBuf = slottedPageEncode(fce.kvs[leftCount:fce.count])
 	}
 	rightPSize := uint32(len(rightBuf))
-	newAnchorLoff := anchorLoff + uint64(anchor.psize)
-	db.ff.Insert(rightBuf, newAnchorLoff, uint64(rightPSize))
+	newAnchorLoff := anchorLoff + uint64(leftPSize)
+	newAnchorKey := fce.kvs[leftCount].Key
+	if _, err := db.ff.Insert(rightBuf, newAnchorLoff, uint64(rightPSize)); err != nil {
+		return fmt.Errorf("treeInsertAnchor insert right anchor key=%q loff=%d psize=%d maxLoff=%d: %w",
+			newAnchorKey, newAnchorLoff, rightPSize, db.ff.tree.MaxLoff, err)
+	}
+
+	// Tag both anchors in FlexSpace before advancing sparse-index/cache state.
+	tag := flexdbTagGenerate(true, 0)
+	if err := db.ff.SetTag(anchorLoff, tag); err != nil {
+		return fmt.Errorf("treeInsertAnchor set left tag anchor key=%q loff=%d psize=%d maxLoff=%d: %w",
+			anchor.key, anchorLoff, leftPSize, db.ff.tree.MaxLoff, err)
+	}
+	if err := db.ff.SetTag(newAnchorLoff, tag); err != nil {
+		return fmt.Errorf("treeInsertAnchor set right tag anchor key=%q loff=%d psize=%d maxLoff=%d: %w",
+			newAnchorKey, newAnchorLoff, rightPSize, db.ff.tree.MaxLoff, err)
+	}
+
+	if leftPSize != oldPSize {
+		nh.shiftUpPropagate(int64(leftPSize) - int64(oldPSize))
+		anchor.psize = leftPSize
+	}
 	nh.shiftUpPropagate(int64(rightPSize))
 
 	// Compute left/right sizes for cache.
@@ -3795,7 +3877,6 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 		leftSize += kvSizeApprox(&fce.kvs[i])
 	}
 
-	newAnchorKey := fce.kvs[leftCount].Key
 	nh.idx++
 	newAnchor := nh.handlerInsert(newAnchorKey, newAnchorLoff, rightPSize)
 	nh.idx--
@@ -3829,14 +3910,7 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 
 	newPartition.releaseEntry(newFce)
 
-	// Tag both anchors in FlexSpace
-	tag := flexdbTagGenerate(true, 0)
-	if err := db.ff.SetTag(anchorLoff, tag); err != nil {
-		panicf("treeInsertAnchor: SetTag left anchorLoff=%d: %v", anchorLoff, err)
-	}
-	if err := db.ff.SetTag(newAnchorLoff, tag); err != nil {
-		panicf("treeInsertAnchor: SetTag right newAnchorLoff=%d: %v", newAnchorLoff, err)
-	}
+	return nil
 }
 
 // verifyAnchorTags walks the sparse index tree and verifies that every anchor
@@ -3976,77 +4050,6 @@ A: Here's the chain of invariants:
 
 	The tag bit-width is not the safety mechanism. The quota check in getEntryUnsorted is.
 */
-// clampAnchorPsizes walks the sparse index tree and fixes any anchor
-// whose psize exceeds slottedPageMaxSize. This handles the case where
-// recovery computed psize from tag distances and a tag was missing
-// (e.g. a split's right-half tag was lost). The over-sized anchor
-// actually contains multiple slottedPageMaxSize pages; we split them
-// into separate anchors by reading the first key of each sub-page.
-func (db *FlexDB) clampAnchorPsizes() {
-	leaf := db.tree.leafHead
-	for leaf != nil {
-		for i := 0; i < leaf.count; i++ {
-			anchor := leaf.anchors[i]
-			if anchor == nil || anchor.psize <= uint32(slottedPageMaxSize) {
-				continue
-			}
-
-			// Compute absolute loff for this anchor.
-			shift := int64(0)
-			n := leaf
-			for n.parent != nil {
-				shift += n.parent.children[n.parentID].shift
-				n = n.parent
-			}
-			absLoff := uint64(anchor.loff + shift)
-
-			alwaysPrintf("clampAnchorPsizes: anchor key=%q loff=%d absLoff=%d psize=%d > slottedPageMaxSize=%d; splitting into sub-anchors",
-				anchor.key, anchor.loff, absLoff, anchor.psize, slottedPageMaxSize)
-
-			// Read the over-sized interval and split into slottedPageMaxSize chunks.
-			remaining := uint64(anchor.psize)
-			subLoff := absLoff + uint64(slottedPageMaxSize) // skip first page (current anchor)
-			remaining -= uint64(slottedPageMaxSize)
-			anchor.psize = uint32(slottedPageMaxSize)
-
-			var nh memSparseIndexTreeHandler
-			for remaining >= uint64(slottedPageMaxSize) {
-				// Read first key of this sub-page.
-				buf := make([]byte, slottedPageMaxSize)
-				nn, err := db.ff.Read(buf, subLoff, uint64(slottedPageMaxSize))
-				if err != nil || nn != slottedPageMaxSize {
-					alwaysPrintf("clampAnchorPsizes: read at loff=%d failed: n=%d err=%v; stopping", subLoff, nn, err)
-					break
-				}
-				subKey, ok := slottedPageFirstKey(buf)
-				if !ok {
-					alwaysPrintf("clampAnchorPsizes: no first key at loff=%d; stopping", subLoff)
-					break
-				}
-
-				// Insert a new anchor for this sub-page.
-				db.tree.findAnchorPos(subKey, &nh)
-				nh.idx++
-				newAnchor := nh.handlerInsert(subKey, subLoff, uint32(slottedPageMaxSize))
-				_ = newAnchor
-				nh.idx--
-
-				// Set the tag on this extent.
-				tag := flexdbTagGenerate(true, 0)
-				db.ff.SetTag(subLoff, tag)
-
-				subLoff += uint64(slottedPageMaxSize)
-				remaining -= uint64(slottedPageMaxSize)
-			}
-
-			// Re-scan this leaf since we may have inserted anchors.
-			// Just restart from the beginning of this leaf.
-			i = -1 // will be incremented to 0
-		}
-		leaf = leaf.next
-	}
-}
-
 // rebuildAnchorsFromTags walks all FlexTree extents, finds anchor tags,
 // and rebuilds the sparse index tree from scratch. Called by recovery()
 // on open and by VacuumKV after compaction. Caller must hold topMutRW.
@@ -4324,11 +4327,13 @@ func (db *FlexDB) safeDoFlush() {
 			}
 		}()
 	}
-	db.doFlush()
+	if err := db.doFlush(); err != nil {
+		panicf("flushWorker: doFlush: %v", err)
+	}
 }
 
 // only called by the flushWorker goroutine.
-func (db *FlexDB) doFlush() {
+func (db *FlexDB) doFlush() error {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 
@@ -4339,7 +4344,7 @@ func (db *FlexDB) doFlush() {
 	}
 
 	if db.mt.empty {
-		return
+		return nil
 	}
 
 	// Flush WAL to disk
@@ -4347,8 +4352,12 @@ func (db *FlexDB) doFlush() {
 	panicOn(db.mt.memWalFD.Sync())
 
 	// Flush memtable to FlexSpace
-	db.flushMemtable()
-	db.cache.flushDirtyPages()
+	if err := db.flushMemtable(); err != nil {
+		return fmt.Errorf("doFlush flush memtable: %w", err)
+	}
+	if err := db.cache.flushDirtyPages(); err != nil {
+		return fmt.Errorf("doFlush flush dirty pages: %w", err)
+	}
 	db.persistCounters()
 	db.ff.Sync()
 	db.maybePiggybackGC()
@@ -4362,19 +4371,22 @@ func (db *FlexDB) doFlush() {
 	db.mt.empty = true
 	db.mt.size = 0
 	db.flushSeq++
+	return nil
 }
 
-func (db *FlexDB) flushMemtable() {
+func (db *FlexDB) flushMemtable() error {
 	m := &db.mt
 	var nh memSparseIndexTreeHandler
 	batch := make([]KV, 0, memtableFlushBatch)
+	var err error
 
 	m.bt.Ascend(KV{}, func(item KV) bool {
 		batch = append(batch, item)
 		if len(batch) >= memtableFlushBatch {
 			for _, kv := range batch {
-				if err := db.putPassthrough(kv, &nh); err != nil {
-					panicf("flushMemtable: putPassthrough: %v", err)
+				if err = db.putPassthrough(kv, &nh); err != nil {
+					err = fmt.Errorf("putPassthrough key=%q: %w", kv.Key, err)
+					return false
 				}
 				nh.node = nil // reset hint after each for simplicity
 			}
@@ -4382,12 +4394,16 @@ func (db *FlexDB) flushMemtable() {
 		}
 		return true
 	})
+	if err != nil {
+		return err
+	}
 	for _, kv := range batch {
-		if err := db.putPassthrough(kv, &nh); err != nil {
-			panicf("flushMemtable: putPassthrough: %v", err)
+		if err = db.putPassthrough(kv, &nh); err != nil {
+			return fmt.Errorf("putPassthrough key=%q: %w", kv.Key, err)
 		}
 		nh.node = nil
 	}
+	return nil
 }
 
 // syncDir opens the directory at path and fsyncs it so that newly

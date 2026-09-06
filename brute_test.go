@@ -73,6 +73,7 @@ Adjacent extents merge into one when ALL of these hold:
 2. Logically contiguous: `prev.Loff + prev.Len == new.Loff`
 3. Combined size ≤ MaxExtentSize
 4. Tag == 0 (only untagged extents merge)
+5. Physical offsets are in the same MaxExtentSize bin
 
 This is an optimization, not a semantic requirement - merging reduces extent count
 but doesn't change the logical-to-physical mapping.
@@ -428,9 +429,7 @@ func checkNoMergeableNeighbors(t testing.TB, bf *bruteForce, opDesc string) {
 	for i := 0; i+1 < len(bf.Extents); i++ {
 		a := &bf.Extents[i]
 		b := &bf.Extents[i+1]
-		if a.Poff+uint64(a.Len) == b.Poff &&
-			a.Len+b.Len <= bf.MaxExtentSize &&
-			a.Tag == 0 && b.Tag == 0 {
+		if b.Tag == 0 && bf.isExtentSequential(a, b.Loff, b.Poff, b.Len) {
 			t.Fatalf("[INV-7] after %s: Extents[%d] and [%d] are mergeable: "+
 				"a={Loff:%d Len:%d Poff:%d Tag:%d} b={Loff:%d Len:%d Poff:%d Tag:%d}",
 				opDesc, i, i+1,
@@ -1069,4 +1068,21 @@ func TestBruteForce_TaggedExtentDoesNotMergeWithUntaggedSequentialAppend(t *test
 	if bf.Extents[1] != (bruteForceExtent{Loff: 10, Len: 5, Poff: 1010, Tag: 0}) {
 		t.Fatalf("second extent = %#v, want untagged [10,15) -> 1010", bf.Extents[1])
 	}
+}
+
+func TestBruteForce_DoesNotMergeAcrossPhysicalExtentBoundary(t *testing.T) {
+	const maxExtentSize = 256
+	bf := openBruteForce(maxExtentSize)
+
+	if rc := bf.Insert(0, 250, 6); rc != 0 {
+		t.Fatalf("first Insert rc=%d, want 0", rc)
+	}
+	if rc := bf.Insert(6, 256, 6); rc != 0 {
+		t.Fatalf("second Insert rc=%d, want 0", rc)
+	}
+
+	if got := len(bf.Extents); got != 2 {
+		t.Fatalf("bruteForce merged across physical boundary; got %d extents, want 2: %#v", got, bf.Extents)
+	}
+	checkNoMergeableNeighbors(t, bf, "physical-boundary")
 }

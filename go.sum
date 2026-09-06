@@ -59,6 +59,8 @@ github.com/glycerine/uart v0.12.16 h1:yyWJ8muzYdRROHE3wmU0oqM/AFMeWs03fgpVw0204D
 github.com/glycerine/uart v0.12.16/go.mod h1:aqhQKW/Ne4lZ8Zoy5q/fL4dd46F0Um18KXgk4zTooa0=
 github.com/glycerine/vfs v0.3.2 h1:pCuEfgJDGjyrNNCCCLfkuSYbxIh5uZakur5eBnhu1t8=
 github.com/glycerine/vfs v0.3.2/go.mod h1:uOfnz4vpwzlK0EXecyX19W9bxfpCRMbyYSQY4reEKtw=
+github.com/glycerine/vfs v0.3.3 h1:Pn5J81CXT5mIqerH3tFKKk+TbJjefYZo23goy8nfUYo=
+github.com/glycerine/vfs v0.3.3/go.mod h1:uOfnz4vpwzlK0EXecyX19W9bxfpCRMbyYSQY4reEKtw=
 github.com/go-errors/errors v1.4.2 h1:J6MZopCL4uSllY1OfXM374weqZFFItUbrImctkmUxIA=
 github.com/go-errors/errors v1.4.2/go.mod h1:sIVyrIiJhuEF+Pj9Ebtd6P/rEYROXFi3BopGUQ5a5Og=
 github.com/gogo/protobuf v1.3.2 h1:Ov1cvc58UF3b5XjBnZv7+opcTcQFZebYjWzi34vdm4Q=
