@@ -136,13 +136,13 @@ func TestSlottedPage_InlineVtypOnlyCostsSpaceWhenNonzero(t *testing.T) {
 	plainSize := len(slottedPageEncode(plain))
 	typedSize := len(slottedPageEncode(typed))
 
-	if typedSize != plainSize+8 {
-		t.Fatalf("nonzero inline Vtyp size = %d, want plain size %d + 8", typedSize, plainSize)
+	if typedSize != plainSize+1 {
+		t.Fatalf("nonzero inline Vtyp size = %d, want plain size %d + 1", typedSize, plainSize)
 	}
 }
 
 func TestSlottedPage_VPtrVtypStoredOnlyInEntry(t *testing.T) {
-	const vtyp uint64 = 0x8877665544332211
+	const vtyp uint64 = 7
 	vtypBytes := make([]byte, 8)
 	putUint64(vtypBytes, vtyp)
 	kv := KV{
@@ -153,6 +153,13 @@ func TestSlottedPage_VPtrVtypStoredOnlyInEntry(t *testing.T) {
 	}
 
 	encoded := slottedPageEncode([]KV{kv})
+	plainKV := kv
+	plainKV.Value = nil
+	plainEncoded := slottedPageEncode([]KV{plainKV})
+	if len(encoded) != len(plainEncoded)+1 {
+		t.Fatalf("VPtr Vtyp page size = %d, want plain VPtr page size %d + 1", len(encoded), len(plainEncoded))
+	}
+
 	entryOff := slottedPageHeaderSize
 	if keyLen := int(binary.LittleEndian.Uint16(encoded[entryOff:])); keyLen != len(kv.Key) {
 		t.Fatalf("keyLen = %d, want %d", keyLen, len(kv.Key))
@@ -161,8 +168,12 @@ func TestSlottedPage_VPtrVtypStoredOnlyInEntry(t *testing.T) {
 	if valInfo != slottedValInfoVPtrWithVtyp {
 		t.Fatalf("valInfo = %#x, want %#x", valInfo, slottedValInfoVPtrWithVtyp)
 	}
-	if got := binary.LittleEndian.Uint64(encoded[entryOff+4:]); got != vtyp {
+	got, n := binary.Uvarint(encoded[entryOff+4:])
+	if got != vtyp {
 		t.Fatalf("entry Vtyp = %#x, want %#x; Vtyp must be stored in the entry record", got, vtyp)
+	}
+	if n != 1 {
+		t.Fatalf("entry Vtyp encoded in %d bytes, want 1-byte Uvarint for small Vtyp", n)
 	}
 	if got := slottedValInfoToLen(valInfo); got != vptrSize {
 		t.Fatalf("value bytes for VPtr+Vtyp = %d, want only the %d-byte VPtr", got, vptrSize)

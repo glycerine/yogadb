@@ -28,7 +28,7 @@ YogaDB: FlexSpace architecture
 400 msec to write 100K random 21 byte keys and values.
 ~~~
 
-Here YogaDB is 2x faster than Pebble and 20x faster than BoltDB at random writes.
+Here YogaDB is 3x faster than Pebble and 20x faster than BoltDB at random writes.
 
 * read (iterate sequentially through all keys)
 
@@ -38,7 +38,7 @@ Bolt         16.7 iter_ns/key
 YogaDB        7.6 iter_ns/key
 ~~~
 
-YogaDB is about 2x faster than BoltDB for full-table-scan read performance, and 15x faster than Pebble.
+Here YogaDB is 2x faster than BoltDB for a full-table-scan, and 15x faster than Pebble.
 
 # what is YogaDB?
 

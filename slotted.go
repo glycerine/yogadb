@@ -37,10 +37,10 @@ package yogadb
 //
 // On-disk layout:
 //
-//  ---------------------------------------------------------------------
-// |Header | Entry Records ->>>                           |free  |<<- Values| CRC32C|
-// | 27B   | N x [keyLen valInfo entryVtyp? hlcDelta key] |space |          |  4B   |
-//  ---------------------------------------------------------------------
+//  --------------------------------------------------------------------------
+// |Header | Entry Records ->>>                              |free|<<- Values|CRC32C|
+// | 27B   | N x [keyLen valInfo entryVtyp? hlcDelta key]    |    |          | 4B   |
+//  --------------------------------------------------------------------------
 //
 // Header (27 bytes):
 //   [16] magic      slottedPageMagic (16-byte signature)
@@ -58,7 +58,9 @@ package yogadb
 //     0xFFFD        = VPtr plus nonzero Vtyp
 //     0xFFFE        = tombstone (0 value bytes)
 //     0xFFFF        = VPtr with Vtyp == 0 (16 value bytes: 8B offset + 8B length)
-//   [8] entryVtyp   uint64 LE - present for any live value with nonzero Vtyp
+//   [varint] entryVtyp - present for any live value with nonzero Vtyp.
+//                        Encoded by encoding/binary.PutUvarint and decoded
+//                        by encoding/binary.Uvarint.
 //   [varint] HLC delta from baseHLC (uvarint, 1-10 bytes)
 //   [keyLen] key bytes
 //
@@ -121,8 +123,8 @@ const (
 
 	// valInfo sentinels and flags
 	slottedValInfoNilValue       = 0x0000 // live key, zero-length value, no Vtyp
-	slottedValInfoInlineVtypFlag = 0x8000 // inline value carries an 8-byte nonzero Vtyp in the entry record
-	slottedValInfoVPtrWithVtyp   = 0xFFFD // VPtr with an 8-byte nonzero Vtyp in the entry record
+	slottedValInfoInlineVtypFlag = 0x8000 // inline value carries a Uvarint nonzero Vtyp in the entry record
+	slottedValInfoVPtrWithVtyp   = 0xFFFD // VPtr with a Uvarint nonzero Vtyp in the entry record
 	slottedValInfoTombstone      = 0xFFFE // deletion marker
 	slottedValInfoVPtr           = 0xFFFF // value in VLOG, no Vtyp
 )
@@ -175,8 +177,8 @@ func slottedPageEncodeInto(kvs []KV, unsorted uint8, targetSize int) []byte {
 	}
 
 	// Compute entry record sizes and total values size.
-	// Each entry record = 2B keyLen + 2B valInfo + optional 8B
-	// Vtyp + varint(HLC delta) + keyLen bytes.
+	// Each entry record = 2B keyLen + 2B valInfo + optional
+	// Uvarint Vtyp + varint(HLC delta) + keyLen bytes.
 	var hlcBuf [binary.MaxVarintLen64]byte
 	totalEntriesSize := 0
 	totalValsSize := 0
@@ -220,8 +222,7 @@ func slottedPageEncodeInto(kvs []KV, unsorted uint8, targetSize int) []byte {
 		binary.LittleEndian.PutUint16(buf[entryOff+2:entryOff+4], vi)
 		entryOff += 4
 		if slottedValInfoHasEntryVtyp(vi) {
-			binary.LittleEndian.PutUint64(buf[entryOff:entryOff+8], kvs[i].Vtyp())
-			entryOff += 8
+			entryOff += binary.PutUvarint(buf[entryOff:], kvs[i].Vtyp())
 		}
 		delta := uint64(kvs[i].Hlc - baseHLC)
 		n := binary.PutUvarint(buf[entryOff:], delta)
@@ -290,11 +291,12 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 		entries[i].valInfo = binary.LittleEndian.Uint16(src[off+2 : off+4])
 		off += 4
 		if slottedValInfoHasEntryVtyp(entries[i].valInfo) {
-			if off+8 > len(src) {
-				return nil, 0, fmt.Errorf("slotted page: truncated entry vtyp at entry %d", i)
+			entryVtyp, n, err := slottedDecodeEntryVtyp(src[off:], i)
+			if err != nil {
+				return nil, 0, err
 			}
-			entries[i].entryVtyp = binary.LittleEndian.Uint64(src[off : off+8])
-			off += 8
+			entries[i].entryVtyp = entryVtyp
+			off += n
 		}
 
 		delta, n := binary.Uvarint(src[off:])
@@ -459,10 +461,30 @@ func slottedValInfoBase(vi uint16) uint16 {
 }
 
 func slottedEntryVtypBytes(kv KV) int {
-	if kv.isTombstone() || kv.Vtyp() == 0 {
+	vtyp := kv.Vtyp()
+	if kv.isTombstone() || vtyp == 0 {
 		return 0
 	}
-	return 8
+	return slottedUvarintLen(vtyp)
+}
+
+func slottedUvarintLen(v uint64) int {
+	var buf [binary.MaxVarintLen64]byte
+	return binary.PutUvarint(buf[:], v)
+}
+
+func slottedDecodeEntryVtyp(src []byte, entry int) (uint64, int, error) {
+	vtyp, n := binary.Uvarint(src)
+	if n == 0 {
+		return 0, 0, fmt.Errorf("slotted page: truncated entry vtyp at entry %d", entry)
+	}
+	if n < 0 {
+		return 0, 0, fmt.Errorf("slotted page: overflow entry vtyp at entry %d", entry)
+	}
+	if vtyp == 0 {
+		return 0, 0, fmt.Errorf("slotted page: zero entry vtyp at entry %d with nonzero-vtyp descriptor", entry)
+	}
+	return vtyp, n, nil
 }
 
 // slottedValBytes returns the number of value bytes stored for a KV.
@@ -508,10 +530,11 @@ func slottedPageFirstKey(src []byte) (string, bool) {
 	valInfo := binary.LittleEndian.Uint16(src[off+2 : off+4])
 	off += 4 // skip keyLen + valInfo
 	if slottedValInfoHasEntryVtyp(valInfo) {
-		if off+8 > len(src) {
+		_, n, err := slottedDecodeEntryVtyp(src[off:], 0)
+		if err != nil {
 			return "", false
 		}
-		off += 8
+		off += n
 	}
 	// Skip HLC delta varint.
 	_, n := binary.Uvarint(src[off:])
@@ -697,12 +720,13 @@ func slottedPageDumpImpl(src []byte, vlog *valueLog) string {
 		e.valInfo = binary.LittleEndian.Uint16(src[off+2 : off+4])
 		off += 4
 		if slottedValInfoHasEntryVtyp(e.valInfo) {
-			if off+8 > totalSize {
+			entryVtyp, n, err := slottedDecodeEntryVtyp(src[off:], i)
+			if err != nil {
 				scanOK = false
 				break
 			}
-			e.entryVtyp = binary.LittleEndian.Uint64(src[off : off+8])
-			off += 8
+			e.entryVtyp = entryVtyp
+			off += n
 		}
 		delta, n := binary.Uvarint(src[off:])
 		if n <= 0 {
