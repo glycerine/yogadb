@@ -94,11 +94,16 @@ func TestSlottedPage_RoundTrip_VPtr(t *testing.T) {
 	}
 }
 
-func TestSlottedPage_RoundTrip_InlineVPtrMetadata(t *testing.T) {
+func TestSlottedPage_RoundTrip_VtypMetadata(t *testing.T) {
+	largeVtyp := make([]byte, 8)
+	putUint64(largeVtyp, 0x8877665544332211)
+
 	kvs := []KV{
 		{Key: "empty", Vptr: VPtr{Offset: 0x11, Length: 0}, Hlc: 1},
 		{Key: "small", Value: []byte("inline"), Vptr: VPtr{Offset: 0x22334455, Length: 6}, Hlc: 2},
-		{Key: "big", Vptr: VPtr{Offset: 12345, Length: 67890}, Hlc: 3},
+		{Key: "big", Value: largeVtyp, Vptr: VPtr{Offset: 12345, Length: vlogInlineThreshold + 1}, Hlc: 3},
+		{Key: "small-plain", Value: []byte("plain"), Vptr: VPtr{Length: 5}, Hlc: 4},
+		{Key: "big-plain", Vptr: VPtr{Offset: 23456, Length: vlogInlineThreshold + 2}, Hlc: 5},
 	}
 
 	encoded := slottedPageEncode(kvs)
@@ -117,6 +122,21 @@ func TestSlottedPage_RoundTrip_InlineVPtrMetadata(t *testing.T) {
 		if !bytes.Equal(decoded[i].Value, kvs[i].Value) {
 			t.Fatalf("decoded[%d].Value = %q, want %q", i, decoded[i].Value, kvs[i].Value)
 		}
+		if decoded[i].Vtyp() != kvs[i].Vtyp() {
+			t.Fatalf("decoded[%d].Vtyp() = %#x, want %#x", i, decoded[i].Vtyp(), kvs[i].Vtyp())
+		}
+	}
+}
+
+func TestSlottedPage_InlineVtypOnlyCostsSpaceWhenNonzero(t *testing.T) {
+	plain := []KV{{Key: "plain", Value: []byte("x"), Vptr: VPtr{Length: 1}, Hlc: 1}}
+	typed := []KV{{Key: "plain", Value: []byte("x"), Vptr: VPtr{Offset: 7, Length: 1}, Hlc: 1}}
+
+	plainSize := len(slottedPageEncode(plain))
+	typedSize := len(slottedPageEncode(typed))
+
+	if typedSize != plainSize+8 {
+		t.Fatalf("nonzero inline Vtyp size = %d, want plain size %d + 8", typedSize, plainSize)
 	}
 }
 
