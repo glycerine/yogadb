@@ -5,13 +5,24 @@ package yogadb
 import (
 	"encoding/binary"
 	"fmt"
-	"os"
+	//"os"
 	"runtime/debug"
-	"syscall"
+	//"syscall"
 	"testing"
 
 	"github.com/glycerine/vfs"
 )
+
+/* useful for
+https://github.com/golang/go/issues/56238
+https://github.com/golang/go/issues/56238#issuecomment-4057433432
+diagnostics but may introduce their own issues.
+We patched the runtime by commenting out
+
+go/src/internal/fuzz/worker.go:493 per Vadim's suggestion
+above (#56238 (comment)) I was just able to complete 3
+hours of fuzzing on a 48 core box without the spurious
+stopping highlighted in this bug report.
 
 var durlog *os.File
 
@@ -51,6 +62,7 @@ func TestMain(m *testing.M) {
 
 	os.Exit(exitcode)
 }
+*/
 
 // FuzzAnchorTreeDrift exercises sequences of Put, Delete, Sync, VacuumKV,
 // and Close+Reopen to detect cases where the memSparseIndexTree (anchor tree)
