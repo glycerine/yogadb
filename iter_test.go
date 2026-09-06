@@ -105,6 +105,40 @@ func TestFlexDB_IteratorAfterSync(t *testing.T) {
 	})
 }
 
+func TestFlexDB_IteratorDirectionChangeAfterReversePrefetch(t *testing.T) {
+	db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
+
+	for _, k := range []string{"a", "b", "c", "d"} {
+		mustPut(t, db, k, "v:"+k)
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	if err := db.View(func(roDB *ReadOnlyTx) error {
+		it := roDB.NewIter()
+		defer it.Close()
+
+		it.SeekLast()
+		if !it.Valid() || it.Key() != "d" {
+			t.Fatalf("SeekLast: got valid=%v key=%q, want d", it.Valid(), it.Key())
+		}
+
+		it.Prev()
+		if !it.Valid() || it.Key() != "c" {
+			t.Fatalf("Prev: got valid=%v key=%q, want c", it.Valid(), it.Key())
+		}
+
+		it.Next()
+		if !it.Valid() || it.Key() != "d" {
+			t.Fatalf("Next after reverse prefetch: got valid=%v key=%q, want d", it.Valid(), it.Key())
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("View: %v", err)
+	}
+}
+
 func TestFlexDB_IteratorGetAnySizeDoesNotPoisonInlineCache(t *testing.T) {
 	db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
 

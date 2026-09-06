@@ -170,7 +170,7 @@ func (it *Iter) releaseIterState() {
 	it.snapshotHLC = 0
 	// Nil out span kvs slices so the GC can collect evicted cache entries
 	// that these spans may be the sole remaining reference to.
-	for i := 0; i < it.pfSpanCount; i++ {
+	for i := it.pfSpanIdx; i < it.pfSpanCount; i++ {
 		it.pfSpans[i].kvs = nil
 	}
 	it.pfSpanCount = 0
@@ -1034,12 +1034,16 @@ func (it *Iter) prefetchFillFlexSpaceReverse() {
 func (it *Iter) servePrefetchReverse() bool {
 	for it.pfSpanIdx < it.pfSpanCount {
 		span := &it.pfSpans[it.pfSpanIdx]
-		for span.pos > span.end {
-			pkv := &span.kvs[span.pos]
-			span.pos--
+		pos := span.pos
+		end := span.end
+		kvs := span.kvs
+		for pos > end {
+			pkv := &kvs[pos]
+			pos--
 			if pkv.isTombstone() {
 				continue
 			}
+			span.pos = pos
 			it.pKV = pkv
 			it.valueNeedsCopy = true
 			it.valueResolved = false
@@ -1047,6 +1051,7 @@ func (it *Iter) servePrefetchReverse() bool {
 			it.dir = -1
 			return true
 		}
+		span.pos = pos
 		span.kvs = nil // release reference to cache entry backing array
 		it.pfSpanIdx++
 	}
@@ -1380,7 +1385,7 @@ func (it *Iter) Next() {
 
 	// Fast path: serve from prefetch spans.
 	// HLC check detects mutations made via it.Put/it.Delete since last fill.
-	if it.pfSpanIdx < it.pfSpanCount {
+	if it.pfSpanIdx < it.pfSpanCount && it.dir == 1 {
 		if it.snapshotHLC == currentHLC {
 			// Inline the common case: next entry in current span, not a tombstone.
 			// This avoids a function call to servePrefetch (which Go can't inline
@@ -1393,8 +1398,6 @@ func (it *Iter) Next() {
 					it.pKV = pkv
 					it.valueNeedsCopy = true
 					it.valueResolved = false
-					it.valid = true
-					it.dir = 1
 					//it.cntInlineFast++
 					return
 				}
@@ -1431,8 +1434,6 @@ func (it *Iter) Next() {
 					it.pKV = pkv
 					it.valueNeedsCopy = true
 					it.valueResolved = false
-					it.valid = true
-					it.dir = 1
 					//it.cntInlineRefill1++
 					return
 				}
@@ -1484,8 +1485,6 @@ func (it *Iter) Next() {
 					it.pKV = pkv
 					it.valueNeedsCopy = true
 					it.valueResolved = false
-					it.valid = true
-					it.dir = 1
 					//it.cntInlineRefill2++
 					return
 				}
@@ -1554,6 +1553,17 @@ func (it *Iter) Prev() {
 	// HLC check detects mutations made via it.Put/it.Delete since last fill.
 	if it.pfSpanIdx < it.pfSpanCount && it.dir == -1 {
 		if it.snapshotHLC == currentHLC {
+			span := &it.pfSpans[it.pfSpanIdx]
+			if pos := span.pos; pos > span.end {
+				pkv := &span.kvs[pos]
+				span.pos = pos - 1
+				if pkv.Vptr.Length != tombstoneVPtrLength {
+					it.pKV = pkv
+					it.valueNeedsCopy = true
+					it.valueResolved = false
+					return
+				}
+			}
 			if it.servePrefetchReverse() {
 				return
 			}
