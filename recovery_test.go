@@ -377,6 +377,53 @@ func TestRecovery_LogRedoRejectsLegacyTwelveByteHeader(t *testing.T) {
 	db.logRedo(fd, int64(len(oldHeader)))
 }
 
+func TestRecovery_BackgroundFlushPersistsDirtyCacheBeforeWALReset(t *testing.T) {
+	dir := "test_recovery_background_flush_dirty_cache"
+	fs := vfs.NewMem()
+	panicOn(fs.MkdirAll(dir, 0755))
+
+	db, err := OpenFlexDB(dir, &Config{
+		FS:                     fs,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Put("k", []byte("old")); err != nil {
+		t.Fatalf("Put old: %v", err)
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync old: %v", err)
+	}
+
+	if err := db.Put("k", []byte("new")); err != nil {
+		t.Fatalf("Put new: %v", err)
+	}
+
+	// Mirror the flush worker deterministically. This must be equivalent to a
+	// durable flush before it clears the memtable and resets FLEXDB.MEMWAL.
+	db.doFlush()
+
+	db2, err := OpenFlexDB(dir, &Config{
+		FS:                     fs,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB after manual background flush: %v", err)
+	}
+	defer db2.Close()
+
+	got, found, err := db2.Get("k")
+	if err != nil {
+		t.Fatalf("Get k: %v", err)
+	}
+	if !found || string(got) != "new" {
+		t.Fatalf("after manual background flush reopen: found=%v got=%q, want %q", found, got, "new")
+	}
+}
+
 // TestRecovery_DurabilityAfterSync verifies invariant S1:
 // Put + Sync -> crash -> reopen -> all synced data present.
 func TestRecovery_DurabilityAfterSync(t *testing.T) {

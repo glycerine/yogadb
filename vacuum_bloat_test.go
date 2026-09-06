@@ -2,7 +2,6 @@ package yogadb
 
 import (
 	"bufio"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -182,6 +181,3 @@ func TestVacuumThenOverwrite_DiskSizeBounded(t *testing.T) {
 	mustCheckIntegrity(t, db)
 	db.Close()
 }
-
-// helper so the import isn't unused when we don't need fmt
-var _ = fmt.Sprintf

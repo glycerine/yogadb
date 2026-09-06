@@ -310,6 +310,8 @@ func (vl *valueLog) read(vp VPtr) ([]byte, error) {
 	if isTombstone {
 		return nil, ErrTomb
 	}
+	// INVAR: !isTombstone
+
 	entrySize := vlogEntryHeaderSize + int(vp.Length)
 	buf := make([]byte, entrySize)
 
@@ -318,12 +320,10 @@ func (vl *valueLog) read(vp VPtr) ([]byte, error) {
 		return nil, fmt.Errorf("vlog: read at offset %d len %d: %w", vp.Offset, vp.Length, err)
 	}
 
-	if !isTombstone {
-		// Verify length field.
-		storedLen := binary.LittleEndian.Uint64(buf[12:20])
-		if storedLen != vp.Length {
-			return nil, fmt.Errorf("vlog: length mismatch at offset %d: stored %d, expected %d", vp.Offset, storedLen, vp.Length)
-		}
+	// Verify length field.
+	storedLen := binary.LittleEndian.Uint64(buf[12:20])
+	if storedLen != vp.Length {
+		return nil, fmt.Errorf("vlog: length mismatch at offset %d: stored %d, expected %d", vp.Offset, storedLen, vp.Length)
 	}
 	// Verify hdrCRC (covers bytes 4..56: HLC + length + valCRC + blake3).
 	storedHdrCRC := binary.LittleEndian.Uint32(buf[0:4])
