@@ -96,13 +96,13 @@ func (c *intervalCache) getPartition(anchor *dbAnchor) *intervalCachePartition {
 // flushDirtyPages writes all dirty cache entries to FlexSpace via Overwrite.
 // It walks the sparse index tree leaf-by-leaf to compute correct absolute loffs,
 // avoiding stale dirtyLoff values that can occur after splits shift offsets.
-func (c *intervalCache) flushDirtyPages() {
+func (c *intervalCache) flushDirtyPages() error {
 	if c.db == nil {
-		return
+		return nil
 	}
 	tree := c.db.tree
 	if tree == nil {
-		return
+		return nil
 	}
 	var flushOverwrites, flushUpdates int
 	var flushUpdateGarbage int64
@@ -136,8 +136,8 @@ func (c *intervalCache) flushDirtyPages() {
 				// Normal case: padded page fits exactly.
 				err := c.db.ff.Overwrite(buf, absLoff, uint64(anchor.psize))
 				if err != nil {
-					panicf("flushDirtyPages: anchor.loff=%d shift=%d absLoff=%d psize=%d maxLoff=%d count=%d key=%q err=%v",
-						anchor.loff, shift, absLoff, anchor.psize, c.db.ff.tree.MaxLoff, fce.count, anchor.key, err)
+					return fmt.Errorf("flushDirtyPages overwrite anchor key=%q loff=%d shift=%d absLoff=%d psize=%d maxLoff=%d count=%d: %w",
+						anchor.key, anchor.loff, shift, absLoff, anchor.psize, c.db.ff.tree.MaxLoff, fce.count, err)
 				}
 				flushOverwrites++
 			} else {
@@ -154,8 +154,8 @@ func (c *intervalCache) flushDirtyPages() {
 				oldPsize := anchor.psize
 				_, err := c.db.ff.Update(padBuf, absLoff, uint64(len(padBuf)), uint64(oldPsize))
 				if err != nil {
-					panicf("flushDirtyPages Update: anchor.loff=%d absLoff=%d psize=%d bufLen=%d err=%v",
-						anchor.loff, absLoff, oldPsize, len(padBuf), err)
+					return fmt.Errorf("flushDirtyPages update anchor key=%q loff=%d absLoff=%d psize=%d bufLen=%d maxLoff=%d: %w",
+						anchor.key, anchor.loff, absLoff, oldPsize, len(padBuf), c.db.ff.tree.MaxLoff, err)
 				}
 				newPsize := uint32(len(padBuf))
 				anchor.psize = newPsize
@@ -179,6 +179,7 @@ func (c *intervalCache) flushDirtyPages() {
 	//	alwaysPrintf("flushDirtyPages: overwrites=%d updates=%d updateGarbage=%d",
 	//		flushOverwrites, flushUpdates, flushUpdateGarbage)
 	//}
+	return nil
 }
 
 // allocEntryForNewAnchor creates a new (empty) cache entry for a freshly created anchor.
@@ -226,7 +227,9 @@ func (p *intervalCachePartition) releaseEntry(fce *intervalCacheEntry) {
 // freeEntry removes and frees a cache entry. Returns the freed size. Caller holds p.mu.
 func (p *intervalCachePartition) freeEntry(fce *intervalCacheEntry) int64 {
 	if fce.dirty {
-		p.flushDirtyEntry(fce)
+		if err := p.flushDirtyEntry(fce); err != nil {
+			panicf("freeEntry flushDirtyEntry: %v", err)
+		}
 	}
 	freed := int64(32 + fce.size)
 	if fce.anchor != nil {
@@ -239,14 +242,14 @@ func (p *intervalCachePartition) freeEntry(fce *intervalCacheEntry) int64 {
 // flushDirtyEntry writes a dirty cache entry to FlexSpace via Overwrite.
 // Computes the absolute loff by walking from the leaf node to the root.
 // Caller holds p.mu.
-func (p *intervalCachePartition) flushDirtyEntry(fce *intervalCacheEntry) {
+func (p *intervalCachePartition) flushDirtyEntry(fce *intervalCacheEntry) error {
 	if !fce.dirty || fce.anchor == nil {
-		return
+		return nil
 	}
 	anchor := fce.anchor
 	if anchor.psize == 0 {
 		fce.dirty = false
-		return
+		return nil
 	}
 	// Compute absolute loff by walking from leaf to root.
 	shift := int64(0)
@@ -260,7 +263,8 @@ func (p *intervalCachePartition) flushDirtyEntry(fce *intervalCacheEntry) {
 	if len(buf) == int(anchor.psize) {
 		err := p.db.ff.Overwrite(buf, absLoff, uint64(anchor.psize))
 		if err != nil {
-			panicf("flushDirtyEntry: %v", err)
+			return fmt.Errorf("flushDirtyEntry overwrite anchor key=%q loff=%d absLoff=%d psize=%d maxLoff=%d: %w",
+				anchor.key, anchor.loff, absLoff, anchor.psize, p.db.ff.tree.MaxLoff, err)
 		}
 	} else {
 		// Content exceeds current psize: see flushDirtyPages for explanation.
@@ -274,7 +278,8 @@ func (p *intervalCachePartition) flushDirtyEntry(fce *intervalCacheEntry) {
 		//	oldPsize, len(padBuf), anchor.key)
 		_, err := p.db.ff.Update(padBuf, absLoff, uint64(len(padBuf)), uint64(oldPsize))
 		if err != nil {
-			panicf("flushDirtyEntry Update: %v", err)
+			return fmt.Errorf("flushDirtyEntry update anchor key=%q loff=%d absLoff=%d psize=%d bufLen=%d maxLoff=%d: %w",
+				anchor.key, anchor.loff, absLoff, oldPsize, len(padBuf), p.db.ff.tree.MaxLoff, err)
 		}
 		newPsize := uint32(len(padBuf))
 		anchor.psize = newPsize
@@ -298,6 +303,7 @@ func (p *intervalCachePartition) flushDirtyEntry(fce *intervalCacheEntry) {
 	}
 	fce.dirty = false
 	fce.dirtyNode = nil
+	return nil
 }
 
 // calibrate evicts entries until size <= cap. Caller holds p.mu.
@@ -404,22 +410,22 @@ func (p *intervalCachePartition) loadInterval(fce *intervalCacheEntry, anchor *d
 	if slottedPageIsSlotted(src) {
 		// Decode slotted page.
 		kvs, consumed, err := slottedPageDecode(src)
-		if err == nil {
-			for _, kv := range kvs {
-				fce.kvs = append(fce.kvs, kv)
-				fce.fps = append(fce.fps, fingerprint(kvCRC32(kv.Key)))
-				fce.size += kvSizeApprox(&kv)
-				fce.count++
-			}
-			src = src[consumed:]
-		} else {
-			src = nil // corrupt page, skip
+		if err != nil {
+			return fmt.Errorf("flexdb: loadInterval slotted page decode at loff %d psize %d: %w",
+				anchorLoff, anchor.psize, err)
 		}
+		for _, kv := range kvs {
+			fce.kvs = append(fce.kvs, kv)
+			fce.fps = append(fce.fps, fingerprint(kvCRC32(kv.Key)))
+			fce.size += kvSizeApprox(&kv)
+			fce.count++
+		}
+		src = src[consumed:]
 	}
 	// All KV.SLOT_BLOCKS data should be slotted page format.
 	// kv128 format is no longer written to KV.SLOT_BLOCKS.
 	if len(src) > 0 {
-		panicf("loadInterval: unexpected non-slotted data at loff=%d, %d trailing bytes, first 16 bytes: %x",
+		return fmt.Errorf("flexdb: loadInterval unexpected non-slotted data at loff %d: %d trailing bytes, first 16 bytes: %x",
 			anchorLoff, len(src), src[:min(len(src), 16)])
 	}
 
@@ -537,6 +543,68 @@ func (p *intervalCachePartition) cacheEntryReplace(fce *intervalCacheEntry, kv K
 	p.mu.Lock()
 	p.size += int64(diff)
 	p.mu.Unlock()
+}
+
+type intervalCacheEntrySnapshot struct {
+	kvs           []KV
+	fps           []uint16
+	count         int
+	size          int
+	partitionSize int64
+}
+
+func (p *intervalCachePartition) snapshotEntry(fce *intervalCacheEntry) intervalCacheEntrySnapshot {
+	p.mu.Lock()
+	partitionSize := p.size
+	p.mu.Unlock()
+	return intervalCacheEntrySnapshot{
+		kvs:           append([]KV(nil), fce.kvs[:fce.count]...),
+		fps:           append([]uint16(nil), fce.fps[:fce.count]...),
+		count:         fce.count,
+		size:          fce.size,
+		partitionSize: partitionSize,
+	}
+}
+
+func (p *intervalCachePartition) restoreEntry(fce *intervalCacheEntry, snap intervalCacheEntrySnapshot) {
+	fce.kvs = snap.kvs
+	fce.fps = snap.fps
+	fce.count = snap.count
+	fce.size = snap.size
+	p.mu.Lock()
+	p.size = snap.partitionSize
+	p.mu.Unlock()
+}
+
+func (p *intervalCachePartition) replaceEntryContents(fce *intervalCacheEntry, kvs []KV, fps []uint16, size int) {
+	diff := size - fce.size
+	fce.kvs = kvs
+	fce.fps = fps
+	fce.count = len(kvs)
+	fce.size = size
+	p.mu.Lock()
+	p.size += int64(diff)
+	p.mu.Unlock()
+}
+
+func intervalCacheEntryPreviewUpsert(fce *intervalCacheEntry, kv KV, idx int, eq bool) ([]KV, []uint16, int) {
+	var kvs []KV
+	if eq {
+		kvs = append([]KV(nil), fce.kvs[:fce.count]...)
+		kvs[idx] = kv
+	} else {
+		kvs = make([]KV, fce.count+1)
+		copy(kvs[:idx], fce.kvs[:idx])
+		kvs[idx] = kv
+		copy(kvs[idx+1:], fce.kvs[idx:fce.count])
+	}
+	fps := make([]uint16, len(kvs))
+	size := 0
+	for i := range kvs {
+		fps[i] = fingerprint(kvCRC32(kvs[i].Key))
+		size += kvSizeApprox(&kvs[i])
+	}
+	return kvs, fps, size
 }
 
 func (p *intervalCachePartition) cacheEntryDelete(fce *intervalCacheEntry, idx int) {

@@ -2,6 +2,7 @@ package ramflextree
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -25,7 +26,7 @@ func openTestDB(t *testing.T, cfg *Config) *FlexDB {
 func makeTestValue(size int) string {
 	b := make([]byte, size)
 	for i := range b {
-		b[i] = byte('A' + (i%26))
+		b[i] = byte('A' + (i % 26))
 	}
 	return string(b)
 }
@@ -53,8 +54,15 @@ func generateBenchKeys() [][]byte {
 
 func mustPut(t *testing.T, db *FlexDB, key, value string) {
 	t.Helper()
-	if err := db.Put(key, []byte(value)); err != nil {
+	if err := db.Put(key, []byte(value), 0); err != nil {
 		t.Fatalf("Put(%q, %q): %v", key, value, err)
+	}
+}
+
+func mustPutVtyp(t *testing.T, db *FlexDB, key, value string, vtyp uint64) {
+	t.Helper()
+	if err := db.Put(key, []byte(value), vtyp); err != nil {
+		t.Fatalf("Put(%q, %q, %v): %v", key, value, vtyp, err)
 	}
 }
 
@@ -67,7 +75,7 @@ func mustDelete(t *testing.T, db *FlexDB, key string) {
 
 func mustGet(t *testing.T, db *FlexDB, key, wantValue string) {
 	t.Helper()
-	val, ok, err := db.Get(key)
+	val, ok, _, err := db.Get(key)
 	if err != nil {
 		t.Fatalf("Get(%q): %v", key, err)
 	}
@@ -81,7 +89,7 @@ func mustGet(t *testing.T, db *FlexDB, key, wantValue string) {
 
 func mustMiss(t *testing.T, db *FlexDB, key string) {
 	t.Helper()
-	val, ok, err := db.Get(key)
+	val, ok, _, err := db.Get(key)
 	if err != nil {
 		t.Fatalf("Get(%q): %v", key, err)
 	}
@@ -91,6 +99,68 @@ func mustMiss(t *testing.T, db *FlexDB, key string) {
 }
 
 // ====================== Tests ======================
+
+func TestFlexDB_WriteValidationRejectsEmptyKeysEverywhere(t *testing.T) {
+	wantErr := func(t *testing.T, name string, err error) {
+		t.Helper()
+		if !errors.Is(err, ErrKeyEmpty) {
+			t.Fatalf("%s error = %v, want ErrKeyEmpty", name, err)
+		}
+	}
+
+	t.Run("direct put", func(t *testing.T) {
+		db := openTestDB(t, nil)
+		wantErr(t, "Put", db.Put("", []byte("value"), 0))
+	})
+
+	t.Run("direct delete", func(t *testing.T) {
+		db := openTestDB(t, nil)
+		wantErr(t, "Delete", db.Delete(""))
+	})
+
+	t.Run("batch set", func(t *testing.T) {
+		db := openTestDB(t, nil)
+		batch := db.NewBatch()
+		wantErr(t, "Batch.Set", batch.Set("", []byte("value"), 0))
+	})
+
+	t.Run("batch delete", func(t *testing.T) {
+		db := openTestDB(t, nil)
+		batch := db.NewBatch()
+		batch.Delete("")
+		_, err := batch.Commit(false)
+		wantErr(t, "Batch.Delete Commit", err)
+	})
+
+	t.Run("write tx put", func(t *testing.T) {
+		db := openTestDB(t, nil)
+		err := db.Update(func(tx *WriteTx) error {
+			return tx.Put("", []byte("value"), 0)
+		})
+		wantErr(t, "WriteTx.Put", err)
+	})
+
+	t.Run("write tx delete", func(t *testing.T) {
+		db := openTestDB(t, nil)
+		err := db.Update(func(tx *WriteTx) error {
+			return tx.Delete("")
+		})
+		wantErr(t, "WriteTx.Delete", err)
+	})
+
+	t.Run("merge", func(t *testing.T) {
+		db := openTestDB(t, nil)
+		called := false
+		err := db.Merge("", func(oldVal []byte, exists bool, oldVtyp uint64) ([]byte, bool, bool, uint64) {
+			called = true
+			return []byte("value"), true, false, oldVtyp
+		})
+		wantErr(t, "Merge", err)
+		if called {
+			t.Fatal("Merge callback was called for an invalid key")
+		}
+	})
+}
 
 // TestFlexDB_BasicMemtable tests Put/Get while data is still in memtable.
 func TestFlexDB_BasicMemtable(t *testing.T) {
@@ -255,6 +325,119 @@ func TestFlexDB_kv128RoundTrip(t *testing.T) {
 	}
 }
 
+func TestFlexDB_GetKVReportsAccurateVptrLengthAndVtyp(t *testing.T) {
+	db := openTestDB(t, nil)
+
+	smallDirect := []byte("small-direct")
+	if err := db.Put("small-direct", smallDirect, 0x1111); err != nil {
+		t.Fatal(err)
+	}
+	kv, err := db.GetKV("small-direct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kv == nil {
+		t.Fatal("small-direct not found")
+	}
+	if kv.HasVPtr() {
+		t.Fatalf("small-direct should be inline, got Vptr %+v", kv.Vptr)
+	}
+	if kv.Vptr.Length != uint64(len(smallDirect)) {
+		t.Fatalf("direct memtable inline Vptr.Length = %d, want %d", kv.Vptr.Length, len(smallDirect))
+	}
+	if kv.Vtyp != 0x1111 || kv.KV.Vtyp() != 0x1111 {
+		t.Fatalf("direct memtable Vtyp = (%#x, %#x), want %#x", kv.Vtyp, kv.KV.Vtyp(), uint64(0x1111))
+	}
+	kv.Close()
+
+	batch := db.NewBatch()
+	smallBatch := []byte("small-batch")
+	if err := batch.Set("small-batch", smallBatch, 0x2222); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := batch.Commit(false); err != nil {
+		t.Fatal(err)
+	}
+	kv, err = db.GetKV("small-batch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kv == nil {
+		t.Fatal("small-batch not found")
+	}
+	if kv.HasVPtr() {
+		t.Fatalf("small-batch should be inline, got Vptr %+v", kv.Vptr)
+	}
+	if kv.Vptr.Length != uint64(len(smallBatch)) {
+		t.Fatalf("batch memtable inline Vptr.Length = %d, want %d", kv.Vptr.Length, len(smallBatch))
+	}
+	if kv.Vtyp != 0x2222 || kv.KV.Vtyp() != 0x2222 {
+		t.Fatalf("batch memtable Vtyp = (%#x, %#x), want %#x", kv.Vtyp, kv.KV.Vtyp(), uint64(0x2222))
+	}
+	kv.Close()
+
+	if err := db.Put("empty-value", []byte{}, 0x3333); err != nil {
+		t.Fatal(err)
+	}
+	kv, err = db.GetKV("empty-value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kv == nil {
+		t.Fatal("empty-value not found")
+	}
+	if kv.Value != nil {
+		t.Fatalf("empty-value Value = %q, want nil zero-length value", kv.Value)
+	}
+	if kv.Vptr.Length != 0 {
+		t.Fatalf("empty-value Vptr.Length = %d, want 0", kv.Vptr.Length)
+	}
+	if kv.Vtyp != 0x3333 || kv.KV.Vtyp() != 0x3333 {
+		t.Fatalf("empty-value Vtyp = (%#x, %#x), want %#x", kv.Vtyp, kv.KV.Vtyp(), uint64(0x3333))
+	}
+	kv.Close()
+
+	largeInline := bytes.Repeat([]byte("x"), 200)
+	if err := db.Put("large-inline", largeInline, 0x4444); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		key  string
+		want []byte
+		vtyp uint64
+	}{
+		{"small-direct", smallDirect, 0x1111},
+		{"small-batch", smallBatch, 0x2222},
+		{"empty-value", nil, 0x3333},
+		{"large-inline", largeInline, 0x4444},
+	} {
+		kv, err = db.GetKV(tc.key)
+		if err != nil {
+			t.Fatalf("%s GetKV: %v", tc.key, err)
+		}
+		if kv == nil {
+			t.Fatalf("%s not found after Sync", tc.key)
+		}
+		if kv.HasVPtr() {
+			t.Fatalf("%s should stay inline in ramflextree, got Vptr %+v", tc.key, kv.Vptr)
+		}
+		if kv.Vptr.Length != uint64(len(tc.want)) {
+			t.Fatalf("%s Vptr.Length = %d, want %d", tc.key, kv.Vptr.Length, len(tc.want))
+		}
+		if !bytes.Equal(kv.Value, tc.want) {
+			t.Fatalf("%s Value = %q, want %q", tc.key, kv.Value, tc.want)
+		}
+		if kv.Vtyp != tc.vtyp || kv.KV.Vtyp() != tc.vtyp {
+			t.Fatalf("%s Vtyp = (%#x, %#x), want %#x", tc.key, kv.Vtyp, kv.KV.Vtyp(), tc.vtyp)
+		}
+		kv.Close()
+	}
+}
+
 // TestFlexDB_kv128CRC32C verifies CRC32C detection of corrupted records.
 func TestFlexDB_kv128CRC32C(t *testing.T) {
 	kv := KV{Key: "testkey", Value: []byte("testvalue"), Hlc: 42}
@@ -407,7 +590,7 @@ func TestFlexDB_LargeValues(t *testing.T) {
 func TestFlexDB_MergeNewKey(t *testing.T) {
 	db := openTestDB(t, nil)
 
-	err := db.Merge("counter", func(old []byte, exists bool) (newValue []byte, doWrite bool, doDelete bool) {
+	err := db.Merge("counter", func(old []byte, exists bool, oldVtyp uint64) (newValue []byte, doWrite bool, doDelete bool, newVtyp uint64) {
 		if exists {
 			t.Fatal("expected key to not exist")
 		}
@@ -427,7 +610,7 @@ func TestFlexDB_MergeExistingMemtable(t *testing.T) {
 
 	mustPut(t, db, "counter", "5")
 
-	err := db.Merge("counter", func(old []byte, exists bool) (newValue []byte, doWrite bool, doDelete bool) {
+	err := db.Merge("counter", func(old []byte, exists bool, oldVtyp uint64) (newValue []byte, doWrite bool, doDelete bool, newVtyp uint64) {
 		if !exists {
 			t.Fatal("expected key to exist")
 		}
@@ -451,7 +634,7 @@ func TestFlexDB_MergeExistingFlexSpace(t *testing.T) {
 	mustPut(t, db, "counter", "10")
 	db.Sync()
 
-	err := db.Merge("counter", func(old []byte, exists bool) (newValue []byte, doWrite bool, doDelete bool) {
+	err := db.Merge("counter", func(old []byte, exists bool, oldVtyp uint64) (newValue []byte, doWrite bool, doDelete bool, newVtyp uint64) {
 		if !exists {
 			t.Fatal("expected key to exist in FlexSpace")
 		}
@@ -474,7 +657,7 @@ func TestFlexDB_MergeNoWrite(t *testing.T) {
 
 	mustPut(t, db, "key", "val")
 
-	err := db.Merge("key", func(old []byte, exists bool) (newValue []byte, doWrite bool, doDelete bool) {
+	err := db.Merge("key", func(old []byte, exists bool, oldVtyp uint64) (newValue []byte, doWrite bool, doDelete bool, newVtyp uint64) {
 		return // no-op: all zero values
 	})
 	if err != nil {
@@ -489,7 +672,7 @@ func TestFlexDB_MergeDelete(t *testing.T) {
 
 	mustPut(t, db, "key", "val")
 
-	err := db.Merge("key", func(old []byte, exists bool) (newValue []byte, doWrite bool, doDelete bool) {
+	err := db.Merge("key", func(old []byte, exists bool, oldVtyp uint64) (newValue []byte, doWrite bool, doDelete bool, newVtyp uint64) {
 		doDelete = true
 		return
 	})
@@ -506,7 +689,7 @@ func TestFlexDB_MergeWriteAndDeleteError(t *testing.T) {
 
 	mustPut(t, db, "key", "val")
 
-	err := db.Merge("key", func(old []byte, exists bool) (newValue []byte, doWrite bool, doDelete bool) {
+	err := db.Merge("key", func(old []byte, exists bool, oldVtyp uint64) (newValue []byte, doWrite bool, doDelete bool, newVtyp uint64) {
 		newValue = []byte("conflict")
 		doWrite = true
 		doDelete = true
@@ -523,7 +706,7 @@ func TestFlexDB_MergeWriteAndDeleteError(t *testing.T) {
 func TestFlexDB_MergeIncrement(t *testing.T) {
 	db := openTestDB(t, nil)
 
-	increment := func(old []byte, exists bool) (newValue []byte, doWrite bool, doDelete bool) {
+	increment := func(old []byte, exists bool, oldVtyp uint64) (newValue []byte, doWrite bool, doDelete bool, newVtyp uint64) {
 		n := 0
 		if exists {
 			n = int(old[0])
@@ -541,7 +724,7 @@ func TestFlexDB_MergeIncrement(t *testing.T) {
 		}
 	}
 
-	val, ok, err := db.Get("ctr")
+	val, ok, _, err := db.Get("ctr")
 	panicOn(err)
 	if !ok || val[0] != 10 {
 		t.Fatalf("expected counter=10, got %v ok=%v", val, ok)
@@ -555,7 +738,7 @@ func TestFlexDB_MergeAfterDelete(t *testing.T) {
 	mustPut(t, db, "key", "original")
 	mustDelete(t, db, "key")
 
-	err := db.Merge("key", func(old []byte, exists bool) (newValue []byte, doWrite bool, doDelete bool) {
+	err := db.Merge("key", func(old []byte, exists bool, oldVtyp uint64) (newValue []byte, doWrite bool, doDelete bool, newVtyp uint64) {
 		if exists {
 			t.Fatal("expected key to not exist after delete")
 		}
@@ -582,7 +765,7 @@ func TestFlexDB_MergeManyKeys(t *testing.T) {
 	// Merge all keys: append suffix.
 	for i := 0; i < 100; i++ {
 		k := fmt.Sprintf("key%03d", i)
-		err := db.Merge(k, func(old []byte, exists bool) (newValue []byte, doWrite bool, doDelete bool) {
+		err := db.Merge(k, func(old []byte, exists bool, oldVtyp uint64) (newValue []byte, doWrite bool, doDelete bool, newVtyp uint64) {
 			if !exists {
 				t.Fatalf("key %s should exist", k)
 			}
@@ -721,7 +904,7 @@ func TestFlexDB_DescendAll_big(t *testing.T) {
 	// Insert all keys
 	batch := db.NewBatch()
 	for i, k := range keys {
-		batch.Set(string(k), k)
+		batch.Set(string(k), k, 0)
 		if (i+1)%10000 == 0 {
 			batch.Commit(false)
 			batch = db.NewBatch()
@@ -1299,7 +1482,6 @@ func TestDeleteRange_AllGone(t *testing.T) {
 	})
 }
 
-
 // ====================== Clear Tests ======================
 
 func TestClear(t *testing.T) {
@@ -1372,7 +1554,7 @@ func TestLen(t *testing.T) {
 		db := openTestDB(t, nil)
 		N := 50
 		for i := 0; i < N; i++ {
-			db.Put(fmt.Sprintf("key%04d", i), []byte("val"))
+			db.Put(fmt.Sprintf("key%04d", i), []byte("val"), 0)
 		}
 		if n := db.Len(); n != int64(N) {
 			t.Fatalf("Len() = %d, want %d", n, N)
@@ -1385,9 +1567,9 @@ func TestLen(t *testing.T) {
 
 	t.Run("delete_key", func(t *testing.T) {
 		db := openTestDB(t, nil)
-		db.Put("a", []byte("1"))
-		db.Put("b", []byte("2"))
-		db.Put("c", []byte("3"))
+		db.Put("a", []byte("1"), 0)
+		db.Put("b", []byte("2"), 0)
+		db.Put("c", []byte("3"), 0)
 		if n := db.Len(); n != 3 {
 			t.Fatalf("Len() = %d, want 3", n)
 		}
@@ -1399,7 +1581,7 @@ func TestLen(t *testing.T) {
 
 	t.Run("delete_nonexistent", func(t *testing.T) {
 		db := openTestDB(t, nil)
-		db.Put("a", []byte("1"))
+		db.Put("a", []byte("1"), 0)
 		db.Delete("nonexistent")
 		if n := db.Len(); n != 1 {
 			t.Fatalf("Len() = %d, want 1", n)
@@ -1408,7 +1590,7 @@ func TestLen(t *testing.T) {
 
 	t.Run("tombstone_overwrites_tombstone", func(t *testing.T) {
 		db := openTestDB(t, nil)
-		db.Put("a", []byte("1"))
+		db.Put("a", []byte("1"), 0)
 		db.Delete("a")
 		if n := db.Len(); n != 0 {
 			t.Fatalf("after first Del: Len() = %d, want 0", n)
@@ -1421,12 +1603,12 @@ func TestLen(t *testing.T) {
 
 	t.Run("reinsert_after_delete", func(t *testing.T) {
 		db := openTestDB(t, nil)
-		db.Put("a", []byte("1"))
+		db.Put("a", []byte("1"), 0)
 		db.Delete("a")
 		if n := db.Len(); n != 0 {
 			t.Fatalf("after Del: Len() = %d, want 0", n)
 		}
-		db.Put("a", []byte("2"))
+		db.Put("a", []byte("2"), 0)
 		if n := db.Len(); n != 1 {
 			t.Fatalf("after re-Put: Len() = %d, want 1", n)
 		}
@@ -1435,7 +1617,7 @@ func TestLen(t *testing.T) {
 	t.Run("clear", func(t *testing.T) {
 		db := openTestDB(t, nil)
 		for i := 0; i < 20; i++ {
-			db.Put(fmt.Sprintf("k%02d", i), []byte("v"))
+			db.Put(fmt.Sprintf("k%02d", i), []byte("v"), 0)
 		}
 		if n := db.Len(); n != 20 {
 			t.Fatalf("Len() = %d, want 20", n)
@@ -1454,7 +1636,7 @@ func TestLen(t *testing.T) {
 		db := openTestDB(t, nil)
 		N := 100
 		for i := 0; i < N; i++ {
-			db.Put(fmt.Sprintf("key%04d", i), []byte("val"))
+			db.Put(fmt.Sprintf("key%04d", i), []byte("val"), 0)
 		}
 		db.Sync()
 		if n := db.Len(); n != int64(N) {
@@ -1462,7 +1644,7 @@ func TestLen(t *testing.T) {
 		}
 		// Add more after flush
 		for i := N; i < N+20; i++ {
-			db.Put(fmt.Sprintf("key%04d", i), []byte("val"))
+			db.Put(fmt.Sprintf("key%04d", i), []byte("val"), 0)
 		}
 		if n := db.Len(); n != int64(N+20) {
 			t.Fatalf("after more puts: Len() = %d, want %d", n, N+20)
@@ -1473,12 +1655,12 @@ func TestLen(t *testing.T) {
 		db := openTestDB(t, nil)
 		// Put keys, flush to FlexSpace
 		for i := 0; i < 50; i++ {
-			db.Put(fmt.Sprintf("key%04d", i), []byte("val"))
+			db.Put(fmt.Sprintf("key%04d", i), []byte("val"), 0)
 		}
 		db.Sync()
 		// Overwrite some from memtable (shadow FlexSpace)
 		for i := 0; i < 10; i++ {
-			db.Put(fmt.Sprintf("key%04d", i), []byte("newval"))
+			db.Put(fmt.Sprintf("key%04d", i), []byte("newval"), 0)
 		}
 		// Delete some
 		for i := 10; i < 15; i++ {
@@ -1486,7 +1668,7 @@ func TestLen(t *testing.T) {
 		}
 		// Add new keys in memtable
 		for i := 50; i < 60; i++ {
-			db.Put(fmt.Sprintf("key%04d", i), []byte("val"))
+			db.Put(fmt.Sprintf("key%04d", i), []byte("val"), 0)
 		}
 		// Expected: 50 original - 5 deleted + 10 new = 55
 		if n := db.Len(); n != 55 {
@@ -1498,7 +1680,7 @@ func TestLen(t *testing.T) {
 		db := openTestDB(t, nil)
 		b := db.NewBatch()
 		for i := 0; i < 25; i++ {
-			b.Set(fmt.Sprintf("bk%04d", i), []byte("bv"))
+			b.Set(fmt.Sprintf("bk%04d", i), []byte("bv"), 0)
 		}
 		b.Commit(false)
 		if n := db.Len(); n != 25 {
@@ -1508,7 +1690,7 @@ func TestLen(t *testing.T) {
 		// Batch with overwrites
 		b2 := db.NewBatch()
 		for i := 0; i < 10; i++ {
-			b.Set(fmt.Sprintf("bk%04d", i), []byte("updated"))
+			b.Set(fmt.Sprintf("bk%04d", i), []byte("updated"), 0)
 		}
 		b2.Commit(false)
 		if n := db.Len(); n != 25 {
@@ -1519,7 +1701,7 @@ func TestLen(t *testing.T) {
 	t.Run("delete_range", func(t *testing.T) {
 		db := openTestDB(t, nil)
 		for i := 0; i < 20; i++ {
-			db.Put(fmt.Sprintf("key%04d", i), []byte("val"))
+			db.Put(fmt.Sprintf("key%04d", i), []byte("val"), 0)
 		}
 		if n := db.Len(); n != 20 {
 			t.Fatalf("Len() = %d, want 20", n)
@@ -1533,38 +1715,36 @@ func TestLen(t *testing.T) {
 	})
 }
 
-func TestFlexDB_NilValuePreservation(t *testing.T) {
+func TestFlexDB_ZeroLengthValueEquivalence(t *testing.T) {
 	db := openTestDB(t, nil)
 
-	// Put with nil value - should store a live key, NOT delete
-	err := db.Put("setkey", nil)
+	err := db.Put("setkey", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Get should return (nil, true, nil) - found, with nil value
-	val, found, err := db.Get("setkey")
+	val, found, _, err := db.Get("setkey")
 	panicOn(err)
 	if !found {
-		t.Fatal("nil-value key should be found")
+		t.Fatal("zero-length key should be found")
+	}
+	if len(val) != 0 {
+		t.Fatalf("expected zero-length value, got %q", val)
 	}
 	if val != nil {
-		t.Fatalf("expected nil value, got %v", val)
+		t.Fatalf("expected canonical nil slice for zero-length value, got %#v", val)
 	}
 
-	// Len should count it
 	if db.Len() != 1 {
 		t.Fatalf("expected Len=1, got %d", db.Len())
 	}
 
-	// Now actually delete it
 	err = db.Delete("setkey")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Should be gone
-	_, found, err = db.Get("setkey")
+	_, found, _, err = db.Get("setkey")
 	panicOn(err)
 	if found {
 		t.Fatal("deleted key should not be found")
@@ -1573,8 +1753,7 @@ func TestFlexDB_NilValuePreservation(t *testing.T) {
 		t.Fatalf("expected Len=0, got %d", db.Len())
 	}
 
-	// Put nil again, Sync, and read back from FlexSpace
-	err = db.Put("setkey2", nil)
+	err = db.Put("setkey2", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1583,27 +1762,40 @@ func TestFlexDB_NilValuePreservation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	val, found, err = db.Get("setkey2")
+	val, found, _, err = db.Get("setkey2")
 	panicOn(err)
 	if !found {
-		t.Fatal("nil-value key should survive Sync")
+		t.Fatal("zero-length key should survive Sync")
+	}
+	if len(val) != 0 {
+		t.Fatalf("expected zero-length value after Sync, got %q", val)
 	}
 	if val != nil {
-		t.Fatalf("expected nil value after Sync, got %v", val)
+		t.Fatalf("expected canonical nil slice after Sync, got %#v", val)
 	}
 
-	// Verify empty-value []byte{} also works and is distinct conceptually
-	err = db.Put("emptykey", []byte{})
+	var vtyp0, vtyp1 uint64
+	vtyp0 = 123
+
+	err = db.Put("emptykey", []byte{}, vtyp0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	val, found, err = db.Get("emptykey")
+	val, found, vtyp1, err = db.Get("emptykey")
 	panicOn(err)
 	if !found {
 		t.Fatal("empty-value key should be found")
 	}
-	// Both nil and empty return len=0, but both are live
+	if len(val) != 0 {
+		t.Fatalf("expected []byte{} to read back as a zero-length value, got %q", val)
+	}
+	if val != nil {
+		t.Fatalf("expected []byte{} to read back as canonical nil, got %#v", val)
+	}
 	if db.Len() != 2 {
 		t.Fatalf("expected Len=2, got %d", db.Len())
+	}
+	if vtyp1 != vtyp0 {
+		t.Fatalf("expected vtyp %d, got %d", vtyp0, vtyp1)
 	}
 }

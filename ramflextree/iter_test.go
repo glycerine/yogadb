@@ -1,6 +1,7 @@
 package ramflextree
 
 import (
+	"bytes"
 	"fmt"
 	"sort"
 
@@ -12,8 +13,8 @@ func TestFlexDB_IteratorBasic(t *testing.T) {
 	db := openTestDB(t, nil)
 
 	keys := []string{"banana", "apple", "cherry", "date"}
-	for _, k := range keys {
-		mustPut(t, db, k, "v:"+k)
+	for i, k := range keys {
+		mustPutVtyp(t, db, k, "v:"+k, uint64(i))
 	}
 
 	db.View(func(roDB *ReadOnlyTx) error {
@@ -22,12 +23,18 @@ func TestFlexDB_IteratorBasic(t *testing.T) {
 		defer it.Close()
 
 		want := []string{"apple", "banana", "cherry", "date"}
-		for _, wk := range want {
+		wantVtyp := []uint64{1, 0, 2, 3}
+		for k, wk := range want {
 			if !it.Valid() {
 				t.Fatalf("iterator ended early; want key %q", wk)
 			}
 			if it.Key() != wk {
 				t.Fatalf("Key() = %q, want %q", it.Key(), wk)
+			}
+			expectedVtyp := wantVtyp[k]
+			gotVtyp := it.Vtyp()
+			if gotVtyp != expectedVtyp {
+				t.Fatalf("got Vtyp() = %v, wanted %v", gotVtyp, expectedVtyp)
 			}
 			if string(it.Vin()) != "v:"+wk {
 				t.Fatalf("Value() = %q, want %q", it.Vin(), "v:"+wk)
@@ -100,6 +107,94 @@ func TestFlexDB_IteratorAfterSync(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestFlexDB_IteratorDirectionChangeAfterReversePrefetch(t *testing.T) {
+	db := openTestDB(t, &Config{DisableBackgroundFlush: true})
+
+	for _, k := range []string{"a", "b", "c", "d"} {
+		mustPut(t, db, k, "v:"+k)
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	if err := db.View(func(roDB *ReadOnlyTx) error {
+		it := roDB.NewIter()
+		defer it.Close()
+
+		it.SeekLast()
+		if !it.Valid() || it.Key() != "d" {
+			t.Fatalf("SeekLast: got valid=%v key=%q, want d", it.Valid(), it.Key())
+		}
+
+		it.Prev()
+		if !it.Valid() || it.Key() != "c" {
+			t.Fatalf("Prev: got valid=%v key=%q, want c", it.Valid(), it.Key())
+		}
+
+		it.Next()
+		if !it.Valid() || it.Key() != "d" {
+			t.Fatalf("Next after reverse prefetch: got valid=%v key=%q, want d", it.Valid(), it.Key())
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("View: %v", err)
+	}
+}
+
+func TestFlexDB_IteratorGetAnySizeDoesNotPoisonInlineCache(t *testing.T) {
+	db := openTestDB(t, &Config{DisableBackgroundFlush: true})
+
+	records := []dbVtypFuzzRecord{
+		{
+			key:   "inline/a",
+			value: bytes.Repeat([]byte{'a'}, 64),
+			vtyp:  0x1111,
+		},
+		{
+			key:   "inline/b",
+			value: bytes.Repeat([]byte{'b'}, 64),
+			vtyp:  0x2222,
+		},
+	}
+	for _, rec := range records {
+		if err := db.Put(rec.key, rec.value, rec.vtyp); err != nil {
+			t.Fatalf("Put(%q): %v", rec.key, err)
+		}
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	if err := db.View(func(roDB *ReadOnlyTx) error {
+		it := roDB.NewIter()
+		defer it.Close()
+		for it.SeekFirst(); it.Valid(); it.Next() {
+			if _, _, _, _, err := it.GetAnySize(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("View: %v", err)
+	}
+
+	for _, rec := range records {
+		got, found, gotVtyp, err := db.Get(rec.key)
+		if err != nil {
+			t.Fatalf("Get(%q): %v", rec.key, err)
+		}
+		if !found {
+			t.Fatalf("Get(%q): not found", rec.key)
+		}
+		if !bytes.Equal(got, rec.value) {
+			t.Fatalf("Get(%q) after iteration = %q, want %q", rec.key, got, rec.value)
+		}
+		if gotVtyp != rec.vtyp {
+			t.Fatalf("Get(%q) vtyp=%#x, want %#x", rec.key, gotVtyp, rec.vtyp)
+		}
+	}
 }
 
 // TestFlexDB_ManyKeysIterator inserts many keys and verifies iterator order.
@@ -392,7 +487,7 @@ func TestFlexDB_HLC_PutMonotonic(t *testing.T) {
 	keys := []string{"aaa", "bbb", "ccc"}
 	hlcs := make([]HLC, len(keys))
 	for i, k := range keys {
-		err := db.Put(k, []byte("v"))
+		err := db.Put(k, []byte("v"), 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -419,9 +514,9 @@ func TestFlexDB_HLC_BatchInterval(t *testing.T) {
 
 	// Batch with unique keys - single-tick interval.
 	batch := db.NewBatch()
-	batch.Set("k1", []byte("v1"))
-	batch.Set("k2", []byte("v2"))
-	batch.Set("k3", []byte("v3"))
+	batch.Set("k1", []byte("v1"), 0)
+	batch.Set("k2", []byte("v2"), 0)
+	batch.Set("k3", []byte("v3"), 0)
 	iv, err := batch.Commit(false)
 	if err != nil {
 		t.Fatal(err)
@@ -435,9 +530,9 @@ func TestFlexDB_HLC_BatchInterval(t *testing.T) {
 
 	// Batch with a duplicate key - multi-tick interval.
 	batch2 := db.NewBatch()
-	batch2.Set("x1", []byte("v1"))
-	batch2.Set("x1", []byte("v2")) // duplicate triggers new tick
-	batch2.Set("x2", []byte("v3"))
+	batch2.Set("x1", []byte("v1"), 0)
+	batch2.Set("x1", []byte("v2"), 0) // duplicate triggers new tick
+	batch2.Set("x2", []byte("v3"), 0)
 	iv2, err := batch2.Commit(false)
 	if err != nil {
 		t.Fatal(err)
@@ -587,7 +682,7 @@ func TestFlexDB_IteratorDeleteAllForward(t *testing.T) {
 	})
 
 	// DB should be empty
-	val, ok, gerr := db.Get("a")
+	val, ok, _, gerr := db.Get("a")
 	panicOn(gerr)
 	if ok {
 		t.Fatalf("expected empty DB, got key 'a' val=%q", val)
@@ -611,7 +706,7 @@ func TestFlexDB_IteratorPutDuringForward(t *testing.T) {
 			k := it.Key()
 			got = append(got, k)
 			if k == "c" {
-				if err := rwDB.Put("d", []byte("v:d")); err != nil {
+				if err := rwDB.Put("d", []byte("v:d"), 0); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -795,7 +890,7 @@ func TestFlexDB_IteratorDeleteAllBackward(t *testing.T) {
 	})
 
 	// DB should be empty
-	val, ok, gerr := db.Get("c")
+	val, ok, _, gerr := db.Get("c")
 	panicOn(gerr)
 	if ok {
 		t.Fatalf("expected empty DB, got key 'c' val=%q", val)

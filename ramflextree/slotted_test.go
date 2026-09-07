@@ -72,10 +72,10 @@ func TestSlottedPage_RoundTrip_Tombstone(t *testing.T) {
 	}
 }
 
-func TestSlottedPage_RoundTrip_VPtr(t *testing.T) {
+func TestSlottedPage_RoundTrip_Vtyp(t *testing.T) {
 	kvs := []KV{
-		{Key: "small", Value: []byte("inline"), Hlc: 1},
-		{Key: "big", Vptr: VPtr{Offset: 12345, Length: 67890}, Hlc: 2},
+		{Key: "small", Value: []byte("inline"), Vptr: VPtr{Offset: 11, Length: 6}, Hlc: 1},
+		{Key: "empty", Vptr: VPtr{Offset: 12345, Length: 0}, Hlc: 2},
 	}
 
 	encoded := slottedPageEncode(kvs)
@@ -84,11 +84,56 @@ func TestSlottedPage_RoundTrip_VPtr(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !decoded[1].HasVPtr() {
-		t.Error("VPtr not set on decoded entry")
+	if got := decoded[0].Vtyp(); got != 11 {
+		t.Fatalf("small Vtyp: got %d, want 11", got)
 	}
-	if decoded[1].Vptr.Offset != 12345 || decoded[1].Vptr.Length != 67890 {
-		t.Errorf("VPtr: got %+v, want {12345, 67890}", decoded[1].Vptr)
+	if got := decoded[1].Vtyp(); got != 12345 {
+		t.Fatalf("empty Vtyp: got %d, want 12345", got)
+	}
+	if decoded[1].isTombstone() {
+		t.Fatal("zero-length typed value decoded as tombstone")
+	}
+}
+
+func TestSlottedPage_RoundTrip_VtypMetadata(t *testing.T) {
+	kvs := []KV{
+		{Key: "empty", Vptr: VPtr{Offset: 0x11, Length: 0}, Hlc: 1},
+		{Key: "small", Value: []byte("inline"), Vptr: VPtr{Offset: 0x22334455, Length: 6}, Hlc: 2},
+		{Key: "large-inline", Value: bytes.Repeat([]byte{'x'}, 65), Vptr: VPtr{Offset: 0x8877665544332211, Length: 65}, Hlc: 3},
+		{Key: "plain", Value: []byte("plain"), Vptr: VPtr{Length: 5}, Hlc: 4},
+	}
+
+	encoded := slottedPageEncode(kvs)
+	decoded, _, err := slottedPageDecode(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := range kvs {
+		if decoded[i].Key != kvs[i].Key {
+			t.Fatalf("decoded[%d].Key = %q, want %q", i, decoded[i].Key, kvs[i].Key)
+		}
+		if decoded[i].Vptr != kvs[i].Vptr {
+			t.Fatalf("decoded[%d].Vptr = %+v, want %+v", i, decoded[i].Vptr, kvs[i].Vptr)
+		}
+		if !bytes.Equal(decoded[i].Value, kvs[i].Value) {
+			t.Fatalf("decoded[%d].Value = %q, want %q", i, decoded[i].Value, kvs[i].Value)
+		}
+		if decoded[i].Vtyp() != kvs[i].Vtyp() {
+			t.Fatalf("decoded[%d].Vtyp() = %#x, want %#x", i, decoded[i].Vtyp(), kvs[i].Vtyp())
+		}
+	}
+}
+
+func TestSlottedPage_InlineVtypOnlyCostsSpaceWhenNonzero(t *testing.T) {
+	plain := []KV{{Key: "plain", Value: []byte("x"), Vptr: VPtr{Length: 1}, Hlc: 1}}
+	typed := []KV{{Key: "plain", Value: []byte("x"), Vptr: VPtr{Offset: 7, Length: 1}, Hlc: 1}}
+
+	plainSize := len(slottedPageEncode(plain))
+	typedSize := len(slottedPageEncode(typed))
+
+	if typedSize != plainSize+1 {
+		t.Fatalf("nonzero inline Vtyp size = %d, want plain size %d + 1", typedSize, plainSize)
 	}
 }
 
@@ -358,25 +403,23 @@ func TestSlottedPage_Dump_CorruptedCRC(t *testing.T) {
 	}
 }
 
-func TestSlottedPage_Dump_VPtrWithoutVLog(t *testing.T) {
+func TestSlottedPage_Dump_Vtyp(t *testing.T) {
 	kvs := []KV{
 		{Key: "small", Value: []byte("inline"), Hlc: 1},
-		{Key: "big", Vptr: VPtr{Offset: 12345, Length: 67890}, Hlc: 2},
+		{Key: "empty", Vptr: VPtr{Offset: 12345, Length: 0}, Hlc: 2},
 	}
 
 	encoded := slottedPageEncode(kvs)
 	out := slottedPageDump(encoded)
-	t.Logf("vptr dump (no vlog):\n%s", out)
+	t.Logf("vtyp dump:\n%s", out)
 
-	if !strings.Contains(out, "vptr(off=12345,len=67890)") {
-		t.Errorf("missing vptr details in output:\n%s", out)
+	if !strings.Contains(out, "zero-length vtyp=12345") {
+		t.Errorf("missing vtyp details in output:\n%s", out)
 	}
-	// Should NOT contain "=>" since no vlog provided.
 	if strings.Contains(out, "=>") {
-		t.Error("unexpected '=>' without vlog")
+		t.Error("unexpected VLOG-resolution output in RAM slotted dump")
 	}
 }
-
 
 func totalPayload(kvs []KV) int {
 	total := 0

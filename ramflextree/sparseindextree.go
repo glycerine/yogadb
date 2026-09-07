@@ -1,6 +1,5 @@
 package ramflextree
 
-
 // ========== Sparse index tree: memSparseIndexTree ==========
 //
 // In-memory B-tree mapping keys to FlexSpace intervals (anchors).

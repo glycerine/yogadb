@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	googbtree "github.com/google/btree"
 	"github.com/glycerine/uart"
+	googbtree "github.com/google/btree"
 	"github.com/puzpuzpuz/xsync/v3"
 	tbtree "github.com/tidwall/btree"
 )
@@ -56,7 +56,7 @@ func BenchmarkReadWriteYogaDB(b *testing.B) {
 					if rng.Float32() < readFrac {
 						db.Get(string(randomKey2(rng)))
 					} else {
-						db.Put(string(randomKey2(rng)), value)
+						db.Put(string(randomKey2(rng)), value, 0)
 					}
 				}
 			})

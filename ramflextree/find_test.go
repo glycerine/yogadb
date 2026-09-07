@@ -412,7 +412,7 @@ func TestFetchLarge_InlineValue(t *testing.T) {
 		t.Fatal("expected inline value, got large")
 	}
 	// FetchLarge on an inline value should return the value.
-	val, err := db.FetchLarge(&kvc.KV)
+	val, _, err := db.FetchLarge(&kvc.KV)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,6 +420,61 @@ func TestFetchLarge_InlineValue(t *testing.T) {
 		t.Fatalf("got %q, want val003", val)
 	}
 	kvc.Close()
+}
+
+// TestFind_LazySmall tests the LAZY_SMALL flag: zero-copy inline values
+// via cache pinning. Values alias cache memory and require Close().
+func TestFind_LazySmall(t *testing.T) {
+	db := openTestDB(t, nil)
+
+	// Populate and flush to FlexSpace so values are in cache.
+	for i := 1; i <= 10; i++ {
+		k := fmt.Sprintf("key%03d", i)
+		v := fmt.Sprintf("val%03d", i)
+		panicOn(db.Put(k, []byte(v), uint64(i)))
+	}
+	db.Sync()
+
+	// LAZY_SMALL: zero-copy inline value
+	kvc, exact, err := db.Find(Exact|LAZY_SMALL, "key005")
+	panicOn(err)
+	if kvc == nil || !exact {
+		t.Fatal("not found")
+	}
+	if string(kvc.Value) != "val005" {
+		t.Fatalf("got %q, want val005", kvc.Value)
+	}
+	if kvc.Vtyp != 5 {
+		t.Fatalf("Vtyp: got %v, want 5", kvc.Vtyp)
+	}
+	valRef := kvc.Value
+	if len(valRef) != 6 {
+		t.Fatal("unexpected length")
+	}
+	kvc.Close()
+	if kvc.Value != nil {
+		t.Fatal("Value should be nil after Close")
+	}
+
+	// LAZY_SMALL with GTE: non-exact match.
+	kvc2, exact2, err := db.Find(GTE|LAZY_SMALL, "key004a")
+	panicOn(err)
+	if kvc2 == nil {
+		t.Fatal("not found")
+	}
+	if exact2 {
+		t.Fatal("should not be exact")
+	}
+	if kvc2.Key != "key005" {
+		t.Fatalf("got %q, want key005", kvc2.Key)
+	}
+	if kvc2.Vtyp != 5 {
+		t.Fatalf("Vtyp: got %v, want 5", kvc2.Vtyp)
+	}
+	if string(kvc2.Value) != "val005" {
+		t.Fatalf("got %q, want val005", kvc2.Value)
+	}
+	kvc2.Close()
 }
 
 // TestFind_SkipValues verifies SKIP_VALUES returns keys with nil Values
@@ -431,7 +486,7 @@ func TestFind_SkipValues(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		k := fmt.Sprintf("key%03d", i)
 		v := fmt.Sprintf("val%03d", i)
-		panicOn(db.Put(k, []byte(v)))
+		panicOn(db.Put(k, []byte(v), uint64(i)))
 	}
 	db.Sync()
 
@@ -443,6 +498,9 @@ func TestFind_SkipValues(t *testing.T) {
 	}
 	if kvc.Key != "key005" {
 		t.Fatalf("got key %q, want key005", kvc.Key)
+	}
+	if kvc.Vtyp != 5 {
+		t.Fatalf("kvc.Vtyp: got %v, want 5", kvc.Vtyp)
 	}
 	if kvc.Value != nil {
 		t.Fatalf("SKIP_VALUES: expected nil Value, got %q", kvc.Value)
@@ -461,6 +519,9 @@ func TestFind_SkipValues(t *testing.T) {
 		if kvc3.Value != nil {
 			t.Fatalf("FindIt SKIP_VALUES: expected nil Value, got %q", kvc3.Value)
 		}
+		if kvc3.Vtyp != 1 {
+			t.Fatalf("Vtyp: got %v, want 1", kvc3.Vtyp)
+		}
 		kvc3.Close()
 
 		// Iterate: all Vin/Vel/FetchV should return nil
@@ -472,13 +533,16 @@ func TestFind_SkipValues(t *testing.T) {
 			if it.Vin() != nil {
 				t.Fatalf("Vin should be nil with SKIP_VALUES, key=%s", it.Key())
 			}
+			if it.Vtyp() == 0 {
+				t.Fatalf("it.Vtyp() should not be 0 for typed test data")
+			}
 			val, empty, large := it.Vel()
 			if val != nil {
 				t.Fatalf("Vel should return nil val with SKIP_VALUES, key=%s", it.Key())
 			}
 			_ = empty
 			_ = large
-			fv, fe := it.FetchV()
+			fv, _, fe := it.FetchV()
 			if fv != nil || fe != nil {
 				t.Fatalf("FetchV should be nil with SKIP_VALUES, key=%s", it.Key())
 			}
@@ -502,7 +566,7 @@ func TestLockedIter_PutGetDelete(t *testing.T) {
 
 	err := db.Update(func(rwDB *WriteTx) error {
 		// Get existing key.
-		val, ok, gerr := rwDB.Get("key005")
+		val, ok, _, gerr := rwDB.Get("key005")
 		panicOn(gerr)
 		if !ok {
 			t.Fatal("Get key005: not found")
@@ -512,12 +576,12 @@ func TestLockedIter_PutGetDelete(t *testing.T) {
 		}
 
 		// Put a new key.
-		if err := rwDB.Put("key005a", []byte("inserted")); err != nil {
+		if err := rwDB.Put("key005a", []byte("inserted"), 0); err != nil {
 			t.Fatal(err)
 		}
 
 		// Read-your-writes: Get the just-inserted key.
-		val2, ok2, gerr2 := rwDB.Get("key005a")
+		val2, ok2, _, gerr2 := rwDB.Get("key005a")
 		panicOn(gerr2)
 		if !ok2 {
 			t.Fatal("Get key005a: not found after Put")
@@ -532,7 +596,7 @@ func TestLockedIter_PutGetDelete(t *testing.T) {
 		}
 
 		// Read-your-writes: deleted key should be gone.
-		_, ok3, gerr3 := rwDB.Get("key003")
+		_, ok3, _, gerr3 := rwDB.Get("key003")
 		panicOn(gerr3)
 		if ok3 {
 			t.Fatal("Get key003: should not be found after Delete")
@@ -580,7 +644,7 @@ func TestLockedIter_Sync(t *testing.T) {
 		}
 
 		// After sync, data should still be retrievable.
-		val, ok, gerr := rwDB.Get("key007")
+		val, ok, _, gerr := rwDB.Get("key007")
 		panicOn(gerr)
 		if !ok {
 			t.Fatal("Get key007 after Sync: not found")

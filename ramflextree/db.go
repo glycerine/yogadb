@@ -19,8 +19,10 @@ import (
 // ====================== Constants ======================
 
 const (
-	// MaxKeySize is actually 16 bytes smaller (really the limit is 4080 bytes).
-	MaxKeySize                        = 4096
+	// MaxKeySize is the maximum accepted user key length in bytes.
+	// It is derived from slotted-page capacity so a single key can always fit
+	// in a RAM FlexSpace interval.
+	MaxKeySize                        = MAX_KEY_BYTES
 	flexMemSparseIndexTreeLeafCap     = 100
 	flexMemSparseIndexTreeInternalCap = 40
 	flexdbSparseIntervalCount         = 1000
@@ -29,7 +31,7 @@ const (
 	memtableFlushBatch                = 1024
 	flexdbUnsortedWriteQuota          = 6
 	// sparseInterval = sortedCount + unsortedQuota + 1 = 32
-	flexdbSparseInterval       = flexdbSparseIntervalCount + flexdbUnsortedWriteQuota + 1
+	flexdbSparseInterval        = flexdbSparseIntervalCount + flexdbUnsortedWriteQuota + 1
 	intervalCachePartitionCount = 1024
 	intervalCachePartitionMask  = intervalCachePartitionCount - 1
 
@@ -42,6 +44,7 @@ const (
 type Batch struct {
 	db   *FlexDB
 	puts []*KV
+	err  error
 }
 
 // NewBatch returns an empty new Batch.
@@ -55,22 +58,38 @@ func (db *FlexDB) NewBatch() (b *Batch) {
 // Set copies key and value internally, so the
 // original memory is safe to be re-used by the
 // caller immediately after Set returns.
-func (s *Batch) Set(key string, value []byte) (err error) {
-	if key == "" {
-		return ErrKeyEmpty
+func (s *Batch) Set(key string, value []byte, vtyp uint64) (err error) {
+	if err := validateUserKey(key); err != nil {
+		if s.err == nil {
+			s.err = err
+		}
+		return err
 	}
 
 	// String keys are immutable - no copy needed.
-	// Value is []byte, so we must copy it.
-	s.puts = append(s.puts, &KV{
+	// Nil and empty values are the same zero-length live value.
+	var valueCopy []byte
+	if len(value) > 0 {
+		valueCopy = append([]byte{}, value...)
+	}
+	pkv := &KV{
 		Key:   key,
-		Value: append([]byte{}, value...),
-	})
+		Value: valueCopy,
+	}
+	pkv.Vptr.Offset = vtyp
+	pkv.Vptr.Length = uint64(len(valueCopy))
+	s.puts = append(s.puts, pkv)
 	return nil
 }
 
 // Delete marks key for deletion in this batch.
 func (s *Batch) Delete(key string) {
+	if err := validateUserKey(key); err != nil {
+		if s.err == nil {
+			s.err = err
+		}
+		return
+	}
 	s.puts = append(s.puts, &KV{
 		Key:  key,
 		Vptr: VPtr{Length: tombstoneVPtrLength},
@@ -107,6 +126,20 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
+
+	if s.err != nil {
+		err := s.err
+		s.puts = nil
+		s.err = nil
+		return HLCInterval{}, nil, err
+	}
+
+	for _, kv := range s.puts {
+		if err := validateUserKey(kv.Key); err != nil {
+			s.puts = nil
+			return HLCInterval{}, nil, err
+		}
+	}
 
 	if len(s.puts) == 0 {
 		if wantMetrics {
@@ -149,8 +182,12 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 
 		if mt.size >= memtableCap {
 			// Memtable full - flush inline.
-			db.flushMemtable()
-			db.cache.flushDirtyPages()
+			if err := db.flushMemtable(); err != nil {
+				return HLCInterval{}, nil, fmt.Errorf("flexdb: batch flush memtable: %w", err)
+			}
+			if err := db.cache.flushDirtyPages(); err != nil {
+				return HLCInterval{}, nil, fmt.Errorf("flexdb: batch flush dirty pages: %w", err)
+			}
 
 			mt.bt.Clear()
 			mt.empty = true
@@ -184,19 +221,25 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 // Reset forgets any existing queued up puts.
 func (s *Batch) Reset() {
 	s.puts = nil
+	s.err = nil
 }
 
 // Close forgets any existing queued up puts, and
 // frees any other resources associated with the Batch.
 func (s *Batch) Close() {
 	s.puts = nil
+	s.err = nil
 }
 
 // ====================== KV type ======================
 
-// KV is a key-value pair. Tombstones are marked by Vptr.Length == tombstoneVPtrLength == 1
-// A nil Value with Vptr.Length == 0 is a live key with nil value (just a
-// key that is present but has no value; this is fine).
+// KV is a key-value pair. Tombstones are marked by Vptr.Length == tombstoneVPtrLength.
+// A zero-length Value with Vptr.Length == 0 is a live key with no value bytes.
+// Nil and empty value slices are intentionally equivalent; only Delete writes
+// the tombstone sentinel.
+//
+// ramflextree stores every user value inline. VPtr is retained for API
+// compatibility and uses Offset to carry Vtyp metadata.
 //
 // KV is currently 64 bytes, a cache line on most systems. Be very wary of
 // making it any bigger, as this could really slow things down.
@@ -209,13 +252,21 @@ func (s *Batch) Close() {
 type KV struct {
 	Key   string
 	Value []byte
-	Vptr  VPtr // Vptr.Length==1 means tombstone; Length>1: VLOG pointer; Length==0: inline/nil
+	Vptr  VPtr // Vptr.Offset carries Vtyp for live values; tombstone uses tombstoneVPtrLength.
 	Hlc   HLC  // hybrid logical clock timestamp. LSN like per mini batch, but has big gaps.
 }
 
-// HasVPtr returns true if the value is stored in the VLOG file.
-// Real VLOG entries always have Length > tombstoneVPtrLength.
-func (kv *KV) HasVPtr() bool { return kv.Vptr.Length > tombstoneVPtrLength }
+// HasVPtr returns true if the value is stored outside the KV. In ramflextree
+// this is always false because there is no VLOG; all user values are inline.
+func (kv *KV) HasVPtr() bool { return false }
+
+// Vtyp extracts value-type information from the KV. Tombstones have Vtyp 0.
+func (kv *KV) Vtyp() uint64 {
+	if kv == nil || kv.isTombstone() {
+		return 0
+	}
+	return kv.Vptr.Offset
+}
 
 func (z *KV) String() (r string) {
 	r = "&KV{\n"
@@ -241,7 +292,7 @@ func kvLess(a, b KV) bool { return a.Key < b.Key }
 func kvSizeApprox(kv *KV) int { return 24 + len(kv.Key) + len(kv.Value) }
 
 // isTombstone returns true if this KV is a deletion marker.
-// A tombstone is marked by the sentinel VPtr.Length == tombstoneVPtrLength == 1.
+// A tombstone is marked by the sentinel VPtr.Length == tombstoneVPtrLength.
 func (kv *KV) isTombstone() bool {
 	return kv.Vptr.Length == tombstoneVPtrLength
 }
@@ -250,11 +301,11 @@ func (kv *KV) isTombstone() bool {
 // (too large for inline storage). Use db.FetchLarge(kv) to
 // retrieve the value bytes.
 func (kv *KV) Large() bool {
-	return kv.Vptr.Length > tombstoneVPtrLength
+	return false
 }
 
 // ====================== KV128 encoding ======================
-// Format: varint(klen) || varint(rawVlen) || key_bytes || value_or_vptr_bytes
+// Format: varint(klen) || varint(rawVlen) || varint(vtyp) || key_bytes || value_or_vptr_bytes
 // Standard LEB128 (same as Go's encoding/binary.PutUvarint).
 //
 // rawVlen encoding:
@@ -266,17 +317,16 @@ func (kv *KV) Large() bool {
 // The two high sentinels (rawVlenVPtr, rawVlenTombstone) can never collide with
 // a real inline value since that would require a value of length ~2^64 - 3.
 
-const rawVlenVPtr = ^uint64(0)      // 0xFFFF FFFF FFFF FFFF - sentinel for VLOG pointer
-const rawVlenTombstone = ^uint64(1) // 0xFFFF FFFF FFFF FFFE - sentinel for tombstone
+const rawVlenVPtr = ^uint64(1)      // 0xFFFF FFFF FFFF FFFE - sentinel for VLOG pointer
+const rawVlenTombstone = ^uint64(0) // 0xFFFF FFFF FFFF FFFF - sentinel for tombstone
 
 // tombstoneVPtrLength is the sentinel value stored in VPtr.Length
-// to mark a KV as a tombstone. Real VLOG entries always have
-// Length > 1, so 1 is safe.
-const tombstoneVPtrLength uint64 = 1
+// to mark a KV as a tombstone.
+const tombstoneVPtrLength uint64 = rawVlenTombstone
 
 func kv128Encode(buf []byte, kv KV) []byte {
 	recordStart := len(buf)
-	var hdr [20]byte
+	var hdr [30]byte
 	n := binary.PutUvarint(hdr[:], uint64(len(kv.Key)))
 	if kv.isTombstone() {
 		n += binary.PutUvarint(hdr[n:], rawVlenTombstone) // tombstone sentinel
@@ -287,6 +337,7 @@ func kv128Encode(buf []byte, kv KV) []byte {
 	} else {
 		n += binary.PutUvarint(hdr[n:], uint64(len(kv.Value)+2)) // inline: len+2
 	}
+	n += binary.PutUvarint(hdr[n:], kv.Vtyp())
 	buf = append(buf, hdr[:n]...)
 	buf = append(buf, kv.Key...)
 	if kv.HasVPtr() {
@@ -308,16 +359,17 @@ func kv128Encode(buf []byte, kv KV) []byte {
 }
 
 func kv128EncodedSize(kv KV) int {
+	vtypSize := varintSize(kv.Vtyp())
 	if kv.isTombstone() {
-		return varintSize(uint64(len(kv.Key))) + varintSize(rawVlenTombstone) + len(kv.Key) + 8 + 4
+		return varintSize(uint64(len(kv.Key))) + varintSize(rawVlenTombstone) + vtypSize + len(kv.Key) + 8 + 4
 	}
 	if kv.HasVPtr() {
-		return varintSize(uint64(len(kv.Key))) + varintSize(rawVlenVPtr) + len(kv.Key) + vptrSize + 8 + 4
+		return varintSize(uint64(len(kv.Key))) + varintSize(rawVlenVPtr) + vtypSize + len(kv.Key) + vptrSize + 8 + 4
 	}
 	if kv.Value == nil {
-		return varintSize(uint64(len(kv.Key))) + 1 + len(kv.Key) + 8 + 4 // rawVlen=0 is 1 byte
+		return varintSize(uint64(len(kv.Key))) + 1 + vtypSize + len(kv.Key) + 8 + 4 // rawVlen=0 is 1 byte
 	}
-	return varintSize(uint64(len(kv.Key))) + varintSize(uint64(len(kv.Value)+2)) + len(kv.Key) + len(kv.Value) + 8 + 4
+	return varintSize(uint64(len(kv.Key))) + varintSize(uint64(len(kv.Value)+2)) + vtypSize + len(kv.Key) + len(kv.Value) + 8 + 4
 }
 
 func kv128Decode(src []byte) (kv KV, n int, ok bool) {
@@ -329,7 +381,11 @@ func kv128Decode(src []byte) (kv KV, n int, ok bool) {
 	if vn <= 0 {
 		return
 	}
-	hdr := kn + vn
+	vtyp, tn := binary.Uvarint(src[kn+vn:])
+	if tn <= 0 {
+		return
+	}
+	hdr := kn + vn + tn
 	if rawVlen == rawVlenTombstone {
 		// tombstone
 		total := hdr + int(klen) + 8
@@ -354,6 +410,7 @@ func kv128Decode(src []byte) (kv KV, n int, ok bool) {
 			return
 		}
 		kv.Key = string(src[hdr : hdr+int(klen)])
+		kv.Vptr.Offset = vtyp
 		kv.Hlc = HLC(binary.BigEndian.Uint64(src[total-8 : total]))
 		return kv, total + 4, true
 	}
@@ -368,6 +425,10 @@ func kv128Decode(src []byte) (kv KV, n int, ok bool) {
 		}
 		kv.Key = string(src[hdr : hdr+int(klen)])
 		kv.Vptr = decodeVPtr(src[hdr+int(klen) : hdr+int(klen)+vptrSize])
+		if vtyp != 0 {
+			kv.Value = make([]byte, 8)
+			putUint64(kv.Value, vtyp)
+		}
 		kv.Hlc = HLC(binary.BigEndian.Uint64(src[total-8 : total]))
 		return kv, total + 4, true
 	}
@@ -380,6 +441,8 @@ func kv128Decode(src []byte) (kv KV, n int, ok bool) {
 		return
 	}
 	kv.Key = string(src[hdr : hdr+int(klen)])
+	kv.Vptr.Offset = vtyp
+	kv.Vptr.Length = uint64(vlen)
 	kv.Value = make([]byte, vlen)
 	copy(kv.Value, src[hdr+int(klen):hdr+int(klen)+vlen])
 	kv.Hlc = HLC(binary.BigEndian.Uint64(src[total-8 : total]))
@@ -397,13 +460,18 @@ func kv128SizePrefix(src []byte) (int, bool) {
 	if vn <= 0 {
 		return 0, false
 	}
+	vtyp, tn := binary.Uvarint(src[kn+vn:])
+	_ = vtyp
+	if tn <= 0 {
+		return 0, false
+	}
 	if rawVlen == rawVlenTombstone || rawVlen == 0 {
-		return kn + vn + int(klen) + 8 + 4, true
+		return kn + vn + tn + int(klen) + 8 + 4, true
 	}
 	if rawVlen == rawVlenVPtr {
-		return kn + vn + int(klen) + vptrSize + 8 + 4, true
+		return kn + vn + tn + int(klen) + vptrSize + 8 + 4, true
 	}
-	return kn + vn + int(klen) + int(rawVlen-2) + 8 + 4, true
+	return kn + vn + tn + int(klen) + int(rawVlen-2) + 8 + 4, true
 }
 
 func varintSize(v uint64) int {
@@ -690,10 +758,16 @@ func (db *FlexDB) Close() *Metrics {
 	}
 	db.closed = true
 	if !db.mt.empty {
-		db.flushMemtable()
-		db.cache.flushDirtyPages()
+		if err := db.flushMemtable(); err != nil {
+			panicf("Close flush memtable: %v", err)
+		}
+		if err := db.cache.flushDirtyPages(); err != nil {
+			panicf("Close flush dirty pages: %v", err)
+		}
 	} else {
-		db.cache.flushDirtyPages()
+		if err := db.cache.flushDirtyPages(); err != nil {
+			panicf("Close flush dirty pages: %v", err)
+		}
 	}
 	m := db.writeLockHeldFinalMetrics(0, 0)
 	db.cache.destroyAll()
@@ -849,33 +923,30 @@ func (db *FlexDB) CumulativeMetrics() *Metrics {
 	return m
 }
 
-// resolveVPtr returns the inline value. In RAM-only mode there is no VLOG,
-// so VPtr entries cannot be resolved. This will return an error if HasVPtr is true.
-func (db *FlexDB) resolveVPtr(kv KV) ([]byte, error) {
-	if !kv.HasVPtr() {
-		return kv.Value, nil
-	}
-	return nil, fmt.Errorf("flexdb: VPtr but no VLOG in RAM-only mode")
+// resolveVPtr returns the inline value and Vtyp. In RAM-only mode there is no
+// VLOG, so every user value is already inline.
+func (db *FlexDB) resolveVPtr(kv KV) (val []byte, vtyp uint64, err error) {
+	return kv.Value, kv.Vtyp(), nil
 }
 
 // FetchLarge retrieves the value bytes for a KV whose value
 // is stored in the VLOG (kv.Large() returns true). For inline
 // values, it simply returns kv.Value.
 // In RAM-only mode, returns kv.Value (no VLOG).
-func (db *FlexDB) FetchLarge(kv *KV) ([]byte, error) {
+func (db *FlexDB) FetchLarge(kv *KV) (val []byte, vtyp uint64, err error) {
 	if kv == nil {
-		return nil, fmt.Errorf("flexdb: FetchLarge called with nil KV")
+		return nil, 0, fmt.Errorf("flexdb: FetchLarge called with nil KV")
 	}
-	return kv.Value, nil
+	return kv.Value, kv.Vtyp(), nil
 }
 
 // lockHeldFetchLarge is the lock-held body of FetchLarge.
 // Caller must hold topMutRW.RLock() or topMutRW.Lock().
-func (db *FlexDB) lockHeldFetchLarge(kv *KV) ([]byte, error) {
+func (db *FlexDB) lockHeldFetchLarge(kv *KV) (val []byte, vtyp uint64, err error) {
 	if kv == nil {
-		return nil, fmt.Errorf("flexdb: FetchLarge called with nil KV")
+		return nil, 0, fmt.Errorf("flexdb: FetchLarge called with nil KV")
 	}
-	return kv.Value, nil
+	return kv.Value, kv.Vtyp(), nil
 }
 
 // VacuumVLOGStats reports the results of a VacuumVLOG operation.
@@ -1153,8 +1224,12 @@ func (db *FlexDB) writeLockHeldSync() error {
 	}
 
 	// Flush memtable to FlexSpace (in memory).
-	db.flushMemtable()
-	db.cache.flushDirtyPages()
+	if err := db.flushMemtable(); err != nil {
+		return fmt.Errorf("flexdb: Sync flush memtable: %w", err)
+	}
+	if err := db.cache.flushDirtyPages(); err != nil {
+		return fmt.Errorf("flexdb: Sync flush dirty pages: %w", err)
+	}
 	db.verifyAnchorTags()
 
 	db.mt.bt.Clear()
@@ -1165,6 +1240,28 @@ func (db *FlexDB) writeLockHeldSync() error {
 }
 
 var ErrKeyEmpty = fmt.Errorf("key cannot be the empty string")
+
+var ErrTomb = fmt.Errorf("error tombstone found")
+
+func validateUserKey(key string) error {
+	if key == "" {
+		return ErrKeyEmpty
+	}
+	if len(key) > MaxKeySize {
+		return fmt.Errorf("flexdb: key too large (max %d bytes)", MaxKeySize)
+	}
+	return nil
+}
+
+func validateKVRecordSize(kv KV) error {
+	if err := validateUserKey(kv.Key); err != nil {
+		return err
+	}
+	if size := slottedPageComputeSize([]KV{kv}); size > slottedPageMaxSize {
+		return fmt.Errorf("flexdb: KV too large for slotted page (size %d, max %d bytes)", size, slottedPageMaxSize)
+	}
+	return nil
+}
 
 // recoverIterIOErr is deferred in Find/Get/Update/View to convert
 // iterIOErr panics (FlexSpace I/O failures) into returned errors.
@@ -1185,26 +1282,20 @@ func recoverIterIOErr(errp *error) {
 //
 // Puts are buffered in the memtable and flushed to the in-memory
 // FlexSpace on Sync() or Close().
-func (db *FlexDB) Put(key string, value []byte) error {
-	if key == "" {
-		return ErrKeyEmpty
-	}
+func (db *FlexDB) Put(key string, value []byte, vtyp uint64) error {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
-	return db.writeLockHeldPut(key, value, false)
+	return db.writeLockHeldPut(key, value, vtyp, false)
 }
 
-func (db *FlexDB) writeLockHeldPut(key string, value []byte, doDelete bool) error {
+func (db *FlexDB) writeLockHeldPut(key string, value []byte, vtyp uint64, doDelete bool) error {
 
 	if doDelete && len(value) > 0 {
 		return fmt.Errorf("flexdb: cannot supply a value and also delete it")
 	}
 
-	if len(key)+16 >= MaxKeySize {
-		return fmt.Errorf("flexdb: key too large (max %d bytes)", MaxKeySize-16)
-	}
-	if len(key)+len(value)+16 >= MaxKeySize {
-		return fmt.Errorf("flexdb: KV too large (max %d bytes)", MaxKeySize)
+	if err := validateUserKey(key); err != nil {
+		return err
 	}
 	atomic.AddInt64(&db.LogicalBytesWritten, int64(len(key)+len(value)))
 
@@ -1212,20 +1303,32 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, doDelete bool) erro
 	hlcVal := db.hlc.CreateSendOrLocalEvent()
 
 	// String keys are immutable - no defensive copy needed.
-	// Value is []byte, so we must copy it.
-	if value != nil {
+	// Nil and empty values are the same zero-length live value.
+	if len(value) == 0 {
+		value = nil
+	} else {
 		value = append([]byte{}, value...)
 	}
 
 	// Build the KV for the memtable.
 	kv := KV{Key: key, Value: value, Hlc: hlcVal}
+	kv.Vptr.Offset = vtyp
+	kv.Vptr.Length = uint64(len(value))
 	if doDelete {
 		kv.Vptr.Length = tombstoneVPtrLength
+	}
+	if err := validateKVRecordSize(kv); err != nil {
+		return err
 	}
 
 	if db.mt.size >= memtableCap {
 		// Inline flush when memtable is full.
-		db.flushMemtable()
+		if err := db.flushMemtable(); err != nil {
+			return fmt.Errorf("flexdb: Put inline flush memtable: %w", err)
+		}
+		if err := db.cache.flushDirtyPages(); err != nil {
+			return fmt.Errorf("flexdb: Put inline flush dirty pages: %w", err)
+		}
 
 		db.mt.bt.Clear()
 		db.mt.empty = true
@@ -1360,22 +1463,25 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 	if found {
 		zc := findBuildKV(it)
 		resultKey := zc.Key
+		vtyp := zc.Vtyp()
+		valueFromCache := it.valueNeedsCopy
 
 		// Release iterator state early - we have what we need.
 		it.releaseIterState()
 
 		if skipValues {
-			kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: db}
+			kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: db, Vtyp: vtyp}
 			return
 		}
 
 		// LAZY_SMALL path: try zero-copy via cache pinning.
-		if lazySmall && !it.valueResolved && !zc.HasVPtr() && zc.Value != nil {
+		if lazySmall && valueFromCache && !zc.HasVPtr() && len(zc.Value) > 0 {
 			kvc, err = db.findBuildKVZeroCopy(resultKey)
 			if err != nil {
 				return
 			}
 			if kvc != nil {
+				kvc.Vtyp = vtyp
 				return
 			}
 			// Fallback: key was in memtable or edge case. Copy below.
@@ -1387,7 +1493,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 		if !zc.HasVPtr() && zc.Value != nil {
 			owned.Value = append([]byte{}, zc.Value...)
 		}
-		kvc = &KVcloser{KV: owned, db: db}
+		kvc = &KVcloser{KV: owned, db: db, Vtyp: vtyp}
 
 		// In RAM-only mode, no VLOG auto-fetch needed.
 		_ = lazyLarge
@@ -1402,6 +1508,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 // value out, or else memory and resource leaks will ensue.
 type KVcloser struct {
 	KV
+	Vtyp      uint64
 	partition *intervalCachePartition // nil when no pin needed
 	entry     *intervalCacheEntry     // nil when no pin needed
 	db        *FlexDB
@@ -1433,7 +1540,14 @@ func (s *KVcloser) Fetch() error {
 	if !s.HasVPtr() {
 		return nil // inline value already present
 	}
-	// RAM-only: no VLOG to fetch from.
+	val, vtyp, err := s.db.FetchLarge(&s.KV)
+	if err != nil {
+		return err
+	}
+	s.Value = val
+	if s.Vtyp != vtyp {
+		s.Vtyp = vtyp
+	}
 	return nil
 }
 
@@ -1465,12 +1579,14 @@ func (db *FlexDB) findBuildKVZeroCopy(key string) (*KVcloser, error) {
 		return nil, nil
 	}
 	// Transfer cache entry ownership to KVcloser (don't release).
-	return &KVcloser{
+	kvc := &KVcloser{
 		KV:        fce.kvs[idx],
 		partition: partition,
 		entry:     fce,
 		db:        db,
-	}, nil
+	}
+	kvc.Vtyp = kvc.KV.Vtyp()
+	return kvc, nil
 }
 
 // GetKV is like Get but allows lazy loading of Large values;
@@ -1484,7 +1600,7 @@ func (db *FlexDB) GetKV(key string) (kv *KVcloser, err error) {
 
 // Get retrieves the value for key. Returns nil, false if not found.
 // Get can return nil, true if a nil value was stored with the key.
-func (db *FlexDB) Get(key string) (value []byte, found bool, err error) {
+func (db *FlexDB) Get(key string) (value []byte, found bool, vtyp uint64, err error) {
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
 	defer recoverIterIOErr(&err)
@@ -1494,54 +1610,59 @@ func (db *FlexDB) Get(key string) (value []byte, found bool, err error) {
 		kv, ok := db.mt.get(key)
 		if ok {
 			if kv.isTombstone() {
-				return nil, false, nil // tombstone
+				return nil, false, 0, nil // tombstone
 			}
-			if kv.Value == nil {
-				return nil, true, nil // live key, nil value
+			val, vtype, err := db.resolveVPtr(kv)
+			if err != nil {
+				return nil, false, 0, err
 			}
-			out := make([]byte, len(kv.Value))
-			copy(out, kv.Value)
-			return out, true, nil
+			if len(val) == 0 {
+				return nil, true, vtype, nil
+			}
+			out := make([]byte, len(val))
+			copy(out, val)
+			return out, true, vtype, nil
 		}
 	}
 
 	// Check FlexSpace via sparse index
-	val, found, err := db.getPassthrough(key)
-	return val, found, err
+	return db.getPassthrough(key)
 }
 
 // someLockHeldGet retrieves the value for key without acquiring topMutRW.
 // Caller must already hold topMutRW.Lock() or topMutRW.RLock().
-func (db *FlexDB) someLockHeldGet(key string) ([]byte, bool, error) {
+func (db *FlexDB) someLockHeldGet(key string) (val []byte, found bool, vtyp uint64, err error) {
 	// Check memtable
 	if !db.mt.empty {
 		kv, ok := db.mt.get(key)
 		if ok {
 			if kv.isTombstone() {
-				return nil, false, nil
+				return nil, false, 0, nil
 			}
-			if kv.Value == nil {
-				return nil, true, nil // live key, nil value
+			val, vtyp, err = db.resolveVPtr(kv)
+			if err != nil {
+				return
 			}
-			out := make([]byte, len(kv.Value))
-			copy(out, kv.Value)
-			return out, true, nil
+			if len(val) == 0 {
+				val = nil
+				found = true
+				return
+			}
+			out := make([]byte, len(val))
+			copy(out, val)
+			return out, true, vtyp, nil
 		}
 	}
 
 	// Check FlexSpace via sparse index
-	val, found, err := db.getPassthrough(key)
-	return val, found, err
+	return db.getPassthrough(key)
 }
 
 // Delete removes key from the store.
 func (db *FlexDB) Delete(key string) error {
-	if key == "" {
-		return ErrKeyEmpty
-	}
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
-	return db.writeLockHeldPut(key, nil, true)
+	return db.writeLockHeldPut(key, nil, 0, true)
 }
 
 // DeleteRange deletes all keys in the range [begKey, endKey] with
@@ -1599,7 +1720,7 @@ func (db *FlexDB) writeLockHeldDeleteRange(includeLarge bool, begKey, endKey str
 			return true
 		})
 		for _, key := range keys {
-			if err := db.writeLockHeldPut(key, nil, true); err != nil {
+			if err := db.writeLockHeldPut(key, nil, 0, true); err != nil {
 				return n, false, err
 			}
 			n++
@@ -1646,7 +1767,7 @@ func (db *FlexDB) writeLockHeldClear(includeLarge bool) (allGone bool, err error
 			return true
 		})
 		for _, key := range keys {
-			if err := db.writeLockHeldPut(key, nil, true); err != nil {
+			if err := db.writeLockHeldPut(key, nil, 0, true); err != nil {
 				return false, err
 			}
 		}
@@ -1891,7 +2012,7 @@ func (db *FlexDB) deleteRangeFlexSpace(begKey, endKey string, begInclusive, endI
 
 				// Write tombstone. Track flushSeq to detect inline flush.
 				prevSeq := db.flushSeq
-				if err := db.writeLockHeldPut(kv.Key, nil, true); err != nil {
+				if err := db.writeLockHeldPut(kv.Key, nil, 0, true); err != nil {
 					return n, err
 				}
 				n++
@@ -1993,7 +2114,7 @@ func (db *FlexDB) deleteRangeFlexSpaceClearSmall() (int64, error) {
 				}
 
 				prevSeq := db.flushSeq
-				if err := db.writeLockHeldPut(kv.Key, nil, true); err != nil {
+				if err := db.writeLockHeldPut(kv.Key, nil, 0, true); err != nil {
 					return n, err
 				}
 				n++
@@ -2029,16 +2150,16 @@ func (db *FlexDB) decodeIntervalDirect(anchor *dbAnchor, anchorLoff uint64) ([]K
 	src := buf
 	if slottedPageIsSlotted(src) {
 		decoded, consumed, err := slottedPageDecode(src)
-		if err == nil {
-			kvs = append(kvs, decoded...)
-			src = src[consumed:]
-		} else {
-			src = nil
+		if err != nil {
+			return nil, fmt.Errorf("decodeIntervalDirect: slotted page decode loff=%d psize=%d: %w",
+				anchorLoff, anchor.psize, err)
 		}
+		kvs = append(kvs, decoded...)
+		src = src[consumed:]
 	}
 	// All KV.SLOT_BLOCKS data should be slotted page format.
 	if len(src) > 0 {
-		panicf("decodeIntervalDirect: unexpected non-slotted data at loff=%d, %d trailing bytes, first 16 bytes: %x",
+		return nil, fmt.Errorf("decodeIntervalDirect: unexpected non-slotted data at loff=%d, %d trailing bytes, first 16 bytes: %x",
 			anchorLoff, len(src), src[:min(len(src), 16)])
 	}
 
@@ -2072,7 +2193,7 @@ func deleteRangeDedup(kvs []KV) []KV {
 }
 
 // Merge performs an atomic read-modify-write on key.
-func (db *FlexDB) Merge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool, doDelete bool)) error {
+func (db *FlexDB) Merge(key string, fn func(oldVal []byte, exists bool, oldVtyp uint64) (newVal []byte, write bool, doDelete bool, newVtyp uint64)) error {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 	return db.writeLockHeldMerge(key, fn)
@@ -2080,39 +2201,46 @@ func (db *FlexDB) Merge(key string, fn func(oldVal []byte, exists bool) (newVal 
 
 // writeLockHeldMerge is the lock-held body of Merge.
 // Caller must hold topMutRW.Lock().
-func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists bool) (newVal []byte, write bool, doDelete bool)) error {
-	if len(key)+16 >= MaxKeySize {
-		return fmt.Errorf("flexdb: key too large for merge (max %d bytes)", MaxKeySize)
+func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists bool, oldVtyp uint64) (newVal []byte, write bool, doDelete bool, newVtyp uint64)) error {
+	if err := validateUserKey(key); err != nil {
+		return err
 	}
 
 	// Phase 1: check memtable.
 	var oldVal []byte
 	var exists bool
+	var oldVtyp uint64
 
 	if !db.mt.empty {
 		kv, ok := db.mt.get(key)
 		if ok {
 			if !kv.isTombstone() {
-				oldVal = kv.Value
-				exists = true
+				oldVtyp = kv.Vptr.Offset
+				val, vtyp, err := db.resolveVPtr(kv)
+				if err == nil {
+					oldVal = val
+					exists = true
+					oldVtyp = vtyp
+				}
 			}
 		}
 	}
 
 	if !exists {
 		// Phase 2: check FlexSpace.
-		val, found, err := db.getPassthrough(key)
+		val, found, vtyp, err := db.getPassthrough(key)
 		if err != nil {
 			return fmt.Errorf("flexdb: merge getPassthrough: %w", err)
 		}
 		if found {
 			oldVal = val
 			exists = true
+			oldVtyp = vtyp
 		}
 	}
 
 	// Apply user merge function.
-	newVal, write, doDelete := fn(oldVal, exists)
+	newVal, write, doDelete, newVtyp := fn(oldVal, exists, oldVtyp)
 	if write && doDelete {
 		return fmt.Errorf("flexdb: Merge callback returned both doWrite=true and doDelete=true; these are mutually exclusive")
 	}
@@ -2121,22 +2249,17 @@ func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists b
 	}
 
 	if doDelete {
-		return db.writeLockHeldPut(key, nil, true)
+		return db.writeLockHeldPut(key, nil, 0, true)
 	}
 
-	// Validate size.
-	if len(key)+len(newVal)+16 >= MaxKeySize {
-		return fmt.Errorf("flexdb: merged KV too large (max %d bytes)", MaxKeySize)
-	}
-
-	return db.writeLockHeldPut(key, newVal, false)
+	return db.writeLockHeldPut(key, newVal, newVtyp, false)
 }
 
 // ====================== Passthrough operations ======================
 // These operate directly on FlexSpace + sparse index.
 // Caller must hold db.topMutRW.
 
-func (db *FlexDB) getPassthrough(key string) ([]byte, bool, error) {
+func (db *FlexDB) getPassthrough(key string) (val []byte, found bool, vtyp uint64, err0 error) {
 	var nh memSparseIndexTreeHandler
 	db.tree.findAnchorPos(key, &nh)
 	anchor := nh.node.anchors[nh.idx]
@@ -2144,26 +2267,29 @@ func (db *FlexDB) getPassthrough(key string) ([]byte, bool, error) {
 	partition := db.cache.getPartition(anchor)
 	fce, err := partition.getEntry(anchor, anchorLoff, db)
 	if err != nil {
-		return nil, false, err
+		partition.releaseEntry(fce)
+		return nil, false, 0, err
 	}
 	defer partition.releaseEntry(fce)
 
 	idx, ok := intervalCacheEntryFindKeyEQ(fce, key)
 	if !ok {
-		return nil, false, nil
+		return nil, false, 0, nil
 	}
 	kv := fce.kvs[idx]
 	if kv.isTombstone() {
-		return nil, false, nil
+		return nil, false, 0, nil
 	}
-	// In RAM-only mode, all values are inline.
-	val := kv.Value
-	if val == nil {
-		return nil, true, nil // live key, nil value
+	val, vtyp, err0 = db.resolveVPtr(kv)
+	if err0 != nil {
+		return nil, false, 0, err0
+	}
+	if len(val) == 0 {
+		return nil, true, vtyp, nil
 	}
 	out := make([]byte, len(val))
 	copy(out, val)
-	return out, true, nil
+	return out, true, vtyp, nil
 }
 
 // getPassthroughKV returns the full KV (including HLC) from the passthrough layer.
@@ -2201,12 +2327,19 @@ func (db *FlexDB) putPassthrough(kv KV, nh *memSparseIndexTreeHandler) error {
 
 	// First write to this anchor: allocate a fixed-size page via Insert.
 	if anchor.psize == 0 {
-		db.putPassthroughInitial(kv, nh, anchor, partition, fce)
+		err = db.putPassthroughInitial(kv, nh, anchor, partition, fce)
 	} else {
-		db.putPassthroughR(kv, nh, anchor, partition, fce)
+		err = db.putPassthroughR(kv, nh, anchor, partition, fce)
+	}
+	if err != nil {
+		partition.releaseEntry(fce)
+		return err
 	}
 	if fce.count >= flexdbSparseIntervalCount {
-		db.treeInsertAnchor(nh, partition, fce)
+		if err := db.treeInsertAnchor(nh, partition, fce); err != nil {
+			partition.releaseEntry(fce)
+			return err
+		}
 	}
 	partition.releaseEntry(fce)
 	return nil
@@ -2214,37 +2347,39 @@ func (db *FlexDB) putPassthrough(kv KV, nh *memSparseIndexTreeHandler) error {
 
 // putPassthroughInitial handles the first write to an anchor: allocates a
 // fixed-size slottedPageMaxSize page via ff.Insert and populates the cache.
-func (db *FlexDB) putPassthroughInitial(kv KV, nh *memSparseIndexTreeHandler, anchor *dbAnchor, partition *intervalCachePartition, fce *intervalCacheEntry) {
+func (db *FlexDB) putPassthroughInitial(kv KV, nh *memSparseIndexTreeHandler, anchor *dbAnchor, partition *intervalCachePartition, fce *intervalCacheEntry) error {
 	anchorLoff := uint64(anchor.loff + nh.shift)
 
-	// Insert into cache.
 	idx, eq := intervalCacheEntryFindKeyGE(fce, kv.Key)
-	if eq {
-		partition.cacheEntryReplace(fce, kv, idx)
-	} else {
-		partition.cacheEntryInsert(fce, kv, idx)
-	}
+	kvs, fps, size := intervalCacheEntryPreviewUpsert(fce, kv, idx, eq)
 
 	// Encode as tight (unpadded) page.
-	buf := slottedPageEncode(fce.kvs[:fce.count])
+	buf := slottedPageEncode(kvs)
 	psize := uint32(len(buf))
 
-	db.ff.Insert(buf, anchorLoff, uint64(psize))
+	if _, err := db.ff.Insert(buf, anchorLoff, uint64(psize)); err != nil {
+		return fmt.Errorf("putPassthroughInitial insert anchor key=%q loff=%d psize=%d maxLoff=%d: %w",
+			anchor.key, anchorLoff, psize, db.ff.tree.MaxLoff, err)
+	}
+
+	tag := flexdbTagGenerate(true, 0)
+	if err := db.ff.SetTag(anchorLoff, tag); err != nil {
+		return fmt.Errorf("putPassthroughInitial set tag anchor key=%q loff=%d psize=%d maxLoff=%d: %w",
+			anchor.key, anchorLoff, psize, db.ff.tree.MaxLoff, err)
+	}
+
+	partition.replaceEntryContents(fce, kvs, fps, size)
 	nh.shiftUpPropagate(int64(psize))
 	anchor.psize = psize
 	anchor.unsorted = 0
 
-	tag := flexdbTagGenerate(true, 0)
-	if err := db.ff.SetTag(anchorLoff, tag); err != nil {
-		panicf("putPassthroughInitial: SetTag anchorLoff=%d: %v", anchorLoff, err)
-	}
-
 	if nh.node.parent != nil {
 		memSparseIndexTreeNodeRebase(nh.node)
 	}
+	return nil
 }
 
-func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *dbAnchor, partition *intervalCachePartition, fce *intervalCacheEntry) {
+func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *dbAnchor, partition *intervalCachePartition, fce *intervalCacheEntry) error {
 	idx, eq := intervalCacheEntryFindKeyGE(fce, kv.Key)
 
 	// Check if the new KV would fit.
@@ -2258,29 +2393,44 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 	}
 	if !slottedPageWouldFit(fce.kvs, fce.count, kv, replaceIdx, fitTarget) {
 		if eq {
-			partition.cacheEntryReplace(fce, kv, idx)
-			newSize := slottedPageComputeSize(fce.kvs[:fce.count])
+			kvs, fps, size := intervalCacheEntryPreviewUpsert(fce, kv, idx, eq)
+			newSize := slottedPageComputeSize(kvs)
 			if newSize > int(anchor.psize) && newSize < 2*slottedPageMaxSize {
-				buf := slottedPageEncode(fce.kvs[:fce.count])
+				buf := slottedPageEncode(kvs)
 				anchorLoff := uint64(anchor.loff + nh.shift)
-				db.ff.Update(buf, anchorLoff, uint64(len(buf)), uint64(anchor.psize))
+				if _, err := db.ff.Update(buf, anchorLoff, uint64(len(buf)), uint64(anchor.psize)); err != nil {
+					return fmt.Errorf("putPassthroughR update anchor key=%q loff=%d oldPSize=%d newPSize=%d maxLoff=%d: %w",
+						anchor.key, anchorLoff, anchor.psize, len(buf), db.ff.tree.MaxLoff, err)
+				}
+				partition.replaceEntryContents(fce, kvs, fps, size)
 				nh.shiftUpPropagate(int64(len(buf)) - int64(anchor.psize))
 				anchor.psize = uint32(len(buf))
 				fce.dirty = false // just written
 				fce.dirtyNode = nil
 			} else if newSize >= 2*slottedPageMaxSize {
-				db.treeInsertAnchor(nh, partition, fce)
+				snap := partition.snapshotEntry(fce)
+				partition.replaceEntryContents(fce, kvs, fps, size)
+				if err := db.treeInsertAnchor(nh, partition, fce); err != nil {
+					partition.restoreEntry(fce, snap)
+					return err
+				}
 				db.putPassthroughMarkDirty(nh, anchor, fce)
 			} else {
+				partition.replaceEntryContents(fce, kvs, fps, size)
 				db.putPassthroughMarkDirty(nh, anchor, fce)
 			}
-			return
+			return nil
 		}
 		// Inserting a new key - page genuinely full. Split.
-		partition.cacheEntryInsert(fce, kv, idx)
-		db.treeInsertAnchor(nh, partition, fce)
+		kvs, fps, size := intervalCacheEntryPreviewUpsert(fce, kv, idx, eq)
+		snap := partition.snapshotEntry(fce)
+		partition.replaceEntryContents(fce, kvs, fps, size)
+		if err := db.treeInsertAnchor(nh, partition, fce); err != nil {
+			partition.restoreEntry(fce, snap)
+			return err
+		}
 		db.putPassthroughMarkDirty(nh, anchor, fce)
-		return
+		return nil
 	}
 
 	// Update cache entry.
@@ -2292,6 +2442,7 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 
 	// Mark dirty - will be written to FlexSpace on Sync or eviction.
 	db.putPassthroughMarkDirty(nh, anchor, fce)
+	return nil
 }
 
 // putPassthroughMarkDirty marks fce as dirty so it will be written to
@@ -2302,13 +2453,14 @@ func (db *FlexDB) putPassthroughMarkDirty(nh *memSparseIndexTreeHandler, anchor 
 	anchor.unsorted = 0
 }
 
-func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *intervalCachePartition, fce *intervalCacheEntry) {
+func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *intervalCachePartition, fce *intervalCacheEntry) error {
 	anchor := nh.node.anchors[nh.idx]
 	anchorLoff := uint64(anchor.loff + nh.shift)
 
 	count := fce.count
 	rightCount := count / 2
 	leftCount := count - rightCount
+	oldPSize := anchor.psize
 
 	// Left half: encode and Update if psize changed.
 	var leftBuf []byte
@@ -2318,10 +2470,11 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 		leftBuf = slottedPageEncode(fce.kvs[:leftCount])
 	}
 	leftPSize := uint32(len(leftBuf))
-	if leftPSize != anchor.psize {
-		db.ff.Update(leftBuf, anchorLoff, uint64(leftPSize), uint64(anchor.psize))
-		nh.shiftUpPropagate(int64(leftPSize) - int64(anchor.psize))
-		anchor.psize = leftPSize
+	if leftPSize != oldPSize {
+		if _, err := db.ff.Update(leftBuf, anchorLoff, uint64(leftPSize), uint64(oldPSize)); err != nil {
+			return fmt.Errorf("treeInsertAnchor update left anchor key=%q loff=%d oldPSize=%d newPSize=%d maxLoff=%d: %w",
+				anchor.key, anchorLoff, oldPSize, leftPSize, db.ff.tree.MaxLoff, err)
+		}
 	}
 
 	// Right half: encode and Insert.
@@ -2332,8 +2485,27 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 		rightBuf = slottedPageEncode(fce.kvs[leftCount:fce.count])
 	}
 	rightPSize := uint32(len(rightBuf))
-	newAnchorLoff := anchorLoff + uint64(anchor.psize)
-	db.ff.Insert(rightBuf, newAnchorLoff, uint64(rightPSize))
+	newAnchorLoff := anchorLoff + uint64(leftPSize)
+	newAnchorKey := fce.kvs[leftCount].Key
+	if _, err := db.ff.Insert(rightBuf, newAnchorLoff, uint64(rightPSize)); err != nil {
+		return fmt.Errorf("treeInsertAnchor insert right anchor key=%q loff=%d psize=%d maxLoff=%d: %w",
+			newAnchorKey, newAnchorLoff, rightPSize, db.ff.tree.MaxLoff, err)
+	}
+
+	tag := flexdbTagGenerate(true, 0)
+	if err := db.ff.SetTag(anchorLoff, tag); err != nil {
+		return fmt.Errorf("treeInsertAnchor set left tag anchor key=%q loff=%d psize=%d maxLoff=%d: %w",
+			anchor.key, anchorLoff, leftPSize, db.ff.tree.MaxLoff, err)
+	}
+	if err := db.ff.SetTag(newAnchorLoff, tag); err != nil {
+		return fmt.Errorf("treeInsertAnchor set right tag anchor key=%q loff=%d psize=%d maxLoff=%d: %w",
+			newAnchorKey, newAnchorLoff, rightPSize, db.ff.tree.MaxLoff, err)
+	}
+
+	if leftPSize != oldPSize {
+		nh.shiftUpPropagate(int64(leftPSize) - int64(oldPSize))
+		anchor.psize = leftPSize
+	}
 	nh.shiftUpPropagate(int64(rightPSize))
 
 	// Compute left/right sizes for cache.
@@ -2342,7 +2514,6 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 		leftSize += kvSizeApprox(&fce.kvs[i])
 	}
 
-	newAnchorKey := fce.kvs[leftCount].Key
 	nh.idx++
 	newAnchor := nh.handlerInsert(newAnchorKey, newAnchorLoff, rightPSize)
 	nh.idx--
@@ -2375,15 +2546,7 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 	fce.size = leftSize
 
 	newPartition.releaseEntry(newFce)
-
-	// Tag both anchors in FlexSpace
-	tag := flexdbTagGenerate(true, 0)
-	if err := db.ff.SetTag(anchorLoff, tag); err != nil {
-		panicf("treeInsertAnchor: SetTag left anchorLoff=%d: %v", anchorLoff, err)
-	}
-	if err := db.ff.SetTag(newAnchorLoff, tag); err != nil {
-		panicf("treeInsertAnchor: SetTag right newAnchorLoff=%d: %v", newAnchorLoff, err)
-	}
+	return nil
 }
 
 // verifyAnchorTags walks the sparse index tree and verifies that every anchor
@@ -2652,17 +2815,19 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte, panicOnFailure boo
 	return KV{}, false
 }
 
-func (db *FlexDB) flushMemtable() {
+func (db *FlexDB) flushMemtable() error {
 	m := &db.mt
 	var nh memSparseIndexTreeHandler
 	batch := make([]KV, 0, memtableFlushBatch)
+	var err error
 
 	m.bt.Ascend(KV{}, func(item KV) bool {
 		batch = append(batch, item)
 		if len(batch) >= memtableFlushBatch {
 			for _, kv := range batch {
-				if err := db.putPassthrough(kv, &nh); err != nil {
-					panicf("flushMemtable: putPassthrough: %v", err)
+				if err = db.putPassthrough(kv, &nh); err != nil {
+					err = fmt.Errorf("putPassthrough key=%q: %w", kv.Key, err)
+					return false
 				}
 				nh.node = nil // reset hint after each for simplicity
 			}
@@ -2670,10 +2835,14 @@ func (db *FlexDB) flushMemtable() {
 		}
 		return true
 	})
+	if err != nil {
+		return err
+	}
 	for _, kv := range batch {
 		if err := db.putPassthrough(kv, &nh); err != nil {
-			panicf("flushMemtable: putPassthrough: %v", err)
+			return fmt.Errorf("putPassthrough key=%q: %w", kv.Key, err)
 		}
 		nh.node = nil
 	}
+	return nil
 }

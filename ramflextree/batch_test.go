@@ -12,9 +12,9 @@ func TestFlexDB_BatchBasic(t *testing.T) {
 	db := openTestDB(t, nil)
 
 	batch := db.NewBatch()
-	batch.Set("k1", []byte("v1"))
-	batch.Set("k2", []byte("v2"))
-	batch.Set("k3", []byte("v3"))
+	batch.Set("k1", []byte("v1"), 0)
+	batch.Set("k2", []byte("v2"), 0)
+	batch.Set("k3", []byte("v3"), 0)
 	if _, err := batch.Commit(false); err != nil {
 		t.Fatal(err)
 	}
@@ -33,8 +33,8 @@ func TestFlexDB_BatchOverwrite(t *testing.T) {
 	mustPut(t, db, "k1", "original")
 
 	batch := db.NewBatch()
-	batch.Set("k1", []byte("updated"))
-	batch.Set("k1", []byte("final"))
+	batch.Set("k1", []byte("updated"), 0)
+	batch.Set("k1", []byte("final"), 0)
 	if _, err := batch.Commit(false); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func Test630_FlexDB_BatchMany(t *testing.T) {
 	for i := 0; i < n; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		val := []byte(fmt.Sprintf("val%06d", i))
-		batch.Set(key, val)
+		batch.Set(key, val, 0)
 		nWrit += len(key) + len(val)
 	}
 	if _, err := batch.Commit(false); err != nil {

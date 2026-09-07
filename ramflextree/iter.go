@@ -13,7 +13,10 @@ import (
 // serve from spans with only an atomic HLC check (no lock).
 // With spans, larger values reduce refill frequency with minimal overhead
 // since fill is O(intervals) not O(keys).
-const iterPreFetchKeyCount = 512 // 512 // ; 2048=>11.25; 1024=>10.24; 512=>9.961 nsec; 400=>9.742 nsec; 350=>11.90; 450=>12.69; 600=>10.58; 550=>10.38; 500=>10.08; 400=>12.82; 512=>9.816; 1=>17.5;
+const iterPreFetchKeyCount = 512 // 512
+
+// tuning notes:
+// ; 2048=>11.25; 1024=>10.24; 512=>9.961 nsec; 400=>9.742 nsec; 350=>11.90; 450=>12.69; 600=>10.58; 550=>10.38; 500=>10.08; 400=>12.82; 512=>9.816; 1=>17.5;
 // 1=>21.49 'InlineFast=0 ServePrefetch=0 InlineRefill1=93789 InlineRefill2=0 FullRefill=6211 SlowPath=0 HLCStale=0 SnapshotZero=0'
 // 2=>13.89, 21.24 'InlineFast=49693 ServePrefetch=0 InlineRefill1=44096 InlineRefill2=0 FullRefill=6211 SlowPath=0 HLCStale=0 SnapshotZero=0'
 // 4=>13.28 'InlineFast=74540 ServePrefetch=0 InlineRefill1=19249 InlineRefill2=0 FullRefill=6211 SlowPath=0 HLCStale=0 SnapshotZero=0'
@@ -103,8 +106,8 @@ func iterIOPanic(err error) { panic(iterIOErr{err}) }
 type Iter struct {
 	db *FlexDB
 
-	// pKV points to the current key-value pair. Points directly into
-	// cache memory (zero-copy), safe because the write lock is held.
+	// pKV points to the current key-value pair. It may point directly into
+	// cache memory, so user-facing accessors must not write through it.
 	pKV *KV
 
 	valid      bool
@@ -124,11 +127,14 @@ type Iter struct {
 	// Reusable buffers for key/value copies to avoid allocation per Next().
 	keyBuf []byte
 	valBuf []byte
+	kvBuf  KV
 
-	// Lazy value resolution: on the fast path, curValue holds a direct
-	// reference into cache memory (Go GC keeps it alive). The value is
-	// only copied into valBuf when Vin() is actually called by the user.
-	valueResolved bool
+	// Lazy value resolution. When pKV points into interval-cache memory,
+	// valueNeedsCopy is true and the first value accessor copies into valBuf.
+	// When pKV is an owned merged result, accessors can return pKV.Value
+	// directly. In either case, key-only scans do no value work.
+	valueResolved  bool
+	valueNeedsCopy bool
 
 	// Diagnostic counters for profiling Next() path distribution.
 	// Check with it.PathCounts() after iteration.
@@ -164,7 +170,7 @@ func (it *Iter) releaseIterState() {
 	it.snapshotHLC = 0
 	// Nil out span kvs slices so the GC can collect evicted cache entries
 	// that these spans may be the sole remaining reference to.
-	for i := 0; i < it.pfSpanCount; i++ {
+	for i := it.pfSpanIdx; i < it.pfSpanCount; i++ {
 		it.pfSpans[i].kvs = nil
 	}
 	it.pfSpanCount = 0
@@ -243,6 +249,7 @@ func (it *Iter) servePrefetch() bool {
 			}
 			span.pos = pos
 			it.pKV = pkv
+			it.valueNeedsCopy = true
 			it.valueResolved = false
 			it.valid = true
 			it.dir = 1
@@ -265,6 +272,21 @@ func reuseAppend(buf, src []byte) []byte {
 		return buf
 	}
 	return append(buf[:0], src...)
+}
+
+func (it *Iter) currentValueBytes(src []byte) []byte {
+	if len(src) == 0 {
+		it.valueResolved = true
+		return nil
+	}
+	if !it.valueNeedsCopy {
+		return src
+	}
+	if !it.valueResolved {
+		it.valBuf = reuseAppend(it.valBuf, src)
+		it.valueResolved = true
+	}
+	return it.valBuf
 }
 
 // ====================== btree one-shot seek helpers ======================
@@ -626,6 +648,10 @@ func (db *FlexDB) flexCursorNextInterval(fc *flexCursor) error {
 			// If evicted, anchor.fce is nil (or a new entry). Our refcnt
 			// bump on the old entry is harmless - just undo and fall back.
 			if anchor.loadFce() == fce && !fce.loading {
+				if fce.loadErr != nil {
+					partition.releaseEntry(fce)
+					return fce.loadErr
+				}
 				if fce.count == 0 {
 					partition.releaseEntry(fce)
 					anchorIdx++
@@ -863,7 +889,7 @@ func (db *FlexDB) flexCursorPrevInterval(fc *flexCursor) error {
 // mergedSeekGE finds the smallest key >= target across memtable + FlexSpace,
 // resolving duplicates by priority (memtable > FlexSpace) and skipping tombstones.
 // If strict is true, finds smallest key > target. Caller must hold topMutRW.RLock().
-func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, hlc HLC, hasVPtr bool, vptr VPtr, found bool) {
+func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, hlc HLC, hasVPtr bool, vptr VPtr, vtyp uint64, found bool) {
 	for {
 		var candidates [2]KV
 		var have [2]bool
@@ -872,7 +898,8 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 		var seekErr error
 		candidates[1], have[1], seekErr = db.flexSpaceSeekGE(target, strict)
 		if seekErr != nil {
-			return nil, nil, 0, false, VPtr{}, false
+			return
+			//return nil, nil, 0, false, VPtr{}, 0, false
 		}
 
 		// Find minimum key
@@ -887,7 +914,8 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 			}
 		}
 		if !haveMin {
-			return nil, nil, 0, false, VPtr{}, false
+			return
+			//return nil, nil, 0, false, VPtr{}, 0, false
 		}
 
 		// Pick highest-priority source at minKey (memtable wins)
@@ -908,7 +936,16 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 			continue // skip tombstone, seek past it
 		}
 
-		return []byte(minKey), dupBytes(bestKV.Value), bestKV.Hlc, false, VPtr{}, true
+		if bestKV.HasVPtr() {
+			return []byte(minKey), nil, bestKV.Hlc, true, bestKV.Vptr, bestKV.Vtyp(), true
+		}
+		val, vtype, err := db.resolveVPtr(bestKV)
+		if err != nil {
+			target = minKey
+			strict = true
+			continue
+		}
+		return []byte(minKey), dupBytes(val), bestKV.Hlc, false, bestKV.Vptr, vtype, true
 	}
 }
 
@@ -997,18 +1034,24 @@ func (it *Iter) prefetchFillFlexSpaceReverse() {
 func (it *Iter) servePrefetchReverse() bool {
 	for it.pfSpanIdx < it.pfSpanCount {
 		span := &it.pfSpans[it.pfSpanIdx]
-		for span.pos > span.end {
-			pkv := &span.kvs[span.pos]
-			span.pos--
+		pos := span.pos
+		end := span.end
+		kvs := span.kvs
+		for pos > end {
+			pkv := &kvs[pos]
+			pos--
 			if pkv.isTombstone() {
 				continue
 			}
+			span.pos = pos
 			it.pKV = pkv
+			it.valueNeedsCopy = true
 			it.valueResolved = false
 			it.valid = true
 			it.dir = -1
 			return true
 		}
+		span.pos = pos
 		span.kvs = nil // release reference to cache entry backing array
 		it.pfSpanIdx++
 	}
@@ -1018,18 +1061,20 @@ func (it *Iter) servePrefetchReverse() bool {
 // mergedSeekGEFastFlexSpace performs a merged seek using one-shot btree seeks for
 // memtable and the stateful FlexSpace cursor. The cursor should already be
 // positioned at or past the target. Caller must hold topMutRW.RLock().
-func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, found bool) {
+func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, vtyp uint64, found bool) {
 	db := it.db
 
 	// Fast path: memtable empty -> pure FlexSpace iteration.
 	// Skip btree seek and 2-way merging.
 	if db.mt.empty {
 		kv, found = it.flexSpaceOnlySeekGE(target, strict)
+		it.valueNeedsCopy = found
 		it.valueResolved = false // value is lazy cache reference
 		return
 	}
 
-	it.valueResolved = true // slow path always returns owned copies
+	it.valueNeedsCopy = false
+	it.valueResolved = true
 
 	for {
 		var candidates [2]KV
@@ -1087,7 +1132,16 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, f
 			continue
 		}
 
-		return &KV{Key: minKey, Value: dupBytes(bestKV.Value), Hlc: bestKV.Hlc}, true
+		if bestKV.HasVPtr() {
+			return &KV{Key: minKey, Hlc: bestKV.Hlc, Vptr: bestKV.Vptr, Value: dupBytes(bestKV.Value)}, bestKV.Vtyp(), true
+		}
+		val, vtype, err := db.resolveVPtr(bestKV)
+		if err != nil {
+			target = minKey
+			strict = true
+			continue
+		}
+		return &KV{Key: minKey, Value: dupBytes(val), Vptr: bestKV.Vptr, Hlc: bestKV.Hlc}, vtype, true
 	}
 }
 
@@ -1112,6 +1166,13 @@ func (it *Iter) flexSpaceOnlySeekGE(target string, strict bool) (kv *KV, found b
 			continue
 		}
 		found = true
+		it.valueNeedsCopy = true
+		it.valueResolved = false
+		if kv.HasVPtr() {
+			return
+		}
+		// Lazy value: store direct reference into cache memory (GC-safe).
+		// The actual copy into valBuf is deferred to Value().
 		return
 	}
 	return
@@ -1214,7 +1275,20 @@ func (db *FlexDB) mergedSeekLE(target string, strict bool) (kv *KV, found bool) 
 			continue
 		}
 		found = true
-		kv = &KV{Key: maxKey, Value: dupBytes(bestKV.Value), Hlc: bestKV.Hlc}
+		if bestKV.HasVPtr() {
+			kv = &KV{}
+			*kv = bestKV
+			kv.Key = maxKey
+			kv.Value = dupBytes(bestKV.Value)
+			return
+		}
+		// bestKV has inline .Value
+		if bestKV.Vptr.Length == rawVlenTombstone {
+			target = maxKey
+			strict = true
+			continue
+		}
+		kv = &KV{Key: maxKey, Value: dupBytes(bestKV.Value), Vptr: bestKV.Vptr, Hlc: bestKV.Hlc}
 		return
 	}
 }
@@ -1239,8 +1313,10 @@ func (it *Iter) Seek(target string) {
 		return
 	}
 
-	it.pKV, it.valid = it.mergedSeekGEFastFlexSpace(target, false)
+	it.pKV, _, it.valid = it.mergedSeekGEFastFlexSpace(target, false)
 	it.dir = 1
+	it.valueNeedsCopy = false
+	it.valueResolved = true
 }
 
 // seekLE positions the iterator at the last key <= target, with backward prefetch.
@@ -1266,6 +1342,7 @@ func (it *Iter) seekLE(target string, strict bool) {
 
 	it.pKV, it.valid = db.mergedSeekLE(target, strict)
 	it.dir = -1
+	it.valueNeedsCopy = false
 	it.valueResolved = true
 }
 
@@ -1294,6 +1371,7 @@ func (it *Iter) SeekLast() {
 
 	it.pKV, it.valid = db.mergedSeekLE("", false)
 	it.dir = -1
+	it.valueNeedsCopy = false
 	it.valueResolved = true
 }
 
@@ -1307,7 +1385,7 @@ func (it *Iter) Next() {
 
 	// Fast path: serve from prefetch spans.
 	// HLC check detects mutations made via it.Put/it.Delete since last fill.
-	if it.pfSpanIdx < it.pfSpanCount {
+	if it.pfSpanIdx < it.pfSpanCount && it.dir == 1 {
 		if it.snapshotHLC == currentHLC {
 			// Inline the common case: next entry in current span, not a tombstone.
 			// This avoids a function call to servePrefetch (which Go can't inline
@@ -1318,9 +1396,8 @@ func (it *Iter) Next() {
 				if pkv.Vptr.Length != tombstoneVPtrLength { // not tombstone
 					span.pos = pos + 1
 					it.pKV = pkv
+					it.valueNeedsCopy = true
 					it.valueResolved = false
-					it.valid = true
-					it.dir = 1
 					//it.cntInlineFast++
 					return
 				}
@@ -1355,9 +1432,8 @@ func (it *Iter) Next() {
 				if pkv.Vptr.Length != tombstoneVPtrLength {
 					it.pfSpans[0].pos = idx + 1
 					it.pKV = pkv
+					it.valueNeedsCopy = true
 					it.valueResolved = false
-					it.valid = true
-					it.dir = 1
 					//it.cntInlineRefill1++
 					return
 				}
@@ -1407,9 +1483,8 @@ func (it *Iter) Next() {
 				if pkv.Vptr.Length != tombstoneVPtrLength {
 					it.pfSpans[0].pos = idx + 1
 					it.pKV = pkv
+					it.valueNeedsCopy = true
 					it.valueResolved = false
-					it.valid = true
-					it.dir = 1
 					//it.cntInlineRefill2++
 					return
 				}
@@ -1431,7 +1506,9 @@ func (it *Iter) Next() {
 
 		// Non-empty memtable: single merged seek with cursor reuse.
 		curKey := it.pKV.Key // save before re-seek overwrites pKV
-		it.pKV, it.valid = it.mergedSeekGEFastFlexSpace(curKey, true)
+		it.pKV, _, it.valid = it.mergedSeekGEFastFlexSpace(curKey, true)
+		it.valueNeedsCopy = false
+		it.valueResolved = true
 		return
 	}
 
@@ -1458,8 +1535,10 @@ func (it *Iter) Next() {
 		return
 	}
 
-	it.pKV, it.valid = it.mergedSeekGEFastFlexSpace(curKey, true)
+	it.pKV, _, it.valid = it.mergedSeekGEFastFlexSpace(curKey, true)
 	it.dir = 1
+	it.valueNeedsCopy = false
+	it.valueResolved = true
 }
 
 // Prev moves to the previous key in descending order.
@@ -1474,6 +1553,17 @@ func (it *Iter) Prev() {
 	// HLC check detects mutations made via it.Put/it.Delete since last fill.
 	if it.pfSpanIdx < it.pfSpanCount && it.dir == -1 {
 		if it.snapshotHLC == currentHLC {
+			span := &it.pfSpans[it.pfSpanIdx]
+			if pos := span.pos; pos > span.end {
+				pkv := &span.kvs[pos]
+				span.pos = pos - 1
+				if pkv.Vptr.Length != tombstoneVPtrLength {
+					it.pKV = pkv
+					it.valueNeedsCopy = true
+					it.valueResolved = false
+					return
+				}
+			}
 			if it.servePrefetchReverse() {
 				return
 			}
@@ -1504,6 +1594,7 @@ func (it *Iter) Prev() {
 
 		// Non-empty memtable: single merged seek.
 		it.pKV, it.valid = db.mergedSeekLE(curKey, true)
+		it.valueNeedsCopy = false
 		it.valueResolved = true
 		return
 	}
@@ -1534,6 +1625,7 @@ func (it *Iter) Prev() {
 
 	it.pKV, it.valid = db.mergedSeekLE(curKey, true)
 	it.dir = -1
+	it.valueNeedsCopy = false
 	it.valueResolved = true
 }
 
@@ -1561,32 +1653,27 @@ func (it *Iter) KV() *KV {
 		return nil
 	}
 
-	// valueResolved does lazy value copying. We don't want
-	// to return cache memory to the user, but if they
-	// don't need a copy (just iterating keys), we avoid
-	// the expense of copying until Vin (or Vel) is called.
-	if !it.valueResolved && it.pKV.Value != nil {
-		it.valBuf = reuseAppend(it.valBuf, it.pKV.Value)
-		it.pKV.Value = it.valBuf
-		it.valueResolved = true
+	it.kvBuf = *it.pKV
+	if it.pKV.Value != nil {
+		it.kvBuf.Value = it.currentValueBytes(it.pKV.Value)
 	}
-
-	return it.pKV
+	return &it.kvBuf
 }
 
 // GetAnySize returns values large or small, if available.
-func (it *Iter) GetAnySize() (key string, val []byte, found bool, err error) {
+func (it *Iter) GetAnySize() (key string, val []byte, vtyp uint64, found bool, err error) {
 	if !it.valid || it.pKV == nil {
 		return
 	}
 	found = true
 	key = it.pKV.Key
-	if !it.valueResolved && it.pKV.Value != nil {
-		it.valBuf = reuseAppend(it.valBuf, it.pKV.Value)
-		it.pKV.Value = it.valBuf
-		it.valueResolved = true
+
+	if it.pKV.HasVPtr() {
+		val, vtyp, err = it.FetchV()
+		return
 	}
-	val = it.pKV.Value
+	vtyp = it.pKV.Vtyp()
+	val = it.currentValueBytes(it.pKV.Value)
 	return
 }
 
@@ -1600,6 +1687,15 @@ func (it *Iter) Key() string {
 	return it.pKV.Key
 }
 
+// Vtyp returns the value type (vtyp) stored with the key, if any.
+// If no vtyp was stored, or the iterator is invalid, the default 0 is returned.
+func (it *Iter) Vtyp() uint64 {
+	if it.pKV == nil {
+		return 0
+	}
+	return it.pKV.Vtyp()
+}
+
 // Vin returns the current value for _inline_ values. For large values
 // stored in VLOG, Vin returns nil. If you get back nil,
 // you must use Large() to check if the value is actually large, and
@@ -1609,20 +1705,11 @@ func (it *Iter) Key() string {
 // On the fast path (empty memtable), the first call copies from the
 // cache reference into valBuf. Subsequent calls return valBuf directly.
 func (it *Iter) Vin() (val []byte) {
-	if it.pKV == nil || it.skipValues {
+	if it.pKV == nil || it.skipValues || it.pKV.HasVPtr() {
 		return nil
 	}
 
-	// valueResolved does lazy value copying. We don't want
-	// to return cache memory to the user, but if they
-	// don't need a copy (just iterating keys), we avoid
-	// the expense of copying until Vin (or Vel) is called.
-	if !it.valueResolved && it.pKV.Value != nil {
-		it.valBuf = reuseAppend(it.valBuf, it.pKV.Value)
-		it.pKV.Value = it.valBuf
-		it.valueResolved = true
-	}
-	return it.pKV.Value
+	return it.currentValueBytes(it.pKV.Value)
 }
 
 // Vel can be more ergonomic than Vin. Vel returns the
@@ -1646,13 +1733,12 @@ func (it *Iter) Vel() (val []byte, empty, large bool) {
 	if it.skipValues {
 		return
 	}
-	// large is always false in ramflextree (no VLOG)
-	if !it.valueResolved && it.pKV.Value != nil {
-		it.valBuf = reuseAppend(it.valBuf, it.pKV.Value)
-		it.pKV.Value = it.valBuf
-		it.valueResolved = true
+	large = it.pKV.HasVPtr()
+	if large {
+		return
 	}
-	val = it.pKV.Value
+	val = it.currentValueBytes(it.pKV.Value)
+	empty = !large && len(val) == 0
 	return
 }
 
@@ -1664,9 +1750,15 @@ func (it *Iter) Hlc() HLC {
 	return it.pKV.Hlc
 }
 
-// Large always returns false in ramflextree (no VLOG).
+// Large returns false if the current value is stored inline
+// (small value). When true, the value is stored in the VLOG and
+// must be fetched via FetchV(). Iteration remains
+// cheap until you really need to see the large value.
 func (it *Iter) Large() bool {
-	return false
+	if it.pKV == nil {
+		return false
+	}
+	return it.pKV.HasVPtr()
 }
 
 // FetchV fetches the current iterator value
@@ -1675,11 +1767,19 @@ func (it *Iter) Large() bool {
 // bytes and any error from the VLOG read. If the value is
 // inline and not large, it will still be returned
 // (and the error will be nil).
-func (it *Iter) FetchV() ([]byte, error) {
+func (it *Iter) FetchV() (val []byte, vtyp uint64, err error) {
 	if !it.valid || it.pKV == nil || it.skipValues {
-		return nil, nil
+		return nil, 0, nil
 	}
-	return it.pKV.Value, nil
+	if it.pKV.isTombstone() {
+		return nil, 0, ErrTomb
+	}
+	if !it.pKV.HasVPtr() {
+		return it.Vin(), it.pKV.Vtyp(), nil
+	}
+	// seems buggy: return it.db.resolveVPtr(KV{Vptr: it.pKV.Vptr})
+	// since resolveVPtr needs to see the kv.Vptr to distinguish large VLOG from inline Value.
+	return it.db.resolveVPtr(*it.pKV)
 }
 
 // ====================== Callback-based iteration ======================
@@ -1690,7 +1790,12 @@ func (it *Iter) iterResolvedValue() []byte {
 	if it.pKV == nil || it.skipValues {
 		return nil
 	}
-	return it.pKV.Value
+	if !it.pKV.HasVPtr() {
+		return it.Vin()
+	}
+	val, _, err := it.db.resolveVPtr(*it.pKV)
+	panicOn(err)
+	return val
 }
 
 // Ascend/Descend/AscendRange/DescendRange are available as methods
