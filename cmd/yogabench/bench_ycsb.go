@@ -110,7 +110,7 @@ func runYCSBBench(args []string) {
 					if roll < threshGet {
 						// GET
 						k := string(hexKeyBuf(keyBuf, readDist.Next(), p.KeyLen))
-						if _, found, _, _ := db.Get(k); found {
+						if _, found, _, _, _ := db.Get(k); found {
 							success++
 						}
 					} else if roll < threshScan {
