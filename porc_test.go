@@ -147,7 +147,7 @@ func Test016_linz(t *testing.T) {
 		// pick a writer, key, and value.
 		w := 0
 		key := "a"
-		err := readers[w].db.Put(key, v, 0)
+		_, err := readers[w].db.Put(key, v, 0)
 		panicOn(err)
 		err = readers[w].db.Sync()
 		panicOn(err)

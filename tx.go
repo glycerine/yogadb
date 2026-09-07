@@ -31,13 +31,23 @@ type ReadOnlyDB interface {
 // your own writes" is often desired/expected/required.
 // WritableDB is implemented by WriteTx.
 //
+// This means that multiple Puts within a WriteTx transaction
+// are not atomic as a group. That is, there is no rollback of a transaction
+// if we encounter, for example, a disk failure part way through
+// a set of multiple writes. Hence these are not ACID transactions.
+// They are Isolated and internally-Consistent writes
+// (in-transaction reads see them immediately) that are Durable after
+// Sync() returns successfully. This is appropriate for the common
+// case where the client will simply try the same write again if
+// it was interrupted.
+//
 // To avoid indirect call overhead, this interface is
 // not actually used in the Update API.
 // It is nice for documention purposes though; to get an
 // overview of the available methods.
 type WritableDB interface {
 	ReadOnlyDB
-	Put(key string, value []byte, vtyp uint64) error
+	Put(key string, value []byte, vtyp uint64) (HLC, error)
 	Delete(key string) error
 	DeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error)
 	Clear(includeLarge bool) (allGone bool, err error)
@@ -237,16 +247,17 @@ func (tx *WriteTx) GetKV(key string) (kv *KVcloser, err error) {
 // the VPtr (16 bytes), not the full value.
 //
 // Puts are not durably on disk until after the user has also
-// completed a db.Sync() call. This allows the user to control
+// completed a tx.Sync() or db.Sync() call. This allows the user to control
 // the rate of fsyncs and trade that against their durability
 // requirements.
-func (tx *WriteTx) Put(key string, value []byte, vtyp uint64) error {
+func (tx *WriteTx) Put(key string, value []byte, vtyp uint64) (HLC, error) {
 	return tx.db.writeLockHeldPut(key, value, vtyp, false)
 }
 
 // Delete removes key from the store.
 func (tx *WriteTx) Delete(key string) error {
-	return tx.db.writeLockHeldPut(key, nil, 0, true)
+	_, err := tx.db.writeLockHeldPut(key, nil, 0, true)
+	return err
 }
 
 // Sync flushes all in-memory data to disk and fsyncs.
@@ -565,7 +576,7 @@ func (roTx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, iter func(
 // database (no buffering, no Commit needed).
 //
 // Do NOT call db.Put/db.Get/db.Delete/db.Sync inside fn - use rwDB
-// methods instead (deadlock).
+// methods instead (to avoid deadlock).
 func (db *FlexDB) Update(fn func(rw *WriteTx) error) (err error) {
 	db.topMutRW.Lock()
 	tx := &WriteTx{txBase{db: db}}

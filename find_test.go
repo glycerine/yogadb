@@ -429,7 +429,8 @@ func TestFind_LazyLarge(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 
 	bigVal := bytes.Repeat([]byte("x"), 200)
-	panicOn(db.Put("bigkey", bigVal, 0))
+	_, err := db.Put("bigkey", bigVal, 0)
+	panicOn(err)
 	db.Sync()
 
 	// Without LAZY_LARGE: value auto-fetched
@@ -472,7 +473,8 @@ func TestFind_LazySmall(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		k := fmt.Sprintf("key%03d", i)
 		v := fmt.Sprintf("val%03d", i)
-		panicOn(db.Put(k, []byte(v), uint64(i)))
+		_, err := db.Put(k, []byte(v), uint64(i))
+		panicOn(err)
 	}
 	db.Sync()
 
@@ -521,7 +523,8 @@ func TestFind_LazySmall(t *testing.T) {
 
 	// LAZY_SMALL|LAZY_LARGE combined with a large value
 	bigVal := bytes.Repeat([]byte("B"), 200)
-	panicOn(db.Put("large001", bigVal, 100))
+	_, err = db.Put("large001", bigVal, 100)
+	panicOn(err)
 	db.Sync()
 
 	// equivalent to LAZY, but just to be explicit:
@@ -558,10 +561,12 @@ func TestFind_SkipValues(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		k := fmt.Sprintf("key%03d", i)
 		v := fmt.Sprintf("val%03d", i)
-		panicOn(db.Put(k, []byte(v), uint64(i)))
+		_, err := db.Put(k, []byte(v), uint64(i))
+		panicOn(err)
 	}
 	bigVal := bytes.Repeat([]byte("X"), 200) // > vlogInlineThreshold
-	panicOn(db.Put("large001", bigVal, 100))
+	_, err := db.Put("large001", bigVal, 100)
+	panicOn(err)
 	db.Sync()
 
 	// Find with SKIP_VALUES: inline value
@@ -668,7 +673,7 @@ func TestLockedIter_PutGetDelete(t *testing.T) {
 		}
 
 		// Put a new key.
-		if err := rwDB.Put("key005a", []byte("inserted"), 0); err != nil {
+		if _, err := rwDB.Put("key005a", []byte("inserted"), 0); err != nil {
 			t.Fatal(err)
 		}
 

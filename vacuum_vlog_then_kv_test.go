@@ -117,7 +117,7 @@ func TestVacuumPreservesVtypMetadata(t *testing.T) {
 		if rec.viaBatch {
 			continue
 		}
-		if err := db.Put(rec.key, rec.value, rec.vtyp); err != nil {
+		if _, err := db.Put(rec.key, rec.value, rec.vtyp); err != nil {
 			t.Fatalf("Put(%q): %v", rec.key, err)
 		}
 	}
@@ -139,7 +139,7 @@ func TestVacuumPreservesVtypMetadata(t *testing.T) {
 
 	records[1].value = bytes.Repeat([]byte{'Q'}, 65)
 	records[1].vtyp = 0x5555666677778888
-	if err := db.Put(records[1].key, records[1].value, records[1].vtyp); err != nil {
+	if _, err := db.Put(records[1].key, records[1].value, records[1].vtyp); err != nil {
 		t.Fatalf("overwrite Put(%q): %v", records[1].key, err)
 	}
 	records[3].value = bytes.Repeat([]byte{'C'}, 65)

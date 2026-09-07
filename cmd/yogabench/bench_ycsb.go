@@ -133,7 +133,7 @@ func runYCSBBench(args []string) {
 					} else if roll < threshSet {
 						// SET
 						k := string(hexKeyBuf(keyBuf, writeDist.Next(), p.KeyLen))
-						if err := db.Put(k, val, 0); err == nil {
+						if _, err := db.Put(k, val, 0); err == nil {
 							success++
 						}
 					} else {

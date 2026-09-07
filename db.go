@@ -2378,20 +2378,21 @@ func recoverIterIOErr(errp *error) {
 // completed a db.Sync() call. This allows the user to control
 // the rate of fsyncs and trade that against their durability
 // requirements.
-func (db *FlexDB) Put(key string, value []byte, vtyp uint64) error {
+func (db *FlexDB) Put(key string, value []byte, vtyp uint64) (HLC, error) {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 	return db.writeLockHeldPut(key, value, vtyp, false)
 }
 
-func (db *FlexDB) writeLockHeldPut(key string, value []byte, vtyp uint64, doDelete bool) error {
+func (db *FlexDB) writeLockHeldPut(key string, value []byte, vtyp uint64, doDelete bool) (HLC, error) {
 
 	if doDelete && len(value) > 0 {
-		return fmt.Errorf("flexdb: cannot supply a value and also delete it")
+		err := fmt.Errorf("flexdb: cannot supply a value and also delete it")
+		return 0, err
 	}
 
 	if err := validateUserKey(key); err != nil {
-		return err
+		return 0, err
 	}
 	atomic.AddInt64(&db.LogicalBytesWritten, int64(len(key)+len(value)))
 
@@ -2425,7 +2426,7 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, vtyp uint64, doDele
 		oldVP := db.lookupOldVPtr(key)
 		vp, _, err := db.vlog.appendDedupAndSync(value, hlcVal, oldVP, db.cfg.OmitMemWalFsync)
 		if err != nil {
-			return fmt.Errorf("flexdb: vlog append: %w", err)
+			return 0, fmt.Errorf("flexdb: vlog append: %w", err)
 		}
 		kv = KV{Key: key, Vptr: vp, Hlc: hlcVal}
 		// type info goes into Value field for large values.
@@ -2436,17 +2437,17 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, vtyp uint64, doDele
 	}
 
 	if err := validateKV128RecordSize(kv); err != nil {
-		return err
+		return 0, err
 	}
 
 	if db.mt.size >= memtableCap {
 		// Inline flush when memtable is full.
 		db.mt.logFlush()
 		if err := db.flushMemtable(); err != nil {
-			return fmt.Errorf("flexdb: Put inline flush memtable: %w", err)
+			return 0, fmt.Errorf("flexdb: Put inline flush memtable: %w", err)
 		}
 		if err := db.cache.flushDirtyPages(); err != nil {
-			return fmt.Errorf("flexdb: Put inline flush dirty pages: %w", err)
+			return 0, fmt.Errorf("flexdb: Put inline flush dirty pages: %w", err)
 		}
 		db.persistCounters()
 		db.ff.Sync()
@@ -2472,7 +2473,7 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, vtyp uint64, doDele
 	// fsynced above, the VPtr is safe to reference on crash recovery.
 	db.mt.logAppend(kv) // here, does kv128Encode
 
-	return nil
+	return hlcVal, nil
 }
 
 // SearchModifier controls the matching behavior of Find.
@@ -2904,7 +2905,8 @@ func (db *FlexDB) someLockHeldGet(key string) (val []byte, found bool, vtyp uint
 func (db *FlexDB) Delete(key string) error {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
-	return db.writeLockHeldPut(key, nil, 0, true)
+	_, err := db.writeLockHeldPut(key, nil, 0, true)
+	return err
 }
 
 // DeleteRange deletes all keys in the range [begKey, endKey] with
@@ -2977,7 +2979,7 @@ func (db *FlexDB) writeLockHeldDeleteRange(includeLarge bool, begKey, endKey str
 			return true
 		})
 		for _, key := range keys {
-			if err := db.writeLockHeldPut(key, nil, 0, true); err != nil {
+			if _, err := db.writeLockHeldPut(key, nil, 0, true); err != nil {
 				return n, false, err
 			}
 			n++
@@ -3030,7 +3032,7 @@ func (db *FlexDB) writeLockHeldClear(includeLarge bool) (allGone bool, err error
 			return true
 		})
 		for _, key := range keys {
-			if err := db.writeLockHeldPut(key, nil, 0, true); err != nil {
+			if _, err := db.writeLockHeldPut(key, nil, 0, true); err != nil {
 				return false, err
 			}
 		}
@@ -3324,7 +3326,7 @@ func (db *FlexDB) deleteRangeFlexSpace(begKey, endKey string, begInclusive, endI
 
 				// Write tombstone. Track flushSeq to detect inline flush.
 				prevSeq := db.flushSeq
-				if err := db.writeLockHeldPut(kv.Key, nil, 0, true); err != nil {
+				if _, err := db.writeLockHeldPut(kv.Key, nil, 0, true); err != nil {
 					return n, err
 				}
 				n++
@@ -3432,7 +3434,7 @@ func (db *FlexDB) deleteRangeFlexSpaceClearSmall() (int64, error) {
 				}
 
 				prevSeq := db.flushSeq
-				if err := db.writeLockHeldPut(kv.Key, nil, 0, true); err != nil {
+				if _, err := db.writeLockHeldPut(kv.Key, nil, 0, true); err != nil {
 					return n, err
 				}
 				n++
@@ -3593,10 +3595,12 @@ func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists b
 	}
 
 	if doDelete {
-		return db.writeLockHeldPut(key, nil, 0, true)
+		_, err := db.writeLockHeldPut(key, nil, 0, true)
+		return err
 	}
 
-	return db.writeLockHeldPut(key, newVal, newVtyp, false)
+	_, err := db.writeLockHeldPut(key, newVal, newVtyp, false)
+	return err
 }
 
 // ====================== Passthrough operations ======================

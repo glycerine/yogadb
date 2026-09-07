@@ -12,10 +12,10 @@ func TestTx_UpdateBasic(t *testing.T) {
 	mustPut(t, db, "k1", "v1")
 
 	err := db.Update(func(rwDB *WriteTx) error {
-		if err := rwDB.Put("k2", []byte("v2"), 0); err != nil {
+		if _, err := rwDB.Put("k2", []byte("v2"), 0); err != nil {
 			return err
 		}
-		if err := rwDB.Put("k3", []byte("v3"), 0); err != nil {
+		if _, err := rwDB.Put("k3", []byte("v3"), 0); err != nil {
 			return err
 		}
 		return nil
@@ -70,7 +70,7 @@ func TestTx_UpdateSeesOwnWrites(t *testing.T) {
 		}
 
 		// Write a new key.
-		if err := rwDB.Put("k2", []byte("v2"), 0); err != nil {
+		if _, err := rwDB.Put("k2", []byte("v2"), 0); err != nil {
 			return err
 		}
 
@@ -82,7 +82,7 @@ func TestTx_UpdateSeesOwnWrites(t *testing.T) {
 		}
 
 		// Overwrite k1.
-		if err := rwDB.Put("k1", []byte("v1-updated"), 0); err != nil {
+		if _, err := rwDB.Put("k1", []byte("v1-updated"), 0); err != nil {
 			return err
 		}
 		val, ok, _, gerr = rwDB.Get("k1")
@@ -163,7 +163,8 @@ func TestTx_SerializedUpdates(t *testing.T) {
 				}
 				c++
 				newVal := []byte(fmt.Sprintf("%d", c))
-				return rwDB.Put("counter", newVal, 0)
+				_, err := rwDB.Put("counter", newVal, 0)
+				return err
 			})
 		}(i)
 	}

@@ -161,7 +161,7 @@ func TestFlexDB_IteratorGetAnySizeDoesNotPoisonInlineCache(t *testing.T) {
 		},
 	}
 	for _, rec := range records {
-		if err := db.Put(rec.key, rec.value, rec.vtyp); err != nil {
+		if _, err := db.Put(rec.key, rec.value, rec.vtyp); err != nil {
 			t.Fatalf("Put(%q): %v", rec.key, err)
 		}
 	}
@@ -489,7 +489,7 @@ func TestFlexDB_HLC_PutMonotonic(t *testing.T) {
 	keys := []string{"aaa", "bbb", "ccc"}
 	hlcs := make([]HLC, len(keys))
 	for i, k := range keys {
-		err := db.Put(k, []byte("v"), 0)
+		_, err := db.Put(k, []byte("v"), 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -595,11 +595,11 @@ func TestFlexDB_HLC_Persistence(t *testing.T) {
 	}
 
 	// Put a few keys; they'll get HLCs.
-	err = db.Put("pk1", []byte("pv1"), 0)
+	_, err = db.Put("pk1", []byte("pv1"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = db.Put("pk2", []byte("pv2"), 0)
+	_, err = db.Put("pk2", []byte("pv2"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -650,7 +650,7 @@ func TestFlexDB_HLC_VLOGRoundTrip(t *testing.T) {
 	}
 
 	bigVal := makeTestValue(500) // 500 bytes, well above vlogInlineThreshold
-	err = db.Put("bigkey", []byte(bigVal), 0)
+	_, err = db.Put("bigkey", []byte(bigVal), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -837,7 +837,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 		for i := 0; i < nKeys; i++ {
 			key := fmt.Sprintf("k%06d", i)
 			val := []byte(fmt.Sprintf("v%06d", i))
-			if err := db.Put(key, val, 0); err != nil {
+			if _, err := db.Put(key, val, 0); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -1184,7 +1184,7 @@ func TestFlexDB_IteratorPutDuringForward(t *testing.T) {
 			k := it.Key()
 			got = append(got, k)
 			if k == "c" {
-				if err := rwDB.Put("d", []byte("v:d"), 0); err != nil {
+				if _, err := rwDB.Put("d", []byte("v:d"), 0); err != nil {
 					t.Fatal(err)
 				}
 			}

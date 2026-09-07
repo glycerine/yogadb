@@ -49,7 +49,7 @@ func FuzzFlexDBVtypRoundTrip(f *testing.F) {
 			if rec.viaBatch {
 				continue
 			}
-			if err := db.Put(rec.key, rec.value, rec.vtyp); err != nil {
+			if _, err := db.Put(rec.key, rec.value, rec.vtyp); err != nil {
 				t.Fatalf("Put(%q, len=%d, vtyp=%#x): %v", rec.key, len(rec.value), rec.vtyp, err)
 			}
 		}

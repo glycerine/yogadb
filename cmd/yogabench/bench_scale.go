@@ -45,7 +45,7 @@ func runScaleWriteBench(args []string) {
 				success := int64(0)
 				for i := int64(0); i < ops; i++ {
 					k := string(hexKeyBuf(keyBuf, zipf.Next(), p.KeyLen))
-					if err := db.Put(k, val, 0); err == nil {
+					if _, err := db.Put(k, val, 0); err == nil {
 						success++
 					}
 				}
@@ -90,7 +90,7 @@ func runScaleReadBench(args []string) {
 		success := int64(0)
 		for i := int64(0); i < ops; i++ {
 			k := string(hexKeyBuf(keyBuf, zipf.Next(), p.KeyLen))
-			if err := db.Put(k, val, 0); err == nil {
+			if _, err := db.Put(k, val, 0); err == nil {
 				success++
 			}
 		}

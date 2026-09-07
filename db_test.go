@@ -68,14 +68,14 @@ func openTestDBAt(fs vfs.FS, t *testing.T, dir string, cfg *Config) *FlexDB {
 
 func mustPut(t *testing.T, db *FlexDB, key, value string) {
 	t.Helper()
-	if err := db.Put(key, []byte(value), 0); err != nil {
+	if _, err := db.Put(key, []byte(value), 0); err != nil {
 		t.Fatalf("Put(%q, %q): %v", key, value, err)
 	}
 }
 
 func mustPutVtyp(t *testing.T, db *FlexDB, key, value string, vtyp uint64) {
 	t.Helper()
-	if err := db.Put(key, []byte(value), vtyp); err != nil {
+	if _, err := db.Put(key, []byte(value), vtyp); err != nil {
 		t.Fatalf("Put(%q, %q, %v): %v", key, value, vtyp, err)
 	}
 }
@@ -197,7 +197,8 @@ func TestFlexDB_WriteValidationRejectsEmptyKeysEverywhere(t *testing.T) {
 
 	t.Run("direct put", func(t *testing.T) {
 		db, _ := openTestDB(t, nil)
-		wantErr(t, "Put", db.Put("", []byte("value"), 0))
+		_, err := db.Put("", []byte("value"), 0)
+		wantErr(t, "Put", err)
 	})
 
 	t.Run("direct delete", func(t *testing.T) {
@@ -222,7 +223,8 @@ func TestFlexDB_WriteValidationRejectsEmptyKeysEverywhere(t *testing.T) {
 	t.Run("write tx put", func(t *testing.T) {
 		db, _ := openTestDB(t, nil)
 		err := db.Update(func(tx *WriteTx) error {
-			return tx.Put("", []byte("value"), 0)
+			_, err := tx.Put("", []byte("value"), 0)
+			return err
 		})
 		wantErr(t, "WriteTx.Put", err)
 	})
@@ -508,7 +510,7 @@ func TestFlexDB_GetKVReportsAccurateVptrLength(t *testing.T) {
 	db := openTestDBAt(fs, t, dir, cfg)
 
 	smallDirect := []byte("small-direct")
-	if err := db.Put("small-direct", smallDirect, 0); err != nil {
+	if _, err := db.Put("small-direct", smallDirect, 0); err != nil {
 		t.Fatal(err)
 	}
 	kv, err := db.GetKV("small-direct")
@@ -549,10 +551,10 @@ func TestFlexDB_GetKVReportsAccurateVptrLength(t *testing.T) {
 	}
 	kv.Close()
 
-	if err := db.Put("nil-value", nil, 0); err != nil {
+	if _, err := db.Put("nil-value", nil, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Put("empty-value", []byte{}, 0); err != nil {
+	if _, err := db.Put("empty-value", []byte{}, 0); err != nil {
 		t.Fatal(err)
 	}
 	for _, key := range []string{"nil-value", "empty-value"} {
@@ -573,7 +575,7 @@ func TestFlexDB_GetKVReportsAccurateVptrLength(t *testing.T) {
 	}
 
 	large := bytes.Repeat([]byte("x"), vlogInlineThreshold+17)
-	if err := db.Put("large-direct", large, 0); err != nil {
+	if _, err := db.Put("large-direct", large, 0); err != nil {
 		t.Fatal(err)
 	}
 	kv, err = db.GetKV("large-direct")
@@ -1536,7 +1538,7 @@ func TestFlexDB_HLC_UpdatedOnReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, k := range keys {
-		if err := db1.Put(k, []byte("val-"+k), 0); err != nil {
+		if _, err := db1.Put(k, []byte("val-"+k), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1565,7 +1567,7 @@ func TestFlexDB_HLC_UpdatedOnReload(t *testing.T) {
 
 	// Re-put the same keys (new HLCs will be assigned).
 	for _, k := range keys {
-		if err := db2.Put(k, []byte("val-"+k), 0); err != nil {
+		if _, err := db2.Put(k, []byte("val-"+k), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1730,7 +1732,7 @@ func TestDeleteRange_Persistence(t *testing.T) {
 	}
 
 	for c := byte('a'); c <= 'j'; c++ {
-		if err := db.Put(string([]byte{c}), []byte{c}, 0); err != nil {
+		if _, err := db.Put(string([]byte{c}), []byte{c}, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2121,7 +2123,7 @@ func TestDeleteRange_AllGone(t *testing.T) {
 			t.Fatal(err)
 		}
 		for c := byte('a'); c <= 'e'; c++ {
-			if err := db.Put(string([]byte{c}), []byte{c}, 0); err != nil {
+			if _, err := db.Put(string([]byte{c}), []byte{c}, 0); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -2136,7 +2138,7 @@ func TestDeleteRange_AllGone(t *testing.T) {
 			t.Fatal("expected allGone=true")
 		}
 		// Write new data post-wipe.
-		if err := db.Put("fresh", []byte("start"), 0); err != nil {
+		if _, err := db.Put("fresh", []byte("start"), 0); err != nil {
 			t.Fatal(err)
 		}
 		db.Close()
@@ -2247,7 +2249,7 @@ func TestFlexDB_IteratorReportsCachedLoadErrorOnForwardAdvance(t *testing.T) {
 	val := bytes.Repeat([]byte("v"), int(vlogInlineThreshold))
 	for i := 0; i < 300; i++ {
 		key := fmt.Sprintf("k%04d", i)
-		if err := db.Put(key, val, 0); err != nil {
+		if _, err := db.Put(key, val, 0); err != nil {
 			t.Fatalf("Put(%q): %v", key, err)
 		}
 	}
@@ -2309,7 +2311,7 @@ func TestFlexDB_SyncReturnsErrorWhenInitialFlexSpaceInsertFails(t *testing.T) {
 		db.mt.size = 0
 	}()
 
-	if err := db.Put("a", []byte("value"), 0); err != nil {
+	if _, err := db.Put("a", []byte("value"), 0); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
@@ -2356,7 +2358,7 @@ func TestFlexDB_VacuumVLOGReturnsFlexSpaceUpdateError(t *testing.T) {
 	}
 
 	largeVal := bytes.Repeat([]byte("x"), int(vlogInlineThreshold)+1)
-	if err := db.Put("big", largeVal, 0); err != nil {
+	if _, err := db.Put("big", largeVal, 0); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	if err := db.Sync(); err != nil {
@@ -2659,7 +2661,7 @@ func TestClear(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i := 0; i < 20; i++ {
-			if err := db.Put(fmt.Sprintf("k%02d", i), []byte(fmt.Sprintf("v%02d", i)), 0); err != nil {
+			if _, err := db.Put(fmt.Sprintf("k%02d", i), []byte(fmt.Sprintf("v%02d", i)), 0); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -2670,7 +2672,7 @@ func TestClear(t *testing.T) {
 		if !allGone {
 			t.Fatal("expected allGone=true")
 		}
-		if err := db.Put("post", []byte("clear"), 0); err != nil {
+		if _, err := db.Put("post", []byte("clear"), 0); err != nil {
 			t.Fatal(err)
 		}
 		db.Close()
@@ -2957,7 +2959,7 @@ func TestLen(t *testing.T) {
 func TestFlexDB_ZeroLengthValueEquivalence(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 
-	err := db.Put("setkey", nil, 0)
+	_, err := db.Put("setkey", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2993,7 +2995,7 @@ func TestFlexDB_ZeroLengthValueEquivalence(t *testing.T) {
 		t.Fatalf("expected Len=0, got %d", db.Len())
 	}
 
-	err = db.Put("setkey2", nil, 0)
+	_, err = db.Put("setkey2", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3017,7 +3019,7 @@ func TestFlexDB_ZeroLengthValueEquivalence(t *testing.T) {
 	var vtyp0, vtyp1 uint64
 	vtyp0 = 123
 
-	err = db.Put("emptykey", []byte{}, vtyp0)
+	_, err = db.Put("emptykey", []byte{}, vtyp0)
 	if err != nil {
 		t.Fatal(err)
 	}

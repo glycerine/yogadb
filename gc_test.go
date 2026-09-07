@@ -552,7 +552,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	// Round 0: initial write - triggers block pre-allocation.
 	for i, k := range keys {
 		val := fmt.Sprintf("val-round0-%06d-padding-data-here", i)
-		if err := db.Put(k, []byte(val), 0); err != nil {
+		if _, err := db.Put(k, []byte(val), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -561,7 +561,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	// Round 1: first overwrite - after this, pre-allocation is stable.
 	for i, k := range keys {
 		val := fmt.Sprintf("val-round1-%06d-padding-data-here", i)
-		if err := db.Put(k, []byte(val), 0); err != nil {
+		if _, err := db.Put(k, []byte(val), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -574,7 +574,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	for r := 2; r <= rounds; r++ {
 		for i, k := range keys {
 			val := fmt.Sprintf("val-round%d-%06d-padding-data-here", r, i)
-			if err := db.Put(k, []byte(val), 0); err != nil {
+			if _, err := db.Put(k, []byte(val), 0); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -636,7 +636,7 @@ func TestGC_PartialOverwrite_NoBlockGrowth(t *testing.T) {
 	// Round 0: initial write of all keys.
 	for i, k := range keys {
 		val := fmt.Sprintf("val-round0-%06d-padding-data-here", i)
-		if err := db.Put(k, []byte(val), 0); err != nil {
+		if _, err := db.Put(k, []byte(val), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -645,7 +645,7 @@ func TestGC_PartialOverwrite_NoBlockGrowth(t *testing.T) {
 	// Round 1: overwrite all keys to stabilize pre-allocation.
 	for i, k := range keys {
 		val := fmt.Sprintf("val-round1-%06d-padding-data-here", i)
-		if err := db.Put(k, []byte(val), 0); err != nil {
+		if _, err := db.Put(k, []byte(val), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -661,7 +661,7 @@ func TestGC_PartialOverwrite_NoBlockGrowth(t *testing.T) {
 		for i := 0; i < nKeys/2; i++ {
 			k := keys[i]
 			val := fmt.Sprintf("val-round%d-%06d-padding-data-here", r, i)
-			if err := db.Put(k, []byte(val), 0); err != nil {
+			if _, err := db.Put(k, []byte(val), 0); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -719,7 +719,7 @@ func TestGC_ReplaceWithLargerValue_Splits(t *testing.T) {
 	for i := 0; i < nKeys; i++ {
 		k := fmt.Sprintf("key%06d", i)
 		v := fmt.Sprintf("v%06d", i) // short values
-		if err := db.Put(k, []byte(v), 0); err != nil {
+		if _, err := db.Put(k, []byte(v), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -731,7 +731,7 @@ func TestGC_ReplaceWithLargerValue_Splits(t *testing.T) {
 	for i := range bigValue {
 		bigValue[i] = byte('A' + i%26)
 	}
-	if err := db.Put("key000100", bigValue, 0); err != nil {
+	if _, err := db.Put("key000100", bigValue, 0); err != nil {
 		t.Fatal(err)
 	}
 	db.Sync()
@@ -967,7 +967,7 @@ func TestGC_CrossSession_DiskGrowth(t *testing.T) {
 		// Write the same keys with session-specific values.
 		for i, k := range keys {
 			val := fmt.Sprintf("val-session%d-%06d-padding-data", s, i)
-			if err := db.Put(k, []byte(val), 0); err != nil {
+			if _, err := db.Put(k, []byte(val), 0); err != nil {
 				t.Fatalf("session %d: Put: %v", s, err)
 			}
 		}
@@ -1160,7 +1160,7 @@ func TestGC_CrossSession_ManyReopens_SameDataset(t *testing.T) {
 		}
 
 		for i := 0; i < nKeys; i++ {
-			if err := db.Put(string(keys[i]), vals[i], 0); err != nil {
+			if _, err := db.Put(string(keys[i]), vals[i], 0); err != nil {
 				t.Fatalf("session %d: Put: %v", s, err)
 			}
 		}
