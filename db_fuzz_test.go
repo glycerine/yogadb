@@ -79,7 +79,7 @@ func assertDBVtypFuzzRecords(t *testing.T, db *FlexDB, records []dbVtypFuzzRecor
 	t.Helper()
 
 	for _, rec := range records {
-		got, found, gotVtyp, err := db.Get(rec.key)
+		got, found, gotVtyp, _, err := db.Get(rec.key)
 		if err != nil {
 			t.Fatalf("%s Get(%q): %v", phase, rec.key, err)
 		}

@@ -271,7 +271,7 @@ func batchLoadAndReadOut(fs vfs.FS, t *testing.T, db *FlexDB, dataPath string) e
 		alwaysPrintf("bad! nLeft = %v that were not gotten back out after being put in!", nLeft)
 		i := 0
 		for k := range verify {
-			_, inDB, _, _ := db.Get(k) // looks like none of them are in the db.
+			_, inDB, _, _, _ := db.Get(k) // looks like none of them are in the db.
 
 			fmt.Printf("in but not out [%02d]: '%v'  (inDB: %v)\n", i, k, inDB)
 			i++

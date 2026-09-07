@@ -89,7 +89,7 @@ func mustDelete(t *testing.T, db *FlexDB, key string) {
 
 func mustGet(t *testing.T, db *FlexDB, key, wantValue string) {
 	t.Helper()
-	val, ok, _, err := db.Get(key)
+	val, ok, _, _, err := db.Get(key)
 	if err != nil {
 		t.Fatalf("Get(%q): %v", key, err)
 	}
@@ -103,7 +103,7 @@ func mustGet(t *testing.T, db *FlexDB, key, wantValue string) {
 
 func mustMiss(t *testing.T, db *FlexDB, key string) {
 	t.Helper()
-	val, ok, vtyp, err := db.Get(key)
+	val, ok, vtyp, _, err := db.Get(key)
 	_ = vtyp
 	if err != nil {
 		t.Fatalf("Get(%q): %v", key, err)
@@ -972,7 +972,7 @@ func TestFlexDB_MergeIncrement(t *testing.T) {
 		}
 	}
 
-	val, ok, _, err := db.Get("ctr")
+	val, ok, _, _, err := db.Get("ctr")
 	panicOn(err)
 	if !ok || val[0] != 10 {
 		t.Fatalf("expected counter=10, got %v ok=%v", val, ok)
@@ -2205,7 +2205,7 @@ func TestFlexDB_GetReportsCorruptedSlottedInterval(t *testing.T) {
 	}
 	corruptFirstFlexSpaceIntervalCRC(t, db)
 
-	val, found, _, err := db.Get("a")
+	val, found, _, _, err := db.Get("a")
 	if err == nil {
 		t.Fatalf("Get returned nil error after corrupted FlexSpace interval; found=%v val=%q", found, val)
 	}
@@ -2228,7 +2228,7 @@ func TestFlexDB_GetLoadErrorReleasesCacheEntry(t *testing.T) {
 		discardAllIntervalCacheForTest(db)
 	}()
 
-	_, found, _, err := db.Get("a")
+	_, found, _, _, err := db.Get("a")
 	if err == nil {
 		t.Fatalf("Get returned nil error after oversized anchor psize; found=%v", found)
 	}
@@ -2427,7 +2427,7 @@ func TestDeleteRange_SkipLargeValues(t *testing.T) {
 		mustMiss(t, db, "c")
 		mustMiss(t, db, "e")
 		// Large keys survive.
-		val, ok, _, err := db.Get("b")
+		val, ok, _, _, err := db.Get("b")
 		panicOn(err)
 		if !ok {
 			t.Fatal("large key 'b' should survive")
@@ -2435,7 +2435,7 @@ func TestDeleteRange_SkipLargeValues(t *testing.T) {
 		if string(val) != bigVal {
 			t.Fatalf("large key 'b' wrong value: got %d bytes", len(val))
 		}
-		val, ok, _, err = db.Get("d")
+		val, ok, _, _, err = db.Get("d")
 		panicOn(err)
 		if !ok {
 			t.Fatal("large key 'd' should survive")
@@ -2463,7 +2463,7 @@ func TestDeleteRange_SkipLargeValues(t *testing.T) {
 		}
 		mustMiss(t, db, "k1")
 		mustMiss(t, db, "k3")
-		val, ok, _, err := db.Get("k2")
+		val, ok, _, _, err := db.Get("k2")
 		panicOn(err)
 		if !ok {
 			t.Fatal("large key 'k2' should survive")
@@ -2505,12 +2505,12 @@ func TestDeleteRange_SkipLargeValues(t *testing.T) {
 			t.Fatalf("n=%d, want 0 (all keys are large)", n)
 		}
 		// Both keys survive.
-		_, ok, _, err := db.Get("a")
+		_, ok, _, _, err := db.Get("a")
 		panicOn(err)
 		if !ok {
 			t.Fatal("key 'a' should survive")
 		}
-		_, ok, _, err = db.Get("b")
+		_, ok, _, _, err = db.Get("b")
 		panicOn(err)
 		if !ok {
 			t.Fatal("key 'b' should survive")
@@ -2579,7 +2579,7 @@ func TestClear(t *testing.T) {
 		}
 		mustMiss(t, db, "a")
 		mustMiss(t, db, "c")
-		val, ok, _, err := db.Get("b")
+		val, ok, _, _, err := db.Get("b")
 		panicOn(err)
 		if !ok {
 			t.Fatal("large key 'b' should survive")
@@ -2587,7 +2587,7 @@ func TestClear(t *testing.T) {
 		if string(val) != bigVal {
 			t.Fatalf("wrong value for 'b'")
 		}
-		val, ok, _, err = db.Get("d")
+		val, ok, _, _, err = db.Get("d")
 		panicOn(err)
 		if !ok {
 			t.Fatal("large key 'd' should survive")
@@ -2613,7 +2613,7 @@ func TestClear(t *testing.T) {
 			t.Fatal("expected allGone=false")
 		}
 		mustMiss(t, db, "x")
-		val, ok, _, err := db.Get("y")
+		val, ok, _, _, err := db.Get("y")
 		panicOn(err)
 		if !ok {
 			t.Fatal("large key 'y' should survive")
@@ -2964,7 +2964,7 @@ func TestFlexDB_ZeroLengthValueEquivalence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	val, found, _, err := db.Get("setkey")
+	val, found, _, _, err := db.Get("setkey")
 	panicOn(err)
 	if !found {
 		t.Fatal("zero-length key should be found")
@@ -2986,7 +2986,7 @@ func TestFlexDB_ZeroLengthValueEquivalence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, found, _, err = db.Get("setkey")
+	_, found, _, _, err = db.Get("setkey")
 	panicOn(err)
 	if found {
 		t.Fatal("deleted key should not be found")
@@ -3004,7 +3004,7 @@ func TestFlexDB_ZeroLengthValueEquivalence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	val, found, _, err = db.Get("setkey2")
+	val, found, _, _, err = db.Get("setkey2")
 	panicOn(err)
 	if !found {
 		t.Fatal("zero-length key should survive Sync")
@@ -3023,7 +3023,7 @@ func TestFlexDB_ZeroLengthValueEquivalence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	val, found, vtyp1, err = db.Get("emptykey")
+	val, found, vtyp1, _, err = db.Get("emptykey")
 	panicOn(err)
 	if !found {
 		t.Fatal("empty-value key should be found")

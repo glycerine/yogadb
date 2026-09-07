@@ -601,7 +601,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	// Verify correctness.
 	for i, k := range keys {
 		expected := fmt.Sprintf("val-round%d-%06d-padding-data-here", rounds, i)
-		got, ok, _, gerr := db.Get(k)
+		got, ok, _, _, gerr := db.Get(k)
 		panicOn(gerr)
 		if !ok {
 			t.Fatalf("key %q not found", k)
@@ -691,7 +691,7 @@ func TestGC_PartialOverwrite_NoBlockGrowth(t *testing.T) {
 		} else {
 			expected = fmt.Sprintf("val-round1-%06d-padding-data-here", i)
 		}
-		got, ok, _, gerr := db.Get(k)
+		got, ok, _, _, gerr := db.Get(k)
 		panicOn(gerr)
 		if !ok {
 			t.Fatalf("key %q not found", k)
@@ -737,7 +737,7 @@ func TestGC_ReplaceWithLargerValue_Splits(t *testing.T) {
 	db.Sync()
 
 	// Verify the large value was stored correctly.
-	got, ok, _, gerr := db.Get("key000100")
+	got, ok, _, _, gerr := db.Get("key000100")
 	panicOn(gerr)
 	if !ok {
 		t.Fatal("key000100 not found after large-value replace")
@@ -758,7 +758,7 @@ func TestGC_ReplaceWithLargerValue_Splits(t *testing.T) {
 		}
 		k := fmt.Sprintf("key%06d", i)
 		expected := fmt.Sprintf("v%06d", i)
-		got, ok, _, gerr := db.Get(k)
+		got, ok, _, _, gerr := db.Get(k)
 		panicOn(gerr)
 		if !ok {
 			t.Fatalf("key %q not found", k)
@@ -998,7 +998,7 @@ func TestGC_CrossSession_DiskGrowth(t *testing.T) {
 		}
 		for i, k := range keys {
 			expected := fmt.Sprintf("val-session%d-%06d-padding-data", sessions-1, i)
-			got, ok, _, gerr := db.Get(k)
+			got, ok, _, _, gerr := db.Get(k)
 			panicOn(gerr)
 			if !ok {
 				t.Fatalf("key %q not found after %d sessions", k, sessions)
@@ -1107,7 +1107,7 @@ func TestGC_CrossSession_BlockReuse(t *testing.T) {
 		for i := 0; i < nKeys; i++ {
 			k := fmt.Sprintf("key%06d", i)
 			expected := fmt.Sprintf("val-session%d-%06d-data-padding", s, i)
-			got, ok, _, gerr := db.Get(k)
+			got, ok, _, _, gerr := db.Get(k)
 			panicOn(gerr)
 			if !ok {
 				t.Fatalf("session %d: key %q not found", s, k)
@@ -1180,7 +1180,7 @@ func TestGC_CrossSession_ManyReopens_SameDataset(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i := 0; i < nKeys; i++ {
-			got, ok, _, gerr := db.Get(string(keys[i]))
+			got, ok, _, _, gerr := db.Get(string(keys[i]))
 			panicOn(gerr)
 			if !ok {
 				t.Fatalf("key %q missing after %d sessions", keys[i], sessions)
@@ -1507,7 +1507,7 @@ func TestPiggybackGC_ReclaimsSpace(t *testing.T) {
 	// Deleted keys should be gone.
 	for i := 0; i < nKeys/2; i++ {
 		k := fmt.Sprintf("key%06d", i)
-		_, ok, _, gerr := db.Get(k)
+		_, ok, _, _, gerr := db.Get(k)
 		panicOn(gerr)
 		if ok {
 			t.Errorf("key %q should have been deleted", k)
@@ -1555,7 +1555,7 @@ func Test_GC1K_write_1k_keys_with_large_values(t *testing.T) {
 	//met.BlocksWithLowUtilization was 5
 
 	// sanity
-	v2, found2, _, gerr := db.Get(keys[0])
+	v2, found2, _, _, gerr := db.Get(keys[0])
 	panicOn(gerr)
 	if !found2 {
 		panicf("key '%v' was written but not found", keys[0])

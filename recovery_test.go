@@ -172,7 +172,7 @@ func crashAndRecover(t *testing.T, fs *vfs.MemFS, dir string, cfg *Config) (*Fle
 func verifyDurability(t *testing.T, db *FlexDB, syncedKVs map[string]string) {
 	t.Helper()
 	for k, want := range syncedKVs {
-		got, found, _, gerr := db.Get(k)
+		got, found, _, _, gerr := db.Get(k)
 		panicOn(gerr)
 		if want == "" {
 			// deleted key: should not be found (we use "" as tombstone sentinel)
@@ -198,7 +198,7 @@ func verifyNoPhantomKeys(t *testing.T, db *FlexDB, syncedKVs map[string]string) 
 	// a range of plausible keys.
 	for i := 0; i < 1000; i++ {
 		key := fmt.Sprintf("key%04d", i)
-		got, found, _, gerr := db.Get(key)
+		got, found, _, _, gerr := db.Get(key)
 		panicOn(gerr)
 		if !found {
 			continue
@@ -336,7 +336,7 @@ func TestRecovery_LogRedoReplays20ByteKV128BatchCommit(t *testing.T) {
 	}
 	defer db2.Close()
 
-	got, found, _, err := db2.Get("wal-small")
+	got, found, _, _, err := db2.Get("wal-small")
 	if err != nil {
 		t.Fatalf("Get wal-small: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestRecovery_LogRedoReplays20ByteKV128BatchCommit(t *testing.T) {
 		t.Fatalf("wal-small after recovery: found=%v got=%q want=%q", found, got, smallVal)
 	}
 
-	got, found, _, err = db2.Get("wal-large")
+	got, found, _, _, err = db2.Get("wal-large")
 	if err != nil {
 		t.Fatalf("Get wal-large: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestRecovery_LogRedoReplays20ByteKV128BatchCommit(t *testing.T) {
 		t.Fatalf("wal-large after recovery: found=%v gotLen=%d wantLen=%d", found, len(got), len(largeVal))
 	}
 
-	got, found, _, err = db2.Get("wal-nil")
+	got, found, _, _, err = db2.Get("wal-nil")
 	if err != nil {
 		t.Fatalf("Get wal-nil: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestRecovery_LogRedoReplays20ByteKV128BatchCommit(t *testing.T) {
 		t.Fatalf("wal-nil after recovery: found=%v got=%#v, want canonical nil zero-length value", found, got)
 	}
 
-	got, found, _, err = db2.Get("wal-empty")
+	got, found, _, _, err = db2.Get("wal-empty")
 	if err != nil {
 		t.Fatalf("Get wal-empty: %v", err)
 	}
@@ -418,7 +418,7 @@ func TestRecovery_LogRedoReplaysMaxKeyBoundaryRecords(t *testing.T) {
 	defer db2.Close()
 
 	for _, tc := range cases {
-		got, found, _, err := db2.Get(tc.key)
+		got, found, _, _, err := db2.Get(tc.key)
 		if err != nil {
 			t.Fatalf("Get max key %s: %v", tc.name, err)
 		}
@@ -480,14 +480,14 @@ func TestRecovery_LogRedoAllowsTornTailButReportsCorruptCompleteRecord(t *testin
 		}
 		defer db.Close()
 
-		got, found, _, err := db.Get("good")
+		got, found, _, _, err := db.Get("good")
 		if err != nil {
 			t.Fatalf("Get good: %v", err)
 		}
 		if !found || string(got) != "value" {
 			t.Fatalf("good after torn-tail recovery: found=%v got=%q", found, got)
 		}
-		if _, found, _, err := db.Get("tail"); err != nil || found {
+		if _, found, _, _, err := db.Get("tail"); err != nil || found {
 			t.Fatalf("tail after torn-tail recovery: found=%v err=%v, want miss", found, err)
 		}
 	})
@@ -553,7 +553,7 @@ func TestRecovery_BackgroundFlushPersistsDirtyCacheBeforeWALReset(t *testing.T) 
 	}
 	defer db2.Close()
 
-	got, found, _, err := db2.Get("k")
+	got, found, _, _, err := db2.Get("k")
 	if err != nil {
 		t.Fatalf("Get k: %v", err)
 	}
@@ -654,13 +654,13 @@ func TestRecovery_DeleteDurability(t *testing.T) {
 	defer db2.Close()
 
 	// "delme" should not be found.
-	if _, found, _, gerr := db2.Get("delme"); gerr != nil {
+	if _, found, _, _, gerr := db2.Get("delme"); gerr != nil {
 		t.Fatal(gerr)
 	} else if found {
 		t.Fatalf("key 'delme' should not be found after delete+sync+crash")
 	}
 	// "keeper" should be found.
-	v, found, _, gerr := db2.Get("keeper")
+	v, found, _, _, gerr := db2.Get("keeper")
 	panicOn(gerr)
 	if !found || string(v) != "world" {
 		t.Fatalf("key 'keeper': expected 'world', got %q found=%v", string(v), found)
@@ -691,20 +691,20 @@ func TestRecovery_ProgressAfterRecovery(t *testing.T) {
 	// New operations after recovery should work.
 	_, err = db2.Put("after", []byte("recovery"), 0)
 	panicOn(err)
-	v, found, _, gerr := db2.Get("after")
+	v, found, _, _, gerr := db2.Get("after")
 	panicOn(gerr)
 	if !found || string(v) != "recovery" {
 		t.Fatalf("post-recovery Put/Get failed: found=%v val=%q", found, string(v))
 	}
 	panicOn(db2.Delete("after"))
-	if _, found, _, gerr := db2.Get("after"); gerr != nil {
+	if _, found, _, _, gerr := db2.Get("after"); gerr != nil {
 		t.Fatal(gerr)
 	} else if found {
 		t.Fatalf("post-recovery Delete failed: key still found")
 	}
 
 	// Pre-crash data still accessible.
-	v, found, _, gerr = db2.Get("before")
+	v, found, _, _, gerr = db2.Get("before")
 	panicOn(gerr)
 	if !found || string(v) != "crash" {
 		t.Fatalf("pre-crash key not found after recovery: found=%v val=%q", found, string(v))
@@ -795,7 +795,7 @@ func TestRecovery_KeyCountConsistency(t *testing.T) {
 	var actualCount int64
 	for i := 0; i < nKeys; i++ {
 		k := fmt.Sprintf("key%04d", i)
-		_, found, _, gerr := db2.Get(k)
+		_, found, _, _, gerr := db2.Get(k)
 		panicOn(gerr)
 		if found {
 			actualCount++
@@ -841,7 +841,7 @@ func TestRecovery_UnsyncedDataLoss(t *testing.T) {
 	defer db2.Close()
 
 	// Synced data must survive.
-	v, found, _, gerr := db2.Get("synced_key")
+	v, found, _, _, gerr := db2.Get("synced_key")
 	panicOn(gerr)
 	if !found || string(v) != "synced_val" {
 		t.Fatalf("synced key lost after crash! found=%v val=%q", found, string(v))
@@ -852,7 +852,7 @@ func TestRecovery_UnsyncedDataLoss(t *testing.T) {
 	// We just verify the DB is operational.
 	for i := 0; i < 10; i++ {
 		k := fmt.Sprintf("unsynced%04d", i)
-		_, _, _, _ = db2.Get(k) // must not panic or hang
+		_, _, _, _, _ = db2.Get(k) // must not panic or hang
 	}
 }
 
@@ -911,7 +911,7 @@ func TestRecovery_LinearizabilitySingleKey(t *testing.T) {
 			go func(clientId int) {
 				defer wg.Done()
 				callT := time.Now().UnixNano()
-				got, found, _, gerr := db.Get(theKey)
+				got, found, _, _, gerr := db.Get(theKey)
 				panicOn(gerr)
 				returnT := time.Now().UnixNano()
 
@@ -946,7 +946,7 @@ func TestRecovery_LinearizabilitySingleKey(t *testing.T) {
 	// Record this as a new operation in the continuing history.
 	{
 		callT := time.Now().UnixNano()
-		got, found, _, gerr := db2.Get(theKey)
+		got, found, _, _, gerr := db2.Get(theKey)
 		panicOn(gerr)
 		returnT := time.Now().UnixNano()
 		if !found || string(got) != lastVal {
@@ -984,7 +984,7 @@ func TestRecovery_LinearizabilitySingleKey(t *testing.T) {
 			go func(clientId int) {
 				defer wg.Done()
 				callT := time.Now().UnixNano()
-				got, found, _, gerr := db2.Get(theKey)
+				got, found, _, _, gerr := db2.Get(theKey)
 				panicOn(gerr)
 				returnT := time.Now().UnixNano()
 
@@ -1087,7 +1087,7 @@ func TestRecovery_LinearizabilityMultiKey(t *testing.T) {
 				} else {
 					// GET
 					callT := time.Now().UnixNano()
-					got, found, _, gerr := db.Get(key)
+					got, found, _, _, gerr := db.Get(key)
 					panicOn(gerr)
 					returnT := time.Now().UnixNano()
 					recordOp(&opsMu, &ops, porc.Operation{
@@ -1115,7 +1115,7 @@ func TestRecovery_LinearizabilityMultiKey(t *testing.T) {
 	// These reads extend the Porcupine history.
 	for _, key := range keys {
 		callT := time.Now().UnixNano()
-		got, found, _, gerr := db2.Get(key)
+		got, found, _, _, gerr := db2.Get(key)
 		panicOn(gerr)
 		returnT := time.Now().UnixNano()
 		recordOp(&opsMu, &ops, porc.Operation{
@@ -1155,7 +1155,7 @@ func TestRecovery_LinearizabilityMultiKey(t *testing.T) {
 					})
 				} else {
 					callT := time.Now().UnixNano()
-					got, found, _, gerr := db2.Get(key)
+					got, found, _, _, gerr := db2.Get(key)
 					panicOn(gerr)
 					returnT := time.Now().UnixNano()
 					recordOp(&opsMu, &ops, porc.Operation{
@@ -1274,7 +1274,7 @@ func TestRecovery_RepeatedCrashCycles(t *testing.T) {
 		// Read all keys after recovery (extends history).
 		for _, key := range keys {
 			callT := time.Now().UnixNano()
-			got, found, _, gerr := db.Get(key)
+			got, found, _, _, gerr := db.Get(key)
 			panicOn(gerr)
 			returnT := time.Now().UnixNano()
 			recordOp(&opsMu, &ops, porc.Operation{
@@ -1305,7 +1305,7 @@ func TestRecovery_RepeatedCrashCycles(t *testing.T) {
 
 			// Read it back.
 			callT = time.Now().UnixNano()
-			got, found, _, gerr := db.Get(key)
+			got, found, _, _, gerr := db.Get(key)
 			panicOn(gerr)
 			returnT = time.Now().UnixNano()
 			recordOp(&opsMu, &ops, porc.Operation{
@@ -1460,7 +1460,7 @@ func (kt *keyTracker) validate(t *testing.T, db *FlexDB) {
 	defer kt.mu.Unlock()
 
 	for key, entry := range kt.entries {
-		got, found, _, gerr := db.Get(key)
+		got, found, _, _, gerr := db.Get(key)
 		panicOn(gerr)
 		switch entry.state {
 		case ksSet:
@@ -1646,7 +1646,7 @@ func runStressWorkers(
 				default:
 				}
 				key := fmt.Sprintf("w%d_k%04d", readerID%cfg.numWriters, readerID%cfg.numKeys)
-				_, _, _, _ = db.Get(key) // result doesn't matter; just exercising reads
+				_, _, _, _, _ = db.Get(key) // result doesn't matter; just exercising reads
 			}
 		}(r)
 	}
@@ -1947,7 +1947,7 @@ func TestRecoveryStress_UnsyncedDataPartial(t *testing.T) {
 	// Also verify the DB is operational post-recovery.
 	_, err = db2.Put("post_recovery", []byte("works"), 0)
 	panicOn(err)
-	got, found, _, gerr := db2.Get("post_recovery")
+	got, found, _, _, gerr := db2.Get("post_recovery")
 	panicOn(gerr)
 	if !found || string(got) != "works" {
 		t.Fatalf("post-recovery Put/Get failed")

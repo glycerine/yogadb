@@ -72,7 +72,7 @@ func Test016_linz(t *testing.T) {
 		//vv("i=%v, jnode=%v, about to Read", i, jnode)
 
 		begtmRead := time.Now()
-		val, found, _, gerr := readers[jnode].db.Get(skey)
+		val, found, _, _, gerr := readers[jnode].db.Get(skey)
 		panicOn(gerr)
 		endtmRead := time.Now()
 

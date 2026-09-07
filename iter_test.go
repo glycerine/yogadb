@@ -183,7 +183,7 @@ func TestFlexDB_IteratorGetAnySizeDoesNotPoisonInlineCache(t *testing.T) {
 	}
 
 	for _, rec := range records {
-		got, found, gotVtyp, err := db.Get(rec.key)
+		got, found, gotVtyp, _, err := db.Get(rec.key)
 		if err != nil {
 			t.Fatalf("Get(%q): %v", rec.key, err)
 		}
@@ -629,12 +629,12 @@ func TestFlexDB_HLC_Persistence(t *testing.T) {
 	}
 	defer db2.Close()
 
-	val, ok, _, gerr := db2.Get("pk1")
+	val, ok, _, _, gerr := db2.Get("pk1")
 	panicOn(gerr)
 	if !ok || string(val) != "pv1" {
 		t.Fatalf("pk1: got %q, ok=%v", val, ok)
 	}
-	val, ok, _, gerr = db2.Get("pk2")
+	val, ok, _, _, gerr = db2.Get("pk2")
 	panicOn(gerr)
 	if !ok || string(val) != "pv2" {
 		t.Fatalf("pk2: got %q, ok=%v", val, ok)
@@ -665,7 +665,7 @@ func TestFlexDB_HLC_VLOGRoundTrip(t *testing.T) {
 	}
 	defer db2.Close()
 
-	val, ok, _, gerr := db2.Get("bigkey")
+	val, ok, _, _, gerr := db2.Get("bigkey")
 	panicOn(gerr)
 	if !ok {
 		t.Fatal("bigkey not found after reopen")
@@ -862,7 +862,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 		for i := 0; i < nKeys; i++ {
 			key := fmt.Sprintf("k%06d", i)
 			expected := fmt.Sprintf("v%06d", i)
-			got, ok, _, gerr := db.Get(key)
+			got, ok, _, _, gerr := db.Get(key)
 			panicOn(gerr)
 			if !ok {
 				t.Fatalf("session 2: key %q missing after vacuum", key)
@@ -893,7 +893,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 		for i := 0; i < nKeys; i++ {
 			key := fmt.Sprintf("k%06d", i)
 			expected := fmt.Sprintf("v%06d", i)
-			got, ok, _, gerr := db.Get(key)
+			got, ok, _, _, gerr := db.Get(key)
 			panicOn(gerr)
 			if !ok {
 				t.Fatalf("session 3: key %q missing", key)
@@ -1160,7 +1160,7 @@ func TestFlexDB_IteratorDeleteAllForward(t *testing.T) {
 	})
 
 	// DB should be empty
-	val, ok, _, gerr := db.Get("a")
+	val, ok, _, _, gerr := db.Get("a")
 	panicOn(gerr)
 	if ok {
 		t.Fatalf("expected empty DB, got key 'a' val=%q", val)
@@ -1371,7 +1371,7 @@ func TestFlexDB_IteratorDeleteAllBackward(t *testing.T) {
 	})
 
 	// DB should be empty
-	val, ok, _, gerr := db.Get("c")
+	val, ok, _, _, gerr := db.Get("c")
 	panicOn(gerr)
 	if ok {
 		t.Fatalf("expected empty DB, got key 'c' val=%q", val)

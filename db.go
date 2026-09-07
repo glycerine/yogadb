@@ -2843,7 +2843,7 @@ func (db *FlexDB) GetKV(key string) (kv *KVcloser, err error) {
 // Get is value size agnostic. It returns large and small values
 // immediately. This is tested at, for example, gc_test.go
 // Test_GC1K_write_1k_keys_with_large_values.
-func (db *FlexDB) Get(key string) (value []byte, found bool, vtyp uint64, err error) {
+func (db *FlexDB) Get(key string) (value []byte, found bool, vtyp uint64, hlc HLC, err error) {
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
 	defer recoverIterIOErr(&err)
@@ -2853,18 +2853,18 @@ func (db *FlexDB) Get(key string) (value []byte, found bool, vtyp uint64, err er
 		kv, ok := db.mt.get(key)
 		if ok {
 			if kv.isTombstone() {
-				return nil, false, 0, nil // tombstone
+				return nil, false, 0, 0, nil // tombstone
 			}
 			val, vtype, err := db.resolveVPtr(kv)
 			if err != nil {
-				return nil, false, 0, err
+				return nil, false, 0, 0, err
 			}
 			if len(val) == 0 {
-				return nil, true, vtype, nil
+				return nil, true, vtype, kv.Hlc, nil
 			}
 			out := make([]byte, len(val))
 			copy(out, val)
-			return out, true, vtype, nil
+			return out, true, vtype, kv.Hlc, nil
 		}
 	}
 
@@ -2874,13 +2874,13 @@ func (db *FlexDB) Get(key string) (value []byte, found bool, vtyp uint64, err er
 
 // someLockHeldGet retrieves the value for key without acquiring topMutRW.
 // Caller must already hold topMutRW.Lock() or topMutRW.RLock().
-func (db *FlexDB) someLockHeldGet(key string) (val []byte, found bool, vtyp uint64, err error) {
+func (db *FlexDB) someLockHeldGet(key string) (val []byte, found bool, vtyp uint64, hlc HLC, err error) {
 	// Check memtable
 	if !db.mt.empty {
 		kv, ok := db.mt.get(key)
 		if ok {
 			if kv.isTombstone() {
-				return nil, false, 0, nil
+				return nil, false, 0, 0, nil
 			}
 			val, vtyp, err = db.resolveVPtr(kv)
 			if err != nil {
@@ -2889,11 +2889,12 @@ func (db *FlexDB) someLockHeldGet(key string) (val []byte, found bool, vtyp uint
 			if len(val) == 0 {
 				val = nil
 				found = true
+				hlc = kv.Hlc
 				return
 			}
 			out := make([]byte, len(val))
 			copy(out, val)
-			return out, true, vtyp, nil
+			return out, true, vtyp, kv.Hlc, nil
 		}
 	}
 
@@ -3574,7 +3575,7 @@ func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists b
 
 	if !exists {
 		// Phase 2: check FlexSpace (getPassthrough already resolves VPtrs).
-		val, found, vtyp, err := db.getPassthrough(key)
+		val, found, vtyp, _, err := db.getPassthrough(key)
 		if err != nil {
 			return fmt.Errorf("flexdb: merge getPassthrough: %w", err)
 		}
@@ -3607,7 +3608,7 @@ func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists b
 // These operate directly on FlexSpace + sparse index.
 // Caller must hold db.topMutRW. but is RLock sufficient? should be since we change nothing.
 
-func (db *FlexDB) getPassthrough(key string) (val []byte, found bool, vtyp uint64, err0 error) {
+func (db *FlexDB) getPassthrough(key string) (val []byte, found bool, vtyp uint64, hlc HLC, err0 error) {
 	var nh memSparseIndexTreeHandler
 	db.tree.findAnchorPos(key, &nh)
 	anchor := nh.node.anchors[nh.idx]
@@ -3616,28 +3617,28 @@ func (db *FlexDB) getPassthrough(key string) (val []byte, found bool, vtyp uint6
 	fce, err := partition.getEntry(anchor, anchorLoff, db)
 	if err != nil {
 		partition.releaseEntry(fce)
-		return nil, false, 0, err
+		return nil, false, 0, 0, err
 	}
 	defer partition.releaseEntry(fce)
 
 	idx, ok := intervalCacheEntryFindKeyEQ(fce, key)
 	if !ok {
-		return nil, false, 0, nil
+		return nil, false, 0, 0, nil
 	}
 	kv := fce.kvs[idx]
 	if kv.isTombstone() {
-		return nil, false, 0, nil
+		return nil, false, 0, 0, nil
 	}
 	val, vtyp, err0 = db.resolveVPtr(kv)
 	if err0 != nil {
-		return nil, false, 0, err0
+		return nil, false, 0, 0, err0
 	}
 	if len(val) == 0 {
-		return nil, true, vtyp, nil
+		return nil, true, vtyp, kv.Hlc, nil
 	}
 	out := make([]byte, len(val))
 	copy(out, val)
-	return out, true, vtyp, nil
+	return out, true, vtyp, kv.Hlc, nil
 }
 
 // getPassthroughKV returns the full KV (including HLC) from the passthrough layer.

@@ -9,7 +9,7 @@ package yogadb
 // It is nice for documention purposes though; to get an
 // overview of the available methods.
 type ReadOnlyDB interface {
-	Get(key string) ([]byte, bool, uint64, error)
+	Get(key string) ([]byte, bool, uint64, HLC, error)
 	GetKV(key string) (kv *KVcloser, err error)
 	Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error)
 	FindIt(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error, it *Iter)
@@ -226,7 +226,7 @@ var _ WritableDB = (*WriteTx)(nil)
 
 // Get retrieves the value for key. Returns (nil, false, nil) if not found
 // or deleted. The returned []byte is a copy, safe to retain.
-func (tx *WriteTx) Get(key string) (value []byte, found bool, vtyp uint64, err error) {
+func (tx *WriteTx) Get(key string) (value []byte, found bool, vtyp uint64, hlc HLC, err error) {
 	return tx.db.someLockHeldGet(key)
 }
 
@@ -437,7 +437,7 @@ type ReadOnlyTx struct{ txBase }
 
 // Get retrieves the value for key. Returns (nil, false, nil) if not found
 // or deleted. The returned []byte is a copy, safe to retain.
-func (roTx *ReadOnlyTx) Get(key string) (value []byte, found bool, vtyp uint64, err error) {
+func (roTx *ReadOnlyTx) Get(key string) (value []byte, found bool, vtyp uint64, hlc HLC, err error) {
 	return roTx.db.someLockHeldGet(key)
 }
 
