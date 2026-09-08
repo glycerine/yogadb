@@ -199,6 +199,34 @@ func (p *intervalCachePartition) allocEntryForNewAnchor(anchor *dbAnchor) *inter
 	return fce
 }
 
+func (p *intervalCachePartition) installCleanEntry(anchor *dbAnchor, kvs []KV, baseHLC HLC, slotSize int) {
+	fce := &intervalCacheEntry{
+		anchor:    anchor,
+		kvs:       append([]KV(nil), kvs...),
+		fps:       make([]uint16, len(kvs)),
+		baseHLC:   baseHLC,
+		slotSize:  slotSize,
+		slotValid: true,
+		count:     len(kvs),
+	}
+	for i := range fce.kvs {
+		fce.fps[i] = fingerprint(kvCRC32(fce.kvs[i].Key))
+		fce.size += kvSizeApprox(&fce.kvs[i])
+	}
+
+	p.mu.Lock()
+	old := anchor.loadFce()
+	if old != nil && old.anchor == anchor {
+		p.size -= p.freeEntry(old)
+	}
+	anchor.storeFce(fce)
+	p.insertIntoClock(fce)
+	atomic.StoreInt32(&fce.access, intervalCacheEntryChance)
+	p.size += int64(32 + fce.size)
+	p.calibrate()
+	p.mu.Unlock()
+}
+
 func (p *intervalCachePartition) insertIntoClock(fce *intervalCacheEntry) {
 	if p.tick == nil {
 		p.tick = fce

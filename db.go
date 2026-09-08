@@ -68,14 +68,6 @@ type Batch struct {
 	err        error
 }
 
-var batchSeenPool = sync.Pool{
-	New: func() any { return new(bulkKVIndex) },
-}
-
-var batchDupHashSetPool = sync.Pool{
-	New: func() any { return new(batchDupHashSet) },
-}
-
 const (
 	batchInitialPutCap        = 1024
 	batchInitialValueArenaCap = 64 << 10
@@ -203,40 +195,11 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	}
 	atomic.AddInt64(&db.LogicalBytesWritten, logicalBytes)
 
-	// --- HLC assignment with sub-batching for duplicate keys ---
-	// Each sub-batch of unique keys shares one HLC tick. When a duplicate
-	// key is encountered, we start a new sub-batch with a new HLC tick.
-	var firstHLC HLC
-
+	// One HLC identifies the whole batch. Duplicate keys within the same batch
+	// are resolved by normal last-write-wins replacement in the memtable.
 	curHLC := db.hlc.CreateSendOrLocalEvent()
-	firstHLC = curHLC
-
-	dupHashSet := batchDupHashSetPool.Get().(*batchDupHashSet)
-	mayHaveDuplicate := dupHashSet.mayContainDuplicate(s.puts)
-	dupHashSet.reset()
-	batchDupHashSetPool.Put(dupHashSet)
-	if mayHaveDuplicate {
-		seen := batchSeenPool.Get().(*bulkKVIndex)
-		seen.clear()
-		seen.ensureCap(len(s.puts))
-		defer func() {
-			seen.clear()
-			batchSeenPool.Put(seen)
-		}()
-		for i := range s.puts {
-			k := s.puts[i].Key
-			if _, dup := seen.get(k); dup {
-				// Duplicate key in this sub-batch - start new sub-batch.
-				seen.clear()
-				curHLC = db.hlc.CreateSendOrLocalEvent()
-			}
-			seen.set(k, i)
-			s.puts[i].Hlc = curHLC
-		}
-	} else {
-		for i := range s.puts {
-			s.puts[i].Hlc = curHLC
-		}
+	for i := range s.puts {
+		s.puts[i].Hlc = curHLC
 	}
 
 	// Write large values to VLOG with a single batch fsync. The WAL then
@@ -373,7 +336,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	if wantMetrics {
 		metrics = db.writeLockHeldSessionMetrics()
 	}
-	interv = HLCInterval{Begin: firstHLC, Endx: curHLC + 1}
+	interv = HLCInterval{Begin: curHLC, Endx: curHLC + 1}
 	return
 }
 
@@ -4695,14 +4658,18 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 			return fmt.Errorf("bulk initial flush insert loff=%d psize=%d firstKey=%q: %w",
 				loff, len(buf), page[0].Key, err)
 		}
+		var anchor *dbAnchor
 		if loff == 0 {
-			anchor := db.tree.root.anchors[0]
+			anchor = db.tree.root.anchors[0]
 			anchor.psize = uint32(len(buf))
 			anchor.unsorted = 0
 		} else {
 			db.tree.findAnchorPos(page[0].Key, &nh)
 			nh.idx++
-			nh.handlerInsert(page[0].Key, loff, uint32(len(buf)))
+			anchor = nh.handlerInsert(page[0].Key, loff, uint32(len(buf)))
+		}
+		if anchor != nil && db.cache != nil {
+			db.cache.getPartition(anchor).installCleanEntry(anchor, page, pageBase, len(buf))
 		}
 		page = page[:0]
 		pageSize = 0

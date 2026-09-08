@@ -530,17 +530,17 @@ func TestFlexDB_HLC_BatchInterval(t *testing.T) {
 		t.Fatal("expected non-zero HLC")
 	}
 
-	// Batch with a duplicate key - multi-tick interval.
+	// Batch with a duplicate key - still one batch/transaction HLC.
 	batch2 := db.NewBatch()
 	batch2.Set("x1", []byte("v1"), 0)
-	batch2.Set("x1", []byte("v2"), 0) // duplicate triggers new tick
+	batch2.Set("x1", []byte("v2"), 0)
 	batch2.Set("x2", []byte("v3"), 0)
 	iv2, err := batch2.Commit(false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if iv2.Endx <= iv2.Begin+1 {
-		t.Fatalf("duplicate key: expected multi-tick interval, got Begin=%v Endx=%v", iv2.Begin, iv2.Endx)
+	if iv2.Endx != iv2.Begin+1 {
+		t.Fatalf("duplicate key: expected single-tick interval, got Begin=%v Endx=%v", iv2.Begin, iv2.Endx)
 	}
 
 	// Intervals from successive batches should not overlap.
