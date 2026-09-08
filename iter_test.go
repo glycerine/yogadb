@@ -173,7 +173,7 @@ func TestFlexDB_IteratorGetAnySizeDoesNotPoisonInlineCache(t *testing.T) {
 		it := roDB.NewIter()
 		defer it.Close()
 		for it.SeekFirst(); it.Valid(); it.Next() {
-			if _, _, _, _, err := it.GetAnySize(); err != nil {
+			if _, _, _, _, _, err := it.GetAnySize(); err != nil {
 				return err
 			}
 		}
@@ -1409,7 +1409,7 @@ func TestFlexDB_IteratorHasInlineValue(t *testing.T) {
 		if v, empty, large := it.Vel(); v != nil || empty || !large {
 			t.Fatal("Vel() should return (nil, false, true) for large values")
 		}
-		val, _, err := it.FetchV()
+		val, _, _, err := it.FetchV()
 		if err != nil {
 			t.Fatalf("FetchV: %v", err)
 		}
@@ -1428,7 +1428,7 @@ func TestFlexDB_IteratorHasInlineValue(t *testing.T) {
 		if string(it.Vin()) != "tiny" {
 			t.Fatalf("Value() = %q, want 'tiny'", it.Vin())
 		}
-		val, _, err = it.FetchV()
+		val, _, _, err = it.FetchV()
 		if err != nil {
 			t.Fatalf("FetchV for inline: %v", err)
 		}
@@ -1450,7 +1450,7 @@ func TestFlexDB_IteratorHasInlineValue(t *testing.T) {
 		if string(it.Vin()) != "" {
 			t.Fatalf("Value() = %q, want empty string", it.Vin())
 		}
-		val, _, err = it.FetchV()
+		val, _, _, err = it.FetchV()
 		if err != nil {
 			t.Fatalf("FetchV for inline: %v", err)
 		}
@@ -1583,7 +1583,7 @@ func TestIterKV_LargeValue(t *testing.T) {
 		}
 
 		// Use FetchLarge to get the actual value
-		val, _, err := roDB.FetchLarge(kv)
+		val, _, _, err := roDB.FetchLarge(kv)
 		if err != nil {
 			t.Fatal(err)
 		}

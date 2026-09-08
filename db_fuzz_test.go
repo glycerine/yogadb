@@ -105,7 +105,7 @@ func assertDBVtypFuzzRecords(t *testing.T, db *FlexDB, records []dbVtypFuzzRecor
 		defer it.Close()
 
 		for it.SeekFirst(); it.Valid(); it.Next() {
-			key, got, gotVtyp, found, err := it.GetAnySize()
+			key, got, gotVtyp, _, found, err := it.GetAnySize()
 			if err != nil {
 				t.Fatalf("%s iterator GetAnySize: %v", phase, err)
 			}

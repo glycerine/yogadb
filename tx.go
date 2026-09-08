@@ -13,7 +13,7 @@ type ReadOnlyDB interface {
 	GetKV(key string) (kv *KVcloser, err error)
 	Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error)
 	FindIt(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error, it *Iter)
-	FetchLarge(kv *KV) (val []byte, vtyp uint64, err error)
+	FetchLarge(kv *KV) (val []byte, vtyp uint64, hlc HLC, err error)
 	NewIter() *Iter
 	Ascend(pivot string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool)
 	Descend(pivot string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool)
@@ -132,7 +132,7 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 
 		// Auto-fetch large value unless LAZY_LARGE was requested.
 		if !lazyLarge && kvc.HasVPtr() {
-			val, _, fetchErr := tx.db.resolveVPtr(kvc.KV)
+			val, _, _, fetchErr := tx.db.resolveVPtr(kvc.KV)
 			if fetchErr != nil {
 				kvc = nil
 				err = fetchErr
@@ -201,7 +201,7 @@ func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact
 
 	// Auto-fetch large value unless LAZY_LARGE was requested.
 	if !lazyLarge && kvc.HasVPtr() {
-		val, _, fetchErr := tx.db.resolveVPtr(kvc.KV)
+		val, _, _, fetchErr := tx.db.resolveVPtr(kvc.KV)
 		if fetchErr != nil {
 			kvc = nil
 			err = fetchErr
@@ -290,7 +290,7 @@ func (tx *WriteTx) FindIt(smod SearchModifier, key string) (kvc *KVcloser, exact
 
 // FetchLarge retrieves the full value for a KV. For VLOG-stored
 // values it reads from disk; for inline values it returns kv.Value directly.
-func (tx *WriteTx) FetchLarge(kv *KV) (val []byte, vtyp uint64, err error) {
+func (tx *WriteTx) FetchLarge(kv *KV) (val []byte, vtyp uint64, hlc HLC, err error) {
 	return tx.db.lockHeldFetchLarge(kv)
 }
 
@@ -467,7 +467,7 @@ func (roTx *ReadOnlyTx) FindIt(smod SearchModifier, key string) (kvc *KVcloser, 
 
 // FetchLarge retrieves the full value for a KV. For VLOG-stored
 // values it reads from disk; for inline values it returns kv.Value directly.
-func (roTx *ReadOnlyTx) FetchLarge(kv *KV) (val []byte, vtyp uint64, err error) {
+func (roTx *ReadOnlyTx) FetchLarge(kv *KV) (val []byte, vtyp uint64, hlc HLC, err error) {
 	return roTx.db.lockHeldFetchLarge(kv)
 }
 

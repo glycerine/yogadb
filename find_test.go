@@ -413,7 +413,7 @@ func TestFetchLarge_InlineValue(t *testing.T) {
 		t.Fatal("expected inline value, got large")
 	}
 	// FetchLarge on an inline value should return the value.
-	val, _, err := db.FetchLarge(&kvc.KV)
+	val, _, _, err := db.FetchLarge(&kvc.KV)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -639,7 +639,7 @@ func TestFind_SkipValues(t *testing.T) {
 			}
 			_ = empty
 			_ = large
-			fv, _, fe := it.FetchV()
+			fv, _, _, fe := it.FetchV()
 			if fv != nil || fe != nil {
 				t.Fatalf("FetchV should be nil with SKIP_VALUES, key=%s", it.Key())
 			}

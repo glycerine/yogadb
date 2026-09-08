@@ -1420,22 +1420,23 @@ func (db *FlexDB) CumulativeMetrics() *Metrics {
 // resolveVPtr reads the value from the VLOG file for a KV that has HasVPtr() true.
 // For small inline values where HasVPtr() is false, we return kv.Value.
 // Returns the resolved value bytes, or an error.
-func (db *FlexDB) resolveVPtr(kv KV) (val []byte, vtyp uint64, err error) {
+func (db *FlexDB) resolveVPtr(kv KV) (val []byte, vtyp uint64, hlc HLC, err error) {
 	if kv.Vptr.Length == rawVlenTombstone {
-		return nil, 0, ErrTomb
+		return nil, 0, 0, ErrTomb
 	}
 	if !kv.HasVPtr() {
-		return kv.Value, kv.Vptr.Offset, nil
+		return kv.Value, kv.Vptr.Offset, kv.Hlc, nil
 	}
 
 	if db.vlog == nil {
-		return nil, 0, fmt.Errorf("flexdb: VPtr but VLOG is nil")
+		return nil, 0, 0, fmt.Errorf("flexdb: VPtr but VLOG is nil")
 	}
 	// allow kv.Value to be skipped for vtyp 0 on disk.
 	if len(kv.Value) == 8 {
 		vtyp = getUint64(kv.Value)
 	}
 	val, err = db.vlog.read(kv.Vptr)
+	hlc = kv.Hlc
 	return
 }
 
@@ -1445,9 +1446,9 @@ func (db *FlexDB) resolveVPtr(kv KV) (val []byte, vtyp uint64, err error) {
 // a fresh copy safe to retain.
 //
 // Goroutine safe. Acquires the read lock internally.
-func (db *FlexDB) FetchLarge(kv *KV) (val []byte, vtyp uint64, err error) {
+func (db *FlexDB) FetchLarge(kv *KV) (val []byte, vtyp uint64, hlc HLC, err error) {
 	if kv == nil {
-		return nil, 0, fmt.Errorf("flexdb: FetchLarge called with nil KV")
+		return nil, 0, 0, fmt.Errorf("flexdb: FetchLarge called with nil KV")
 	}
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
@@ -1456,9 +1457,9 @@ func (db *FlexDB) FetchLarge(kv *KV) (val []byte, vtyp uint64, err error) {
 
 // lockHeldFetchLarge is the lock-held body of FetchLarge.
 // Caller must hold topMutRW.RLock() or topMutRW.Lock().
-func (db *FlexDB) lockHeldFetchLarge(kv *KV) (val []byte, vtyp uint64, err error) {
+func (db *FlexDB) lockHeldFetchLarge(kv *KV) (val []byte, vtyp uint64, hlc HLC, err error) {
 	if kv == nil {
-		return nil, 0, fmt.Errorf("flexdb: FetchLarge called with nil KV")
+		return nil, 0, 0, fmt.Errorf("flexdb: FetchLarge called with nil KV")
 	}
 	return db.resolveVPtr(*kv)
 }
@@ -2691,7 +2692,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 
 		// Auto-fetch large value unless LAZY_LARGE was requested
 		if !lazyLarge && kvc.HasVPtr() {
-			val, _, fetchErr := db.resolveVPtr(kvc.KV)
+			val, _, _, fetchErr := db.resolveVPtr(kvc.KV)
 			if fetchErr != nil {
 				kvc = nil
 				err = fetchErr
@@ -2774,7 +2775,8 @@ func (s *KVcloser) Fetch() error {
 	if !s.HasVPtr() {
 		return nil // inline value already present
 	}
-	val, vtyp, err := s.db.FetchLarge(&s.KV)
+	val, vtyp, hlc, err := s.db.FetchLarge(&s.KV)
+	_ = hlc
 	if err != nil {
 		return err
 	}
@@ -2855,7 +2857,7 @@ func (db *FlexDB) Get(key string) (value []byte, found bool, vtyp uint64, hlc HL
 			if kv.isTombstone() {
 				return nil, false, 0, 0, nil // tombstone
 			}
-			val, vtype, err := db.resolveVPtr(kv)
+			val, vtype, _, err := db.resolveVPtr(kv)
 			if err != nil {
 				return nil, false, 0, 0, err
 			}
@@ -2882,7 +2884,7 @@ func (db *FlexDB) someLockHeldGet(key string) (val []byte, found bool, vtyp uint
 			if kv.isTombstone() {
 				return nil, false, 0, 0, nil
 			}
-			val, vtyp, err = db.resolveVPtr(kv)
+			val, vtyp, _, err = db.resolveVPtr(kv)
 			if err != nil {
 				return
 			}
@@ -3562,7 +3564,7 @@ func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists b
 		if ok {
 			if !kv.isTombstone() {
 				oldVtyp = kv.Vptr.Offset
-				val, vtyp, err := db.resolveVPtr(kv)
+				val, vtyp, _, err := db.resolveVPtr(kv)
 				if err == nil {
 					// large VLOG value.
 					oldVal = val
@@ -3629,7 +3631,7 @@ func (db *FlexDB) getPassthrough(key string) (val []byte, found bool, vtyp uint6
 	if kv.isTombstone() {
 		return nil, false, 0, 0, nil
 	}
-	val, vtyp, err0 = db.resolveVPtr(kv)
+	val, vtyp, _, err0 = db.resolveVPtr(kv)
 	if err0 != nil {
 		return nil, false, 0, 0, err0
 	}

@@ -939,7 +939,7 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 		if bestKV.HasVPtr() {
 			return []byte(minKey), nil, bestKV.Hlc, true, bestKV.Vptr, bestKV.Vtyp(), true
 		}
-		val, vtype, err := db.resolveVPtr(bestKV)
+		val, vtype, _, err := db.resolveVPtr(bestKV)
 		if err != nil {
 			target = minKey
 			strict = true
@@ -1135,7 +1135,7 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, v
 		if bestKV.HasVPtr() {
 			return &KV{Key: minKey, Hlc: bestKV.Hlc, Vptr: bestKV.Vptr, Value: dupBytes(bestKV.Value)}, bestKV.Vtyp(), true
 		}
-		val, vtype, err := db.resolveVPtr(bestKV)
+		val, vtype, _, err := db.resolveVPtr(bestKV)
 		if err != nil {
 			target = minKey
 			strict = true
@@ -1661,7 +1661,7 @@ func (it *Iter) KV() *KV {
 }
 
 // GetAnySize returns values large or small, if available.
-func (it *Iter) GetAnySize() (key string, val []byte, vtyp uint64, found bool, err error) {
+func (it *Iter) GetAnySize() (key string, val []byte, vtyp uint64, hlc HLC, found bool, err error) {
 	if !it.valid || it.pKV == nil {
 		return
 	}
@@ -1669,7 +1669,7 @@ func (it *Iter) GetAnySize() (key string, val []byte, vtyp uint64, found bool, e
 	key = it.pKV.Key
 
 	if it.pKV.HasVPtr() {
-		val, vtyp, err = it.FetchV()
+		val, vtyp, hlc, err = it.FetchV()
 		return
 	}
 	vtyp = it.pKV.Vtyp()
@@ -1767,15 +1767,15 @@ func (it *Iter) Large() bool {
 // bytes and any error from the VLOG read. If the value is
 // inline and not large, it will still be returned
 // (and the error will be nil).
-func (it *Iter) FetchV() (val []byte, vtyp uint64, err error) {
+func (it *Iter) FetchV() (val []byte, vtyp uint64, hlc HLC, err error) {
 	if !it.valid || it.pKV == nil || it.skipValues {
-		return nil, 0, nil
+		return nil, 0, 0, nil
 	}
 	if it.pKV.isTombstone() {
-		return nil, 0, ErrTomb
+		return nil, 0, 0, ErrTomb
 	}
 	if !it.pKV.HasVPtr() {
-		return it.Vin(), it.pKV.Vtyp(), nil
+		return it.Vin(), it.pKV.Vtyp(), it.pKV.Hlc, nil
 	}
 	// seems buggy: return it.db.resolveVPtr(KV{Vptr: it.pKV.Vptr})
 	// since resolveVPtr needs to see the kv.Vptr to distinguish large VLOG from inline Value.
@@ -1793,7 +1793,7 @@ func (it *Iter) iterResolvedValue() []byte {
 	if !it.pKV.HasVPtr() {
 		return it.Vin()
 	}
-	val, _, err := it.db.resolveVPtr(*it.pKV)
+	val, _, _, err := it.db.resolveVPtr(*it.pKV)
 	panicOn(err)
 	return val
 }

@@ -93,8 +93,9 @@ func (c *YviewConfig) justShowAll(db *yogadb.FlexDB, dbPath string) {
 		for it.SeekFirst(); it.Valid(); it.Next() {
 			kv := it.KV()
 			if kv != nil {
-				value, vtyp, err := it.FetchV()
+				value, vtyp, hlc, err := it.FetchV()
 				panicOn(err)
+				_ = hlc
 				_ = vtyp
 				key := kv.Key
 
@@ -128,7 +129,7 @@ func (c *YviewConfig) justShowAll(db *yogadb.FlexDB, dbPath string) {
 			}
 		}
 		if false { // old non-timestamp version
-			roDB.Ascend("", func(key string, value []byte) bool {
+			roDB.Ascend("", func(key string, value []byte, vtyp uint64, hlc yogadb.HLC) bool {
 				keyb += int64(len(key))
 				valb += int64(len(value))
 				need := 2 + len(key) + len(value)

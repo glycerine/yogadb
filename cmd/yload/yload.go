@@ -162,7 +162,7 @@ func main() {
 		t1 := time.Now()
 		saw := 0
 		db.View(func(roDB *yogadb.ReadOnlyTx) error {
-			roDB.Ascend("", func(key string, value []byte) bool {
+			roDB.Ascend("", func(key string, value []byte, vtyp uint64, hlc yogadb.HLC) bool {
 				os.Stdout.Write([]byte(key))
 				if len(value) > 0 {
 					os.Stdout.Write(colon)
@@ -183,7 +183,7 @@ func justShowAll(db *yogadb.FlexDB, dbPath string) {
 	saw := 0
 	buf := make([]byte, 0, 4<<20)
 	db.View(func(roDB *yogadb.ReadOnlyTx) error {
-		roDB.Ascend("", func(key string, value []byte) bool {
+		roDB.Ascend("", func(key string, value []byte, vtyp uint64, hlc yogadb.HLC) bool {
 			need := 2 + len(key) + len(value)
 			if len(buf)+need <= cap(buf) {
 				// fine. write below.

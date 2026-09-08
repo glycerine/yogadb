@@ -67,12 +67,12 @@ func FirstDiff(dbA, dbB *FlexDB) string {
 
 		case va && vb:
 			// both valid, compare them
-			ka, va, vtypa, foundA, errA := itA.GetAnySize()
+			ka, va, vtypa, hlcA, foundA, errA := itA.GetAnySize()
 			panicOn(errA)
 			if !foundA {
 				panicf("i=%v how can itA be valid but return not found?", i)
 			}
-			kb, vb, vtypb, foundB, errB := itB.GetAnySize()
+			kb, vb, vtypb, hlcB, foundB, errB := itB.GetAnySize()
 			panicOn(errB)
 			if !foundB {
 				panicf("i=%v how can itB be valid but return not found?", i)
@@ -87,8 +87,8 @@ func FirstDiff(dbA, dbB *FlexDB) string {
 			if cmp != 0 {
 				return fmt.Sprintf("value diff at i=%v, keyA==keyB:'%v' but va=\n%v\n vb=\n%v\n", i, ka, string(va), string(vb))
 			}
-			hlcA := itA.Hlc()
-			hlcB := itB.Hlc()
+			//hlcA := itA.Hlc()
+			//hlcB := itB.Hlc()
 			if hlcA != hlcB {
 				return fmt.Sprintf("hlc diff at i=%v, keys agree:'%v' and values agree, but hlcA='%v' (%v); while hlcB='%v' (%v)", i, ka, hlcA, nice(time.Unix(0, int64(hlcA))), hlcB, nice(time.Unix(0, int64(hlcB))))
 			}
