@@ -72,6 +72,10 @@ var batchSeenPool = sync.Pool{
 	New: func() any { return new(bulkKVIndex) },
 }
 
+var batchDupHashSetPool = sync.Pool{
+	New: func() any { return new(batchDupHashSet) },
+}
+
 const (
 	batchInitialPutCap        = 1024
 	batchInitialValueArenaCap = 64 << 10
@@ -207,22 +211,32 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	curHLC := db.hlc.CreateSendOrLocalEvent()
 	firstHLC = curHLC
 
-	seen := batchSeenPool.Get().(*bulkKVIndex)
-	seen.clear()
-	seen.ensureCap(len(s.puts))
-	defer func() {
+	dupHashSet := batchDupHashSetPool.Get().(*batchDupHashSet)
+	mayHaveDuplicate := dupHashSet.mayContainDuplicate(s.puts)
+	dupHashSet.reset()
+	batchDupHashSetPool.Put(dupHashSet)
+	if mayHaveDuplicate {
+		seen := batchSeenPool.Get().(*bulkKVIndex)
 		seen.clear()
-		batchSeenPool.Put(seen)
-	}()
-	for i := range s.puts {
-		k := s.puts[i].Key
-		if _, dup := seen.get(k); dup {
-			// Duplicate key in this sub-batch - start new sub-batch.
+		seen.ensureCap(len(s.puts))
+		defer func() {
 			seen.clear()
-			curHLC = db.hlc.CreateSendOrLocalEvent()
+			batchSeenPool.Put(seen)
+		}()
+		for i := range s.puts {
+			k := s.puts[i].Key
+			if _, dup := seen.get(k); dup {
+				// Duplicate key in this sub-batch - start new sub-batch.
+				seen.clear()
+				curHLC = db.hlc.CreateSendOrLocalEvent()
+			}
+			seen.set(k, i)
+			s.puts[i].Hlc = curHLC
 		}
-		seen.set(k, i)
-		s.puts[i].Hlc = curHLC
+	} else {
+		for i := range s.puts {
+			s.puts[i].Hlc = curHLC
+		}
 	}
 
 	// Write large values to VLOG with a single batch fsync. The WAL then
@@ -334,7 +348,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		oldState := ksNotExists
 		if replaced {
 			oldState = kvToState(old)
-		} else {
+		} else if !useBulkInitial {
 			oldState = db.writeLockHeldKeyState(putKV.Key)
 		}
 		db.adjustKeyCounters(oldState, newState)
