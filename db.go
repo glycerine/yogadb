@@ -2503,16 +2503,15 @@ func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string,
 		return 0, err
 	}
 
-	// do not arbitrarily limit write transaction Put() and Delete()
-	// transaction sizes. If we have the memory, use it.
-	// Otherwise, limit to memtableCap count of keys in memory
-	// before automatically flushing to disk. For transactions, the
-	// user wants atomic commit or rollback en-mass, so we cannot
-	// auto-commit and flush to disk for them.
-	if beforeWrite == nil {
-		// we are not in a WriteTxn here, since only
-		// tx.go WriteTxn and its call paths set beforeWrite.
-		// So, check if we should be auto-flushing to disk.
+	// memtableCap is a billion writes. not really much of a real limit,
+	// and giving the user a clear error is a better user experience
+	// than crashing on them in a random place because we have
+	// run out of memory.
+	if db.mt.size >= memtableCap {
+		if beforeWrite != nil {
+			return 0, fmt.Errorf("flexdb error: write transaction exceeds memtable capacity; split it into smaller transactions. limit is memtableCap=%v", memtableCap)
+		}
+		// Inline flush when memtable is full.
 		if db.mt.size >= memtableCap {
 			// Inline flush when memtable is full.
 			if err := db.mt.logFlush(); err != nil {
