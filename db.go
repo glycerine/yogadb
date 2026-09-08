@@ -2401,13 +2401,17 @@ func validateKV128RecordSize(kv KV) error {
 	if !kv.isTombstone() && !kv.HasVPtr() && len(kv.Value) > vlogInlineThreshold {
 		return fmt.Errorf("flexdb: inline value too large without VLOG (max %d bytes)", vlogInlineThreshold)
 	}
-	var g GreenMEMWAL_KV
-	g.fillFromKV(&kv)
-	encoded, err := g.SaveToSlice()
-	if err != nil {
-		return fmt.Errorf("flexdb: MEMWAL encode: %w", err)
+	g := GreenMEMWAL_KV{
+		WalRecordType: MEMWAL_KV,
+		VptrLength:    kv.Vptr.Length,
+		VptrOffset:    kv.Vptr.Offset,
+		Hlc:           int64(kv.Hlc),
+		Key:           kv.Key,
+		InlineVal:     kv.Value,
 	}
-	if size := len(encoded); size >= memtableWalBufCap {
+	payloadSize := g.Msgsize()
+	size := msgp.BytesPrefixSize + payloadSize + msgp.BytesPrefixSize + 8
+	if size >= memtableWalBufCap {
 		return fmt.Errorf("flexdb: KV too large for MEMWAL record (size %d, max %d bytes)", size, memtableWalBufCap-1)
 	}
 	if size := slottedPageComputeSize([]KV{kv}); size > slottedPageMaxSize {
@@ -3845,7 +3849,7 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 	if fitTarget < slottedPageMaxSize {
 		fitTarget = slottedPageMaxSize
 	}
-	if !slottedPageWouldFit(fce.kvs, fce.count, kv, replaceIdx, fitTarget) {
+	if !intervalCacheEntryWouldFit(fce, kv, replaceIdx, fitTarget) {
 		if eq {
 			// Replacing an existing key - the entry count stays the same.
 			// The overflow is from HLC varint growth (mixed old/new HLCs
