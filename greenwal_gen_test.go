@@ -9,8 +9,8 @@ import (
 	"github.com/glycerine/greenpack/msgp"
 )
 
-func TestMarshalUnmarshalGreenMemWalKV(t *testing.T) {
-	v := GreenMemWalKV{}
+func TestMarshalUnmarshalGreenMEMWAL_KV(t *testing.T) {
+	v := GreenMEMWAL_KV{}
 	bts, err := v.MarshalMsg(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -32,8 +32,8 @@ func TestMarshalUnmarshalGreenMemWalKV(t *testing.T) {
 	}
 }
 
-func BenchmarkMarshalMsgGreenMemWalKV(b *testing.B) {
-	v := GreenMemWalKV{}
+func BenchmarkMarshalMsgGreenMEMWAL_KV(b *testing.B) {
+	v := GreenMEMWAL_KV{}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -41,8 +41,8 @@ func BenchmarkMarshalMsgGreenMemWalKV(b *testing.B) {
 	}
 }
 
-func BenchmarkAppendMsgGreenMemWalKV(b *testing.B) {
-	v := GreenMemWalKV{}
+func BenchmarkAppendMsgGreenMEMWAL_KV(b *testing.B) {
+	v := GreenMEMWAL_KV{}
 	bts := make([]byte, 0, v.Msgsize())
 	bts, _ = v.MarshalMsg(bts[0:0])
 	b.SetBytes(int64(len(bts)))
@@ -53,8 +53,8 @@ func BenchmarkAppendMsgGreenMemWalKV(b *testing.B) {
 	}
 }
 
-func BenchmarkUnmarshalGreenMemWalKV(b *testing.B) {
-	v := GreenMemWalKV{}
+func BenchmarkUnmarshalGreenMEMWAL_KV(b *testing.B) {
+	v := GreenMEMWAL_KV{}
 	bts, _ := v.MarshalMsg(nil)
 	b.ReportAllocs()
 	b.SetBytes(int64(len(bts)))
@@ -67,8 +67,8 @@ func BenchmarkUnmarshalGreenMemWalKV(b *testing.B) {
 	}
 }
 
-func TestEncodeDecodeGreenMemWalKV(t *testing.T) {
-	v := GreenMemWalKV{}
+func TestEncodeDecodeGreenMEMWAL_KV(t *testing.T) {
+	v := GreenMEMWAL_KV{}
 	var buf bytes.Buffer
 	msgp.Encode(&buf, &v)
 
@@ -77,7 +77,7 @@ func TestEncodeDecodeGreenMemWalKV(t *testing.T) {
 		t.Logf("WARNING: Msgsize() for %v is inaccurate", v)
 	}
 
-	vn := GreenMemWalKV{}
+	vn := GreenMEMWAL_KV{}
 	err := msgp.Decode(&buf, &vn)
 	if err != nil {
 		t.Error(err)
@@ -91,8 +91,8 @@ func TestEncodeDecodeGreenMemWalKV(t *testing.T) {
 	}
 }
 
-func BenchmarkEncodeGreenMemWalKV(b *testing.B) {
-	v := GreenMemWalKV{}
+func BenchmarkEncodeGreenMEMWAL_KV(b *testing.B) {
+	v := GreenMEMWAL_KV{}
 	var buf bytes.Buffer
 	msgp.Encode(&buf, &v)
 	b.SetBytes(int64(buf.Len()))
@@ -105,8 +105,8 @@ func BenchmarkEncodeGreenMemWalKV(b *testing.B) {
 	en.Flush()
 }
 
-func BenchmarkDecodeGreenMemWalKV(b *testing.B) {
-	v := GreenMemWalKV{}
+func BenchmarkDecodeGreenMEMWAL_KV(b *testing.B) {
+	v := GreenMEMWAL_KV{}
 	var buf bytes.Buffer
 	msgp.Encode(&buf, &v)
 	b.SetBytes(int64(buf.Len()))
