@@ -729,31 +729,33 @@ func TestLockedIter_PutGetDelete(t *testing.T) {
 	}
 }
 
-// TestLockedIter_Sync verifies that rwDB.Sync flushes the memtable.
+// TestLockedIter_Sync verifies that plain db.Put writes are flushed by db.Sync.
 func TestLockedIter_Sync(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	populateFindTestDB(t, db)
 
-	err := db.Update(func(rwDB *WriteTx) error {
-		// Sync should not error.
-		if err := rwDB.Sync(); err != nil {
-			t.Fatal(err)
-		}
+	if err := db.Sync(); err != nil {
+		t.Fatal(err)
+	}
 
-		// After sync, data should still be retrievable.
-		val, ok, _, _, gerr := rwDB.Get("key007")
-		panicOn(gerr)
-		if !ok {
-			t.Fatal("Get key007 after Sync: not found")
+	mustGet(t, db, "key007", "val007")
+}
+
+// TestLockedIter_Commit verifies that WriteTx.Commit flushes transaction writes.
+func TestLockedIter_Commit(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+
+	err := db.Update(func(rwDB *WriteTx) error {
+		if _, err := rwDB.Put("key007", []byte("val007"), 0); err != nil {
+			return err
 		}
-		if string(val) != "val007" {
-			t.Fatalf("Get key007 after Sync: got %q, want val007", val)
-		}
-		return nil
+		return rwDB.Commit()
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	mustGet(t, db, "key007", "val007")
 }
 
 // populateFindTestDB inserts 10 keys: key001..key010 with values val001..val010.

@@ -7,6 +7,31 @@ import (
 	"testing"
 )
 
+func mustTxGet(t *testing.T, tx *WriteTx, key, wantValue string) {
+	t.Helper()
+	val, ok, _, _, err := tx.Get(key)
+	if err != nil {
+		t.Fatalf("tx.Get(%q): %v", key, err)
+	}
+	if !ok {
+		t.Fatalf("tx.Get(%q): not found (want %q)", key, wantValue)
+	}
+	if string(val) != wantValue {
+		t.Fatalf("tx.Get(%q) = %q, want %q", key, val, wantValue)
+	}
+}
+
+func mustTxMiss(t *testing.T, tx *WriteTx, key string) {
+	t.Helper()
+	val, ok, _, _, err := tx.Get(key)
+	if err != nil {
+		t.Fatalf("tx.Get(%q): %v", key, err)
+	}
+	if ok {
+		t.Fatalf("tx.Get(%q) = %q, want miss", key, val)
+	}
+}
+
 func TestTx_UpdateBasic(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	mustPut(t, db, "k1", "v1")
@@ -62,7 +87,7 @@ func TestTxPutReturnsMemWALBeginErrorBeforeApplyingWrite(t *testing.T) {
 	db.Close()
 }
 
-func TestTx_GreenMEMWALLazyBeginAfterSync(t *testing.T) {
+func TestTx_GreenMEMWALLazyBeginAfterCommit(t *testing.T) {
 	db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
 
 	err := db.Update(func(rwDB *WriteTx) error {
@@ -82,16 +107,131 @@ func TestTx_GreenMEMWALLazyBeginAfterSync(t *testing.T) {
 		if _, err := rwDB.Put("k", []byte("v"), 0); err != nil {
 			return err
 		}
-		return rwDB.Sync()
+		return rwDB.Commit()
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(db.mt.memWalBuf) != 0 {
-		t.Fatalf("Update after tx.Sync left %d buffered MEMWAL bytes, want 0", len(db.mt.memWalBuf))
+		t.Fatalf("Update after tx.Commit left %d buffered MEMWAL bytes, want 0", len(db.mt.memWalBuf))
 	}
 	if got, err := db.mt.memWalSize(); err != nil || got != memWalHeaderSize {
-		t.Fatalf("Update after tx.Sync MEMWAL size = %d err=%v, want %d nil", got, err, memWalHeaderSize)
+		t.Fatalf("Update after tx.Commit MEMWAL size = %d err=%v, want %d nil", got, err, memWalHeaderSize)
+	}
+}
+
+func TestTx_UpdateCallbackErrorRollsBackWrites(t *testing.T) {
+	db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
+	mustPut(t, db, "keep", "old")
+	mustPut(t, db, "delete-me", "old")
+
+	sentinel := errors.New("rollback sentinel")
+	err := db.Update(func(rwDB *WriteTx) error {
+		if _, err := rwDB.Put("temp", []byte("value"), 0); err != nil {
+			return err
+		}
+		if _, err := rwDB.Put("keep", []byte("new"), 0); err != nil {
+			return err
+		}
+		if err := rwDB.Delete("delete-me"); err != nil {
+			return err
+		}
+
+		mustTxGet(t, rwDB, "temp", "value")
+		mustTxGet(t, rwDB, "keep", "new")
+		mustTxMiss(t, rwDB, "delete-me")
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Update error = %v, want sentinel", err)
+	}
+
+	mustMiss(t, db, "temp")
+	mustGet(t, db, "keep", "old")
+	mustGet(t, db, "delete-me", "old")
+}
+
+func TestBeginUpdateCommitRollbackFirstWins(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+
+	rwDB, err := db.BeginUpdate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rwDB.Rollback()
+
+	if _, err := rwDB.Put("committed", []byte("yes"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := rwDB.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rwDB.Rollback(); err != nil {
+		t.Fatalf("Rollback after Commit = %v, want nil", err)
+	}
+	if _, err := rwDB.Put("after-commit", []byte("no"), 0); !errors.Is(err, ErrWriteTxClosed) {
+		t.Fatalf("Put after Commit error = %v, want ErrWriteTxClosed", err)
+	}
+
+	mustGet(t, db, "committed", "yes")
+}
+
+func TestBeginUpdateRollbackCommitFirstWins(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+
+	rwDB, err := db.BeginUpdate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rwDB.Rollback()
+
+	if _, err := rwDB.Put("rolled-back", []byte("no"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := rwDB.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rwDB.Commit(); err != nil {
+		t.Fatalf("Commit after Rollback = %v, want nil", err)
+	}
+	if _, err := rwDB.Put("after-rollback", []byte("no"), 0); !errors.Is(err, ErrWriteTxClosed) {
+		t.Fatalf("Put after Rollback error = %v, want ErrWriteTxClosed", err)
+	}
+
+	mustMiss(t, db, "rolled-back")
+}
+
+func TestWriteTxClearTrueCannotRollback(t *testing.T) {
+	db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
+	mustPut(t, db, "a", "1")
+	mustPut(t, db, "b", "2")
+	if err := db.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	sentinel := errors.New("rollback after clear")
+	err := db.Update(func(rwDB *WriteTx) error {
+		allGone, err := rwDB.Clear(true)
+		if err != nil {
+			return err
+		}
+		if !allGone {
+			t.Fatal("Clear(true) allGone = false, want true")
+		}
+		if _, err := rwDB.Put("after-clear", []byte("x"), 0); err != nil {
+			return err
+		}
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Update error = %v, want sentinel", err)
+	}
+
+	mustMiss(t, db, "a")
+	mustMiss(t, db, "b")
+	mustMiss(t, db, "after-clear")
+	if got := db.Len(); got != 0 {
+		t.Fatalf("Len after rollback from Clear(true) tx = %d, want 0", got)
 	}
 }
 

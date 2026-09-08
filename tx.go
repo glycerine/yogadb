@@ -1,6 +1,10 @@
 package yogadb
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"time"
+)
 
 // ReadOnlyDB provides read-only access to the database within a View
 // transaction. Methods must not be used after the callback returns.
@@ -35,9 +39,9 @@ type ReadOnlyDB interface {
 //
 // WriteTx writes are bracketed in FLEXDB.MEMWAL by lazy BEGIN/COMMIT records
 // for crash recovery: recovery replays all records in a committed group, and
-// discards a group whose COMMIT was not present. Writes are still applied
-// immediately in memory, so callback errors are not a rollback mechanism.
-// They are Durable only after Sync() returns successfully.
+// discards a group whose COMMIT was not present. Writes are applied
+// immediately in memory so readers inside the transaction see their own
+// writes, but rollbackable writes become durable only after Commit returns.
 //
 // To avoid indirect call overhead, this interface is
 // not actually used in the Update API.
@@ -50,7 +54,8 @@ type WritableDB interface {
 	DeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error)
 	Clear(includeLarge bool) (allGone bool, err error)
 	Merge(key string, fn func(oldVal []byte, exists bool, oldVtyp uint64) (newVal []byte, write bool, doDelete bool, newVtyp uint64)) error
-	Sync() error
+	Commit() error
+	Rollback() error
 }
 
 // txBase tracks iterators created within a transaction and auto-closes
@@ -212,20 +217,35 @@ func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact
 
 // ========== WriteTx (implements WritableDB) ==========
 
-// WriteTx extends ReadTx with mutation methods. Passed to
-// Update transaction callbacks. Writes are applied immediately
-// to the database (no buffering). Since there is only ever
-// a single writer at a time, and no concurrent readers, there
-// is no point in waiting to apply each action, and "reading
-// your own writes" is often desired/expected/required.
+// WriteTx extends ReadTx with mutation methods. Passed to Update transaction
+// callbacks. Writes are applied immediately to the active memtable so reads in
+// the transaction see their own writes. Commit persists those writes; Rollback
+// discards them from the memtable and MEMWAL.
 type WriteTx struct {
 	txBase
-	walTxnBegun bool
+	walTxnBegun     bool
+	done            bool
+	managedByUpdate bool
+	beginLiveKeys   int64
+	beginBigKeys    int64
+	beginSmallKeys  int64
 }
 
 var _ WritableDB = (*WriteTx)(nil)
 
+var ErrWriteTxClosed = errors.New("yogadb: write transaction already committed or rolled back")
+
+func (tx *WriteTx) checkOpen() error {
+	if tx.done {
+		return ErrWriteTxClosed
+	}
+	return nil
+}
+
 func (tx *WriteTx) ensureWalTxn() error {
+	if err := tx.checkOpen(); err != nil {
+		return err
+	}
 	if !tx.walTxnBegun {
 		if err := tx.db.mt.logAppendWalRecordType(MEMWAL_BEGIN_TXN); err != nil {
 			return err
@@ -236,6 +256,9 @@ func (tx *WriteTx) ensureWalTxn() error {
 }
 
 func (tx *WriteTx) commitWalTxn() error {
+	if err := tx.checkOpen(); err != nil {
+		return err
+	}
 	if tx.walTxnBegun {
 		if err := tx.db.mt.logAppendWalRecordType(MEMWAL_COMMIT_TXN); err != nil {
 			return err
@@ -245,23 +268,63 @@ func (tx *WriteTx) commitWalTxn() error {
 	return nil
 }
 
-func (tx *WriteTx) Rollback() {
-	// TODO: implement by discarding all memtable updates and
-	// truncating the MEMWAL log frm the start of this transaction to the end. We could record the length of
-	// the log so we know exactly where we started, and that offset could be where we truncate if
-	// we Rollback().
-	// Any other action after Rollback() should return an error, maybe panic, since the transaction
-	// is now dead.
+func (tx *WriteTx) finish() {
+	tx.done = true
+	tx.closeAll()
+	if !tx.managedByUpdate {
+		tx.db.topMutRW.Unlock()
+	}
+}
+
+// Rollback discards all writes made in this WriteTx. It is safe to defer:
+// if Commit already won, Rollback is a no-op.
+func (tx *WriteTx) Rollback() error {
+	if tx.done {
+		return nil
+	}
+	err := tx.rollbackOpen()
+	tx.finish()
+	return err
+}
+
+func (tx *WriteTx) rollbackOpen() error {
+	db := tx.db
+	db.mt.bt.Clear()
+	db.mt.empty = true
+	db.mt.size = 0
+	db.liveKeys = tx.beginLiveKeys
+	db.liveBigKeys = tx.beginBigKeys
+	db.liveSmallKeys = tx.beginSmallKeys
+	tx.walTxnBegun = false
+	db.flushSeq++
+
+	ts := uint64(time.Now().UnixNano())
+	if err := db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
+		return fmt.Errorf("flexdb: rollback truncate memwal: %w", err)
+	}
+	return nil
+}
+
+func (tx *WriteTx) resetRollbackBaseline() {
+	tx.beginLiveKeys = tx.db.liveKeys
+	tx.beginBigKeys = tx.db.liveBigKeys
+	tx.beginSmallKeys = tx.db.liveSmallKeys
 }
 
 // Get retrieves the value for key. Returns (nil, false, nil) if not found
 // or deleted. The returned []byte is a copy, safe to retain.
 func (tx *WriteTx) Get(key string) (value []byte, found bool, vtyp uint64, hlc HLC, err error) {
+	if err := tx.checkOpen(); err != nil {
+		return nil, false, 0, 0, err
+	}
 	return tx.db.someLockHeldGet(key)
 }
 
 // GetKV is equivalent to tx.Find(Exact, key).
 func (tx *WriteTx) GetKV(key string) (kv *KVcloser, err error) {
+	if err := tx.checkOpen(); err != nil {
+		return nil, err
+	}
 	kv, _, err = tx.Find(Exact, key)
 	return
 }
@@ -276,26 +339,37 @@ func (tx *WriteTx) GetKV(key string) (kv *KVcloser, err error) {
 // Large values are written exactly once: to the VLOG. The WAL stores only
 // the VPtr (16 bytes), not the full value.
 //
-// Puts are not durably on disk until after the user has also
-// completed a tx.Sync() or db.Sync() call. This allows the user to control
-// the rate of fsyncs and trade that against their durability
-// requirements.
+// Puts are not durably committed until Commit returns successfully.
 func (tx *WriteTx) Put(key string, value []byte, vtyp uint64) (HLC, error) {
+	if err := tx.checkOpen(); err != nil {
+		return 0, err
+	}
 	return tx.db.writeLockHeldPutWithHook(tx.ensureWalTxn, key, value, vtyp, false)
 }
 
 // Delete removes key from the store.
 func (tx *WriteTx) Delete(key string) error {
+	if err := tx.checkOpen(); err != nil {
+		return err
+	}
 	_, err := tx.db.writeLockHeldPutWithHook(tx.ensureWalTxn, key, nil, 0, true)
 	return err
 }
 
-// Sync flushes all in-memory data to disk and fsyncs.
-func (tx *WriteTx) Sync() error {
+// Commit durably commits this WriteTx. It is terminal: if Rollback already won,
+// Commit is a no-op.
+func (tx *WriteTx) Commit() error {
+	if tx.done {
+		return nil
+	}
+	defer tx.finish()
 	if err := tx.commitWalTxn(); err != nil {
+		return errors.Join(err, tx.rollbackOpen())
+	}
+	if err := tx.db.writeLockHeldSync(); err != nil {
 		return err
 	}
-	return tx.db.writeLockHeldSync()
+	return nil
 }
 
 // Find seeks to a key relative to the given key per smod (Exact, GTE, GT, LTE, LT)
@@ -308,6 +382,9 @@ func (tx *WriteTx) Sync() error {
 // Warning: the user must call Close() on the kvc *KVcloser when done copying any
 // value out, or else memory and resource leaks will ensue.
 func (tx *WriteTx) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error) {
+	if err := tx.checkOpen(); err != nil {
+		return nil, false, err
+	}
 	kvc, exact, err = txFind(&tx.txBase, smod, key)
 	return
 }
@@ -317,6 +394,9 @@ func (tx *WriteTx) Find(smod SearchModifier, key string) (kvc *KVcloser, exact b
 // call kvc.Close() when done with the initial result, and use the iterator
 // for continued scanning. The iterator is auto-closed when the transaction ends.
 func (tx *WriteTx) FindIt(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error, it *Iter) {
+	if err := tx.checkOpen(); err != nil {
+		return nil, false, err, nil
+	}
 	kvc, exact, err, it = txFindIt(&tx.txBase, smod, key)
 	return
 }
@@ -324,6 +404,9 @@ func (tx *WriteTx) FindIt(smod SearchModifier, key string) (kvc *KVcloser, exact
 // FetchLarge retrieves the full value for a KV. For VLOG-stored
 // values it reads from disk; for inline values it returns kv.Value directly.
 func (tx *WriteTx) FetchLarge(kv *KV) (val []byte, vtyp uint64, hlc HLC, err error) {
+	if err := tx.checkOpen(); err != nil {
+		return nil, 0, 0, err
+	}
 	return tx.db.lockHeldFetchLarge(kv)
 }
 
@@ -332,27 +415,41 @@ func (tx *WriteTx) FetchLarge(kv *KV) (val []byte, vtyp uint64, hlc HLC, err err
 // legal to Close it sooner if you want to release resources
 // early.
 func (tx *WriteTx) NewIter() *Iter {
+	if err := tx.checkOpen(); err != nil {
+		panic(err)
+	}
 	return tx.newIter()
 }
 
 // Len returns the total number of live keys in the database.
 func (tx *WriteTx) Len() int64 {
+	if err := tx.checkOpen(); err != nil {
+		panic(err)
+	}
 	return tx.db.liveKeys
 }
 
 // LenBigSmall returns live key counts partitioned by storage (VLOG vs inline).
 func (tx *WriteTx) LenBigSmall() (big, small int64) {
+	if err := tx.checkOpen(); err != nil {
+		panic(err)
+	}
 	return tx.db.liveBigKeys, tx.db.liveSmallKeys
 }
 
 // DeleteRange deletes keys in the range [begKey, endKey] with configurable
 // inclusivity. When includeLarge is false, VLOG-stored keys are skipped.
-// If allGone is true, the entire database was reinitialized and all
-// previously obtained iterators and KV references are invalidated.
+// If allGone is true, the fast delete-all path reinitialized the database
+// immediately and cannot be rolled back; previously obtained iterators and KV
+// references are invalidated.
 func (tx *WriteTx) DeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
+	if err := tx.checkOpen(); err != nil {
+		return 0, false, err
+	}
 	n, allGone, err = tx.db.writeLockHeldDeleteRangeWithHook(tx.ensureWalTxn, includeLarge, begKey, endKey, begInclusive, endInclusive)
 	if allGone && err == nil {
 		tx.walTxnBegun = false
+		tx.resetRollbackBaseline()
 	}
 	return
 }
@@ -360,11 +457,17 @@ func (tx *WriteTx) DeleteRange(includeLarge bool, begKey, endKey string, begIncl
 // Clear deletes all keys. When includeLarge is false, only inline-value
 // keys are deleted; VLOG-stored keys survive. When allGone is true,
 // the database was reinitialized and all previously obtained iterators
-// and KV references are invalidated.
+// and KV references are invalidated. The fast allGone path rewrites database
+// files immediately and cannot be rolled back; Rollback can only discard later
+// writes in the same WriteTx.
 func (tx *WriteTx) Clear(includeLarge bool) (allGone bool, err error) {
+	if err := tx.checkOpen(); err != nil {
+		return false, err
+	}
 	allGone, err = tx.db.writeLockHeldClearWithHook(tx.ensureWalTxn, includeLarge)
 	if allGone && err == nil {
 		tx.walTxnBegun = false
+		tx.resetRollbackBaseline()
 	}
 	return
 }
@@ -396,12 +499,18 @@ func (tx *WriteTx) Clear(includeLarge bool) (allGone bool, err error) {
 //
 // .
 func (tx *WriteTx) Merge(key string, callback func(oldVal []byte, exists bool, oldVtyp uint64) (newVal []byte, write bool, doDelete bool, newVtype uint64)) error {
+	if err := tx.checkOpen(); err != nil {
+		return err
+	}
 	return tx.db.writeLockHeldMergeWithHook(tx.ensureWalTxn, key, callback)
 }
 
 // Ascend iterates keys >= pivot in ascending order until callback returns false.
 // Use pivot="" to start from the first key.
 func (tx *WriteTx) Ascend(pivot string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
+	if err := tx.checkOpen(); err != nil {
+		panic(err)
+	}
 	it := tx.newIter()
 	defer it.Close()
 	it.Seek(pivot)
@@ -416,6 +525,9 @@ func (tx *WriteTx) Ascend(pivot string, callback func(key string, value []byte, 
 // Descend iterates keys <= pivot in descending order until callback returns false.
 // Use pivot="" to start from the last key.
 func (tx *WriteTx) Descend(pivot string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
+	if err := tx.checkOpen(); err != nil {
+		panic(err)
+	}
 	it := tx.newIter()
 	defer it.Close()
 	if pivot == "" {
@@ -434,6 +546,9 @@ func (tx *WriteTx) Descend(pivot string, callback func(key string, value []byte,
 // AscendRange iterates keys in [greaterOrEqual, lessThan) in ascending order.
 // Use "" for either bound to leave it open.
 func (tx *WriteTx) AscendRange(greaterOrEqual, lessThan string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
+	if err := tx.checkOpen(); err != nil {
+		panic(err)
+	}
 	it := tx.newIter()
 	defer it.Close()
 	it.Seek(greaterOrEqual)
@@ -451,6 +566,9 @@ func (tx *WriteTx) AscendRange(greaterOrEqual, lessThan string, callback func(ke
 // DescendRange iterates keys in (greaterThan, lessOrEqual] in descending order.
 // Use "" for either bound to leave it open.
 func (tx *WriteTx) DescendRange(lessOrEqual, greaterThan string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
+	if err := tx.checkOpen(); err != nil {
+		panic(err)
+	}
 	it := tx.newIter()
 	defer it.Close()
 	if lessOrEqual == "" {
@@ -614,21 +732,55 @@ func (roTx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, callback f
 // All iterators created within fn via rwDB.NewIter() or rwDB.FindIt()
 // are automatically closed when fn returns.
 //
-// Writes via rwDB.Put/rwDB.Delete are applied immediately to the
-// database (no buffering, no Commit needed).
+// Before fn runs, existing memtable contents are flushed so rollback can
+// discard this transaction's memtable changes. If fn returns nil, Update calls
+// Commit. If fn returns an error, Update calls Rollback and returns the error.
 //
 // Do NOT call db.Put/db.Get/db.Delete/db.Sync inside fn - use rwDB
 // methods instead (to avoid deadlock).
 func (db *FlexDB) Update(fn func(rw *WriteTx) error) (err error) {
 	db.topMutRW.Lock()
-	tx := &WriteTx{txBase: txBase{db: db}}
-	defer func() {
-		err = errors.Join(err, tx.commitWalTxn())
-		tx.closeAll()
+	tx, err := db.beginWriteTxLocked(true)
+	if err != nil {
 		db.topMutRW.Unlock()
+		return err
+	}
+	defer func() {
+		defer db.topMutRW.Unlock()
+		defer tx.closeAll()
+
+		if r := recover(); r != nil {
+			rollbackErr := tx.Rollback()
+			if ioe, ok := r.(iterIOErr); ok {
+				err = errors.Join(ioe.err, rollbackErr)
+			} else {
+				panic(r)
+			}
+			return
+		}
+		if tx.done {
+			return
+		}
+		if err != nil {
+			err = errors.Join(err, tx.Rollback())
+			return
+		}
+		err = tx.Commit()
 	}()
-	defer recoverIterIOErr(&err)
 	return fn(tx)
+}
+
+func (db *FlexDB) beginWriteTxLocked(managedByUpdate bool) (*WriteTx, error) {
+	if err := db.writeLockHeldSync(); err != nil {
+		return nil, fmt.Errorf("flexdb: begin write transaction sync: %w", err)
+	}
+	return &WriteTx{
+		txBase:          txBase{db: db},
+		managedByUpdate: managedByUpdate,
+		beginLiveKeys:   db.liveKeys,
+		beginBigKeys:    db.liveBigKeys,
+		beginSmallKeys:  db.liveSmallKeys,
+	}, nil
 }
 
 // View runs fn inside a read-only transaction. The read lock
@@ -650,15 +802,17 @@ func (db *FlexDB) View(fn func(ro *ReadOnlyTx) error) (err error) {
 	return fn(tx)
 }
 
-func (db *FlexDB) BeginUpdate() *WriteTx {
+func (db *FlexDB) BeginUpdate() (*WriteTx, error) {
 	db.topMutRW.Lock()
-	return &WriteTx{txBase: txBase{db: db}}
+	tx, err := db.beginWriteTxLocked(false)
+	if err != nil {
+		db.topMutRW.Unlock()
+		return nil, err
+	}
+	return tx, nil
 }
 func (wtx *WriteTx) Close() error {
-	err := wtx.commitWalTxn()
-	wtx.closeAll()
-	wtx.db.topMutRW.Unlock()
-	return err
+	return wtx.Rollback()
 }
 
 func (db *FlexDB) BeginView() *ReadOnlyTx {

@@ -2510,7 +2510,7 @@ func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string,
 
 	if db.mt.size >= memtableCap {
 		if beforeWrite != nil {
-			return 0, fmt.Errorf("flexdb: memtable full during write transaction; call tx.Sync() before adding more writes")
+			return 0, fmt.Errorf("flexdb: write transaction exceeds memtable capacity; split it into smaller transactions")
 		}
 		// Inline flush when memtable is full.
 		if err := db.mt.logFlush(); err != nil {
@@ -3040,6 +3040,9 @@ func (db *FlexDB) writeLockHeldDeleteRangeWithHook(beforeWrite func() error, inc
 	// including large values, reinitialize instead of iterating.
 	// When !includeLarge, large-value keys survive so we can't wipe.
 	if includeLarge && db.writeLockHeldCoversAllKeys(begKey, endKey, begInclusive, endInclusive) {
+		// Keep full-range DeleteRange fast even inside WriteTx. Like
+		// Clear(true), this is not rollbackable; WriteTx.Rollback can only
+		// discard later memtable writes in the same WriteTx.
 		err := db.writeLockHeldDeleteAll() // only place called
 		return 0, true, err
 	}
@@ -3107,6 +3110,9 @@ func (db *FlexDB) writeLockHeldClear(includeLarge bool) (allGone bool, err error
 
 func (db *FlexDB) writeLockHeldClearWithHook(beforeWrite func() error, includeLarge bool) (allGone bool, err error) {
 	if includeLarge {
+		// Keep Clear(true) fast even inside WriteTx. This rewrites database
+		// files immediately, so WriteTx.Rollback cannot restore the cleared
+		// data; it can only discard later memtable writes in the same WriteTx.
 		err := db.writeLockHeldDeleteAll()
 		return true, err
 	}
