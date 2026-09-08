@@ -51,10 +51,10 @@ func Benchmark_Iter_YogaDB_Ascend(b *testing.B) {
 	}
 	batch.Commit(false)
 	db.Sync()
+	insertElapsed := time.Since(t0)
 
 	slices.SortFunc(keys, bytes.Compare)
 
-	insertElapsed := time.Since(t0)
 	b.ReportMetric(float64(insertElapsed.Nanoseconds())/float64(len(keys)), "insert_ns/key")
 	vv("yogadb insert %v", insertElapsed)
 
