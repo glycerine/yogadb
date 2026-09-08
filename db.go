@@ -11,8 +11,10 @@ package yogadb
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"math/bits"
 	"os"
 	"path/filepath"
@@ -22,6 +24,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/glycerine/greenpack/msgp"
 	"github.com/glycerine/idem"
 	"github.com/glycerine/vfs"
 )
@@ -55,8 +58,9 @@ const (
 
 var sep = string(os.PathSeparator)
 
-// Batch submits a set of writes all together at once
-// for load efficiency and/or atomic change to the database.
+// Batch submits a set of writes all together at once for load efficiency.
+// It writes standalone MEMWAL_KV records; use Update for BEGIN/COMMIT grouped
+// crash recovery of multiple key writes.
 type Batch struct {
 	db   *FlexDB
 	puts []*KV
@@ -115,8 +119,8 @@ func (s *Batch) Delete(key string) {
 	})
 }
 
-// Commit flushes the batch atomically all the way to disk
-// but does not fsync unless set doFsync true.
+// Commit applies the batch as a grouped write path for load efficiency.
+// It does not fsync unless set doFsync true.
 //
 // After Commit the batch is empty and can be re-used immediately.
 //
@@ -256,7 +260,6 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 
 	mt.memWalMut.Lock()
 	defer mt.memWalMut.Unlock()
-	var encoded []byte
 
 	for idx := 0; idx < len(s.puts); idx++ {
 
@@ -289,11 +292,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		}
 		db.adjustKeyCounters(oldState, newState)
 
-		encoded = kv128Encode(encoded[:0], *s.puts[idx]) // here
-		if len(mt.memWalBuf)+len(encoded) >= memtableWalBufCap {
-			mt.logFlushLocked()
-		}
-		mt.memWalBuf = append(mt.memWalBuf, encoded...)
+		mt.logAppendKVLocked(*s.puts[idx])
 	}
 
 	mt.empty = false
@@ -2343,8 +2342,14 @@ func validateKV128RecordSize(kv KV) error {
 	if !kv.isTombstone() && !kv.HasVPtr() && len(kv.Value) > vlogInlineThreshold {
 		return fmt.Errorf("flexdb: inline value too large without VLOG (max %d bytes)", vlogInlineThreshold)
 	}
-	if size := kv128EncodedSize(kv); size >= memtableWalBufCap {
-		return fmt.Errorf("flexdb: KV too large for WAL record (size %d, max %d bytes)", size, memtableWalBufCap-1)
+	var g GreenMEMWAL_KV
+	g.fillFromKV(&kv)
+	encoded, err := g.SaveToSlice()
+	if err != nil {
+		return fmt.Errorf("flexdb: MEMWAL encode: %w", err)
+	}
+	if size := len(encoded); size >= memtableWalBufCap {
+		return fmt.Errorf("flexdb: KV too large for MEMWAL record (size %d, max %d bytes)", size, memtableWalBufCap-1)
 	}
 	if size := slottedPageComputeSize([]KV{kv}); size > slottedPageMaxSize {
 		return fmt.Errorf("flexdb: KV too large for slotted page (size %d, max %d bytes)", size, slottedPageMaxSize)
@@ -2385,6 +2390,10 @@ func (db *FlexDB) Put(key string, value []byte, vtyp uint64) (HLC, error) {
 }
 
 func (db *FlexDB) writeLockHeldPut(key string, value []byte, vtyp uint64, doDelete bool) (HLC, error) {
+	return db.writeLockHeldPutWithHook(nil, key, value, vtyp, doDelete)
+}
+
+func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string, value []byte, vtyp uint64, doDelete bool) (HLC, error) {
 
 	if doDelete && len(value) > 0 {
 		err := fmt.Errorf("flexdb: cannot supply a value and also delete it")
@@ -2441,6 +2450,9 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, vtyp uint64, doDele
 	}
 
 	if db.mt.size >= memtableCap {
+		if beforeWrite != nil {
+			return 0, fmt.Errorf("flexdb: memtable full during write transaction; call tx.Sync() before adding more writes")
+		}
 		// Inline flush when memtable is full.
 		db.mt.logFlush()
 		if err := db.flushMemtable(); err != nil {
@@ -2457,6 +2469,11 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, vtyp uint64, doDele
 		db.mt.size = 0
 		db.flushSeq++
 	}
+	if beforeWrite != nil {
+		if err := beforeWrite(); err != nil {
+			return 0, err
+		}
+	}
 	newState := kvToState(kv)
 	old, replaced := db.mt.put(kv)
 	db.mt.empty = false
@@ -2469,9 +2486,9 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, vtyp uint64, doDele
 	}
 	db.adjustKeyCounters(oldState, newState)
 
-	// WAL stores VPtr (not full value) for large values. Since LARGE.VLOG was
-	// fsynced above, the VPtr is safe to reference on crash recovery.
-	db.mt.logAppend(kv) // here, does kv128Encode
+	// WAL stores VPtr metadata for large values. Since LARGE.VLOG was fsynced
+	// above, the VPtr is safe to reference on crash recovery.
+	db.mt.logAppend(kv)
 
 	return hlcVal, nil
 }
@@ -2943,6 +2960,10 @@ func (db *FlexDB) DeleteRange(includeLarge bool, begKey, endKey string, begInclu
 // writeLockHeldDeleteRange is the lock-held body of DeleteRange.
 // Caller must hold topMutRW.Lock().
 func (db *FlexDB) writeLockHeldDeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
+	return db.writeLockHeldDeleteRangeWithHook(nil, includeLarge, begKey, endKey, begInclusive, endInclusive)
+}
+
+func (db *FlexDB) writeLockHeldDeleteRangeWithHook(beforeWrite func() error, includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
 	if begKey > endKey {
 		return 0, false, fmt.Errorf("yogadb: DeleteRange: begKey > endKey")
 	}
@@ -2981,7 +3002,7 @@ func (db *FlexDB) writeLockHeldDeleteRange(includeLarge bool, begKey, endKey str
 			return true
 		})
 		for _, key := range keys {
-			if _, err := db.writeLockHeldPut(key, nil, 0, true); err != nil {
+			if _, err := db.writeLockHeldPutWithHook(beforeWrite, key, nil, 0, true); err != nil {
 				return n, false, err
 			}
 			n++
@@ -2990,7 +3011,7 @@ func (db *FlexDB) writeLockHeldDeleteRange(includeLarge bool, begKey, endKey str
 
 	// Phase 2: Walk FlexSpace sparse index directly, decode intervals
 	// without cache, and tombstone every non-tombstone key in range.
-	n2, err := db.deleteRangeFlexSpace(begKey, endKey, begInclusive, endInclusive, includeLarge)
+	n2, err := db.deleteRangeFlexSpace(beforeWrite, begKey, endKey, begInclusive, endInclusive, includeLarge)
 	n += n2
 	return n, false, err
 }
@@ -3017,6 +3038,10 @@ func (db *FlexDB) Clear(includeLarge bool) (allGone bool, err error) {
 // writeLockHeldClear is the lock-held body of Clear.
 // Caller must hold topMutRW.Lock().
 func (db *FlexDB) writeLockHeldClear(includeLarge bool) (allGone bool, err error) {
+	return db.writeLockHeldClearWithHook(nil, includeLarge)
+}
+
+func (db *FlexDB) writeLockHeldClearWithHook(beforeWrite func() error, includeLarge bool) (allGone bool, err error) {
 	if includeLarge {
 		err := db.writeLockHeldDeleteAll()
 		return true, err
@@ -3034,14 +3059,14 @@ func (db *FlexDB) writeLockHeldClear(includeLarge bool) (allGone bool, err error
 			return true
 		})
 		for _, key := range keys {
-			if _, err := db.writeLockHeldPut(key, nil, 0, true); err != nil {
+			if _, err := db.writeLockHeldPutWithHook(beforeWrite, key, nil, 0, true); err != nil {
 				return false, err
 			}
 		}
 	}
 
 	// Phase 2: Walk FlexSpace and tombstone small-value keys.
-	_, err = db.deleteRangeFlexSpaceClearSmall()
+	_, err = db.deleteRangeFlexSpaceClearSmall(beforeWrite)
 	return false, err
 }
 
@@ -3248,7 +3273,7 @@ func deleteRangePastEnd(key, endKey string, endInclusive bool) bool {
 // processed key in the rebuilt sparse index tree.
 //
 // Caller must hold topMutRW.Lock().
-func (db *FlexDB) deleteRangeFlexSpace(begKey, endKey string, begInclusive, endInclusive, includeLarge bool) (int64, error) {
+func (db *FlexDB) deleteRangeFlexSpace(beforeWrite func() error, begKey, endKey string, begInclusive, endInclusive, includeLarge bool) (int64, error) {
 	var n int64
 	target := begKey
 	// On first seek, whether we include target depends on begInclusive.
@@ -3328,7 +3353,7 @@ func (db *FlexDB) deleteRangeFlexSpace(begKey, endKey string, begInclusive, endI
 
 				// Write tombstone. Track flushSeq to detect inline flush.
 				prevSeq := db.flushSeq
-				if _, err := db.writeLockHeldPut(kv.Key, nil, 0, true); err != nil {
+				if _, err := db.writeLockHeldPutWithHook(beforeWrite, kv.Key, nil, 0, true); err != nil {
 					return n, err
 				}
 				n++
@@ -3357,7 +3382,7 @@ func (db *FlexDB) deleteRangeFlexSpace(begKey, endKey string, begInclusive, endI
 // cover the entire keyspace.
 //
 // Caller must hold topMutRW.Lock().
-func (db *FlexDB) deleteRangeFlexSpaceClearSmall() (int64, error) {
+func (db *FlexDB) deleteRangeFlexSpaceClearSmall(beforeWrite func() error) (int64, error) {
 	var n int64
 	var target string
 	seekStrict := false
@@ -3436,7 +3461,7 @@ func (db *FlexDB) deleteRangeFlexSpaceClearSmall() (int64, error) {
 				}
 
 				prevSeq := db.flushSeq
-				if _, err := db.writeLockHeldPut(kv.Key, nil, 0, true); err != nil {
+				if _, err := db.writeLockHeldPutWithHook(beforeWrite, kv.Key, nil, 0, true); err != nil {
 					return n, err
 				}
 				n++
@@ -3549,6 +3574,10 @@ func (db *FlexDB) Merge(key string, fn func(oldVal []byte, exists bool, oldVtyp 
 // writeLockHeldMerge is the lock-held body of Merge.
 // Caller must hold topMutRW.Lock().
 func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists bool, oldVtyp uint64) (newVal []byte, write bool, doDelete bool, newVtyp uint64)) error {
+	return db.writeLockHeldMergeWithHook(nil, key, fn)
+}
+
+func (db *FlexDB) writeLockHeldMergeWithHook(beforeWrite func() error, key string, fn func(oldVal []byte, exists bool, oldVtyp uint64) (newVal []byte, write bool, doDelete bool, newVtyp uint64)) error {
 	if err := validateUserKey(key); err != nil {
 		return err
 	}
@@ -3597,11 +3626,11 @@ func (db *FlexDB) writeLockHeldMerge(key string, fn func(oldVal []byte, exists b
 	}
 
 	if doDelete {
-		_, err := db.writeLockHeldPut(key, nil, 0, true)
+		_, err := db.writeLockHeldPutWithHook(beforeWrite, key, nil, 0, true)
 		return err
 	}
 
-	_, err := db.writeLockHeldPut(key, newVal, newVtyp, false)
+	_, err := db.writeLockHeldPutWithHook(beforeWrite, key, newVal, newVtyp, false)
 	return err
 }
 
@@ -4229,9 +4258,12 @@ func flexdbReadKVFromHandler(fh FlexSpaceHandler, buf []byte, panicOnFailure boo
 	return KV{}, false
 }
 
-// logRedo replays the current 20-byte-header MEMWAL, applying kv128 records to
-// FlexSpace. A torn tail stops replay at the last complete, CRC-valid record.
-// Complete malformed records are reported as corruption.
+// logRedo replays the current 20-byte-header MEMWAL, applying typed
+// GreenMEMWAL records to FlexSpace. Standalone MEMWAL_KV records are treated as
+// already committed. KVs bracketed by MEMWAL_BEGIN_TXN/MEMWAL_COMMIT_TXN are
+// replayed as a group only if the commit record is present. A torn tail stops
+// replay at the last complete, CRC-valid record. Complete malformed records are
+// reported as corruption.
 func (db *FlexDB) logRedo(fd vfs.File, fileSize int64) error {
 	if fileSize == 0 {
 		return nil
@@ -4249,52 +4281,78 @@ func (db *FlexDB) logRedo(fd vfs.File, fileSize int64) error {
 		return fmt.Errorf("flexdb: logRedo: corrupt 20-byte WAL header in %s", fd.Name())
 	}
 
-	probe := make([]byte, vptrSize+binary.MaxVarintLen64)
 	var nh memSparseIndexTreeHandler
+	applyKV := func(kv KV) error {
+		if err := validateKV128RecordSize(kv); err != nil {
+			return fmt.Errorf("invalid MEMWAL KV key=%q: %w", kv.Key, err)
+		}
+		return db.putPassthrough(kv, &nh)
+	}
 
 	offset := int64(memWalHeaderSize)
+	reader := msgp.NewReader(io.NewSectionReader(fd, offset, fileSize-offset))
+	inTxn := false
+	var pending []KV
+
 	for offset < fileSize {
-		remaining := fileSize - offset
-		probeLen := len(probe)
-		if remaining < int64(probeLen) {
-			probeLen = int(remaining)
-		}
-		n, err := fd.ReadAt(probe[:probeLen], offset)
-		if n < probeLen || err != nil {
-			vv("flexdb: logRedo: truncated size prefix at offset %d (n=%d need=%d): %v", offset, n, probeLen, err)
-			break
-		}
-		size, ok := kv128SizePrefix(probe[:n])
-		if !ok || size <= 0 {
-			if remaining < int64(len(probe)) {
-				vv("flexdb: logRedo: torn kv128 size prefix at offset %d remaining=%d", offset, remaining)
+		g, n, err := LoadMEMWAL(reader)
+		if err != nil {
+			if greenMEMWALTornTail(err) {
+				vv("flexdb: logRedo: torn GreenMEMWAL tail at offset %d: %v", offset, err)
 				break
 			}
-			vv("flexdb: logRedo: invalid kv128 size prefix at offset %d", offset)
-			return fmt.Errorf("flexdb: logRedo: corrupt kv128 size prefix at offset %d", offset)
+			return fmt.Errorf("flexdb: logRedo: corrupt GreenMEMWAL record at offset %d: %w", offset, err)
 		}
-		if int64(size) > remaining {
-			vv("flexdb: logRedo: truncated kv128 record at offset %d (size=%d remaining=%d)", offset, size, remaining)
-			break
+		if n <= 0 {
+			return fmt.Errorf("flexdb: logRedo: corrupt zero-length GreenMEMWAL record at offset %d", offset)
 		}
-		rec := make([]byte, size)
-		n, err = fd.ReadAt(rec, offset)
-		if n != size || err != nil {
-			vv("flexdb: logRedo: truncated at offset %d (n=%d size=%d): %v", offset, n, size, err)
-			break
+		offset += int64(n)
+
+		switch g.WalRecordType {
+		case MEMWAL_KV:
+			var kv KV
+			g.toKV(&kv)
+			if inTxn {
+				pending = append(pending, kv)
+				continue
+			}
+			if err := applyKV(kv); err != nil {
+				vv("flexdb: logRedo: putPassthrough error at offset %d: %v", offset-int64(n), err)
+				return fmt.Errorf("flexdb: logRedo: replay at offset %d: %w", offset-int64(n), err)
+			}
+		case MEMWAL_BEGIN_TXN:
+			if inTxn {
+				return fmt.Errorf("flexdb: logRedo: nested MEMWAL_BEGIN_TXN at offset %d", offset-int64(n))
+			}
+			inTxn = true
+			pending = pending[:0]
+		case MEMWAL_COMMIT_TXN:
+			if !inTxn {
+				return fmt.Errorf("flexdb: logRedo: MEMWAL_COMMIT_TXN without MEMWAL_BEGIN_TXN at offset %d", offset-int64(n))
+			}
+			for i := range pending {
+				if err := applyKV(pending[i]); err != nil {
+					vv("flexdb: logRedo: putPassthrough error committing tx at offset %d: %v", offset-int64(n), err)
+					return fmt.Errorf("flexdb: logRedo: replay committed transaction ending at offset %d: %w", offset-int64(n), err)
+				}
+			}
+			pending = pending[:0]
+			inTxn = false
+		default:
+			return fmt.Errorf("flexdb: logRedo: unknown GreenMEMWAL record type %d at offset %d", g.WalRecordType, offset-int64(n))
 		}
-		kv, _, ok2 := kv128Decode(rec)
-		if !ok2 {
-			vv("flexdb: logRedo: kv128 decode failed at offset %d size=%d", offset, size)
-			return fmt.Errorf("flexdb: logRedo: corrupt kv128 record at offset %d size=%d", offset, size)
-		}
-		if err := db.putPassthrough(kv, &nh); err != nil {
-			vv("flexdb: logRedo: putPassthrough error at offset %d: %v", offset, err)
-			return fmt.Errorf("flexdb: logRedo: replay at offset %d: %w", offset, err)
-		}
-		offset += int64(size)
+	}
+	if inTxn {
+		vv("flexdb: logRedo: discarding incomplete GreenMEMWAL transaction with %d pending KVs", len(pending))
 	}
 	return nil
+}
+
+func greenMEMWALTornTail(err error) bool {
+	return errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, msgp.ErrShortBytes) ||
+		errors.Is(err, NotEnoughBytes)
 }
 
 // ====================== Flush worker ======================

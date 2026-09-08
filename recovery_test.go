@@ -292,8 +292,27 @@ func writeRawMemWALForRecoveryTest(t *testing.T, fs vfs.FS, dir string, payload 
 	}
 }
 
-func TestRecovery_LogRedoReplays20ByteKV128BatchCommit(t *testing.T) {
-	dir := "test_recovery_logredo_20byte_kv128_batch"
+func greenMEMWALPayloadForRecoveryTest(t *testing.T, records ...*GreenMEMWAL_KV) []byte {
+	t.Helper()
+	var payload []byte
+	for _, rec := range records {
+		b, err := rec.SaveToSlice()
+		if err != nil {
+			t.Fatalf("GreenMEMWAL_KV.SaveToSlice: %v", err)
+		}
+		payload = append(payload, b...)
+	}
+	return payload
+}
+
+func greenMEMWALKVForRecoveryTest(kv KV) *GreenMEMWAL_KV {
+	var g GreenMEMWAL_KV
+	g.fillFromKV(&kv)
+	return &g
+}
+
+func TestRecovery_LogRedoReplays20ByteGreenMEMWALBatchCommit(t *testing.T) {
+	dir := "test_recovery_logredo_20byte_greenmemwal_batch"
 	fs := vfs.NewCrashableMem()
 	panicOn(fs.MkdirAll(dir, 0755))
 
@@ -466,8 +485,8 @@ func TestRecovery_LogRedoAllowsTornTailButReportsCorruptCompleteRecord(t *testin
 
 		goodVal := []byte("value")
 		tornVal := []byte("ignored")
-		good := kv128Encode(nil, KV{Key: "good", Value: goodVal, Vptr: VPtr{Length: uint64(len(goodVal))}, Hlc: HLC(1)})
-		torn := kv128Encode(nil, KV{Key: "tail", Value: tornVal, Vptr: VPtr{Length: uint64(len(tornVal))}, Hlc: HLC(2)})
+		good := greenMEMWALPayloadForRecoveryTest(t, greenMEMWALKVForRecoveryTest(KV{Key: "good", Value: goodVal, Vptr: VPtr{Length: uint64(len(goodVal))}, Hlc: HLC(1)}))
+		torn := greenMEMWALPayloadForRecoveryTest(t, greenMEMWALKVForRecoveryTest(KV{Key: "tail", Value: tornVal, Vptr: VPtr{Length: uint64(len(tornVal))}, Hlc: HLC(2)}))
 		payload := append(append([]byte{}, good...), torn[:len(torn)-1]...)
 		writeRawMemWALForRecoveryTest(t, fs, dir, payload)
 
@@ -497,8 +516,8 @@ func TestRecovery_LogRedoAllowsTornTailButReportsCorruptCompleteRecord(t *testin
 		fs := vfs.NewMem()
 		panicOn(fs.MkdirAll(dir, 0755))
 
-		corrupt := kv128Encode(nil, KV{Key: "bad", Value: []byte("value"), Hlc: HLC(1)})
-		corrupt[len(corrupt)-1] ^= 0x80
+		corrupt := greenMEMWALPayloadForRecoveryTest(t, greenMEMWALKVForRecoveryTest(KV{Key: "bad", Value: []byte("value"), Vptr: VPtr{Length: uint64(len("value"))}, Hlc: HLC(1)}))
+		corrupt[len(corrupt)-8] ^= 0x80
 		writeRawMemWALForRecoveryTest(t, fs, dir, corrupt)
 
 		db, err := OpenFlexDB(dir, &Config{
@@ -513,6 +532,139 @@ func TestRecovery_LogRedoAllowsTornTailButReportsCorruptCompleteRecord(t *testin
 			t.Fatalf("OpenFlexDB error = %v, want corruption error", err)
 		}
 	})
+}
+
+func TestRecovery_LogRedoGreenMEMWALTransactionAtomicity(t *testing.T) {
+	t.Run("committed transaction replays all keys", func(t *testing.T) {
+		dir := "test_recovery_logredo_greenmemwal_committed_txn"
+		fs := vfs.NewMem()
+		panicOn(fs.MkdirAll(dir, 0755))
+
+		payload := greenMEMWALPayloadForRecoveryTest(t,
+			&GreenMEMWAL_KV{WalRecordType: MEMWAL_BEGIN_TXN},
+			greenMEMWALKVForRecoveryTest(KV{Key: "tx-a", Value: []byte("A"), Vptr: VPtr{Length: 1}, Hlc: HLC(1)}),
+			greenMEMWALKVForRecoveryTest(KV{Key: "tx-b", Value: []byte("B"), Vptr: VPtr{Length: 1}, Hlc: HLC(2)}),
+			&GreenMEMWAL_KV{WalRecordType: MEMWAL_COMMIT_TXN},
+		)
+		writeRawMemWALForRecoveryTest(t, fs, dir, payload)
+
+		db, err := OpenFlexDB(dir, &Config{
+			FS:                     fs,
+			DisableBackgroundFlush: true,
+		})
+		if err != nil {
+			t.Fatalf("OpenFlexDB with committed transaction: %v", err)
+		}
+		defer db.Close()
+
+		for _, tc := range []struct {
+			key  string
+			want string
+		}{
+			{"tx-a", "A"},
+			{"tx-b", "B"},
+		} {
+			got, found, _, _, err := db.Get(tc.key)
+			if err != nil {
+				t.Fatalf("Get %s: %v", tc.key, err)
+			}
+			if !found || string(got) != tc.want {
+				t.Fatalf("%s after committed transaction recovery: found=%v got=%q want=%q", tc.key, found, got, tc.want)
+			}
+		}
+	})
+
+	t.Run("incomplete transaction is discarded", func(t *testing.T) {
+		dir := "test_recovery_logredo_greenmemwal_incomplete_txn"
+		fs := vfs.NewMem()
+		panicOn(fs.MkdirAll(dir, 0755))
+
+		payload := greenMEMWALPayloadForRecoveryTest(t,
+			greenMEMWALKVForRecoveryTest(KV{Key: "standalone", Value: []byte("ok"), Vptr: VPtr{Length: 2}, Hlc: HLC(1)}),
+			&GreenMEMWAL_KV{WalRecordType: MEMWAL_BEGIN_TXN},
+			greenMEMWALKVForRecoveryTest(KV{Key: "tx-a", Value: []byte("A"), Vptr: VPtr{Length: 1}, Hlc: HLC(2)}),
+			greenMEMWALKVForRecoveryTest(KV{Key: "tx-b", Value: []byte("B"), Vptr: VPtr{Length: 1}, Hlc: HLC(3)}),
+		)
+		writeRawMemWALForRecoveryTest(t, fs, dir, payload)
+
+		db, err := OpenFlexDB(dir, &Config{
+			FS:                     fs,
+			DisableBackgroundFlush: true,
+		})
+		if err != nil {
+			t.Fatalf("OpenFlexDB with incomplete transaction: %v", err)
+		}
+		defer db.Close()
+
+		got, found, _, _, err := db.Get("standalone")
+		if err != nil {
+			t.Fatalf("Get standalone: %v", err)
+		}
+		if !found || string(got) != "ok" {
+			t.Fatalf("standalone after recovery: found=%v got=%q", found, got)
+		}
+		for _, key := range []string{"tx-a", "tx-b"} {
+			if _, found, _, _, err := db.Get(key); err != nil || found {
+				t.Fatalf("%s after incomplete transaction recovery: found=%v err=%v, want miss", key, found, err)
+			}
+		}
+	})
+}
+
+func TestRecovery_WriteTxUpdateUsesGreenMEMWALCommitMarkers(t *testing.T) {
+	dir := "test_recovery_writetx_greenmemwal_commit_markers"
+	fs := vfs.NewCrashableMem()
+	panicOn(fs.MkdirAll(dir, 0755))
+
+	db, err := OpenFlexDB(dir, &Config{
+		FS:                     fs,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB: %v", err)
+	}
+	defer db.Close()
+
+	err = db.Update(func(rwDB *WriteTx) error {
+		if _, err := rwDB.Put("tx-a", []byte("A"), 0); err != nil {
+			return err
+		}
+		if _, err := rwDB.Put("tx-b", []byte("B"), 0); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	db.mt.logSync()
+	crashedFS := fs.CrashClone(vfs.CrashCloneCfg{UnsyncedDataPercent: 0})
+
+	db2, err := OpenFlexDB(dir, &Config{
+		FS:                     crashedFS,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB after WAL-only crash clone: %v", err)
+	}
+	defer db2.Close()
+
+	for _, tc := range []struct {
+		key  string
+		want string
+	}{
+		{"tx-a", "A"},
+		{"tx-b", "B"},
+	} {
+		got, found, _, _, err := db2.Get(tc.key)
+		if err != nil {
+			t.Fatalf("Get %s: %v", tc.key, err)
+		}
+		if !found || string(got) != tc.want {
+			t.Fatalf("%s after WriteTx WAL recovery: found=%v got=%q want=%q", tc.key, found, got, tc.want)
+		}
+	}
 }
 
 func TestRecovery_BackgroundFlushPersistsDirtyCacheBeforeWALReset(t *testing.T) {

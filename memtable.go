@@ -65,9 +65,34 @@ func (m *memtable) get(key string) (KV, bool) {
 }
 
 func (m *memtable) logAppend(kv KV) {
-	encoded := kv128Encode(nil, kv)
 	m.memWalMut.Lock()
 	defer m.memWalMut.Unlock()
+	m.logAppendKVLocked(kv)
+}
+
+func (m *memtable) logAppendKVLocked(kv KV) {
+	var g GreenMEMWAL_KV
+	g.fillFromKV(&kv)
+	m.logAppendGreenLocked(&g)
+}
+
+func (m *memtable) logAppendWalRecordType(recordType int32) {
+	m.memWalMut.Lock()
+	defer m.memWalMut.Unlock()
+	m.logAppendWalRecordTypeLocked(recordType)
+}
+
+func (m *memtable) logAppendWalRecordTypeLocked(recordType int32) {
+	g := GreenMEMWAL_KV{WalRecordType: recordType}
+	m.logAppendGreenLocked(&g)
+}
+
+func (m *memtable) logAppendGreenLocked(g *GreenMEMWAL_KV) {
+	encoded, err := g.SaveToSlice()
+	panicOn(err)
+	if len(encoded) >= memtableWalBufCap {
+		panicf("memtable WAL record too large: size %d, max %d", len(encoded), memtableWalBufCap-1)
+	}
 	if len(m.memWalBuf)+len(encoded) >= memtableWalBufCap {
 		m.logFlushLocked()
 	}

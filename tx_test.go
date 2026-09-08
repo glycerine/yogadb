@@ -29,6 +29,39 @@ func TestTx_UpdateBasic(t *testing.T) {
 	mustGet(t, db, "k3", "v3")
 }
 
+func TestTx_GreenMEMWALLazyBeginAfterSync(t *testing.T) {
+	db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
+
+	err := db.Update(func(rwDB *WriteTx) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(db.mt.memWalBuf) != 0 {
+		t.Fatalf("empty Update left %d buffered MEMWAL bytes, want 0", len(db.mt.memWalBuf))
+	}
+	if got := db.mt.memWalSize(); got != memWalHeaderSize {
+		t.Fatalf("empty Update MEMWAL size = %d, want %d", got, memWalHeaderSize)
+	}
+
+	err = db.Update(func(rwDB *WriteTx) error {
+		if _, err := rwDB.Put("k", []byte("v"), 0); err != nil {
+			return err
+		}
+		return rwDB.Sync()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(db.mt.memWalBuf) != 0 {
+		t.Fatalf("Update after tx.Sync left %d buffered MEMWAL bytes, want 0", len(db.mt.memWalBuf))
+	}
+	if got := db.mt.memWalSize(); got != memWalHeaderSize {
+		t.Fatalf("Update after tx.Sync MEMWAL size = %d, want %d", got, memWalHeaderSize)
+	}
+}
+
 func TestTx_ViewBasic(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 	mustPut(t, db, "k1", "v1")

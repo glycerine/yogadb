@@ -31,15 +31,11 @@ type ReadOnlyDB interface {
 // your own writes" is often desired/expected/required.
 // WritableDB is implemented by WriteTx.
 //
-// This means that multiple Puts within a WriteTx transaction
-// are not atomic as a group. That is, there is no rollback of a transaction
-// if we encounter, for example, a disk failure part way through
-// a set of multiple writes. Hence these are not ACID transactions.
-// They are Isolated and internally-Consistent writes
-// (in-transaction reads see them immediately) that are Durable after
-// Sync() returns successfully. This is appropriate for the common
-// case where the client will simply try the same write again if
-// it was interrupted.
+// WriteTx writes are bracketed in FLEXDB.MEMWAL by lazy BEGIN/COMMIT records
+// for crash recovery: recovery replays all records in a committed group, and
+// discards a group whose COMMIT was not present. Writes are still applied
+// immediately in memory, so callback errors are not a rollback mechanism.
+// They are Durable only after Sync() returns successfully.
 //
 // To avoid indirect call overhead, this interface is
 // not actually used in the Update API.
@@ -220,9 +216,27 @@ func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact
 // a single writer at a time, and no concurrent readers, there
 // is no point in waiting to apply each action, and "reading
 // your own writes" is often desired/expected/required.
-type WriteTx struct{ txBase }
+type WriteTx struct {
+	txBase
+	walTxnBegun bool
+}
 
 var _ WritableDB = (*WriteTx)(nil)
+
+func (tx *WriteTx) ensureWalTxn() error {
+	if !tx.walTxnBegun {
+		tx.db.mt.logAppendWalRecordType(MEMWAL_BEGIN_TXN)
+		tx.walTxnBegun = true
+	}
+	return nil
+}
+
+func (tx *WriteTx) commitWalTxn() {
+	if tx.walTxnBegun {
+		tx.db.mt.logAppendWalRecordType(MEMWAL_COMMIT_TXN)
+		tx.walTxnBegun = false
+	}
+}
 
 // Get retrieves the value for key. Returns (nil, false, nil) if not found
 // or deleted. The returned []byte is a copy, safe to retain.
@@ -251,17 +265,18 @@ func (tx *WriteTx) GetKV(key string) (kv *KVcloser, err error) {
 // the rate of fsyncs and trade that against their durability
 // requirements.
 func (tx *WriteTx) Put(key string, value []byte, vtyp uint64) (HLC, error) {
-	return tx.db.writeLockHeldPut(key, value, vtyp, false)
+	return tx.db.writeLockHeldPutWithHook(tx.ensureWalTxn, key, value, vtyp, false)
 }
 
 // Delete removes key from the store.
 func (tx *WriteTx) Delete(key string) error {
-	_, err := tx.db.writeLockHeldPut(key, nil, 0, true)
+	_, err := tx.db.writeLockHeldPutWithHook(tx.ensureWalTxn, key, nil, 0, true)
 	return err
 }
 
 // Sync flushes all in-memory data to disk and fsyncs.
 func (tx *WriteTx) Sync() error {
+	tx.commitWalTxn()
 	return tx.db.writeLockHeldSync()
 }
 
@@ -317,7 +332,11 @@ func (tx *WriteTx) LenBigSmall() (big, small int64) {
 // If allGone is true, the entire database was reinitialized and all
 // previously obtained iterators and KV references are invalidated.
 func (tx *WriteTx) DeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
-	return tx.db.writeLockHeldDeleteRange(includeLarge, begKey, endKey, begInclusive, endInclusive)
+	n, allGone, err = tx.db.writeLockHeldDeleteRangeWithHook(tx.ensureWalTxn, includeLarge, begKey, endKey, begInclusive, endInclusive)
+	if allGone && err == nil {
+		tx.walTxnBegun = false
+	}
+	return
 }
 
 // Clear deletes all keys. When includeLarge is false, only inline-value
@@ -325,7 +344,11 @@ func (tx *WriteTx) DeleteRange(includeLarge bool, begKey, endKey string, begIncl
 // the database was reinitialized and all previously obtained iterators
 // and KV references are invalidated.
 func (tx *WriteTx) Clear(includeLarge bool) (allGone bool, err error) {
-	return tx.db.writeLockHeldClear(includeLarge)
+	allGone, err = tx.db.writeLockHeldClearWithHook(tx.ensureWalTxn, includeLarge)
+	if allGone && err == nil {
+		tx.walTxnBegun = false
+	}
+	return
 }
 
 // Merge performs an atomic read-modify-write on key. The callback
@@ -355,7 +378,7 @@ func (tx *WriteTx) Clear(includeLarge bool) (allGone bool, err error) {
 //
 // .
 func (tx *WriteTx) Merge(key string, callback func(oldVal []byte, exists bool, oldVtyp uint64) (newVal []byte, write bool, doDelete bool, newVtype uint64)) error {
-	return tx.db.writeLockHeldMerge(key, callback)
+	return tx.db.writeLockHeldMergeWithHook(tx.ensureWalTxn, key, callback)
 }
 
 // Ascend iterates keys >= pivot in ascending order until callback returns false.
@@ -580,8 +603,9 @@ func (roTx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, callback f
 // methods instead (to avoid deadlock).
 func (db *FlexDB) Update(fn func(rw *WriteTx) error) (err error) {
 	db.topMutRW.Lock()
-	tx := &WriteTx{txBase{db: db}}
+	tx := &WriteTx{txBase: txBase{db: db}}
 	defer func() {
+		tx.commitWalTxn()
 		tx.closeAll()
 		db.topMutRW.Unlock()
 	}()
@@ -610,9 +634,10 @@ func (db *FlexDB) View(fn func(ro *ReadOnlyTx) error) (err error) {
 
 func (db *FlexDB) BeginUpdate() *WriteTx {
 	db.topMutRW.Lock()
-	return &WriteTx{txBase{db: db}}
+	return &WriteTx{txBase: txBase{db: db}}
 }
 func (wtx *WriteTx) Close() {
+	wtx.commitWalTxn()
 	wtx.closeAll()
 	wtx.db.topMutRW.Unlock()
 }

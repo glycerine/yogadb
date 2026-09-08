@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
-	"io"
 
 	"github.com/glycerine/greenpack/msgp"
 )
@@ -15,13 +14,39 @@ import (
 // GreenMEMWAL_KV is a greenpack version of KV128 which allows typed BEGIN_TX
 // and COMMIT_TX records in the MEMWAL too.
 type GreenMEMWAL_KV struct {
-	WalRecordType int32   `zid:"0"`
-	VptrLength    uint64  `zid:"1"`
-	VptrOffset    uint64  `zid:"2"`
-	Hlc           int64   `zid:"3"`
-	Key           string  `zid:"4"`
-	InlineVal     []byte  `zid:"5"`
-	CRC32c        [4]byte `zid:"6"`
+	WalRecordType int32  `zid:"0"`
+	VptrLength    uint64 `zid:"1"`
+	VptrOffset    uint64 `zid:"2"`
+	Hlc           int64  `zid:"3"`
+	Key           string `zid:"4"`
+	InlineVal     []byte `zid:"5"`
+}
+
+const (
+	MEMWAL_KV         int32 = 0
+	MEMWAL_BEGIN_TXN  int32 = 1
+	MEMWAL_COMMIT_TXN int32 = 2
+)
+
+func (g *GreenMEMWAL_KV) fillFromKV(kv *KV) {
+	g.WalRecordType = MEMWAL_KV
+	g.VptrLength = kv.Vptr.Length
+	g.VptrOffset = kv.Vptr.Offset
+	g.Hlc = int64(kv.Hlc)
+	g.Key = kv.Key
+	if len(kv.Value) == 0 {
+		g.InlineVal = nil
+	} else {
+		g.InlineVal = append(g.InlineVal[:0], kv.Value...)
+	}
+}
+
+func (g *GreenMEMWAL_KV) toKV(kv *KV) {
+	kv.Key = g.Key
+	kv.Vptr.Length = g.VptrLength
+	kv.Vptr.Offset = g.VptrOffset
+	kv.Hlc = HLC(g.Hlc)
+	kv.Value = g.InlineVal // now owned by the kv.
 }
 
 func (a *GreenMEMWAL_KV) Equal(b *GreenMEMWAL_KV) bool {
@@ -41,9 +66,6 @@ func (a *GreenMEMWAL_KV) Equal(b *GreenMEMWAL_KV) bool {
 		return false
 	}
 	if 0 != bytes.Compare(a.InlineVal, b.InlineVal) {
-		return false
-	}
-	if 0 != bytes.Compare(a.CRC32c[:], b.CRC32c[:]) {
 		return false
 	}
 	return true
@@ -120,78 +142,54 @@ func unframeBinMsgpack(p []byte) (ntotal int, ninside int, nheader int, err erro
 		nheader = 5
 		ntotal = ninside + nheader
 	default:
-		fmt.Printf("p bytes = '%#v'\n", p[:5])
-		fmt.Printf("p bytes = '%#v'/as string='%v'\n", p, string(p))
 		err = NotBinarySlice
-		panic(err)
 	}
 	return
 }
 
 // read and de-serialize a GreenMEMWAL_KV struct from the byte stream r.
 func LoadMEMWAL(r *msgp.Reader) (g *GreenMEMWAL_KV, numread int, err error) {
-
-	// peek ahead first, so we can avoid
-	// moving the read point ahead if there
-	// are insufficient bytes
-
-	// try to get at least 5 bytes, but
-	// settle for 2 since that is possible.
-	var by []byte
-
-	var i int
-	for i = 5; i >= 2; i-- {
-		by, err = r.R.Peek(i)
-		if err == nil {
-			break
-		}
-		if err == io.EOF {
-			// try shorter
-			continue
-		}
-		return nil, 0, err
-	}
-	if err == io.EOF {
-		return nil, 0, err
-	}
+	var payload ByteSlice
+	err = payload.DecodeMsg(r)
 	if err != nil {
-		return nil, 0, fmt.Errorf("LoadMEMWAL() error trying to r.R.Peek() for bytes: '%s'/%T", err, err)
+		return nil, 0, fmt.Errorf("LoadMEMWAL() payload read error on ByteSlice.DecodeMsg(): %w", err)
 	}
-
-	ntotal, ninside, nheader, err := unframeBinMsgpack(by)
-
-	if err != nil {
-		return nil, 0, fmt.Errorf("LoadMEMWAL() error on UnframeBinMsgPack(): '%s'", err)
-	}
-
-	var tmp []byte
-	tmp, err = r.R.Peek(ntotal)
-	if err != nil {
-		return nil, 0, fmt.Errorf("LoadMEMWAL() error on Peek() call for ntotal(%v) bytes: '%s'/%T (only got, len(tmp)=%v; i = %v, ninside=%v, nheader=%v)", ntotal, err, err, len(tmp), i, ninside, nheader)
-	}
+	numread += msgpackBinFrameSize(len(payload))
 
 	g = &GreenMEMWAL_KV{}
-	//_, err = g.UnmarshalMsg(bs2)
-	_, err = g.UnmarshalMsg(tmp[nheader:])
+	_, err = g.UnmarshalMsg(payload)
 	if err != nil {
-		return nil, ntotal, fmt.Errorf("LoadMEMWAL() error on GreenMemWalKV.UnmarshalMsg(): '%s'; bs2='%#v'; string(bs2)='%v' (len: %v); partly decoded GreenMEMWAL_KV: '%#v'", err, tmp, string(tmp), len(tmp), g)
+		return nil, numread, fmt.Errorf("LoadMEMWAL() error on GreenMEMWAL_KV.UnmarshalMsg(): %w", err)
 	}
-	_, err = r.R.Skip(ntotal)
-	panicOn(err)
 
 	// read the crc32c checksum. should take up 10 bytes: 2 description + 8 payload.
 	var bs2 ByteSlice
 	err = bs2.DecodeMsg(r)
 	if err != nil {
-		return nil, ntotal, fmt.Errorf("LoadMEMWAL() crc32c read error on ByteSlice(by).DecodeMsg(): '%s'", err)
+		return nil, numread, fmt.Errorf("LoadMEMWAL() crc32c read error on ByteSlice.DecodeMsg(): %w", err)
+	}
+	numread += msgpackBinFrameSize(len(bs2))
+	if len(bs2) < 4 {
+		return nil, numread, fmt.Errorf("LoadMEMWAL() crc32c frame too short: got %d bytes, want at least 4", len(bs2))
 	}
 
-	got := crc32.Checksum(tmp[nheader:], crc32cTable)
+	got := crc32.Checksum(payload, crc32cTable)
 	want := binary.LittleEndian.Uint32(bs2[:4])
 	if got != want {
-		return nil, ntotal + 10, fmt.Errorf("crc32c checksum failed! got=%v; want=%v", got, want)
+		return nil, numread, fmt.Errorf("crc32c checksum failed! got=%v; want=%v", got, want)
 	}
-	return g, ntotal + 10, nil
+	return g, numread, nil
+}
+
+func msgpackBinFrameSize(n int) int {
+	switch {
+	case n <= 0xff:
+		return 2 + n
+	case n <= 0xffff:
+		return 3 + n
+	default:
+		return 5 + n
+	}
 }
 
 // save g to w.
@@ -216,7 +214,17 @@ func (tk *GreenMEMWAL_KV) SaveToSlice() ([]byte, error) {
 
 	b, err := tk.MarshalMsg(nil)
 	if err != nil {
-		return nil, fmt.Errorf("GreenMEMWAL_KV.SaveToSlice() error on MarshalMsg: '%s'", err)
+		return nil, fmt.Errorf("GreenMEMWAL_KV.SaveToSlice() error on MarshalMsg: %w", err)
 	}
-	return ByteSlice(b).MarshalMsg(nil)
+	var crcBuf [8]byte = [8]byte{'1', '2', '3', '4', '=', '=', '=', '\n'}
+	binary.LittleEndian.PutUint32(crcBuf[:4], crc32.Checksum(b, crc32cTable))
+	out, err := ByteSlice(b).MarshalMsg(nil)
+	if err != nil {
+		return nil, fmt.Errorf("GreenMEMWAL_KV.SaveToSlice() error framing payload: %w", err)
+	}
+	out, err = ByteSlice(crcBuf[:]).MarshalMsg(out)
+	if err != nil {
+		return nil, fmt.Errorf("GreenMEMWAL_KV.SaveToSlice() error framing crc32c: %w", err)
+	}
+	return out, nil
 }

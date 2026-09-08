@@ -1,6 +1,7 @@
 package yogadb
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"testing"
@@ -46,7 +47,6 @@ func makeTestGreenMEMWAL_KV(j int) (g *GreenMEMWAL_KV) {
 		Hlc:           int64(4 + j),
 		Key:           str + "_key",
 		InlineVal:     []byte(str + "_value"),
-		CRC32c:        [4]byte{byte(6 + j), byte(5 + j), byte(4 + j), byte(3 + j)},
 	}
 	return
 }
@@ -95,4 +95,28 @@ func Test222TestLoadSave_of_GreenMEMWAL_KV(t *testing.T) {
 		}
 	}
 	//vv("total bytes read: %v in %v records", tot, N)
+}
+
+func TestGreenMEMWAL_SaveToSliceRoundTrip(t *testing.T) {
+	const N = 10
+
+	var buf []byte
+	g := make([]*GreenMEMWAL_KV, N)
+	for i := range N {
+		g[i] = makeTestGreenMEMWAL_KV(i)
+		b, err := g[i].SaveToSlice()
+		panicOn(err)
+		buf = append(buf, b...)
+	}
+
+	r := msgp.NewReader(bytes.NewReader(buf))
+	for i := range N {
+		g2, _, err := LoadMEMWAL(r)
+		panicOn(err)
+		if !g2.Equal(g[i]) {
+			fmt.Printf("\n wrote to slice:       g[%v] = %#v\n", i, g[i])
+			fmt.Printf("\n from slice read back: g2 = %#v\n", g2)
+			panicf("not equal: g2 != g at i = %v", i)
+		}
+	}
 }
