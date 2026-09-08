@@ -811,9 +811,6 @@ func (db *FlexDB) BeginUpdate() (*WriteTx, error) {
 	}
 	return tx, nil
 }
-func (wtx *WriteTx) Close() error {
-	return wtx.Rollback()
-}
 
 func (db *FlexDB) BeginView() *ReadOnlyTx {
 	db.topMutRW.RLock()
