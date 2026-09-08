@@ -241,7 +241,7 @@ func TestFlexDB_AscendRange(t *testing.T) {
 	db.View(func(roDB *ReadOnlyTx) error {
 		// [bbb, ddd) - should include bbb, ccc but NOT ddd
 		var keys []string
-		roDB.AscendRange("bbb", "ddd", func(key string, value []byte) bool {
+		roDB.AscendRange("bbb", "ddd", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			keys = append(keys, key)
 			return true
 		})
@@ -249,7 +249,7 @@ func TestFlexDB_AscendRange(t *testing.T) {
 
 		// Unbounded start: ["", ccc)
 		keys = nil
-		roDB.AscendRange("", "ccc", func(key string, value []byte) bool {
+		roDB.AscendRange("", "ccc", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			keys = append(keys, key)
 			return true
 		})
@@ -257,7 +257,7 @@ func TestFlexDB_AscendRange(t *testing.T) {
 
 		// Unbounded end: [ccc, "")
 		keys = nil
-		roDB.AscendRange("ccc", "", func(key string, value []byte) bool {
+		roDB.AscendRange("ccc", "", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			keys = append(keys, key)
 			return true
 		})
@@ -265,7 +265,7 @@ func TestFlexDB_AscendRange(t *testing.T) {
 
 		// Both empty: all keys
 		keys = nil
-		roDB.AscendRange("", "", func(key string, value []byte) bool {
+		roDB.AscendRange("", "", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			keys = append(keys, key)
 			return true
 		})
@@ -282,7 +282,7 @@ func TestFlexDB_DescendRange(t *testing.T) {
 	db.View(func(roDB *ReadOnlyTx) error {
 		// (bbb, ddd] - should include ddd, ccc but NOT bbb
 		var keys []string
-		roDB.DescendRange("ddd", "bbb", func(key string, value []byte) bool {
+		roDB.DescendRange("ddd", "bbb", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			keys = append(keys, key)
 			return true
 		})
@@ -290,7 +290,7 @@ func TestFlexDB_DescendRange(t *testing.T) {
 
 		// Unbounded start (descend from end): (bbb, ""]
 		keys = nil
-		roDB.DescendRange("", "bbb", func(key string, value []byte) bool {
+		roDB.DescendRange("", "bbb", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			keys = append(keys, key)
 			return true
 		})
@@ -298,7 +298,7 @@ func TestFlexDB_DescendRange(t *testing.T) {
 
 		// Unbounded end (descend to beginning): ("", ddd]
 		keys = nil
-		roDB.DescendRange("ddd", "", func(key string, value []byte) bool {
+		roDB.DescendRange("ddd", "", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			keys = append(keys, key)
 			return true
 		})
@@ -306,7 +306,7 @@ func TestFlexDB_DescendRange(t *testing.T) {
 
 		// Both empty: all keys descending
 		keys = nil
-		roDB.DescendRange("", "", func(key string, value []byte) bool {
+		roDB.DescendRange("", "", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			keys = append(keys, key)
 			return true
 		})
@@ -322,7 +322,7 @@ func TestFlexDB_AscendRangeAfterSync(t *testing.T) {
 
 	db.View(func(roDB *ReadOnlyTx) error {
 		var keys []string
-		roDB.AscendRange("bbb", "eee", func(key string, value []byte) bool {
+		roDB.AscendRange("bbb", "eee", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			keys = append(keys, key)
 			return true
 		})
@@ -338,7 +338,7 @@ func TestFlexDB_DescendRangeAfterSync(t *testing.T) {
 
 	db.View(func(roDB *ReadOnlyTx) error {
 		var keys []string
-		roDB.DescendRange("ddd", "aaa", func(key string, value []byte) bool {
+		roDB.DescendRange("ddd", "aaa", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			keys = append(keys, key)
 			return true
 		})
@@ -354,7 +354,7 @@ func TestFlexDB_AscendValues(t *testing.T) {
 
 	db.View(func(roDB *ReadOnlyTx) error {
 		var pairs []string
-		roDB.Ascend("bbb", func(key string, value []byte) bool {
+		roDB.Ascend("bbb", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			pairs = append(pairs, key+"="+string(value))
 			return true
 		})
@@ -371,7 +371,7 @@ func TestFlexDB_DescendValues(t *testing.T) {
 
 	db.View(func(roDB *ReadOnlyTx) error {
 		var pairs []string
-		roDB.Descend("ddd", func(key string, value []byte) bool {
+		roDB.Descend("ddd", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			pairs = append(pairs, key+"="+string(value))
 			return true
 		})
@@ -448,7 +448,7 @@ func TestFlexDB_AscendManyKeys(t *testing.T) {
 	db.View(func(roDB *ReadOnlyTx) error {
 		// Ascend from key000100
 		var keys []string
-		roDB.Ascend("key000100", func(key string, value []byte) bool {
+		roDB.Ascend("key000100", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			keys = append(keys, key)
 			return true
 		})
@@ -457,7 +457,7 @@ func TestFlexDB_AscendManyKeys(t *testing.T) {
 
 		// Descend from key000050
 		var dkeys []string
-		roDB.Descend("key000050", func(key string, value []byte) bool {
+		roDB.Descend("key000050", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			dkeys = append(dkeys, string(key))
 			return true
 		})
@@ -469,7 +469,7 @@ func TestFlexDB_AscendManyKeys(t *testing.T) {
 
 		// AscendRange [key000010, key000015)
 		var rangeKeys []string
-		roDB.AscendRange("key000010", "key000015", func(key string, value []byte) bool {
+		roDB.AscendRange("key000010", "key000015", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			rangeKeys = append(rangeKeys, string(key))
 			return true
 		})
@@ -1253,7 +1253,7 @@ func TestFlexDB_IteratorDeleteOldTimestamps(t *testing.T) {
 	// Only new keys should remain
 	db.View(func(roDB *ReadOnlyTx) error {
 		var remaining []string
-		roDB.Ascend("", func(key string, value []byte) bool {
+		roDB.Ascend("", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			remaining = append(remaining, key)
 			return true
 		})

@@ -1073,7 +1073,7 @@ func populateDB(t *testing.T, db *FlexDB, doSync bool) {
 func collectAscend(db *FlexDB, pivot string) []string {
 	var keys []string
 	db.View(func(roDB *ReadOnlyTx) error {
-		roDB.Ascend(pivot, func(key string, value []byte) bool {
+		roDB.Ascend(pivot, func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			keys = append(keys, key)
 			return true
 		})
@@ -1086,7 +1086,7 @@ func collectAscend(db *FlexDB, pivot string) []string {
 func collectDescend(db *FlexDB, pivot string) []string {
 	var keys []string
 	db.View(func(roDB *ReadOnlyTx) error {
-		roDB.Descend(pivot, func(key string, value []byte) bool {
+		roDB.Descend(pivot, func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			keys = append(keys, key)
 			return true
 		})
@@ -1150,7 +1150,7 @@ func TestFlexDB_AscendEarlyStop(t *testing.T) {
 
 	var keys []string
 	db.View(func(roDB *ReadOnlyTx) error {
-		roDB.Ascend("", func(key string, value []byte) bool {
+		roDB.Ascend("", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			keys = append(keys, key)
 			return len(keys) < 3 // stop after 3
 		})
@@ -1242,7 +1242,7 @@ func TestFlexDB_DescendEarlyStop(t *testing.T) {
 
 	var keys []string
 	db.View(func(roDB *ReadOnlyTx) error {
-		roDB.Descend("", func(key string, value []byte) bool {
+		roDB.Descend("", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			keys = append(keys, key)
 			return len(keys) < 2
 		})

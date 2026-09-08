@@ -89,7 +89,7 @@ func TestLoadBloat_SpaceAmplification(t *testing.T) {
 	}
 	db.View(func(ro *ReadOnlyTx) error {
 		count := 0
-		ro.Ascend("", func(key string, value []byte) bool {
+		ro.Ascend("", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			count++
 			return true
 		})

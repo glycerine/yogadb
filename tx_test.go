@@ -334,7 +334,7 @@ func TestTx_UpdateAscendDescend(t *testing.T) {
 	err := db.Update(func(rwDB *WriteTx) error {
 		// Ascend from "b".
 		var asc []string
-		rwDB.Ascend("b", func(key string, value []byte) bool {
+		rwDB.Ascend("b", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			asc = append(asc, key)
 			return true
 		})
@@ -342,7 +342,7 @@ func TestTx_UpdateAscendDescend(t *testing.T) {
 
 		// Descend from "c".
 		var desc []string
-		rwDB.Descend("c", func(key string, value []byte) bool {
+		rwDB.Descend("c", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			desc = append(desc, key)
 			return true
 		})
@@ -350,7 +350,7 @@ func TestTx_UpdateAscendDescend(t *testing.T) {
 
 		// AscendRange [b, d).
 		var rng []string
-		rwDB.AscendRange("b", "d", func(key string, value []byte) bool {
+		rwDB.AscendRange("b", "d", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			rng = append(rng, key)
 			return true
 		})
@@ -358,7 +358,7 @@ func TestTx_UpdateAscendDescend(t *testing.T) {
 
 		// DescendRange [c, a).
 		var drng []string
-		rwDB.DescendRange("c", "a", func(key string, value []byte) bool {
+		rwDB.DescendRange("c", "a", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			drng = append(drng, key)
 			return true
 		})

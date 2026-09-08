@@ -15,10 +15,10 @@ type ReadOnlyDB interface {
 	FindIt(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error, it *Iter)
 	FetchLarge(kv *KV) (val []byte, vtyp uint64, err error)
 	NewIter() *Iter
-	Ascend(pivot string, iter func(key string, value []byte) bool)
-	Descend(pivot string, iter func(key string, value []byte) bool)
-	AscendRange(greaterOrEqual, lessThan string, iter func(key string, value []byte) bool)
-	DescendRange(lessOrEqual, greaterThan string, iter func(key string, value []byte) bool)
+	Ascend(pivot string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool)
+	Descend(pivot string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool)
+	AscendRange(greaterOrEqual, lessThan string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool)
+	DescendRange(lessOrEqual, greaterThan string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool)
 	Len() int64
 	LenBigSmall() (big, small int64)
 }
@@ -328,9 +328,10 @@ func (tx *WriteTx) Clear(includeLarge bool) (allGone bool, err error) {
 	return tx.db.writeLockHeldClear(includeLarge)
 }
 
-// Merge performs an atomic read-modify-write on key. fn is always
-// called: when the key exists, oldVal is its current value and
-// exists=true; when the key is absent or deleted, oldVal=nil and
+// Merge performs an atomic read-modify-write on key. The callback
+// function is always called: when the key exists,
+// oldVal is its current value and exists=true;
+// when the key is absent or deleted, oldVal=nil and
 // exists=false (allowing conditional creation). Return write=false
 // to skip the write, or doDelete=true to delete the key.
 //
@@ -353,27 +354,27 @@ func (tx *WriteTx) Clear(includeLarge bool) (allGone bool, err error) {
 //     value (though Get is simpler for that).
 //
 // .
-func (tx *WriteTx) Merge(key string, fn func(oldVal []byte, exists bool, oldVtyp uint64) (newVal []byte, write bool, doDelete bool, newVtype uint64)) error {
-	return tx.db.writeLockHeldMerge(key, fn)
+func (tx *WriteTx) Merge(key string, callback func(oldVal []byte, exists bool, oldVtyp uint64) (newVal []byte, write bool, doDelete bool, newVtype uint64)) error {
+	return tx.db.writeLockHeldMerge(key, callback)
 }
 
-// Ascend iterates keys >= pivot in ascending order until iter returns false.
+// Ascend iterates keys >= pivot in ascending order until callback returns false.
 // Use pivot="" to start from the first key.
-func (tx *WriteTx) Ascend(pivot string, iter func(key string, value []byte) bool) {
+func (tx *WriteTx) Ascend(pivot string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
 	it := tx.newIter()
 	defer it.Close()
 	it.Seek(pivot)
 	for it.Valid() {
-		if !iter(it.Key(), it.iterResolvedValue()) {
+		if !callback(it.Key(), it.iterResolvedValue(), it.Vtyp(), it.Hlc()) {
 			return
 		}
 		it.Next()
 	}
 }
 
-// Descend iterates keys <= pivot in descending order until iter returns false.
+// Descend iterates keys <= pivot in descending order until callback returns false.
 // Use pivot="" to start from the last key.
-func (tx *WriteTx) Descend(pivot string, iter func(key string, value []byte) bool) {
+func (tx *WriteTx) Descend(pivot string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
 	it := tx.newIter()
 	defer it.Close()
 	if pivot == "" {
@@ -382,7 +383,7 @@ func (tx *WriteTx) Descend(pivot string, iter func(key string, value []byte) boo
 		it.seekLE(pivot, false)
 	}
 	for it.Valid() {
-		if !iter(it.Key(), it.iterResolvedValue()) {
+		if !callback(it.Key(), it.iterResolvedValue(), it.Vtyp(), it.Hlc()) {
 			return
 		}
 		it.Prev()
@@ -391,7 +392,7 @@ func (tx *WriteTx) Descend(pivot string, iter func(key string, value []byte) boo
 
 // AscendRange iterates keys in [greaterOrEqual, lessThan) in ascending order.
 // Use "" for either bound to leave it open.
-func (tx *WriteTx) AscendRange(greaterOrEqual, lessThan string, iter func(key string, value []byte) bool) {
+func (tx *WriteTx) AscendRange(greaterOrEqual, lessThan string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
 	it := tx.newIter()
 	defer it.Close()
 	it.Seek(greaterOrEqual)
@@ -399,7 +400,7 @@ func (tx *WriteTx) AscendRange(greaterOrEqual, lessThan string, iter func(key st
 		if lessThan != "" && it.Key() >= lessThan {
 			return
 		}
-		if !iter(it.Key(), it.iterResolvedValue()) {
+		if !callback(it.Key(), it.iterResolvedValue(), it.Vtyp(), it.Hlc()) {
 			return
 		}
 		it.Next()
@@ -408,7 +409,7 @@ func (tx *WriteTx) AscendRange(greaterOrEqual, lessThan string, iter func(key st
 
 // DescendRange iterates keys in (greaterThan, lessOrEqual] in descending order.
 // Use "" for either bound to leave it open.
-func (tx *WriteTx) DescendRange(lessOrEqual, greaterThan string, iter func(key string, value []byte) bool) {
+func (tx *WriteTx) DescendRange(lessOrEqual, greaterThan string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
 	it := tx.newIter()
 	defer it.Close()
 	if lessOrEqual == "" {
@@ -420,7 +421,7 @@ func (tx *WriteTx) DescendRange(lessOrEqual, greaterThan string, iter func(key s
 		if greaterThan != "" && it.Key() <= greaterThan {
 			return
 		}
-		if !iter(it.Key(), it.iterResolvedValue()) {
+		if !callback(it.Key(), it.iterResolvedValue(), it.Vtyp(), it.Hlc()) {
 			return
 		}
 		it.Prev()
@@ -493,23 +494,23 @@ func (roTx *ReadOnlyTx) LenBigSmall() (big, small int64) {
 	return roTx.db.liveBigKeys, roTx.db.liveSmallKeys
 }
 
-// Ascend iterates keys >= pivot in ascending order until iter returns false.
+// Ascend iterates keys >= pivot in ascending order until callback returns false.
 // Use pivot="" to start from the first key.
-func (roTx *ReadOnlyTx) Ascend(pivot string, iter func(key string, value []byte) bool) {
+func (roTx *ReadOnlyTx) Ascend(pivot string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
 	it := roTx.newIter()
 	defer it.Close()
 	it.Seek(pivot)
 	for it.Valid() {
-		if !iter(it.Key(), it.iterResolvedValue()) {
+		if !callback(it.Key(), it.iterResolvedValue(), it.Vtyp(), it.Hlc()) {
 			return
 		}
 		it.Next()
 	}
 }
 
-// Descend iterates keys <= pivot in descending order until iter returns false.
+// Descend iterates keys <= pivot in descending order until callback returns false.
 // Use pivot="" to start from the last key.
-func (roTx *ReadOnlyTx) Descend(pivot string, iter func(key string, value []byte) bool) {
+func (roTx *ReadOnlyTx) Descend(pivot string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
 	it := roTx.newIter()
 	defer it.Close()
 	if pivot == "" {
@@ -518,7 +519,7 @@ func (roTx *ReadOnlyTx) Descend(pivot string, iter func(key string, value []byte
 		it.seekLE(pivot, false)
 	}
 	for it.Valid() {
-		if !iter(it.Key(), it.iterResolvedValue()) {
+		if !callback(it.Key(), it.iterResolvedValue(), it.Vtyp(), it.Hlc()) {
 			return
 		}
 		it.Prev()
@@ -527,7 +528,7 @@ func (roTx *ReadOnlyTx) Descend(pivot string, iter func(key string, value []byte
 
 // AscendRange iterates keys in [greaterOrEqual, lessThan) in ascending order.
 // Use "" for either bound to leave it open.
-func (roTx *ReadOnlyTx) AscendRange(greaterOrEqual, lessThan string, iter func(key string, value []byte) bool) {
+func (roTx *ReadOnlyTx) AscendRange(greaterOrEqual, lessThan string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
 	it := roTx.newIter()
 	defer it.Close()
 	it.Seek(greaterOrEqual)
@@ -535,7 +536,7 @@ func (roTx *ReadOnlyTx) AscendRange(greaterOrEqual, lessThan string, iter func(k
 		if lessThan != "" && it.Key() >= lessThan {
 			return
 		}
-		if !iter(it.Key(), it.iterResolvedValue()) {
+		if !callback(it.Key(), it.iterResolvedValue(), it.Vtyp(), it.Hlc()) {
 			return
 		}
 		it.Next()
@@ -544,7 +545,7 @@ func (roTx *ReadOnlyTx) AscendRange(greaterOrEqual, lessThan string, iter func(k
 
 // DescendRange iterates keys in (greaterThan, lessOrEqual] in descending order.
 // Use "" for either bound to leave it open.
-func (roTx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, iter func(key string, value []byte) bool) {
+func (roTx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
 	it := roTx.newIter()
 	defer it.Close()
 	if lessOrEqual == "" {
@@ -556,7 +557,7 @@ func (roTx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, iter func(
 		if greaterThan != "" && it.Key() <= greaterThan {
 			return
 		}
-		if !iter(it.Key(), it.iterResolvedValue()) {
+		if !callback(it.Key(), it.iterResolvedValue(), it.Vtyp(), it.Hlc()) {
 			return
 		}
 		it.Prev()
