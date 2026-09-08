@@ -601,6 +601,19 @@ func flexdbTagGenerate(isAnchor bool, unsorted uint8) uint16 {
 func flexdbTagIsAnchor(tag uint16) bool  { return tag&1 != 0 }
 func flexdbTagUnsorted(tag uint16) uint8 { return uint8((tag >> 1) & 0x7f) }
 
+func (db *FlexDB) updateAnchorPage(anchor *dbAnchor, anchorLoff uint64, buf []byte, oldPSize uint32) (int, error) {
+	if anchor == nil {
+		return -1, fmt.Errorf("flexdb: cannot update nil anchor at loff=%d", anchorLoff)
+	}
+	tag := flexdbTagGenerate(true, anchor.unsorted)
+	n, err := db.ff.updateR(buf, anchorLoff, uint64(len(buf)), uint64(oldPSize), tag)
+	if err != nil {
+		return -1, fmt.Errorf("flexdb: update anchor page key=%q loff=%d oldPSize=%d newPSize=%d tag=0x%04x: %w",
+			anchor.key, anchorLoff, oldPSize, len(buf), tag, err)
+	}
+	return n, nil
+}
+
 // ====================== CRC32C / fingerprint ======================
 
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
@@ -1581,7 +1594,8 @@ func (db *FlexDB) VacuumVLOG() (*VacuumVLOGStats, error) {
 			// caused bloat on subsequent loads.
 			buf := slottedPageEncode(updated)
 			newPSize := uint32(len(buf))
-			if _, err := db.ff.Update(buf, anchorLoff, uint64(newPSize), uint64(anchor.psize)); err != nil {
+			anchor.unsorted = 0
+			if _, err := db.updateAnchorPage(anchor, anchorLoff, buf, anchor.psize); err != nil {
 				partition.releaseEntry(fce)
 				newVL.close()
 				db.vfs.Remove(newPath)
@@ -1594,7 +1608,6 @@ func (db *FlexDB) VacuumVLOG() (*VacuumVLOGStats, error) {
 				nh.shiftUpPropagate(int64(newPSize) - int64(anchor.psize))
 				anchor.psize = newPSize
 			}
-			anchor.unsorted = 0
 			stats.EntriesCopied += intervalEntriesCopied
 			stats.IntervalsRewritten++
 			partition.releaseEntry(fce)
@@ -1690,7 +1703,9 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 	stats := &VacuumKVStats{}
 
 	// Flush memtable so all live data is in FlexSpace.
-	db.writeLockHeldSync()
+	if err := db.writeLockHeldSync(); err != nil {
+		return stats, fmt.Errorf("vacuumkv: sync before vacuum: %w", err)
+	}
 
 	// Exclusive access to FlexSpace and memtable by topMutRW.
 
@@ -1958,7 +1973,8 @@ func (e IntegrityError) Error() string {
 //  2. Extent validity: every non-hole extent has poff + len within file bounds
 //  3. Extent readability: data at every extent can be read from disk
 //  4. Block usage: recomputed from FlexTree matches the block manager's state
-//  5. Sparse index: every anchor interval is readable and kv128-decodable
+//  5. Sparse index: every anchor interval has a matching FlexTree tag
+//     and is readable and kv128-decodable
 //  6. Sorted keys: keys within each decoded interval are in sorted order
 //  7. Anchor coverage: anchor loff+psize spans tile the FlexSpace without gaps/overlaps
 //  8. VLOG blake3: for every KV with a VPtr, read the VLOG entry and verify
@@ -1969,12 +1985,15 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 
-	// Flush memtable so FlexSpace has all live data.
-	db.writeLockHeldSync()
-
 	var errs []IntegrityError
 	addErr := func(check, detail string, fatal bool) {
 		errs = append(errs, IntegrityError{Check: check, Detail: detail, Fatal: fatal})
+	}
+
+	// Flush memtable so FlexSpace has all live data.
+	if err := db.writeLockHeldSync(); err != nil {
+		addErr("sync_before_integrity", fmt.Sprintf("flush before integrity check failed: %v", err), true)
+		return errs
 	}
 
 	ff := db.ff
@@ -2166,6 +2185,13 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 
 			if psize == 0 {
 				continue // empty anchor (e.g., sentinel at start)
+			}
+
+			tag, tagErr := ff.GetTag(anchorLoff)
+			if tagErr != nil || !flexdbTagIsAnchor(tag) {
+				addErr("anchor_tag",
+					fmt.Sprintf("anchor %d (key=%q): loff=%d psize=%d missing FlexTree anchor tag: tag=0x%04x err=%v",
+						anchorCount, anchor.key, anchorLoff, psize, tag, tagErr), false)
 			}
 
 			// Verify the interval is within FlexSpace bounds
@@ -3740,14 +3766,9 @@ func (db *FlexDB) putPassthroughInitial(kv KV, nh *memSparseIndexTreeHandler, an
 	buf := slottedPageEncode(kvs)
 	psize := uint32(len(buf))
 
-	if _, err := db.ff.Insert(buf, anchorLoff, uint64(psize)); err != nil {
-		return fmt.Errorf("putPassthroughInitial insert anchor key=%q loff=%d psize=%d maxLoff=%d: %w",
-			anchor.key, anchorLoff, psize, db.ff.tree.MaxLoff, err)
-	}
-
 	tag := flexdbTagGenerate(true, 0)
-	if err := db.ff.SetTag(anchorLoff, tag); err != nil {
-		return fmt.Errorf("putPassthroughInitial set tag anchor key=%q loff=%d psize=%d maxLoff=%d: %w",
+	if _, err := db.ff.InsertWTag(buf, anchorLoff, uint64(psize), tag); err != nil {
+		return fmt.Errorf("putPassthroughInitial insert anchor key=%q loff=%d psize=%d maxLoff=%d: %w",
 			anchor.key, anchorLoff, psize, db.ff.tree.MaxLoff, err)
 	}
 
@@ -3791,7 +3812,8 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 				anchorLoff := uint64(anchor.loff + nh.shift)
 				//alwaysPrintf("putPassthroughR Update: oldPsize=%d newSize=%d key=%q",
 				//	anchor.psize, len(buf), kv.Key)
-				if _, err := db.ff.Update(buf, anchorLoff, uint64(len(buf)), uint64(anchor.psize)); err != nil {
+				anchor.unsorted = 0
+				if _, err := db.updateAnchorPage(anchor, anchorLoff, buf, anchor.psize); err != nil {
 					return fmt.Errorf("putPassthroughR update anchor key=%q loff=%d oldPSize=%d newPSize=%d maxLoff=%d: %w",
 						anchor.key, anchorLoff, anchor.psize, len(buf), db.ff.tree.MaxLoff, err)
 				}
@@ -3865,8 +3887,9 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 		leftBuf = slottedPageEncode(fce.kvs[:leftCount])
 	}
 	leftPSize := uint32(len(leftBuf))
+	anchor.unsorted = 0
 	if leftPSize != oldPSize {
-		if _, err := db.ff.Update(leftBuf, anchorLoff, uint64(leftPSize), uint64(oldPSize)); err != nil {
+		if _, err := db.updateAnchorPage(anchor, anchorLoff, leftBuf, oldPSize); err != nil {
 			return fmt.Errorf("treeInsertAnchor update left anchor key=%q loff=%d oldPSize=%d newPSize=%d maxLoff=%d: %w",
 				anchor.key, anchorLoff, oldPSize, leftPSize, db.ff.tree.MaxLoff, err)
 		}
@@ -3884,13 +3907,13 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 	rightPSize := uint32(len(rightBuf))
 	newAnchorLoff := anchorLoff + uint64(leftPSize)
 	newAnchorKey := fce.kvs[leftCount].Key
-	if _, err := db.ff.Insert(rightBuf, newAnchorLoff, uint64(rightPSize)); err != nil {
+	tag := flexdbTagGenerate(true, 0)
+	if _, err := db.ff.InsertWTag(rightBuf, newAnchorLoff, uint64(rightPSize), tag); err != nil {
 		return fmt.Errorf("treeInsertAnchor insert right anchor key=%q loff=%d psize=%d maxLoff=%d: %w",
 			newAnchorKey, newAnchorLoff, rightPSize, db.ff.tree.MaxLoff, err)
 	}
 
 	// Tag both anchors in FlexSpace before advancing sparse-index/cache state.
-	tag := flexdbTagGenerate(true, 0)
 	if err := db.ff.SetTag(anchorLoff, tag); err != nil {
 		return fmt.Errorf("treeInsertAnchor set left tag anchor key=%q loff=%d psize=%d maxLoff=%d: %w",
 			anchor.key, anchorLoff, leftPSize, db.ff.tree.MaxLoff, err)

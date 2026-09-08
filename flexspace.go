@@ -811,9 +811,10 @@ func (ff *FlexSpace) readR(buf []byte, loff, length uint64, frag *uint64) (int, 
 
 // ======================== Insert ========================
 
-// insertR writes len bytes at loff, shifting subsequent data.
+// insertWithTagR writes len bytes at loff, shifting subsequent data. If tag is
+// non-zero, it is applied to the first inserted extent.
 // If commit is true, syncs when the log buffer is full.
-func (ff *FlexSpace) insertR(buf []byte, loff, length uint64, commit bool) (int, error) {
+func (ff *FlexSpace) insertWithTagR(buf []byte, loff, length uint64, tag uint16, commit bool) (int, error) {
 	if loff > ff.tree.MaxLoff {
 		return -1, fmt.Errorf("flexspace: insert loff=%d > maxloff=%d (no holes)", loff, ff.tree.MaxLoff)
 	}
@@ -832,9 +833,19 @@ func (ff *FlexSpace) insertR(buf []byte, loff, length uint64, commit bool) (int,
 	for olen > 0 {
 		poff := ff.bm.offset()
 		tlen := ff.bm.write(b, olen, false)
-		ff.tree.Insert(oloff, poff, uint32(tlen))
+		extentTag := uint16(0)
+		if oloff == loff {
+			extentTag = tag
+		}
+		if r := ff.tree.InsertWTag(oloff, poff, uint32(tlen), extentTag); r != 0 {
+			return -1, fmt.Errorf("flexspace: insert loff=%d poff=%d len=%d tag=0x%04x failed",
+				oloff, poff, tlen, extentTag)
+		}
 		if !ff.omitRedoLog {
 			ff.logWrite(flexOpTreeInsert, oloff, poff, tlen)
+			if extentTag != 0 {
+				ff.logWrite(flexOpSetTag, oloff, uint64(extentTag), 0)
+			}
 		}
 		oloff += tlen
 		olen -= tlen
@@ -846,11 +857,25 @@ func (ff *FlexSpace) insertR(buf []byte, loff, length uint64, commit bool) (int,
 	return int(length), nil
 }
 
+// insertR writes len bytes at loff, shifting subsequent data.
+func (ff *FlexSpace) insertR(buf []byte, loff, length uint64, commit bool) (int, error) {
+	return ff.insertWithTagR(buf, loff, length, 0, commit)
+}
+
 // Insert inserts len bytes at loff, shifting all subsequent extents right.
 func (ff *FlexSpace) Insert(buf []byte, loff, length uint64) (int, error) {
 	atomic.AddInt64(&ff.insertCount, 1)
 	atomic.AddInt64(&ff.insertBytes, int64(length))
 	return ff.insertR(buf, loff, length, true)
+}
+
+// InsertWTag inserts len bytes at loff and applies tag to the first inserted
+// extent. A non-zero tag prevents the new logical boundary from being merged
+// into the previous extent.
+func (ff *FlexSpace) InsertWTag(buf []byte, loff, length uint64, tag uint16) (int, error) {
+	atomic.AddInt64(&ff.insertCount, 1)
+	atomic.AddInt64(&ff.insertBytes, int64(length))
+	return ff.insertWithTagR(buf, loff, length, tag, true)
 }
 
 // ======================== Collapse ========================
@@ -957,31 +982,31 @@ func (ff *FlexSpace) GetTag(loff uint64) (uint16, error) {
 
 // ======================== Update ========================
 
-// Update atomically replaces olen bytes at loff with len bytes from buf.
-// The tag (if any) is preserved.
-func (ff *FlexSpace) Update(buf []byte, loff, length, olen uint64) (int, error) {
+func (ff *FlexSpace) updateR(buf []byte, loff, length, olen uint64, tag uint16) (int, error) {
 	if loff+olen > ff.tree.MaxLoff {
 		return -1, fmt.Errorf("flexspace: update out of range")
 	}
 	atomic.AddInt64(&ff.updateCount, 1)
 	atomic.AddInt64(&ff.updateGarbageBytes, int64(olen))
-	// Preserve tag
-	tag, _ := ff.GetTag(loff)
 
 	if err := ff.collapseR(loff, olen, false); err != nil {
 		return -1, err
 	}
-	n, err := ff.insertR(buf, loff, length, false)
+	n, err := ff.insertWithTagR(buf, loff, length, tag, false)
 	if err != nil {
 		return -1, err
-	}
-	if tag != 0 {
-		_ = ff.setTagR(loff, tag, false)
 	}
 	if !ff.omitRedoLog && ff.logFull() {
 		ff.Sync()
 	}
 	return n, nil
+}
+
+// Update atomically replaces olen bytes at loff with len bytes from buf.
+// The tag (if any) is preserved.
+func (ff *FlexSpace) Update(buf []byte, loff, length, olen uint64) (int, error) {
+	tag, _ := ff.GetTag(loff)
+	return ff.updateR(buf, loff, length, olen, tag)
 }
 
 // ======================== Overwrite ========================

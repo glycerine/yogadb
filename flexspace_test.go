@@ -240,6 +240,44 @@ func TestFlexspace_Tags(t *testing.T) {
 	}
 }
 
+func TestFlexspace_UpdateRWithTagPreservesBoundaryAfterSequentialRewrite(t *testing.T) {
+	fs, dir := newTestFS(t)
+	ff := mustOpen(t, dir, fs)
+	defer ff.Close()
+
+	mustInsert(t, ff, "aaaaaaaaaa", 0)
+	if err := ff.SetTag(0, 0x1111); err != nil {
+		t.Fatalf("SetTag(0): %v", err)
+	}
+	mustInsert(t, ff, "bbbbbbbbbb", 10)
+	if err := ff.SetTag(10, 0x2222); err != nil {
+		t.Fatalf("SetTag(10): %v", err)
+	}
+
+	// Leave the two extent boundaries in place but remove their tags. Updating
+	// both extents in logical order then makes the second physical rewrite
+	// adjacent to the first, which used to allow an untagged insert to merge
+	// away the boundary needed by FlexDB anchors.
+	if err := ff.SetTag(0, 0); err != nil {
+		t.Fatalf("clear tag at 0: %v", err)
+	}
+	if err := ff.SetTag(10, 0); err != nil {
+		t.Fatalf("clear tag at 10: %v", err)
+	}
+	if _, err := ff.Update([]byte("AAAAAAAAAA"), 0, 10, 10); err != nil {
+		t.Fatalf("untagged Update(0): %v", err)
+	}
+	if _, err := ff.updateR([]byte("BBBBBBBBBB"), 10, 10, 10, 0xCAFE); err != nil {
+		t.Fatalf("tagged updateR(10): %v", err)
+	}
+
+	tag, err := ff.GetTag(10)
+	if err != nil || tag != 0xCAFE {
+		t.Fatalf("tagged rewrite lost anchor boundary: tag=0x%04x err=%v", tag, err)
+	}
+	checkContent(t, ff, "AAAAAAAAAABBBBBBBBBB")
+}
+
 // ======================== Handler API ========================
 
 func TestFlexspace_Handler(t *testing.T) {

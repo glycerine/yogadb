@@ -152,7 +152,8 @@ func (c *intervalCache) flushDirtyPages() error {
 				}
 				padBuf := slottedPageEncodePadded(fce.kvs[:fce.count], growTarget)
 				oldPsize := anchor.psize
-				_, err := c.db.ff.Update(padBuf, absLoff, uint64(len(padBuf)), uint64(oldPsize))
+				anchor.unsorted = 0
+				_, err := c.db.updateAnchorPage(anchor, absLoff, padBuf, oldPsize)
 				if err != nil {
 					return fmt.Errorf("flushDirtyPages update anchor key=%q loff=%d absLoff=%d psize=%d bufLen=%d maxLoff=%d: %w",
 						anchor.key, anchor.loff, absLoff, oldPsize, len(padBuf), c.db.ff.tree.MaxLoff, err)
@@ -276,7 +277,8 @@ func (p *intervalCachePartition) flushDirtyEntry(fce *intervalCacheEntry) error 
 		oldPsize := anchor.psize
 		//alwaysPrintf("flushDirtyEntry Update: oldPsize=%d newSize=%d key=%q",
 		//	oldPsize, len(padBuf), anchor.key)
-		_, err := p.db.ff.Update(padBuf, absLoff, uint64(len(padBuf)), uint64(oldPsize))
+		anchor.unsorted = 0
+		_, err := p.db.updateAnchorPage(anchor, absLoff, padBuf, oldPsize)
 		if err != nil {
 			return fmt.Errorf("flushDirtyEntry update anchor key=%q loff=%d absLoff=%d psize=%d bufLen=%d maxLoff=%d: %w",
 				anchor.key, anchor.loff, absLoff, oldPsize, len(padBuf), p.db.ff.tree.MaxLoff, err)

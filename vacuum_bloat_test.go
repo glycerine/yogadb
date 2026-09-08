@@ -41,6 +41,85 @@ func loadVacuumBloatKeys(t *testing.T) []string {
 	return keys
 }
 
+func forceTinyIntervalCache(db *FlexDB) {
+	db.cache.cap = 1
+	for i := range db.cache.partitions {
+		db.cache.partitions[i].cap = 1
+	}
+}
+
+func TestVacuumKVOverwriteTinyCachePreservesAnchorTags(t *testing.T) {
+	fs, dir := newTestFS(t)
+	cfg := &Config{
+		FS:                     fs,
+		OmitMemWalFsync:        true,
+		DisableBackgroundFlush: true,
+	}
+	keys := loadVacuumBloatKeys(t)
+	t.Logf("loaded %d keys from assets/", len(keys))
+
+	db, err := OpenFlexDB(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forceTinyIntervalCache(db)
+
+	batch := db.NewBatch()
+	for i, k := range keys {
+		if err := batch.Set(k, []byte(k), 0); err != nil {
+			t.Fatal(err)
+		}
+		if (i+1)%1000 == 0 {
+			if _, err := batch.Commit(false); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := batch.Commit(false); err != nil {
+		t.Fatal(err)
+	}
+	batch.Close()
+	if err := db.Sync(); err != nil {
+		t.Fatalf("initial Sync: %v", err)
+	}
+	db.Close()
+
+	db, err = OpenFlexDB(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forceTinyIntervalCache(db)
+	if _, err := db.VacuumVLOG(); err != nil {
+		t.Fatalf("VacuumVLOG: %v", err)
+	}
+	mustCheckIntegrity(t, db)
+	if _, err := db.VacuumKV(); err != nil {
+		t.Fatalf("VacuumKV: %v", err)
+	}
+	mustCheckIntegrity(t, db)
+
+	batch = db.NewBatch()
+	for i, k := range keys {
+		if err := batch.Set(k, []byte(k), 0); err != nil {
+			t.Fatalf("rewrite Set(%q): %v", k, err)
+		}
+		if (i+1)%1000 == 0 {
+			if _, err := batch.Commit(false); err != nil {
+				t.Fatalf("rewrite Commit: %v", err)
+			}
+		}
+	}
+	if _, err := batch.Commit(false); err != nil {
+		t.Fatalf("final rewrite Commit: %v", err)
+	}
+	batch.Close()
+	if err := db.Sync(); err != nil {
+		t.Fatalf("rewrite Sync: %v", err)
+	}
+	mustCheckIntegrity(t, db)
+	db.Close()
+}
+
 // TestVacuumThenOverwrite_DiskSizeBounded reproduces a space amplification
 // regression: after VacuumVLOG + VacuumKV, reloading the same keys causes
 // KV.SLOT_BLOCKS to grow by ~4 MB per load instead of staying constant.
