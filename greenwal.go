@@ -1,6 +1,7 @@
 package yogadb
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -22,10 +23,36 @@ type GreenMEMWAL_KV struct {
 	CRC32c        [4]byte `zid:"6"`
 }
 
+func (a *GreenMEMWAL_KV) Equal(b *GreenMEMWAL_KV) bool {
+	if a.WalRecordType != b.WalRecordType {
+		return false
+	}
+	if a.VptrLength != b.VptrLength {
+		return false
+	}
+	if a.VptrOffset != b.VptrOffset {
+		return false
+	}
+	if a.Hlc != b.Hlc {
+		return false
+	}
+	if a.Key != b.Key {
+		return false
+	}
+	if 0 != bytes.Compare(a.InlineVal, b.InlineVal) {
+		return false
+	}
+	if 0 != bytes.Compare(a.CRC32c[:], b.CRC32c[:]) {
+		return false
+	}
+	return true
+}
+
 // A simple wrapper header on all msgpack messages; has the length and the bytes.
 // Allows us length delimited messages; with length knowledge up front.
 type ByteSlice []byte
 
+// the msgpack codes for binary slices of various sizes. Up to 32 bit integer len.
 const (
 	bin8  uint8 = 0xc4
 	bin16 uint8 = 0xc5
@@ -42,14 +69,17 @@ const (
 func (e UnframeError) Error() string {
 	switch e {
 	case NotEnoughBytes:
-		return "UnframeBinMsgpack() error: NotEnoughBytes"
+		return "unframeBinMsgpack() error: NotEnoughBytes"
 	case NotBinarySlice:
-		return "UnframeBinMsgpack() error: NotBinarySlice: could not find 0xC4, 0xC5, 0xC6 in start of binary msgpack"
+		return "unframeBinMsgpack() error: NotBinarySlice: could not find 0xC4, 0xC5, 0xC6 in start of binary msgpack"
 	default:
 		return "UnknownUnframeError"
 	}
 }
 
+// unframeBinMsgpack() works on just the minimal 2-5 bytes peek ahead
+// needed to see how much to read next.
+//
 // ninside returns the number of bytes inside/that follow the 2-5 byte
 // binary msgpack header. The header frames the internal msgpack serialized
 // object. ntotal returns the total number of bytes including the
@@ -57,10 +87,7 @@ func (e UnframeError) Error() string {
 // itself, and so is 2-5 bytes extra, not counting the internal byte
 // slice that makes up the internal msgp object. So there are two
 // msgpack decoding steps to get a golang object back.
-//
-// UnframeBinMsgpack() works on just the minimal 2-5 bytes peek ahead
-// needed to see how much to read next.
-func UnframeBinMsgpack(p []byte) (ntotal int, ninside int, nheader int, err error) {
+func unframeBinMsgpack(p []byte) (ntotal int, ninside int, nheader int, err error) {
 
 	if len(p) == 0 {
 		err = NotEnoughBytes
@@ -100,7 +127,7 @@ func UnframeBinMsgpack(p []byte) (ntotal int, ninside int, nheader int, err erro
 	return
 }
 
-// read and de-serialize a GreenMemWalKV struct from the byte stream r.
+// read and de-serialize a GreenMEMWAL_KV struct from the byte stream r.
 func LoadMEMWAL(r *msgp.Reader) (g *GreenMEMWAL_KV, numread int, err error) {
 
 	// peek ahead first, so we can avoid
@@ -130,7 +157,7 @@ func LoadMEMWAL(r *msgp.Reader) (g *GreenMEMWAL_KV, numread int, err error) {
 		return nil, 0, fmt.Errorf("LoadMEMWAL() error trying to r.R.Peek() for bytes: '%s'/%T", err, err)
 	}
 
-	ntotal, ninside, nheader, err := UnframeBinMsgpack(by)
+	ntotal, ninside, nheader, err := unframeBinMsgpack(by)
 
 	if err != nil {
 		return nil, 0, fmt.Errorf("LoadMEMWAL() error on UnframeBinMsgPack(): '%s'", err)
