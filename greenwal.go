@@ -169,22 +169,24 @@ func LoadMEMWAL(r *msgp.Reader) (g *GreenMEMWAL_KV, numread int, err error) {
 		return nil, 0, fmt.Errorf("LoadMEMWAL() error on Peek() call for ntotal(%v) bytes: '%s'/%T (only got, len(tmp)=%v; i = %v, ninside=%v, nheader=%v)", ntotal, err, err, len(tmp), i, ninside, nheader)
 	}
 
-	var bs2 ByteSlice
-	err = bs2.DecodeMsg(r)
-	if err != nil {
-		return nil, 0, fmt.Errorf("LoadMEMWAL() error on ByteSlice(by).DecodeMsg(): '%s'", err)
-	}
+	//var bs2 ByteSlice
+	//err = bs2.DecodeMsg(r)
+	//if err != nil {
+	//	return nil, 0, fmt.Errorf("LoadMEMWAL() error on ByteSlice(by).DecodeMsg(): '%s'", err)
+	//}
 
 	// this never fired, so can be assumed to be an INVARIANT. Leave it commented out for speed.
-	if len(bs2) != ninside {
-		panic(fmt.Sprintf("expected len(bs2)=%v to equal ninside=%v, because we assume DecodeMsg is using the whole frame...?", len(bs2), ninside))
-	}
+	//if len(bs2) != ninside {
+	//	panic(fmt.Sprintf("expected len(bs2)=%v to equal ninside=%v, because we assume DecodeMsg is using the whole frame...?", len(bs2), ninside))
+	//}
 
 	g = &GreenMEMWAL_KV{}
-	_, err = g.UnmarshalMsg(bs2)
+	//_, err = g.UnmarshalMsg(bs2)
+	_, err = g.UnmarshalMsg(tmp[nheader:])
 	if err != nil {
-		return nil, ntotal, fmt.Errorf("LoadMEMWAL() error on GreenMemWalKV.UnmarshalMsg(): '%s'; bs2='%#v'; string(bs2)='%v' (len: %v); partly decoded GreenMEMWAL_KV: '%#v'", err, bs2, string(bs2), len(bs2), g)
+		return nil, ntotal, fmt.Errorf("LoadMEMWAL() error on GreenMemWalKV.UnmarshalMsg(): '%s'; bs2='%#v'; string(bs2)='%v' (len: %v); partly decoded GreenMEMWAL_KV: '%#v'", err, tmp, string(tmp), len(tmp), g)
 	}
+	r.R.Skip(ntotal)
 	return g, ntotal, nil
 }
 
