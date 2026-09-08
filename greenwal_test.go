@@ -57,7 +57,7 @@ func Test222TestLoadSave_of_GreenMEMWAL_KV(t *testing.T) {
 	fn := "test.greenwal_kv.222.msgp"
 	f, err := os.Create(fn)
 	panicOn(err)
-	//defer os.Remove(fn)
+	defer os.Remove(fn)
 	w := msgp.NewWriter(f)
 
 	g := make([]*GreenMEMWAL_KV, N)
@@ -83,6 +83,9 @@ func Test222TestLoadSave_of_GreenMEMWAL_KV(t *testing.T) {
 		panicOn(err)
 		_ = nr
 		//vv("nr = %v", nr)
+
+		//fmt.Printf("\n wrote to disk:        g[%v] = %#v\n", i, g[i])
+		//fmt.Printf("\n from disk read back: g2[%v] = %#v\n", i, g2[i])
 
 		if !g2[i].Equal(g[i]) {
 			fmt.Printf("\n wrote to disk:        g[%v] = %#v\n", i, g[i])
