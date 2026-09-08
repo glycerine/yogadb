@@ -111,7 +111,7 @@ func (s *Batch) Delete(key string) {
 	}
 	s.puts = append(s.puts, &KV{
 		Key:  key,
-		Vptr: VPtr{Length: tombstoneVPtrLength},
+		Vptr: VPtr{Length: rawVlenTombstone},
 	})
 }
 
@@ -331,7 +331,7 @@ func (s *Batch) Close() {
 
 // ====================== KV type ======================
 
-// KV is a key-value pair. Tombstones are marked by Vptr.Length == tombstoneVPtrLength.
+// KV is a key-value pair. Tombstones are marked by Vptr.Length == rawVlenTombstone.
 // A zero-length Value with Vptr.Length == 0 is a live key with no value bytes.
 // Nil and empty value slices are intentionally equivalent; only Delete writes
 // the tombstone sentinel.
@@ -363,7 +363,7 @@ type KV struct {
 	// When Vptr.Length <= vlogInlineThreshold(64), then the .Value field holds the inline
 	// value, and Vptr.Offset holds the Vtyp, and Vptr.Length == len(KV.Value).
 	//
-	// When vlogInlineThreshold(64) < Vptr.Length < tombstoneVPtrLength(^0; a.k.a. rawVlenTombstone),
+	// When vlogInlineThreshold(64) < Vptr.Length < rawVlenTombstone(^0),
 	// then KV.Value holds the 8 bytes of the uint64 Vtyp (value type).
 	//
 	// The important new rule is that you must key off the Vptr.Length before you know
@@ -372,8 +372,8 @@ type KV struct {
 
 	// Vptr.Length <= vlogInlineThreshold(64) means inline Value. In this case,
 	//                  Vptr.Offset is re-purposed used for Vtyp (value type uint64 information)
-	// Vptr.Length >  vlogInlineThreshold(64) and < tombstoneVPtrLength: means real VLOG pointer.
-	// Vptr.Length == tombstoneVPtrLength(^0, all bits set uint64) means tombstone.
+	// Vptr.Length >  vlogInlineThreshold(64) and < rawVlenTombstone: means real VLOG pointer.
+	// Vptr.Length == rawVlenTombstone(^0, all bits set uint64) means tombstone.
 	Vptr VPtr
 
 	Hlc HLC // hybrid logical clock timestamp. LSN like per mini batch, but has big gaps.
@@ -428,9 +428,9 @@ func kvLess(a, b KV) bool { return a.Key < b.Key }
 func kvSizeApprox(kv *KV) int { return 24 + len(kv.Key) + len(kv.Value) }
 
 // isTombstone returns true if this KV is a deletion marker.
-// A tombstone is marked by the sentinel VPtr.Length == tombstoneVPtrLength.
+// A tombstone is marked by the sentinel VPtr.Length == rawVlenTombstone.
 func (kv *KV) isTombstone() bool {
-	return kv.Vptr.Length == rawVlenTombstone // or tombstoneVPtrLength
+	return kv.Vptr.Length == rawVlenTombstone
 }
 
 // Large returns true if this KV's value is stored in the VLOG
@@ -451,14 +451,13 @@ func (kv *KV) Large() bool {
 //         CRC32c
 // Standard LEB128 (same as Go's encoding/binary.PutUvarint).
 //
-// The high sentinels rawVlenTombstone is unlikely to collide with
+// The high sentinel rawVlenTombstone is unlikely to collide with
 // a real value since that would require a value of length of about 2^64 - 1.
 
 // rawVlenTombstone is the sentinel value stored in VPtr.Length
-// to mark a KV as a tombstone.
-const rawVlenTombstone = ^uint64(0) // 0xFFFF FFFF FFFF FFFF - sentinel for tombstone
-
-const tombstoneVPtrLength uint64 = rawVlenTombstone
+// to mark a KV as a tombstone. The value is
+// 0xFFFF FFFF FFFF FFFF - sentinel for tombstone
+const rawVlenTombstone uint64 = ^uint64(0)
 
 func kv128Encode(buf []byte, kv KV) []byte {
 
@@ -2416,7 +2415,7 @@ func (db *FlexDB) writeLockHeldPut(key string, value []byte, vtyp uint64, doDele
 	kv.Vptr.Length = uint64(len(value))
 
 	if doDelete {
-		kv.Vptr.Length = tombstoneVPtrLength
+		kv.Vptr.Length = rawVlenTombstone
 	}
 
 	if db.vlog != nil && value != nil && len(value) > vlogInlineThreshold {

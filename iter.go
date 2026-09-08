@@ -1392,8 +1392,8 @@ func (it *Iter) Next() {
 			// because it contains loops) on every Next().
 			span := &it.pfSpans[it.pfSpanIdx]
 			if pos := span.pos; pos < span.end {
-				pkv := &span.kvs[pos]                       // one cache-line access (64B KV)
-				if pkv.Vptr.Length != tombstoneVPtrLength { // not tombstone
+				pkv := &span.kvs[pos]                    // one cache-line access (64B KV)
+				if pkv.Vptr.Length != rawVlenTombstone { // not tombstone
 					span.pos = pos + 1
 					it.pKV = pkv
 					it.valueNeedsCopy = true
@@ -1429,7 +1429,7 @@ func (it *Iter) Next() {
 				it.fc.kvIdx = idx + n
 				// Serve the first entry from the new span.
 				pkv := &it.pfSpans[0].kvs[idx]
-				if pkv.Vptr.Length != tombstoneVPtrLength {
+				if pkv.Vptr.Length != rawVlenTombstone {
 					it.pfSpans[0].pos = idx + 1
 					it.pKV = pkv
 					it.valueNeedsCopy = true
@@ -1480,7 +1480,7 @@ func (it *Iter) Next() {
 				it.snapshotHLC = currentHLC
 				// Serve first entry inline.
 				pkv := &it.pfSpans[0].kvs[idx]
-				if pkv.Vptr.Length != tombstoneVPtrLength {
+				if pkv.Vptr.Length != rawVlenTombstone {
 					it.pfSpans[0].pos = idx + 1
 					it.pKV = pkv
 					it.valueNeedsCopy = true
@@ -1557,7 +1557,7 @@ func (it *Iter) Prev() {
 			if pos := span.pos; pos > span.end {
 				pkv := &span.kvs[pos]
 				span.pos = pos - 1
-				if pkv.Vptr.Length != tombstoneVPtrLength {
+				if pkv.Vptr.Length != rawVlenTombstone {
 					it.pKV = pkv
 					it.valueNeedsCopy = true
 					it.valueResolved = false

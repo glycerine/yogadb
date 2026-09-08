@@ -57,7 +57,7 @@ func TestSlottedPage_RoundTrip_Basic(t *testing.T) {
 func TestSlottedPage_RoundTrip_Tombstone(t *testing.T) {
 	kvs := []KV{
 		{Key: "alive", Value: []byte("val"), Hlc: 1},
-		{Key: "dead", Vptr: VPtr{Length: tombstoneVPtrLength}, Hlc: 2}, // tombstone
+		{Key: "dead", Vptr: VPtr{Length: rawVlenTombstone}, Hlc: 2}, // tombstone
 		{Key: "zombie", Value: []byte("z"), Hlc: 3},
 	}
 
@@ -368,7 +368,7 @@ func TestSlottedPage_Dump(t *testing.T) {
 	kvs := []KV{
 		{Key: "alpha", Value: []byte("value-alpha"), Hlc: 1000},
 		{Key: "bravo", Value: []byte("value-bravo"), Hlc: 1002},
-		{Key: "charlie", Vptr: VPtr{Length: tombstoneVPtrLength}, Hlc: 1005}, // tombstone
+		{Key: "charlie", Vptr: VPtr{Length: rawVlenTombstone}, Hlc: 1005}, // tombstone
 	}
 
 	encoded := slottedPageEncode(kvs)
@@ -506,7 +506,7 @@ func TestSlottedPage_DumpWithVLog(t *testing.T) {
 	kvs := []KV{
 		{Key: "alpha", Value: []byte("inline-val"), Hlc: 100},
 		{Key: "bravo", Vptr: vp1, Hlc: 150},
-		{Key: "charlie", Vptr: VPtr{Length: tombstoneVPtrLength}, Hlc: 175}, // tombstone
+		{Key: "charlie", Vptr: VPtr{Length: rawVlenTombstone}, Hlc: 175}, // tombstone
 		{Key: "delta", Vptr: vp2, Hlc: 200},
 	}
 

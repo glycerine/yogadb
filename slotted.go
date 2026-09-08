@@ -364,7 +364,7 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 		baseValInfo := slottedValInfoBase(entries[i].valInfo)
 		if baseValInfo == slottedValInfoTombstone {
 			// tombstone: mark with sentinel, Value stays nil
-			kvs[i].Vptr.Length = tombstoneVPtrLength
+			kvs[i].Vptr.Length = rawVlenTombstone
 		} else if baseValInfo == slottedValInfoNilValue {
 			// live key, zero-length value: Value stays nil, Vptr stays zero
 			kvs[i].Vptr.Offset = entries[i].entryVtyp

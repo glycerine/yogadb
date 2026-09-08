@@ -450,7 +450,7 @@ func TestFlexDB_kv128RoundTrip(t *testing.T) {
 	cases := []KV{
 		{Key: "hello", Value: []byte("world"), Vptr: VPtr{Length: 5}, Hlc: 12345},
 		{Key: "", Value: []byte(""), Hlc: 0},
-		{Key: "a", Vptr: VPtr{Length: tombstoneVPtrLength}, Hlc: 999}, // tombstone
+		{Key: "a", Vptr: VPtr{Length: rawVlenTombstone}, Hlc: 999}, // tombstone
 		{Key: string(make([]byte, 100)), Value: make([]byte, 64), Vptr: VPtr{Length: 64}, Hlc: 0x7FFFFFFFFFFFFFFF},
 		{Key: "inline-offset", Value: []byte("typed"), Vptr: VPtr{Offset: 0x12345678, Length: 5}, Hlc: 777},
 		// VPtr case with HLC
@@ -656,7 +656,7 @@ func TestFlexDB_kv128CRC32C(t *testing.T) {
 	}
 
 	// Tombstone path
-	tomb := KV{Key: "delme", Vptr: VPtr{Length: tombstoneVPtrLength}, Hlc: 7}
+	tomb := KV{Key: "delme", Vptr: VPtr{Length: rawVlenTombstone}, Hlc: 7}
 	tbuf := kv128Encode(nil, tomb)
 	_, _, ok = kv128Decode(tbuf)
 	if !ok {
