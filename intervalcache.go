@@ -54,6 +54,9 @@ type intervalCacheEntry struct {
 	kvs       []KV                    // decoded KV slice (sorted when unsorted==0)
 	fps       []uint16                // fingerprints per KV
 	size      int                     // sum of kvSizeApprox for all kvs
+	baseHLC   HLC                     // minimum HLC used by cached slottedSize
+	slotSize  int                     // cached slotted-page encoded size
+	slotValid bool                    // true when baseHLC and slotSize match kvs[:count]
 	count     int                     // same as len(kvs)
 	frag      bool                    // needs defrag
 	dirty     bool                    // modified in cache, not yet written to FlexSpace
@@ -520,6 +523,8 @@ func intervalCacheEntryFindKeyEQ(fce *intervalCacheEntry, key string) (int, bool
 }
 
 func (p *intervalCachePartition) cacheEntryInsert(fce *intervalCacheEntry, kv KV, idx int) {
+	slotWasValid := fce.slotValid
+	oldBaseHLC := fce.baseHLC
 	fce.kvs = append(fce.kvs, KV{})
 	fce.fps = append(fce.fps, 0)
 	copy(fce.kvs[idx+1:], fce.kvs[idx:])
@@ -529,6 +534,11 @@ func (p *intervalCachePartition) cacheEntryInsert(fce *intervalCacheEntry, kv KV
 	approx := kvSizeApprox(&kv)
 	fce.size += approx
 	fce.count++
+	if slotWasValid && fce.count > 1 && kv.Hlc >= oldBaseHLC {
+		fce.slotSize += slottedKVEncodedSize(kv, oldBaseHLC)
+	} else {
+		fce.slotValid = false
+	}
 	p.mu.Lock()
 	p.size += int64(approx)
 	p.mu.Unlock()
@@ -542,6 +552,7 @@ func (p *intervalCachePartition) cacheEntryReplace(fce *intervalCacheEntry, kv K
 	fce.fps[idx] = fingerprint(kvCRC32(kv.Key))
 	diff := newSz - oldSz
 	fce.size += diff
+	fce.slotValid = false
 	p.mu.Lock()
 	p.size += int64(diff)
 	p.mu.Unlock()
@@ -552,6 +563,9 @@ type intervalCacheEntrySnapshot struct {
 	fps           []uint16
 	count         int
 	size          int
+	baseHLC       HLC
+	slotSize      int
+	slotValid     bool
 	partitionSize int64
 }
 
@@ -564,6 +578,9 @@ func (p *intervalCachePartition) snapshotEntry(fce *intervalCacheEntry) interval
 		fps:           append([]uint16(nil), fce.fps[:fce.count]...),
 		count:         fce.count,
 		size:          fce.size,
+		baseHLC:       fce.baseHLC,
+		slotSize:      fce.slotSize,
+		slotValid:     fce.slotValid,
 		partitionSize: partitionSize,
 	}
 }
@@ -573,6 +590,9 @@ func (p *intervalCachePartition) restoreEntry(fce *intervalCacheEntry, snap inte
 	fce.fps = snap.fps
 	fce.count = snap.count
 	fce.size = snap.size
+	fce.baseHLC = snap.baseHLC
+	fce.slotSize = snap.slotSize
+	fce.slotValid = snap.slotValid
 	p.mu.Lock()
 	p.size = snap.partitionSize
 	p.mu.Unlock()
@@ -584,6 +604,7 @@ func (p *intervalCachePartition) replaceEntryContents(fce *intervalCacheEntry, k
 	fce.fps = fps
 	fce.count = len(kvs)
 	fce.size = size
+	fce.slotValid = false
 	p.mu.Lock()
 	p.size += int64(diff)
 	p.mu.Unlock()
@@ -618,6 +639,7 @@ func (p *intervalCachePartition) cacheEntryDelete(fce *intervalCacheEntry, idx i
 	fce.fps = fce.fps[:fce.count-1]
 	fce.size -= sz
 	fce.count--
+	fce.slotValid = false
 	p.mu.Lock()
 	p.size -= int64(sz)
 	p.mu.Unlock()

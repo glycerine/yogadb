@@ -18,9 +18,16 @@ import (
 type memtable struct {
 	// backing in memory B-tree (was skiplist in C).
 	bt *btree.BTreeG[KV]
+	// bulkKVs/bulkIndex are used only for pristine initial batch loads. They
+	// avoid per-key B-tree insertion until a read requires materialization or
+	// Sync streams the sorted entries directly to FlexSpace.
+	bulkKVs   []KV
+	bulkIndex bulkKVIndex
+	bulkOrder []int
 
 	memWalFD          vfs.File // FLEXDB.MEMWAL
 	memWalBuf         []byte
+	memWalEncodeBuf   []byte
 	memWalWriteOffset int64
 
 	memWalMut sync.Mutex
@@ -45,6 +52,9 @@ func newMemtable(memWalFD vfs.File) *memtable {
 func (m *memtable) reset() {
 	m.empty = true
 	m.size = 0
+	m.bulkKVs = m.bulkKVs[:0]
+	m.bulkIndex.reset()
+	m.bulkOrder = m.bulkOrder[:0]
 }
 
 // caller should set m.empty to false after calling put()
@@ -62,8 +72,87 @@ func (m *memtable) put(kv KV) (KV, bool) {
 	return old, replaced
 }
 
+func (m *memtable) putBulk(kv KV) (KV, bool) {
+	if idx, ok := m.bulkIndex.get(kv.Key); ok {
+		old := m.bulkKVs[idx]
+		m.bulkKVs[idx] = kv
+		m.size += int64(kvSizeApprox(&kv) - kvSizeApprox(&old))
+		return old, true
+	}
+	m.bulkIndex.set(kv.Key, len(m.bulkKVs))
+	m.bulkKVs = append(m.bulkKVs, kv)
+	m.size += int64(kvSizeApprox(&kv))
+	if m.size <= 0 {
+		panicf("bad: memtable with some content should have size(%v) > 0: %#v", m.size, m)
+	}
+	return KV{}, false
+}
+
+func (m *memtable) ensureBulkIndexCap(n int) {
+	if cap(m.bulkKVs) < n {
+		next := 1
+		for next < n {
+			next <<= 1
+		}
+		newBulk := make([]KV, len(m.bulkKVs), next)
+		copy(newBulk, m.bulkKVs)
+		m.bulkKVs = newBulk
+	}
+	m.bulkIndex.ensureCap(n)
+}
+
+func (m *memtable) materializeBulk() {
+	if len(m.bulkKVs) == 0 {
+		return
+	}
+	for i := range m.bulkKVs {
+		m.bt.Set(m.bulkKVs[i])
+	}
+	m.bulkKVs = m.bulkKVs[:0]
+	m.bulkIndex.reset()
+}
+
 func (m *memtable) get(key string) (KV, bool) {
+	if idx, ok := m.bulkIndex.get(key); ok {
+		return m.bulkKVs[idx], true
+	}
 	return m.bt.Get(KV{Key: key})
+}
+
+type bulkKVIndex struct {
+	m map[string]int
+}
+
+func (x *bulkKVIndex) reset() {
+	x.m = nil
+}
+
+func (x *bulkKVIndex) clear() {
+	clear(x.m)
+}
+
+func (x *bulkKVIndex) ensureCap(n int) {
+	if n <= 0 {
+		return
+	}
+	if x.m == nil {
+		x.m = make(map[string]int, n)
+	}
+}
+
+func (x *bulkKVIndex) get(key string) (int, bool) {
+	if x.m == nil {
+		return 0, false
+	}
+	idx, ok := x.m[key]
+	return idx, ok
+}
+
+func (x *bulkKVIndex) set(key string, idx int) {
+	if x.m == nil {
+		x.m = make(map[string]int, 16)
+	}
+	x.m[key] = idx
 }
 
 func (m *memtable) logAppend(kv KV) error {
@@ -73,8 +162,14 @@ func (m *memtable) logAppend(kv KV) error {
 }
 
 func (m *memtable) logAppendKVLocked(kv KV) error {
-	var g GreenMEMWAL_KV
-	g.fillFromKV(&kv)
+	g := GreenMEMWAL_KV{
+		WalRecordType: MEMWAL_KV,
+		VptrLength:    kv.Vptr.Length,
+		VptrOffset:    kv.Vptr.Offset,
+		Hlc:           int64(kv.Hlc),
+		Key:           kv.Key,
+		InlineVal:     kv.Value,
+	}
 	return m.logAppendGreenLocked(&g)
 }
 
@@ -90,20 +185,60 @@ func (m *memtable) logAppendWalRecordTypeLocked(recordType int32) error {
 }
 
 func (m *memtable) logAppendGreenLocked(g *GreenMEMWAL_KV) error {
-	encoded, err := g.SaveToSlice()
-	if err != nil {
-		return fmt.Errorf("memtable WAL encode record type=%d: %w", g.WalRecordType, err)
+	payload := g.appendCompactPayload(m.memWalEncodeBuf[:0])
+	m.memWalEncodeBuf = payload
+	return m.logAppendPayloadLocked(payload)
+}
+
+func (m *memtable) logAppendBatchLocked(kvs []KV) (bool, error) {
+	payloadSize := compactBatchPayloadSize(kvs)
+	recordSize := msgpackByteSliceFrameSize(payloadSize) + msgpackByteSliceFrameSize(8)
+	if recordSize >= memtableWalBufCap {
+		return false, nil
 	}
-	if len(encoded) >= memtableWalBufCap {
-		return fmt.Errorf("memtable WAL record too large: size %d, max %d", len(encoded), memtableWalBufCap-1)
+	payload := appendCompactBatchPayload(m.memWalEncodeBuf[:0], kvs)
+	m.memWalEncodeBuf = payload
+	return true, m.logAppendPayloadLocked(payload)
+}
+
+func (m *memtable) logAppendPayloadLocked(payload []byte) error {
+	recordSize := msgpackByteSliceFrameSize(len(payload)) + msgpackByteSliceFrameSize(8)
+	if recordSize >= memtableWalBufCap {
+		return fmt.Errorf("memtable WAL record too large: size %d, max %d", recordSize, memtableWalBufCap-1)
 	}
-	if len(m.memWalBuf)+len(encoded) >= memtableWalBufCap {
+	if len(m.memWalBuf)+recordSize >= memtableWalBufCap {
 		if err := m.logFlushLocked(); err != nil {
 			return err
 		}
 	}
-	m.memWalBuf = append(m.memWalBuf, encoded...)
+	m.memWalBuf = appendMsgpackByteSlice(m.memWalBuf, payload)
+	var crcBuf [8]byte = [8]byte{'1', '2', '3', '4', '=', '=', '=', '\n'}
+	binary.LittleEndian.PutUint32(crcBuf[:4], crc32.Checksum(payload, crc32cTable))
+	m.memWalBuf = appendMsgpackByteSlice(m.memWalBuf, crcBuf[:])
 	return nil
+}
+
+func msgpackByteSliceFrameSize(n int) int {
+	switch {
+	case n <= 0xff:
+		return 2 + n
+	case n <= 0xffff:
+		return 3 + n
+	default:
+		return 5 + n
+	}
+}
+
+func appendMsgpackByteSlice(dst []byte, b []byte) []byte {
+	switch n := len(b); {
+	case n <= 0xff:
+		dst = append(dst, bin8, byte(n))
+	case n <= 0xffff:
+		dst = append(dst, bin16, byte(n>>8), byte(n))
+	default:
+		dst = append(dst, bin32, byte(n>>24), byte(n>>16), byte(n>>8), byte(n))
+	}
+	return append(dst, b...)
 }
 
 func (m *memtable) logFlushLocked() error {

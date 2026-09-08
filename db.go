@@ -62,15 +62,26 @@ var sep = string(os.PathSeparator)
 // It writes standalone MEMWAL_KV records; use Update for BEGIN/COMMIT grouped
 // crash recovery of multiple key writes.
 type Batch struct {
-	db   *FlexDB
-	puts []*KV
-	err  error
+	db         *FlexDB
+	puts       []KV
+	valueArena []byte
+	err        error
 }
+
+var batchSeenPool = sync.Pool{
+	New: func() any { return new(bulkKVIndex) },
+}
+
+const (
+	batchInitialPutCap        = 1024
+	batchInitialValueArenaCap = 64 << 10
+)
 
 // NewBatch returns an empty new Batch.
 func (db *FlexDB) NewBatch() (b *Batch) {
 	b = &Batch{
-		db: db,
+		db:   db,
+		puts: make([]KV, 0, batchInitialPutCap),
 	}
 	return
 }
@@ -90,18 +101,27 @@ func (s *Batch) Set(key string, value []byte, vtyp uint64) (err error) {
 	// Nil and empty values are the same zero-length live value.
 	var valueCopy []byte
 	if len(value) > 0 {
-		valueCopy = append([]byte{}, value...)
+		if s.valueArena == nil {
+			capHint := batchInitialValueArenaCap
+			if len(value) > capHint {
+				capHint = len(value)
+			}
+			s.valueArena = make([]byte, 0, capHint)
+		}
+		start := len(s.valueArena)
+		s.valueArena = append(s.valueArena, value...)
+		valueCopy = s.valueArena[start:]
 	}
-	pkv := &KV{
+	kv := KV{
 		Key:   key,
 		Value: valueCopy,
 	}
 	// Note the strangeness! We
 	// store vtyp type information in Offset even for large values, before
 	// we have written to the VLOG at all(!)
-	pkv.Vptr.Offset = vtyp
-	pkv.Vptr.Length = uint64(len(value))
-	s.puts = append(s.puts, pkv)
+	kv.Vptr.Offset = vtyp
+	kv.Vptr.Length = uint64(len(value))
+	s.puts = append(s.puts, kv)
 	return nil
 }
 
@@ -113,7 +133,7 @@ func (s *Batch) Delete(key string) {
 		}
 		return
 	}
-	s.puts = append(s.puts, &KV{
+	s.puts = append(s.puts, KV{
 		Key:  key,
 		Vptr: VPtr{Length: rawVlenTombstone},
 	})
@@ -157,15 +177,9 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	if s.err != nil {
 		err := s.err
 		s.puts = nil
+		s.valueArena = nil
 		s.err = nil
 		return HLCInterval{}, nil, err
-	}
-
-	for _, kv := range s.puts {
-		if err := validateUserKey(kv.Key); err != nil {
-			s.puts = nil
-			return HLCInterval{}, nil, err
-		}
 	}
 
 	if len(s.puts) == 0 {
@@ -190,19 +204,25 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	// key is encountered, we start a new sub-batch with a new HLC tick.
 	var firstHLC HLC
 
-	seen := make(map[string]struct{})
 	curHLC := db.hlc.CreateSendOrLocalEvent()
 	firstHLC = curHLC
 
-	for _, kv := range s.puts {
-		k := string(kv.Key)
-		if _, dup := seen[k]; dup {
+	seen := batchSeenPool.Get().(*bulkKVIndex)
+	seen.clear()
+	seen.ensureCap(len(s.puts))
+	defer func() {
+		seen.clear()
+		batchSeenPool.Put(seen)
+	}()
+	for i := range s.puts {
+		k := s.puts[i].Key
+		if _, dup := seen.get(k); dup {
 			// Duplicate key in this sub-batch - start new sub-batch.
-			seen = make(map[string]struct{})
+			seen.clear()
 			curHLC = db.hlc.CreateSendOrLocalEvent()
 		}
-		seen[k] = struct{}{}
-		kv.Hlc = curHLC
+		seen.set(k, i)
+		s.puts[i].Hlc = curHLC
 	}
 
 	// Write large values to VLOG with a single batch fsync. The WAL then
@@ -230,7 +250,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 				return HLCInterval{}, nil, fmt.Errorf("flexdb: vlog batch append: %w", err)
 			}
 			for j, idx := range largeIndices {
-				e := s.puts[idx]
+				e := &s.puts[idx]
 				vtyp := e.Vptr.Offset
 				// Key stays same.
 				e.Value = nil
@@ -244,9 +264,10 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		}
 	}
 
-	for _, kv := range s.puts {
-		if err := validateKV128RecordSize(*kv); err != nil {
+	for i := range s.puts {
+		if err := validateKV128RecordSizeAfterUserKey(s.puts[i]); err != nil {
 			s.puts = nil
+			s.valueArena = nil
 			return HLCInterval{}, nil, err
 		}
 	}
@@ -260,6 +281,17 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 
 	mt.memWalMut.Lock()
 	defer mt.memWalMut.Unlock()
+	useBulkInitial := db.bulkInitialBatchLoad && db.ff.Size() == 0
+	batchWalAppended := false
+	if useBulkInitial {
+		mt.ensureBulkIndexCap(len(mt.bulkKVs) + len(s.puts))
+		var ok bool
+		ok, err = mt.logAppendBatchLocked(s.puts)
+		if err != nil {
+			return HLCInterval{}, nil, fmt.Errorf("flexdb: batch append compact memwal: %w", err)
+		}
+		batchWalAppended = ok
+	}
 
 	for idx := 0; idx < len(s.puts); idx++ {
 
@@ -283,21 +315,28 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 			mt.size = 0
 			db.flushSeq++
 		}
-		putKV := *s.puts[idx]
+		putKV := s.puts[idx]
 		newState := kvToState(putKV)
-		var oldState keyState
-		old, replaced := mt.get(putKV.Key)
+
+		if !batchWalAppended {
+			if err := mt.logAppendKVLocked(putKV); err != nil {
+				return HLCInterval{}, nil, fmt.Errorf("flexdb: batch append memwal key=%q: %w", putKV.Key, err)
+			}
+		}
+		var old KV
+		var replaced bool
+		if useBulkInitial {
+			old, replaced = mt.putBulk(putKV)
+		} else {
+			old, replaced = mt.put(putKV)
+		}
+		mt.empty = false
+		oldState := ksNotExists
 		if replaced {
 			oldState = kvToState(old)
 		} else {
 			oldState = db.writeLockHeldKeyState(putKV.Key)
 		}
-
-		if err := mt.logAppendKVLocked(putKV); err != nil {
-			return HLCInterval{}, nil, fmt.Errorf("flexdb: batch append memwal key=%q: %w", putKV.Key, err)
-		}
-		mt.put(putKV)
-		mt.empty = false
 		db.adjustKeyCounters(oldState, newState)
 	}
 
@@ -315,6 +354,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 
 	// make ready for immediate reuse after a Commit.
 	s.puts = nil
+	s.valueArena = nil
 
 	if wantMetrics {
 		metrics = db.writeLockHeldSessionMetrics()
@@ -326,6 +366,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 // Reset forgets any existing queued up puts.
 func (s *Batch) Reset() {
 	s.puts = nil
+	s.valueArena = nil
 	s.err = nil
 }
 
@@ -333,6 +374,7 @@ func (s *Batch) Reset() {
 // frees any other resources associated with the Batch.
 func (s *Batch) Close() {
 	s.puts = nil
+	s.valueArena = nil
 	s.err = nil
 }
 
@@ -754,6 +796,10 @@ type FlexDB struct {
 
 	mt       memtable // single memtable (was dual; see commit history)
 	flushSeq uint64   // incremented on each memtable flush (inline or background)
+	// The bulk initial flush is only enabled for pristine batch loads. Direct
+	// Put workloads can interleave with Sync/recovery patterns that still need
+	// the conservative point-insert flush path.
+	bulkInitialBatchLoad bool
 
 	// flush worker
 	flushTrigger chan struct{}
@@ -1012,16 +1058,17 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	}
 
 	db := &FlexDB{
-		cfg:          cfg,
-		Path:         path,
-		vfs:          fs,
-		ff:           ff,
-		vlog:         vl,
-		cache:        newCache(nil, cfg.CacheMB),
-		kvbuf1:       make([]byte, 0, MaxKeySize),
-		itvbuf:       make([]byte, 0, flexdbSparseIntervalSize+MaxKeySize),
-		flushTrigger: make(chan struct{}, 1),
-		flushHalt:    idem.NewHalterNamed("flushWorker-orig"),
+		cfg:                  cfg,
+		Path:                 path,
+		vfs:                  fs,
+		ff:                   ff,
+		vlog:                 vl,
+		cache:                newCache(nil, cfg.CacheMB),
+		kvbuf1:               make([]byte, 0, MaxKeySize),
+		itvbuf:               make([]byte, 0, flexdbSparseIntervalSize+MaxKeySize),
+		flushTrigger:         make(chan struct{}, 1),
+		flushHalt:            idem.NewHalterNamed("flushWorker-orig"),
+		bulkInitialBatchLoad: true,
 	}
 	db.cache.db = db
 	for i := range db.cache.partitions {
@@ -2398,6 +2445,10 @@ func validateKV128RecordSize(kv KV) error {
 	if err := validateUserKey(kv.Key); err != nil {
 		return err
 	}
+	return validateKV128RecordSizeAfterUserKey(kv)
+}
+
+func validateKV128RecordSizeAfterUserKey(kv KV) error {
 	if !kv.isTombstone() && !kv.HasVPtr() && len(kv.Value) > vlogInlineThreshold {
 		return fmt.Errorf("flexdb: inline value too large without VLOG (max %d bytes)", vlogInlineThreshold)
 	}
@@ -2409,12 +2460,12 @@ func validateKV128RecordSize(kv KV) error {
 		Key:           kv.Key,
 		InlineVal:     kv.Value,
 	}
-	payloadSize := g.Msgsize()
-	size := msgp.BytesPrefixSize + payloadSize + msgp.BytesPrefixSize + 8
+	payloadSize := g.compactPayloadSize()
+	size := msgpackByteSliceFrameSize(payloadSize) + msgpackByteSliceFrameSize(8)
 	if size >= memtableWalBufCap {
 		return fmt.Errorf("flexdb: KV too large for MEMWAL record (size %d, max %d bytes)", size, memtableWalBufCap-1)
 	}
-	if size := slottedPageComputeSize([]KV{kv}); size > slottedPageMaxSize {
+	if size := slottedPageHeaderSize + slottedKVEncodedSize(kv, kv.Hlc) + slottedPageCRCSize; size > slottedPageMaxSize {
 		return fmt.Errorf("flexdb: KV too large for slotted page (size %d, max %d bytes)", size, slottedPageMaxSize)
 	}
 	return nil
@@ -2453,7 +2504,8 @@ func (db *FlexDB) Put(key string, value []byte, vtyp uint64) (HLC, error) {
 }
 
 func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string, value []byte, vtyp uint64, doDelete bool) (HLC, error) {
-
+	db.mt.materializeBulk()
+	db.bulkInitialBatchLoad = false
 	if doDelete && len(value) > 0 {
 		return 0, fmt.Errorf("flexdb API use error: cannot supply a value and also delete it's key, this is a contradiction. Do not set a value on delete of a key: '%v'.", key)
 	}
@@ -2542,13 +2594,6 @@ func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string,
 		}
 	}
 	newState := kvToState(kv)
-	var oldState keyState
-	old, replaced := db.mt.get(key)
-	if replaced {
-		oldState = kvToState(old)
-	} else {
-		oldState = db.writeLockHeldKeyState(key)
-	}
 
 	// WAL stores VPtr metadata for large values. Since LARGE.VLOG was fsynced
 	// above, the VPtr is safe to reference on crash recovery.
@@ -2556,8 +2601,14 @@ func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string,
 		return 0, fmt.Errorf("flexdb: append memwal key=%q: %w", key, err)
 	}
 
-	db.mt.put(kv)
+	old, replaced := db.mt.put(kv)
 	db.mt.empty = false
+	oldState := ksNotExists
+	if replaced {
+		oldState = kvToState(old)
+	} else {
+		oldState = db.writeLockHeldKeyState(key)
+	}
 	db.adjustKeyCounters(oldState, newState)
 
 	return hlcVal, nil
@@ -2720,8 +2771,9 @@ func findBuildKV(it *Iter) *KV {
 // However it is always fine to do the Close() even then, as
 // kvc.Close() is a no-op if kvc is nil.
 func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error) {
-	db.topMutRW.RLock()
-	defer db.topMutRW.RUnlock()
+	db.topMutRW.Lock()
+	db.mt.materializeBulk()
+	defer db.topMutRW.Unlock()
 	defer recoverIterIOErr(&err)
 
 	it := &Iter{db: db}
@@ -3793,7 +3845,7 @@ func (db *FlexDB) putPassthrough(kv KV, nh *memSparseIndexTreeHandler) error {
 		partition.releaseEntry(fce)
 		return err
 	}
-	if fce.count >= flexdbSparseIntervalCount {
+	if fce.count > flexdbSparseIntervalCount {
 		if err := db.treeInsertAnchor(nh, partition, fce); err != nil {
 			partition.releaseEntry(fce)
 			return err
@@ -4402,6 +4454,22 @@ func (db *FlexDB) logRedo(fd vfs.File, fileSize int64) error {
 				vv("flexdb: logRedo: putPassthrough error at offset %d: %v", offset-int64(n), err)
 				return fmt.Errorf("flexdb: logRedo: replay at offset %d: %w", offset-int64(n), err)
 			}
+		case MEMWAL_BATCH_KV:
+			var kvs []KV
+			kvs, err = compactBatchPayloadToKVs(g.InlineVal, kvs)
+			if err != nil {
+				return fmt.Errorf("flexdb: logRedo: decode batch at offset %d: %w", offset-int64(n), err)
+			}
+			if inTxn {
+				pending = append(pending, kvs...)
+				continue
+			}
+			for i := range kvs {
+				if err := applyKV(kvs[i]); err != nil {
+					vv("flexdb: logRedo: putPassthrough error in batch at offset %d: %v", offset-int64(n), err)
+					return fmt.Errorf("flexdb: logRedo: replay batch at offset %d: %w", offset-int64(n), err)
+				}
+			}
 		case MEMWAL_BEGIN_TXN:
 			if inTxn {
 				return fmt.Errorf("flexdb: logRedo: nested MEMWAL_BEGIN_TXN at offset %d", offset-int64(n))
@@ -4528,6 +4596,10 @@ func (db *FlexDB) doFlush() error {
 
 func (db *FlexDB) flushMemtable() error {
 	m := &db.mt
+	if ok, err := db.flushMemtableBulkInitial(m); ok || err != nil {
+		return err
+	}
+	m.materializeBulk()
 	var nh memSparseIndexTreeHandler
 	batch := make([]KV, 0, memtableFlushBatch)
 	var err error
@@ -4540,7 +4612,6 @@ func (db *FlexDB) flushMemtable() error {
 					err = fmt.Errorf("putPassthrough key=%q: %w", kv.Key, err)
 					return false
 				}
-				nh.node = nil // reset hint after each for simplicity
 			}
 			batch = batch[:0]
 		}
@@ -4553,9 +4624,125 @@ func (db *FlexDB) flushMemtable() error {
 		if err = db.putPassthrough(kv, &nh); err != nil {
 			return fmt.Errorf("putPassthrough key=%q: %w", kv.Key, err)
 		}
-		nh.node = nil
 	}
 	return nil
+}
+
+func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
+	if !db.bulkInitialBatchLoad || db.ff.Size() != 0 || db.tree == nil || db.tree.root != db.tree.leafHead ||
+		!db.tree.root.isLeaf || db.tree.root.count != 1 ||
+		db.tree.root.anchors[0] == nil || db.tree.root.anchors[0].key != "" ||
+		db.tree.root.anchors[0].psize != 0 {
+		return false, nil
+	}
+
+	eligible := true
+	if len(m.bulkKVs) > 0 {
+		for i := range m.bulkKVs {
+			if m.bulkKVs[i].isTombstone() {
+				eligible = false
+				break
+			}
+		}
+	} else {
+		m.bt.Ascend(KV{}, func(item KV) bool {
+			if item.isTombstone() {
+				eligible = false
+				return false
+			}
+			return true
+		})
+	}
+	if !eligible {
+		return false, nil
+	}
+
+	tag := flexdbTagGenerate(true, 0)
+	bulkPageCount := flexdbSparseIntervalCount
+	if bulkPageCount < 1 {
+		bulkPageCount = 1
+	}
+	var page []KV
+	var pageBase HLC
+	pageSize := 0
+	var nh memSparseIndexTreeHandler
+
+	flushPage := func() error {
+		if len(page) == 0 {
+			return nil
+		}
+		buf := slottedPageEncode(page)
+		if len(buf) > slottedPageMaxSize {
+			return fmt.Errorf("bulk initial flush built overlarge slotted page: size=%d max=%d count=%d firstKey=%q",
+				len(buf), slottedPageMaxSize, len(page), page[0].Key)
+		}
+		loff := db.ff.Size()
+		if _, err := db.ff.InsertWTag(buf, loff, uint64(len(buf)), tag); err != nil {
+			return fmt.Errorf("bulk initial flush insert loff=%d psize=%d firstKey=%q: %w",
+				loff, len(buf), page[0].Key, err)
+		}
+		if loff == 0 {
+			anchor := db.tree.root.anchors[0]
+			anchor.psize = uint32(len(buf))
+			anchor.unsorted = 0
+		} else {
+			db.tree.findAnchorPos(page[0].Key, &nh)
+			nh.idx++
+			nh.handlerInsert(page[0].Key, loff, uint32(len(buf)))
+		}
+		page = page[:0]
+		pageSize = 0
+		pageBase = 0
+		return nil
+	}
+
+	var err error
+	consumeItem := func(item KV) bool {
+		if len(page) == 0 {
+			pageBase = item.Hlc
+			pageSize = slottedPageHeaderSize + slottedPageCRCSize
+		} else if item.Hlc < pageBase {
+			pageBase = item.Hlc
+			pageSize = intervalCacheEntrySlottedKVsSize(page, pageBase)
+		}
+		itemSize := slottedKVEncodedSize(item, pageBase)
+		if len(page) > 0 && (len(page) >= bulkPageCount || pageSize+itemSize > slottedPageMaxSize) {
+			if err = flushPage(); err != nil {
+				return false
+			}
+			pageBase = item.Hlc
+			pageSize = slottedPageHeaderSize + slottedPageCRCSize
+			itemSize = slottedKVEncodedSize(item, pageBase)
+		}
+		page = append(page, item)
+		pageSize += itemSize
+		return true
+	}
+	if len(m.bulkKVs) > 0 {
+		m.bulkOrder = m.bulkOrder[:0]
+		for i := range m.bulkKVs {
+			m.bulkOrder = append(m.bulkOrder, i)
+		}
+		sortBulkOrderByKey(m.bulkOrder, m.bulkKVs)
+		for _, idx := range m.bulkOrder {
+			if !consumeItem(m.bulkKVs[idx]) {
+				break
+			}
+		}
+	} else {
+		m.bt.Ascend(KV{}, consumeItem)
+	}
+	if err != nil {
+		return true, err
+	}
+	if err := flushPage(); err != nil {
+		return true, err
+	}
+	db.bulkInitialBatchLoad = false
+	m.bulkKVs = m.bulkKVs[:0]
+	m.bulkIndex.reset()
+	m.bulkOrder = m.bulkOrder[:0]
+	return true, nil
 }
 
 // syncDir opens the directory at path and fsyncs it so that newly

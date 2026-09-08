@@ -50,6 +50,8 @@ type NodeID int32
 const IllegalID NodeID = 0
 
 const DefaultFlexTreeMaxExtentSizeLimit = (64 << 20) // 64 MB
+const initialFlexTreeArenaCap = 1024
+const initialFlexTreeFreeListCap = 1024
 
 // or?
 //const DefaultFlexTreeMaxExtentSizeLimit = (128 << 10) // 128 KB
@@ -554,12 +556,12 @@ func NewFlexTree(fs vfs.FS) *FlexTree {
 
 		//Root:          IllegalID,
 		//LeafHead:      IllegalID,
-		InternalArena: make([]InternalNode, 0, 128<<10),
-		LeafArena:     make([]LeafNode, 0, 128<<10),
+		InternalArena: make([]InternalNode, 0, initialFlexTreeArenaCap),
+		LeafArena:     make([]LeafNode, 0, initialFlexTreeArenaCap),
 
 		// Pre-allocate some free list capacity
-		FreeInternals: make([]int32, 0, 16<<10),
-		FreeLeaves:    make([]int32, 0, 16<<10),
+		FreeInternals: make([]int32, 0, initialFlexTreeFreeListCap),
+		FreeLeaves:    make([]int32, 0, initialFlexTreeFreeListCap),
 		cowEnabled:    true,
 	}
 }

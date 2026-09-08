@@ -177,6 +177,63 @@ func Benchmark_Iter_Pebble(b *testing.B) {
 	b.StopTimer()
 }
 
+func Benchmark_LoadOnly_YogaDB(b *testing.B) {
+	keys := generateBenchKeys()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		b.StopTimer()
+		dir := b.TempDir()
+		cfg := &Config{}
+		db, err := OpenFlexDB(dir, cfg)
+		panicOn(err)
+		b.StartTimer()
+
+		batch := db.NewBatch()
+		for i, k := range keys {
+			panicOn(batch.Set(string(k), k, 0))
+			if (i+1)%10000 == 0 {
+				_, err := batch.Commit(false)
+				panicOn(err)
+				batch = db.NewBatch()
+			}
+		}
+		_, err = batch.Commit(false)
+		panicOn(err)
+		panicOn(db.Sync())
+		b.StopTimer()
+		db.Close()
+		b.StartTimer()
+	}
+}
+
+func Benchmark_LoadOnly_Pebble(b *testing.B) {
+	keys := generateBenchKeys()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		b.StopTimer()
+		dir := b.TempDir()
+		db, err := pebble.Open(dir, &pebble.Options{})
+		panicOn(err)
+		b.StartTimer()
+
+		batch := db.NewBatch()
+		for i, k := range keys {
+			panicOn(batch.Set(k, k, pebble.NoSync))
+			if (i+1)%10000 == 0 {
+				panicOn(batch.Commit(pebble.NoSync))
+				batch = db.NewBatch()
+			}
+		}
+		panicOn(batch.Commit(pebble.NoSync))
+		panicOn(db.Flush())
+		b.StopTimer()
+		panicOn(db.Close())
+		b.StartTimer()
+	}
+}
+
 func Benchmark_Iter_Bolt(b *testing.B) {
 	dir := b.TempDir()
 	dbPath := filepath.Join(dir, "bolt.db")

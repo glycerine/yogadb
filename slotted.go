@@ -642,6 +642,56 @@ func slottedPageWouldFit(kvs []KV, count int, newKV KV, replaceIdx int, targetSi
 	return contentSize <= targetSize
 }
 
+func slottedKVEncodedSize(kv KV, baseHLC HLC) int {
+	var hlcBuf [binary.MaxVarintLen64]byte
+	delta := uint64(kv.Hlc - baseHLC)
+	varintLen := binary.PutUvarint(hlcBuf[:], delta)
+	return 4 + slottedEntryVtypBytes(kv) + varintLen + len(kv.Key) + slottedValBytes(kv)
+}
+
+func intervalCacheEntrySlottedKVsSize(kvs []KV, baseHLC HLC) int {
+	size := slottedPageHeaderSize + slottedPageCRCSize
+	for i := range kvs {
+		size += slottedKVEncodedSize(kvs[i], baseHLC)
+	}
+	return size
+}
+
+func intervalCacheEntrySlottedSize(fce *intervalCacheEntry) int {
+	if fce.slotValid {
+		return fce.slotSize
+	}
+	if fce.count == 0 {
+		fce.baseHLC = 0
+		fce.slotSize = slottedPageHeaderSize + slottedPageCRCSize
+		fce.slotValid = true
+		return fce.slotSize
+	}
+	baseHLC := fce.kvs[0].Hlc
+	for i := 1; i < fce.count; i++ {
+		if fce.kvs[i].Hlc < baseHLC {
+			baseHLC = fce.kvs[i].Hlc
+		}
+	}
+	size := intervalCacheEntrySlottedKVsSize(fce.kvs[:fce.count], baseHLC)
+	fce.baseHLC = baseHLC
+	fce.slotSize = size
+	fce.slotValid = true
+	return size
+}
+
+func intervalCacheEntryWouldFit(fce *intervalCacheEntry, newKV KV, replaceIdx int, targetSize int) bool {
+	if replaceIdx >= 0 {
+		return slottedPageWouldFit(fce.kvs, fce.count, newKV, replaceIdx, targetSize)
+	}
+	size := intervalCacheEntrySlottedSize(fce)
+	if fce.count == 0 || newKV.Hlc < fce.baseHLC {
+		fce.slotValid = false
+		return slottedPageWouldFit(fce.kvs, fce.count, newKV, replaceIdx, targetSize)
+	}
+	return size+slottedKVEncodedSize(newKV, fce.baseHLC) <= targetSize
+}
+
 // slottedPageDump returns a human-readable multi-line string describing the
 // structure of a raw slotted page buffer. Useful for debugging.
 func slottedPageDump(src []byte) string {
