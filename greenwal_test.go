@@ -74,6 +74,7 @@ func Test222TestLoadSave_of_GreenMEMWAL_KV(t *testing.T) {
 	panicOn(err)
 	defer f.Close()
 
+	var tot int
 	g2 := make([]*GreenMEMWAL_KV, N)
 	r := msgp.NewReader(f2)
 	for i := range N {
@@ -81,7 +82,7 @@ func Test222TestLoadSave_of_GreenMEMWAL_KV(t *testing.T) {
 		var err error
 		g2[i], nr, err = LoadMEMWAL(r)
 		panicOn(err)
-		_ = nr
+		tot += nr
 		//vv("nr = %v", nr)
 
 		//fmt.Printf("\n wrote to disk:        g[%v] = %#v\n", i, g[i])
@@ -93,4 +94,5 @@ func Test222TestLoadSave_of_GreenMEMWAL_KV(t *testing.T) {
 			panicf("not equal: g2 != g at i = %v", i)
 		}
 	}
+	//vv("total bytes read: %v in %v records", tot, N)
 }
