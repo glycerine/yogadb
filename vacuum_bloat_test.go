@@ -8,23 +8,9 @@ import (
 	"testing"
 )
 
-// TestVacuumThenOverwrite_DiskSizeBounded reproduces a space amplification
-// regression: after VacuumVLOG + VacuumKV, reloading the same keys causes
-// KV.SLOT_BLOCKS to grow by ~4 MB per load instead of staying constant.
-//
-// The pattern is: load keys (some with VLOG-sized values) -> close -> reopen ->
-// VacuumVLOG -> VacuumKV -> reload same keys N times -> check disk size.
-//
-// Uses real-world keys from assets/*.txt (the same data as ~/all).
-func TestVacuumThenOverwrite_DiskSizeBounded(t *testing.T) {
-	fs, dir := newTestFS(t)
-	cfg := &Config{
-		FS:                         fs,
-		OmitMemWalFsync:            true,
-		PiggybackGC_on_SyncOrFlush: true,
-	}
+func loadVacuumBloatKeys(t *testing.T) []string {
+	t.Helper()
 
-	// Load keys from assets/*.txt (value = key, like the reproducer).
 	assetsDir := filepath.Join("assets")
 	entries, err := os.ReadDir(assetsDir)
 	if err != nil {
@@ -52,6 +38,26 @@ func TestVacuumThenOverwrite_DiskSizeBounded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	return keys
+}
+
+// TestVacuumThenOverwrite_DiskSizeBounded reproduces a space amplification
+// regression: after VacuumVLOG + VacuumKV, reloading the same keys causes
+// KV.SLOT_BLOCKS to grow by ~4 MB per load instead of staying constant.
+//
+// The pattern is: load keys (some with VLOG-sized values) -> close -> reopen ->
+// VacuumVLOG -> VacuumKV -> reload same keys N times -> check disk size.
+//
+// Uses real-world keys from assets/*.txt (the same data as ~/all).
+func TestVacuumThenOverwrite_DiskSizeBounded(t *testing.T) {
+	fs, dir := newTestFS(t)
+	cfg := &Config{
+		FS:                         fs,
+		OmitMemWalFsync:            true,
+		PiggybackGC_on_SyncOrFlush: true,
+	}
+
+	keys := loadVacuumBloatKeys(t)
 	t.Logf("loaded %d keys from assets/", len(keys))
 
 	// Step 1: Initial load with value = key (like the reproducer).
