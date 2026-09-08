@@ -2445,18 +2445,13 @@ func recoverIterIOErr(errp *error) {
 func (db *FlexDB) Put(key string, value []byte, vtyp uint64) (HLC, error) {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
-	return db.writeLockHeldPut(key, value, vtyp, false)
-}
-
-func (db *FlexDB) writeLockHeldPut(key string, value []byte, vtyp uint64, doDelete bool) (HLC, error) {
-	return db.writeLockHeldPutWithHook(nil, key, value, vtyp, doDelete)
+	return db.writeLockHeldPutWithHook(nil, key, value, vtyp, false)
 }
 
 func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string, value []byte, vtyp uint64, doDelete bool) (HLC, error) {
 
 	if doDelete && len(value) > 0 {
-		err := fmt.Errorf("flexdb: cannot supply a value and also delete it")
-		return 0, err
+		return 0, fmt.Errorf("flexdb API use error: cannot supply a value and also delete it's key, this is a contradiction. Do not set a value on delete of a key: '%v'.", key)
 	}
 
 	if err := validateUserKey(key); err != nil {
@@ -2508,27 +2503,35 @@ func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string,
 		return 0, err
 	}
 
-	if db.mt.size >= memtableCap {
-		if beforeWrite != nil {
-			return 0, fmt.Errorf("flexdb: write transaction exceeds memtable capacity; split it into smaller transactions")
-		}
-		// Inline flush when memtable is full.
-		if err := db.mt.logFlush(); err != nil {
-			return 0, fmt.Errorf("flexdb: Put inline flush memwal: %w", err)
-		}
-		if err := db.flushMemtable(); err != nil {
-			return 0, fmt.Errorf("flexdb: Put inline flush memtable: %w", err)
-		}
-		if err := db.cache.flushDirtyPages(); err != nil {
-			return 0, fmt.Errorf("flexdb: Put inline flush dirty pages: %w", err)
-		}
-		db.persistCounters()
-		db.ff.Sync()
+	// do not arbitrarily limit write transaction Put() and Delete()
+	// transaction sizes. If we have the memory, use it.
+	// Otherwise, limit to memtableCap count of keys in memory
+	// before automatically flushing to disk. For transactions, the
+	// user wants atomic commit or rollback en-mass, so we cannot
+	// auto-commit and flush to disk for them.
+	if beforeWrite == nil {
+		// we are not in a WriteTxn here, since only
+		// tx.go WriteTxn and its call paths set beforeWrite.
+		// So, check if we should be auto-flushing to disk.
+		if db.mt.size >= memtableCap {
+			// Inline flush when memtable is full.
+			if err := db.mt.logFlush(); err != nil {
+				return 0, fmt.Errorf("flexdb: Put inline flush memwal: %w", err)
+			}
+			if err := db.flushMemtable(); err != nil {
+				return 0, fmt.Errorf("flexdb: Put inline flush memtable: %w", err)
+			}
+			if err := db.cache.flushDirtyPages(); err != nil {
+				return 0, fmt.Errorf("flexdb: Put inline flush dirty pages: %w", err)
+			}
+			db.persistCounters()
+			db.ff.Sync()
 
-		db.mt.bt.Clear()
-		db.mt.empty = true
-		db.mt.size = 0
-		db.flushSeq++
+			db.mt.bt.Clear()
+			db.mt.empty = true
+			db.mt.size = 0
+			db.flushSeq++
+		}
 	}
 	if beforeWrite != nil {
 		if err := beforeWrite(); err != nil {
@@ -2988,7 +2991,7 @@ func (db *FlexDB) someLockHeldGet(key string) (val []byte, found bool, vtyp uint
 func (db *FlexDB) Delete(key string) error {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
-	_, err := db.writeLockHeldPut(key, nil, 0, true)
+	_, err := db.writeLockHeldPutWithHook(nil, key, nil, 0, true)
 	return err
 }
 
