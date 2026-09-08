@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"io"
 
 	"github.com/glycerine/greenpack/msgp"
@@ -186,8 +187,22 @@ func LoadMEMWAL(r *msgp.Reader) (g *GreenMEMWAL_KV, numread int, err error) {
 	if err != nil {
 		return nil, ntotal, fmt.Errorf("LoadMEMWAL() error on GreenMemWalKV.UnmarshalMsg(): '%s'; bs2='%#v'; string(bs2)='%v' (len: %v); partly decoded GreenMEMWAL_KV: '%#v'", err, tmp, string(tmp), len(tmp), g)
 	}
-	r.R.Skip(ntotal)
-	return g, ntotal, nil
+	_, err = r.R.Skip(ntotal)
+	panicOn(err)
+
+	// read the crc32c checksum. should take up 10 bytes: 2 description + 8 payload.
+	var bs2 ByteSlice
+	err = bs2.DecodeMsg(r)
+	if err != nil {
+		return nil, ntotal, fmt.Errorf("LoadMEMWAL() crc32c read error on ByteSlice(by).DecodeMsg(): '%s'", err)
+	}
+
+	got := crc32.Checksum(tmp[nheader:], crc32cTable)
+	want := binary.LittleEndian.Uint32(bs2[:4])
+	if got != want {
+		return nil, ntotal + 10, fmt.Errorf("crc32c checksum failed! got=%v; want=%v", got, want)
+	}
+	return g, ntotal + 10, nil
 }
 
 // save g to w.
@@ -196,7 +211,13 @@ func (g *GreenMEMWAL_KV) Save(w *msgp.Writer) error {
 	if err != nil {
 		return err
 	}
-	return ByteSlice(b).EncodeMsg(w)
+	var crcBuf [8]byte = [8]byte{'1', '2', '3', '4', '=', '=', '=', '\n'}
+	binary.LittleEndian.PutUint32(crcBuf[:4], crc32.Checksum(b, crc32cTable))
+	err = ByteSlice(b).EncodeMsg(w)
+	if err != nil {
+		return err
+	}
+	return ByteSlice(crcBuf[:]).EncodeMsg(w)
 }
 
 // Save g as a framed msgpack message (where first few bytes are a []byte encoded

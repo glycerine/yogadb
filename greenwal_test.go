@@ -8,14 +8,44 @@ import (
 	"github.com/glycerine/greenpack/msgp"
 )
 
+func num2str(j int) string {
+	switch j {
+	case 0:
+		return "zero"
+	case 1:
+		return "one"
+	case 2:
+		return "two"
+	case 3:
+		return "three"
+	case 4:
+		return "four"
+	case 5:
+		return "five"
+	case 6:
+		return "six"
+	case 7:
+		return "seven"
+	case 8:
+		return "eight"
+	case 9:
+		return "nine"
+	case 10:
+		return "ten"
+	}
+	panicf("%v too large, not supported by num2str()", j)
+	return ""
+}
+
 func makeTestGreenMEMWAL_KV(j int) (g *GreenMEMWAL_KV) {
+	str := num2str(j)
 	g = &GreenMEMWAL_KV{
 		WalRecordType: int32(1 + j),
 		VptrLength:    uint64(2 + j),
 		VptrOffset:    uint64(3 + j),
 		Hlc:           int64(4 + j),
-		Key:           "five_key",
-		InlineVal:     []byte("five_value"),
+		Key:           str + "_key",
+		InlineVal:     []byte(str + "_value"),
 		CRC32c:        [4]byte{byte(6 + j), byte(5 + j), byte(4 + j), byte(3 + j)},
 	}
 	return
@@ -27,7 +57,7 @@ func Test222TestLoadSave_of_GreenMEMWAL_KV(t *testing.T) {
 	fn := "test.greenwal_kv.222.msgp"
 	f, err := os.Create(fn)
 	panicOn(err)
-	defer os.Remove(fn)
+	//defer os.Remove(fn)
 	w := msgp.NewWriter(f)
 
 	g := make([]*GreenMEMWAL_KV, N)
