@@ -12,6 +12,20 @@ import (
 	"github.com/glycerine/vfs"
 )
 
+var errMemWALWriteForTest = errors.New("injected memwal write failure")
+
+type failWriteAtFileForTest struct {
+	vfs.File
+	failWriteAt bool
+}
+
+func (f *failWriteAtFileForTest) WriteAt(p []byte, off int64) (int, error) {
+	if f.failWriteAt {
+		return 0, errMemWALWriteForTest
+	}
+	return f.File.WriteAt(p, off)
+}
+
 // ====================== Helpers ======================
 
 func openTestDB(t *testing.T, cfg *Config) (*FlexDB, vfs.FS) {
@@ -326,7 +340,9 @@ func TestFlexDB_PersistenceWAL(t *testing.T) {
 	mustPut(t, db, "b", "2")
 	// Flush WAL but don't Sync() (don't flush to FlexSpace).
 	// WAL is written on every Put, so data is in WAL.
-	db.mt.logFlush()
+	if err := db.mt.logFlush(); err != nil {
+		t.Fatalf("flush memwal: %v", err)
+	}
 	// Close without Sync - but Close() itself flushes active memtable
 	db.Close()
 

@@ -1,5 +1,7 @@
 package yogadb
 
+import "errors"
+
 // ReadOnlyDB provides read-only access to the database within a View
 // transaction. Methods must not be used after the callback returns.
 // ReadOnlyDB is implemented by ReadOnlyTx.
@@ -225,17 +227,31 @@ var _ WritableDB = (*WriteTx)(nil)
 
 func (tx *WriteTx) ensureWalTxn() error {
 	if !tx.walTxnBegun {
-		tx.db.mt.logAppendWalRecordType(MEMWAL_BEGIN_TXN)
+		if err := tx.db.mt.logAppendWalRecordType(MEMWAL_BEGIN_TXN); err != nil {
+			return err
+		}
 		tx.walTxnBegun = true
 	}
 	return nil
 }
 
-func (tx *WriteTx) commitWalTxn() {
+func (tx *WriteTx) commitWalTxn() error {
 	if tx.walTxnBegun {
-		tx.db.mt.logAppendWalRecordType(MEMWAL_COMMIT_TXN)
+		if err := tx.db.mt.logAppendWalRecordType(MEMWAL_COMMIT_TXN); err != nil {
+			return err
+		}
 		tx.walTxnBegun = false
 	}
+	return nil
+}
+
+func (tx *WriteTx) Rollback() {
+	// TODO: implement by discarding all memtable updates and
+	// truncating the MEMWAL log frm the start of this transaction to the end. We could record the length of
+	// the log so we know exactly where we started, and that offset could be where we truncate if
+	// we Rollback().
+	// Any other action after Rollback() should return an error, maybe panic, since the transaction
+	// is now dead.
 }
 
 // Get retrieves the value for key. Returns (nil, false, nil) if not found
@@ -276,7 +292,9 @@ func (tx *WriteTx) Delete(key string) error {
 
 // Sync flushes all in-memory data to disk and fsyncs.
 func (tx *WriteTx) Sync() error {
-	tx.commitWalTxn()
+	if err := tx.commitWalTxn(); err != nil {
+		return err
+	}
 	return tx.db.writeLockHeldSync()
 }
 
@@ -605,7 +623,7 @@ func (db *FlexDB) Update(fn func(rw *WriteTx) error) (err error) {
 	db.topMutRW.Lock()
 	tx := &WriteTx{txBase: txBase{db: db}}
 	defer func() {
-		tx.commitWalTxn()
+		err = errors.Join(err, tx.commitWalTxn())
 		tx.closeAll()
 		db.topMutRW.Unlock()
 	}()
@@ -636,10 +654,11 @@ func (db *FlexDB) BeginUpdate() *WriteTx {
 	db.topMutRW.Lock()
 	return &WriteTx{txBase: txBase{db: db}}
 }
-func (wtx *WriteTx) Close() {
-	wtx.commitWalTxn()
+func (wtx *WriteTx) Close() error {
+	err := wtx.commitWalTxn()
 	wtx.closeAll()
 	wtx.db.topMutRW.Unlock()
+	return err
 }
 
 func (db *FlexDB) BeginView() *ReadOnlyTx {

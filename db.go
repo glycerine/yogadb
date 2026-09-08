@@ -265,7 +265,9 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 
 		if mt.size >= memtableCap {
 			// Memtable full - flush inline.
-			mt.logFlushLocked()
+			if err := mt.logFlushLocked(); err != nil {
+				return HLCInterval{}, nil, fmt.Errorf("flexdb: batch flush memwal: %w", err)
+			}
 
 			if err := db.flushMemtable(); err != nil {
 				return HLCInterval{}, nil, fmt.Errorf("flexdb: batch flush memtable: %w", err)
@@ -283,16 +285,20 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		}
 		putKV := *s.puts[idx]
 		newState := kvToState(putKV)
-		old, replaced := mt.put(putKV)
 		var oldState keyState
+		old, replaced := mt.get(putKV.Key)
 		if replaced {
 			oldState = kvToState(old)
 		} else {
 			oldState = db.writeLockHeldKeyState(putKV.Key)
 		}
-		db.adjustKeyCounters(oldState, newState)
 
-		mt.logAppendKVLocked(*s.puts[idx])
+		if err := mt.logAppendKVLocked(putKV); err != nil {
+			return HLCInterval{}, nil, fmt.Errorf("flexdb: batch append memwal key=%q: %w", putKV.Key, err)
+		}
+		mt.put(putKV)
+		mt.empty = false
+		db.adjustKeyCounters(oldState, newState)
 	}
 
 	mt.empty = false
@@ -302,7 +308,9 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	// WAL stores VPtrs for large values (VLOG was fsynced above).
 
 	if doFsync && !db.cfg.OmitMemWalFsync {
-		mt.logSyncLocked() // here in Batch.Commit(doFsync=true)
+		if err := mt.logSyncLocked(); err != nil { // here in Batch.Commit(doFsync=true)
+			return HLCInterval{}, nil, fmt.Errorf("flexdb: batch sync memwal: %w", err)
+		}
 	}
 
 	// make ready for immediate reuse after a Commit.
@@ -1042,7 +1050,15 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 
 	// Recovery or fresh DB.
 	ffSize := ff.Size()
-	walSize := db.mt.memWalSize()
+	walSize, err := db.mt.memWalSize()
+	if err != nil {
+		ff.Close()
+		walFD.Close()
+		if vl != nil {
+			vl.close()
+		}
+		return nil, fmt.Errorf("flexdb: inspect memwal: %w", err)
+	}
 	if ffSize > 0 || walSize > memWalHeaderSize {
 		if err := db.recovery(); err != nil {
 			ff.Close()
@@ -1060,7 +1076,14 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 
 	// Reset WAL (always use 20-byte versioned header for consistent disk format)
 	ts := uint64(time.Now().UnixNano())
-	db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
+	if err := db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
+		ff.Close()
+		walFD.Close()
+		if vl != nil {
+			vl.close()
+		}
+		return nil, fmt.Errorf("flexdb: initialize memwal: %w", err)
+	}
 
 	// Start flush worker goroutine (unless disabled for fuzz testing).
 	if !db.cfg.DisableBackgroundFlush {
@@ -1092,7 +1115,9 @@ func (db *FlexDB) Close() *Metrics {
 
 	// Flush any data that is still in the memtable.
 	if !db.mt.empty {
-		db.mt.logFlush()
+		if err := db.mt.logFlush(); err != nil {
+			panicf("Close flush memwal: %v", err)
+		}
 		if err := db.flushMemtable(); err != nil {
 			panicf("Close flush memtable: %v", err)
 		}
@@ -1115,7 +1140,9 @@ func (db *FlexDB) Close() *Metrics {
 
 	// Truncate WAL (always use 20-byte versioned header for consistent disk format)
 	ts := uint64(time.Now().UnixNano())
-	db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
+	if err := db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
+		panicf("Close truncate memwal: %v", err)
+	}
 
 	db.cache.destroyAll()
 	var vlogFoot, kvFoot int64
@@ -2306,9 +2333,13 @@ func (db *FlexDB) writeLockHeldSync() error {
 
 	// Flush memtable to FlexSpace.
 	if db.cfg.OmitMemWalFsync {
-		db.mt.logFlush() // insufficient for safety: does not fdatasync!
+		if err := db.mt.logFlush(); err != nil { // insufficient for safety: does not fdatasync!
+			return fmt.Errorf("flexdb: Sync flush memwal: %w", err)
+		}
 	} else {
-		db.mt.logSync() // flush + fdatasync. here in FlexDB.Sync()
+		if err := db.mt.logSync(); err != nil { // flush + fdatasync. here in FlexDB.Sync()
+			return fmt.Errorf("flexdb: Sync sync memwal: %w", err)
+		}
 	}
 	if err := db.flushMemtable(); err != nil {
 		return fmt.Errorf("flexdb: Sync flush memtable: %w", err)
@@ -2340,7 +2371,9 @@ func (db *FlexDB) writeLockHeldSync() error {
 	}
 
 	ts := uint64(time.Now().UnixNano())
-	db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
+	if err := db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
+		return fmt.Errorf("flexdb: Sync truncate memwal: %w", err)
+	}
 
 	db.mt.bt.Clear()
 	db.mt.empty = true
@@ -2480,7 +2513,9 @@ func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string,
 			return 0, fmt.Errorf("flexdb: memtable full during write transaction; call tx.Sync() before adding more writes")
 		}
 		// Inline flush when memtable is full.
-		db.mt.logFlush()
+		if err := db.mt.logFlush(); err != nil {
+			return 0, fmt.Errorf("flexdb: Put inline flush memwal: %w", err)
+		}
 		if err := db.flushMemtable(); err != nil {
 			return 0, fmt.Errorf("flexdb: Put inline flush memtable: %w", err)
 		}
@@ -2501,20 +2536,23 @@ func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string,
 		}
 	}
 	newState := kvToState(kv)
-	old, replaced := db.mt.put(kv)
-	db.mt.empty = false
-
 	var oldState keyState
+	old, replaced := db.mt.get(key)
 	if replaced {
 		oldState = kvToState(old)
 	} else {
 		oldState = db.writeLockHeldKeyState(key)
 	}
-	db.adjustKeyCounters(oldState, newState)
 
 	// WAL stores VPtr metadata for large values. Since LARGE.VLOG was fsynced
 	// above, the VPtr is safe to reference on crash recovery.
-	db.mt.logAppend(kv)
+	if err := db.mt.logAppend(kv); err != nil {
+		return 0, fmt.Errorf("flexdb: append memwal key=%q: %w", key, err)
+	}
+
+	db.mt.put(kv)
+	db.mt.empty = false
+	db.adjustKeyCounters(oldState, newState)
 
 	return hlcVal, nil
 }
@@ -3251,7 +3289,9 @@ func (db *FlexDB) writeLockHeldDeleteAll() error {
 
 	// 8. Truncate WAL file.
 	ts := uint64(time.Now().UnixNano())
-	db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
+	if err := db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
+		return fmt.Errorf("yogadb: DeleteAll: truncate memwal: %w", err)
+	}
 
 	// 9. (no longer need to: Restart flush worker; we never killed it).
 
@@ -4198,11 +4238,18 @@ func (db *FlexDB) recovery() error {
 	treeVer := db.ff.tree.PersistentVersion
 
 	// Replay current WAL (FLEXDB.MEMWAL).
-	walSize := db.mt.memWalSize()
+	walSize, err := db.mt.memWalSize()
+	if err != nil {
+		return fmt.Errorf("flexdb: recovery inspect memwal: %w", err)
+	}
 	walHdr := db.mt.memWalDataOffset()
 	skipWal := false
 	if db.ff.omitRedoLog {
-		if v := db.mt.logTreeVersion(); v > 0 && v <= treeVer {
+		v, err := db.mt.logTreeVersion()
+		if err != nil {
+			return fmt.Errorf("flexdb: recovery read memwal tree version: %w", err)
+		}
+		if v > 0 && v <= treeVer {
 			skipWal = true
 		}
 	}
@@ -4435,8 +4482,12 @@ func (db *FlexDB) doFlush() error {
 	}
 
 	// Flush WAL to disk
-	db.mt.logFlush()
-	panicOn(db.mt.memWalFD.Sync())
+	if err := db.mt.logFlush(); err != nil {
+		return fmt.Errorf("doFlush flush memwal: %w", err)
+	}
+	if err := db.mt.memWalFD.Sync(); err != nil {
+		return fmt.Errorf("doFlush sync memwal: %w", err)
+	}
 
 	// Flush memtable to FlexSpace
 	if err := db.flushMemtable(); err != nil {
@@ -4451,7 +4502,9 @@ func (db *FlexDB) doFlush() error {
 
 	// Truncate WAL (always use 20-byte versioned header for consistent disk format)
 	ts := uint64(time.Now().UnixNano())
-	db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion)
+	if err := db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
+		return fmt.Errorf("doFlush truncate memwal: %w", err)
+	}
 
 	// Clear the btree
 	db.mt.bt.Clear()

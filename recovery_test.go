@@ -274,7 +274,9 @@ func writeRawMemWALForRecoveryTest(t *testing.T, fs vfs.FS, dir string, payload 
 		t.Fatalf("OpenReadWrite FLEXDB.MEMWAL: %v", err)
 	}
 	mt := newMemtable(fd)
-	mt.logTruncateWithVersion(uint64(time.Now().UnixNano()), 0)
+	if err := mt.logTruncateWithVersion(uint64(time.Now().UnixNano()), 0); err != nil {
+		t.Fatalf("truncate memwal with version: %v", err)
+	}
 	if len(payload) > 0 {
 		n, err := fd.WriteAt(payload, memWalHeaderSize)
 		if err != nil {
@@ -638,7 +640,9 @@ func TestRecovery_WriteTxUpdateUsesGreenMEMWALCommitMarkers(t *testing.T) {
 		t.Fatalf("Update: %v", err)
 	}
 
-	db.mt.logSync()
+	if err := db.mt.logSync(); err != nil {
+		t.Fatalf("sync memwal: %v", err)
+	}
 	crashedFS := fs.CrashClone(vfs.CrashCloneCfg{UnsyncedDataPercent: 0})
 
 	db2, err := OpenFlexDB(dir, &Config{

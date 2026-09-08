@@ -29,6 +29,39 @@ func TestTx_UpdateBasic(t *testing.T) {
 	mustGet(t, db, "k3", "v3")
 }
 
+func TestTxPutReturnsMemWALBeginErrorBeforeApplyingWrite(t *testing.T) {
+	fs, dir := newTestFS(t)
+	db, err := OpenFlexDB(dir, &Config{
+		FS:                     fs,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB: %v", err)
+	}
+
+	failFD := &failWriteAtFileForTest{File: db.mt.memWalFD, failWriteAt: true}
+	db.mt.memWalFD = failFD
+	db.mt.memWalBuf = db.mt.memWalBuf[:memtableWalBufCap-1]
+
+	err = db.Update(func(rwDB *WriteTx) error {
+		_, err := rwDB.Put("wal-fail", []byte("value"), 0)
+		return err
+	})
+	if !errors.Is(err, errMemWALWriteForTest) {
+		t.Fatalf("Update error = %v, want injected MEMWAL write failure", err)
+	}
+	if _, ok := db.mt.get("wal-fail"); ok {
+		t.Fatal("failed transaction write was applied to memtable")
+	}
+	if value, found, _, _, err := db.Get("wal-fail"); err != nil || found {
+		t.Fatalf("Get after failed WAL begin = (%q, %v, %v), want not found with nil error", value, found, err)
+	}
+
+	failFD.failWriteAt = false
+	db.mt.memWalBuf = db.mt.memWalBuf[:0]
+	db.Close()
+}
+
 func TestTx_GreenMEMWALLazyBeginAfterSync(t *testing.T) {
 	db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
 
@@ -41,8 +74,8 @@ func TestTx_GreenMEMWALLazyBeginAfterSync(t *testing.T) {
 	if len(db.mt.memWalBuf) != 0 {
 		t.Fatalf("empty Update left %d buffered MEMWAL bytes, want 0", len(db.mt.memWalBuf))
 	}
-	if got := db.mt.memWalSize(); got != memWalHeaderSize {
-		t.Fatalf("empty Update MEMWAL size = %d, want %d", got, memWalHeaderSize)
+	if got, err := db.mt.memWalSize(); err != nil || got != memWalHeaderSize {
+		t.Fatalf("empty Update MEMWAL size = %d err=%v, want %d nil", got, err, memWalHeaderSize)
 	}
 
 	err = db.Update(func(rwDB *WriteTx) error {
@@ -57,8 +90,8 @@ func TestTx_GreenMEMWALLazyBeginAfterSync(t *testing.T) {
 	if len(db.mt.memWalBuf) != 0 {
 		t.Fatalf("Update after tx.Sync left %d buffered MEMWAL bytes, want 0", len(db.mt.memWalBuf))
 	}
-	if got := db.mt.memWalSize(); got != memWalHeaderSize {
-		t.Fatalf("Update after tx.Sync MEMWAL size = %d, want %d", got, memWalHeaderSize)
+	if got, err := db.mt.memWalSize(); err != nil || got != memWalHeaderSize {
+		t.Fatalf("Update after tx.Sync MEMWAL size = %d err=%v, want %d nil", got, err, memWalHeaderSize)
 	}
 }
 
