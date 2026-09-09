@@ -23,10 +23,11 @@ type GreenMEMWAL_KV struct {
 }
 
 const (
-	MEMWAL_KV         int32 = 0
-	MEMWAL_BEGIN_TXN  int32 = 1
-	MEMWAL_COMMIT_TXN int32 = 2
-	MEMWAL_BATCH_KV   int32 = 3
+	MEMWAL_KV           int32 = 0
+	MEMWAL_BEGIN_TXN    int32 = 1
+	MEMWAL_COMMIT_TXN   int32 = 2
+	MEMWAL_BATCH_KV     int32 = 3
+	MEMWAL_BATCH_KV_HLC int32 = 4
 )
 
 const compactMEMWALMagic = "\x00YMW1"
@@ -89,7 +90,7 @@ func compactPayloadToGreenMEMWAL(payload []byte, g *GreenMEMWAL_KV) (bool, error
 	g.Hlc = 0
 	g.Key = ""
 	g.InlineVal = g.InlineVal[:0]
-	if g.WalRecordType == MEMWAL_BATCH_KV {
+	if g.WalRecordType == MEMWAL_BATCH_KV || g.WalRecordType == MEMWAL_BATCH_KV_HLC {
 		g.InlineVal = append(g.InlineVal[:0], payload...)
 		return true, nil
 	}
@@ -146,6 +147,19 @@ func compactPayloadToGreenMEMWAL(payload []byte, g *GreenMEMWAL_KV) (bool, error
 }
 
 func appendCompactBatchPayload(b []byte, kvs []KV) []byte {
+	if len(kvs) > 0 {
+		hlc := kvs[0].Hlc
+		allSameHLC := true
+		for i := 1; i < len(kvs); i++ {
+			if kvs[i].Hlc != hlc {
+				allSameHLC = false
+				break
+			}
+		}
+		if allSameHLC {
+			return appendCompactBatchHLCPayload(b, kvs, hlc)
+		}
+	}
 	b = append(b, compactMEMWALMagic...)
 	b = binary.AppendVarint(b, int64(MEMWAL_BATCH_KV))
 	b = binary.AppendUvarint(b, uint64(len(kvs)))
@@ -162,8 +176,46 @@ func appendCompactBatchPayload(b []byte, kvs []KV) []byte {
 	return b
 }
 
+func appendCompactBatchHLCPayload(b []byte, kvs []KV, hlc HLC) []byte {
+	b = append(b, compactMEMWALMagic...)
+	b = binary.AppendVarint(b, int64(MEMWAL_BATCH_KV_HLC))
+	b = binary.AppendUvarint(b, uint64(len(kvs)))
+	b = binary.AppendVarint(b, int64(hlc))
+	for i := range kvs {
+		kv := &kvs[i]
+		b = binary.AppendUvarint(b, kv.Vptr.Length)
+		b = binary.AppendUvarint(b, kv.Vptr.Offset)
+		b = binary.AppendUvarint(b, uint64(len(kv.Key)))
+		b = append(b, kv.Key...)
+		b = binary.AppendUvarint(b, uint64(len(kv.Value)))
+		b = append(b, kv.Value...)
+	}
+	return b
+}
+
 func compactBatchPayloadSize(kvs []KV) int {
 	size := len(compactMEMWALMagic) + binary.MaxVarintLen64 + binary.MaxVarintLen64
+	if len(kvs) > 0 {
+		hlc := kvs[0].Hlc
+		allSameHLC := true
+		for i := 1; i < len(kvs); i++ {
+			if kvs[i].Hlc != hlc {
+				allSameHLC = false
+				break
+			}
+		}
+		if allSameHLC {
+			size += binary.MaxVarintLen64
+			for i := range kvs {
+				kv := &kvs[i]
+				size += binary.MaxVarintLen64 // VptrLength
+				size += binary.MaxVarintLen64 // VptrOffset
+				size += binary.MaxVarintLen64 + len(kv.Key)
+				size += binary.MaxVarintLen64 + len(kv.Value)
+			}
+			return size
+		}
+	}
 	for i := range kvs {
 		kv := &kvs[i]
 		size += binary.MaxVarintLen64 // VptrLength
@@ -173,6 +225,68 @@ func compactBatchPayloadSize(kvs []KV) int {
 		size += binary.MaxVarintLen64 + len(kv.Value)
 	}
 	return size
+}
+
+func compactBatchHLCPayloadToKVs(payload []byte, out []KV) ([]KV, error) {
+	count, n := binary.Uvarint(payload)
+	if n <= 0 {
+		return out, fmt.Errorf("compact MEMWAL batch HLC count decode failed")
+	}
+	payload = payload[n:]
+	hlc, n := binary.Varint(payload)
+	if n <= 0 {
+		return out, fmt.Errorf("compact MEMWAL batch HLC decode failed")
+	}
+	payload = payload[n:]
+	if count > uint64(int(^uint(0)>>1)) {
+		return out, fmt.Errorf("compact MEMWAL batch HLC count overflows int: %d", count)
+	}
+	if cap(out)-len(out) < int(count) {
+		newOut := make([]KV, len(out), len(out)+int(count))
+		copy(newOut, out)
+		out = newOut
+	}
+	for i := 0; i < int(count); i++ {
+		var kv KV
+		u, n := binary.Uvarint(payload)
+		if n <= 0 {
+			return out, fmt.Errorf("compact MEMWAL batch HLC[%d] VptrLength decode failed", i)
+		}
+		kv.Vptr.Length = u
+		payload = payload[n:]
+		u, n = binary.Uvarint(payload)
+		if n <= 0 {
+			return out, fmt.Errorf("compact MEMWAL batch HLC[%d] VptrOffset decode failed", i)
+		}
+		kv.Vptr.Offset = u
+		payload = payload[n:]
+		kv.Hlc = HLC(hlc)
+		u, n = binary.Uvarint(payload)
+		if n <= 0 {
+			return out, fmt.Errorf("compact MEMWAL batch HLC[%d] key length decode failed", i)
+		}
+		payload = payload[n:]
+		if u > uint64(len(payload)) {
+			return out, fmt.Errorf("compact MEMWAL batch HLC[%d] key length %d exceeds remaining %d", i, u, len(payload))
+		}
+		kv.Key = string(payload[:u])
+		payload = payload[u:]
+		u, n = binary.Uvarint(payload)
+		if n <= 0 {
+			return out, fmt.Errorf("compact MEMWAL batch HLC[%d] value length decode failed", i)
+		}
+		payload = payload[n:]
+		if u > uint64(len(payload)) {
+			return out, fmt.Errorf("compact MEMWAL batch HLC[%d] value length %d exceeds remaining %d", i, u, len(payload))
+		}
+		kv.Value = append(kv.Value[:0], payload[:u]...)
+		payload = payload[u:]
+		out = append(out, kv)
+	}
+	if len(payload) != 0 {
+		return out, fmt.Errorf("compact MEMWAL batch HLC has %d trailing bytes", len(payload))
+	}
+	return out, nil
 }
 
 func compactBatchPayloadToKVs(payload []byte, out []KV) ([]KV, error) {

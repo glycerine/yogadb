@@ -108,7 +108,7 @@ const (
 	// And go test -v -tags memfs -run=xxx -bench BigRandomRWBatch
 	//
 	// 10 is a nice middle ground: 2x write vs Pebble,2x read vs Bolt. With tight splits (Config.PaddedSplits = false, the default).
-	SLOTTED_PAGE_KB = 10 // 10:5.214 8:5.84 12:7.874 // up from 2 to 10 seems to help scans alot. 10: (9.984, 10.01, 9.817 ns/key); 2: (23.72 ns/key); 20:14.84 128: 4ns/key sequential scan, nice. 8: 5.347 ns/key. 4: very fast insert. 7.6 ns/key full scan. 32:4.473 ns/key. choice for now: keep at 4 for a litle balance between insert and scan through. but 64:4.168 ns/key, but random rw slows 2x.
+	SLOTTED_PAGE_KB = 4 // 10:5.214 8:5.84 12:7.874 // up from 2 to 10 seems to help scans alot. 10: (9.984, 10.01, 9.817 ns/key); 2: (23.72 ns/key); 20:14.84 128: 4ns/key sequential scan, nice. 8: 5.347 ns/key. 4: very fast insert. 7.6 ns/key full scan. 32:4.473 ns/key. choice for now: keep at 4 for a litle balance between insert and scan through. but 64:4.168 ns/key, but random rw slows 2x.
 
 	slottedPageMaxSize = SLOTTED_PAGE_KB * 1024 // e.g. 65536 bytes if we used 64 for SLOTTED_PAGE_KB
 
@@ -150,6 +150,10 @@ func slottedPageEncodePadded(kvs []KV, targetSize int) []byte {
 // slottedPageEncodeInto is the common encoder. If targetSize > 0, the output is
 // padded to exactly targetSize bytes. Otherwise, output is tight (no padding).
 func slottedPageEncodeInto(kvs []KV, unsorted uint8, targetSize int) []byte {
+	return slottedPageEncodeIntoBuffer(nil, kvs, unsorted, targetSize)
+}
+
+func slottedPageEncodeIntoBuffer(dst []byte, kvs []KV, unsorted uint8, targetSize int) []byte {
 	count := len(kvs)
 	if count == 0 {
 		if targetSize > 0 {
@@ -206,7 +210,15 @@ func slottedPageEncodeInto(kvs []KV, unsorted uint8, targetSize int) []byte {
 		}
 	}
 
-	buf := make([]byte, totalSize)
+	var buf []byte
+	if cap(dst) >= totalSize {
+		buf = dst[:totalSize]
+		if targetSize > contentSize {
+			clear(buf[contentSize:targetSize])
+		}
+	} else {
+		buf = make([]byte, totalSize)
+	}
 
 	// --- Header ---
 	copy(buf[0:slottedPageMagicSize], slottedPageMagic[:])

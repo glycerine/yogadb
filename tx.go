@@ -793,7 +793,7 @@ func (db *FlexDB) beginWriteTxLocked(managedByUpdate bool) (*WriteTx, error) {
 // Do NOT call db.Get inside fn - use roDB methods instead (deadlock).
 func (db *FlexDB) View(fn func(ro *ReadOnlyTx) error) (err error) {
 	db.topMutRW.Lock()
-	db.mt.materializeBulk()
+	db.materializeBulkInitialLocked()
 	tx := &ReadOnlyTx{txBase{db: db}}
 	defer func() {
 		tx.closeAll()
@@ -815,7 +815,7 @@ func (db *FlexDB) BeginUpdate() (*WriteTx, error) {
 
 func (db *FlexDB) BeginView() *ReadOnlyTx {
 	db.topMutRW.Lock()
-	db.mt.materializeBulk()
+	db.materializeBulkInitialLocked()
 	db.topMutRW.Unlock()
 	db.topMutRW.RLock()
 	return &ReadOnlyTx{txBase{db: db}}

@@ -21,9 +21,10 @@ type memtable struct {
 	// bulkKVs/bulkIndex are used only for pristine initial batch loads. They
 	// avoid per-key B-tree insertion until a read requires materialization or
 	// Sync streams the sorted entries directly to FlexSpace.
-	bulkKVs   []KV
-	bulkIndex bulkKVIndex
-	bulkOrder []int
+	bulkKVs         []KV
+	bulkIndex       bulkKVIndex
+	bulkOrder       []int
+	bulkCountsDirty bool
 
 	memWalFD          vfs.File // FLEXDB.MEMWAL
 	memWalBuf         []byte
@@ -55,6 +56,7 @@ func (m *memtable) reset() {
 	m.bulkKVs = m.bulkKVs[:0]
 	m.bulkIndex.reset()
 	m.bulkOrder = m.bulkOrder[:0]
+	m.bulkCountsDirty = false
 }
 
 // caller should set m.empty to false after calling put()
@@ -73,15 +75,10 @@ func (m *memtable) put(kv KV) (KV, bool) {
 }
 
 func (m *memtable) putBulk(kv KV) (KV, bool) {
-	if idx, ok := m.bulkIndex.get(kv.Key); ok {
-		old := m.bulkKVs[idx]
-		m.bulkKVs[idx] = kv
-		m.size += int64(kvSizeApprox(&kv) - kvSizeApprox(&old))
-		return old, true
-	}
-	m.bulkIndex.set(kv.Key, len(m.bulkKVs))
 	m.bulkKVs = append(m.bulkKVs, kv)
 	m.size += int64(kvSizeApprox(&kv))
+	m.bulkIndex.reset()
+	m.bulkCountsDirty = true
 	if m.size <= 0 {
 		panicf("bad: memtable with some content should have size(%v) > 0: %#v", m.size, m)
 	}
@@ -98,7 +95,6 @@ func (m *memtable) ensureBulkIndexCap(n int) {
 		copy(newBulk, m.bulkKVs)
 		m.bulkKVs = newBulk
 	}
-	m.bulkIndex.ensureCap(n)
 }
 
 func (m *memtable) materializeBulk() {
@@ -110,13 +106,25 @@ func (m *memtable) materializeBulk() {
 	}
 	m.bulkKVs = m.bulkKVs[:0]
 	m.bulkIndex.reset()
+	m.bulkCountsDirty = false
 }
 
 func (m *memtable) get(key string) (KV, bool) {
+	m.ensureBulkIndex()
 	if idx, ok := m.bulkIndex.get(key); ok {
 		return m.bulkKVs[idx], true
 	}
 	return m.bt.Get(KV{Key: key})
+}
+
+func (m *memtable) ensureBulkIndex() {
+	if len(m.bulkKVs) == 0 || m.bulkIndex.m != nil {
+		return
+	}
+	m.bulkIndex.ensureCap(len(m.bulkKVs))
+	for i := range m.bulkKVs {
+		m.bulkIndex.set(m.bulkKVs[i].Key, i)
+	}
 }
 
 type bulkKVIndex struct {
