@@ -4211,43 +4211,14 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 	}
 	if !intervalCacheEntryWouldFit(fce, kv, replaceIdx, fitTarget) {
 		if eq {
-			// Replacing an existing key - the entry count stays the same.
-			// The overflow is from HLC varint growth (mixed old/new HLCs
-			// inflate delta encoding). Instead of splitting (which would
-			// allocate a new 4MB block for a half-page of data), grow the
-			// page in-place via ff.Update (collapse old + insert new).
-			kvs, size := intervalCacheEntryPreviewUpsert(fce, kv, idx, eq)
-			newSize := slottedPageComputeSize(kvs)
-			if newSize > int(anchor.psize) && newSize < 2*slottedPageMaxSize {
-				// Page genuinely grew - resize the extent in place.
-				buf := slottedPageEncode(kvs)
-				anchorLoff := uint64(anchor.loff + nh.shift)
-				//alwaysPrintf("putPassthroughR Update: oldPsize=%d newSize=%d key=%q",
-				//	anchor.psize, len(buf), kv.Key)
-				anchor.unsorted = 0
-				if _, err := db.updateAnchorPage(anchor, anchorLoff, buf, anchor.psize); err != nil {
-					return fmt.Errorf("putPassthroughR update anchor key=%q loff=%d oldPSize=%d newPSize=%d maxLoff=%d: %w",
-						anchor.key, anchorLoff, anchor.psize, len(buf), db.ff.tree.MaxLoff, err)
-				}
-				partition.replaceEntryContents(fce, kvs, size)
-				nh.shiftUpPropagate(int64(len(buf)) - int64(anchor.psize))
-				anchor.psize = uint32(len(buf))
-				fce.dirty = false // just written
-				fce.dirtyNode = nil
-			} else if newSize >= 2*slottedPageMaxSize {
-				// Pathological growth - fall through to split.
-				snap := partition.snapshotEntry(fce)
-				partition.replaceEntryContents(fce, kvs, size)
-				if err := db.treeInsertAnchor(nh, partition, fce); err != nil {
-					partition.restoreEntry(fce, snap)
-					return err
-				}
-				db.putPassthroughMarkDirty(nh, anchor, fce)
-			} else {
-				// Fits after replace (e.g., new value is smaller).
-				partition.replaceEntryContents(fce, kvs, size)
-				db.putPassthroughMarkDirty(nh, anchor, fce)
-			}
+			// Replacing an existing key keeps the entry count unchanged.
+			// If the page appears too large here, it is often only because
+			// this page temporarily mixes old and new HLC bases while a reload
+			// or overwrite batch is walking through its keys. Do not physically
+			// resize on every key; let the dirty-page flush encode the final
+			// settled page once.
+			partition.cacheEntryReplace(fce, kv, idx)
+			db.putPassthroughMarkDirty(nh, anchor, fce)
 			return nil
 		}
 		// Inserting a new key - page genuinely full. Split.
