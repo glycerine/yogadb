@@ -41,7 +41,7 @@ const (
 	flexdbSparseIntervalCount         = 1000                  //2000(6.3); 100(8.974); 1000(5.894, 5.6) ; 1500(7.993), 4000(10.35), 500(7.142);                  // with flexdbUnsortedWriteQuota=6;              // old:500=>15.77 ; 2000=>14.64 ; 1000=>16.4; 3000=>14.53; 2000=>14.24; 200=>16.68; 4000(2000 flexdbUnsortedWriteQuota)=>
 	flexdbSparseIntervalSize          = SLOTTED_PAGE_KB << 10 // 64 KB
 	memtableCap                       = 1 << 30               // 1 GB
-	memtableWalBufCap                 = 4 << 20               // 4 MB log buffer (must be at least 2x than MaxKeySize + space for a KV struct) so we don't deadlock trying to flush the memtable and write a new large key.
+	memtableWalBufCap                 = 8 << 20               // 8 MB log buffer (must be at least 2x than MaxKeySize + space for a KV struct) so we don't deadlock trying to flush the memtable and write a new large key.
 	memtableFlushBatch                = 1024
 	flexdbUnsortedWriteQuota          = 6 // 8 // 15 // 200 // was 200 ; limited to 127 anyway in flexdbTagUnsorted(tag uint16) uint8 { return uint8((tag >> 1) & 0x7f) }; 2=>6.261; 4=>5.553; 8=>5.662, 9.699; 15=>6.037; 3=>6.753; 6=>6.819,6.312,6.329; 5=>7.3; 4=> 9.401, 7.485;
 	// sparseInterval = sortedCount + unsortedQuota + 1 = 32
@@ -62,11 +62,12 @@ var sep = string(os.PathSeparator)
 // It writes standalone MEMWAL_KV records; use Update for BEGIN/COMMIT grouped
 // crash recovery of multiple key writes.
 type Batch struct {
-	db         *FlexDB
-	puts       []KV
-	keyArena   []byte
-	valueArena []byte
-	err        error
+	db                    *FlexDB
+	puts                  []KV
+	keyArena              []byte
+	valueArena            []byte
+	recordsNeedValidation bool
+	err                   error
 }
 
 const (
@@ -99,6 +100,9 @@ func (s *Batch) Set(key string, value []byte, vtyp uint64) (err error) {
 	// Nil and empty values are the same zero-length live value.
 	var valueCopy []byte
 	if len(value) > 0 {
+		if len(value) > vlogInlineThreshold {
+			s.recordsNeedValidation = true
+		}
 		if s.valueArena == nil {
 			capHint := batchInitialValueArenaCap
 			if len(value) > capHint {
@@ -152,6 +156,9 @@ func (s *Batch) SetBytes(key []byte, value []byte, vtyp uint64) (err error) {
 
 	var valueCopy []byte
 	if len(value) > 0 {
+		if len(value) > vlogInlineThreshold {
+			s.recordsNeedValidation = true
+		}
 		if len(value) == len(key) && unsafe.SliceData(value) == unsafe.SliceData(key) {
 			valueCopy = keyCopy
 		} else {
@@ -231,6 +238,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		s.puts = nil
 		s.keyArena = nil
 		s.valueArena = nil
+		s.recordsNeedValidation = false
 		s.err = nil
 		return HLCInterval{}, nil, err
 	}
@@ -298,12 +306,15 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		}
 	}
 
-	for i := range s.puts {
-		if err := validateKV128RecordSizeAfterUserKey(s.puts[i]); err != nil {
-			s.puts = nil
-			s.keyArena = nil
-			s.valueArena = nil
-			return HLCInterval{}, nil, err
+	if s.recordsNeedValidation {
+		for i := range s.puts {
+			if err := validateKV128RecordSizeAfterUserKey(s.puts[i]); err != nil {
+				s.puts = nil
+				s.keyArena = nil
+				s.valueArena = nil
+				s.recordsNeedValidation = false
+				return HLCInterval{}, nil, err
+			}
 		}
 	}
 
@@ -342,6 +353,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 			s.puts = nil
 			s.keyArena = nil
 			s.valueArena = nil
+			s.recordsNeedValidation = false
 			interv = HLCInterval{Begin: curHLC, Endx: curHLC + 1}
 			return
 		}
@@ -412,6 +424,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	s.puts = nil
 	s.keyArena = nil
 	s.valueArena = nil
+	s.recordsNeedValidation = false
 
 	if wantMetrics {
 		if useBulkInitial && mt.bulk.dirty {
@@ -428,6 +441,7 @@ func (s *Batch) Reset() {
 	s.puts = nil
 	s.keyArena = nil
 	s.valueArena = nil
+	s.recordsNeedValidation = false
 	s.err = nil
 }
 
@@ -437,6 +451,7 @@ func (s *Batch) Close() {
 	s.puts = nil
 	s.keyArena = nil
 	s.valueArena = nil
+	s.recordsNeedValidation = false
 	s.err = nil
 }
 
@@ -862,6 +877,7 @@ type FlexDB struct {
 	// Put workloads can interleave with Sync/recovery patterns that still need
 	// the conservative point-insert flush path.
 	bulkInitialBatchLoad bool
+	dirSyncNeeded        bool
 
 	// flush worker
 	flushTrigger chan struct{}
@@ -1806,6 +1822,7 @@ func (db *FlexDB) VacuumVLOG() (*VacuumVLOGStats, error) {
 	if err := db.vfs.Rename(newPath, oldPath); err != nil {
 		return stats, fmt.Errorf("vacuum: rename: %w", err)
 	}
+	db.dirSyncNeeded = true
 	if err := db.vlog.reopen(oldPath); err != nil {
 		return stats, fmt.Errorf("vacuum: reopen: %w", err)
 	}
@@ -2039,6 +2056,7 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 	if err := db.vfs.Rename(vacuumPath, dataPath); err != nil { // oldpath, newpath
 		return stats, fmt.Errorf("vacuumkv: rename: %w", err)
 	}
+	db.dirSyncNeeded = true
 	//newFD2, err := db.vfs.OpenFile(dataPath, os.O_RDWR, 0644)
 	newFD2, err := db.vfs.OpenReadWrite(dataPath, vfs.WriteCategoryUnspecified)
 
@@ -2482,15 +2500,12 @@ func (db *FlexDB) writeLockHeldSync() error {
 		return nil // nothing to flush
 	}
 
-	// Flush memtable to FlexSpace.
-	if db.cfg.OmitMemWalFsync {
-		if err := db.mt.logFlush(); err != nil { // insufficient for safety: does not fdatasync!
-			return fmt.Errorf("flexdb: Sync flush memwal: %w", err)
-		}
-	} else {
-		if err := db.mt.logSync(); err != nil { // flush + fdatasync. here in FlexDB.Sync()
-			return fmt.Errorf("flexdb: Sync sync memwal: %w", err)
-		}
+	// Flush WAL bytes before moving the memtable into FlexSpace, but do not
+	// force the WAL here. Commit(doFsync=true) already provides per-commit WAL
+	// durability. Commit(false) is only promised durable after Sync returns, and
+	// by then these KVs have been written through the FlexSpace durable path.
+	if err := db.mt.logFlush(); err != nil {
+		return fmt.Errorf("flexdb: Sync flush memwal: %w", err)
 	}
 	if err := db.flushMemtable(); err != nil {
 		return fmt.Errorf("flexdb: Sync flush memtable: %w", err)
@@ -2517,8 +2532,11 @@ func (db *FlexDB) writeLockHeldSync() error {
 	}
 
 	// Sync the parent directory so new/renamed files are durable.
-	if err := syncDir(db.vfs, db.Path); err != nil {
-		return fmt.Errorf("flexdb: sync dir: %w", err)
+	if db.dirSyncNeeded {
+		if err := syncDir(db.vfs, db.Path); err != nil {
+			return fmt.Errorf("flexdb: sync dir: %w", err)
+		}
+		db.dirSyncNeeded = false
 	}
 
 	ts := uint64(time.Now().UnixNano())
