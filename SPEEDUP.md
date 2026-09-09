@@ -3213,3 +3213,101 @@ Allocation rose by about 1 MB/op from the large count table.
 Rejected and reverted. The wall-clock samples looked attractive, but line
 profiling showed the total sort cost remained about the same; the 16-bit pass
 mostly moved work around and increased allocation.
+
+### 2026-09-09: Experiments 101-109, Goal-5x Pass And Shippable Pause
+
+Goal:
+
+```text
+Beat Pebble write throughput by 5x while preserving correctness and the
+fast iter_bench_test.go read path.
+```
+
+Retained changes:
+
+```text
+1. Compact alias-key staging for initial bulk loads:
+   Batch.SetBytes(k, k, 0) can stage only copied key strings when values
+   alias keys, avoiding the per-entry []KV batch representation for unsorted
+   alias-only loads. One HLC still identifies the whole committed batch.
+
+2. Sorted alias batches route back through the materialized []KV path:
+   ascending/sorted loads keep the original fast sorted flush path and do not
+   pay compact-segment page materialization costs.
+
+3. Random alias batches stop sortedness checks after the first inversion:
+   random batches no longer compare every key against the previous key once
+   the batch is known unsorted.
+
+4. Ping-pong MSD radix sorter:
+   the ref/key sidecar sorter alternates buffers and avoids unconditional
+   copy-back at every recursion level.
+
+5. Specialized unsorted value-is-key page consumer:
+   all-value-is-key unsorted bulk flushes consume sorted refs through a compact
+   path, avoid generic KV classification, avoid generic kvSizeApprox alias
+   checks, and still preserve duplicate-key last/highest-HLC semantics.
+
+6. Cache-owned page slices for unsorted value-is-key bulk flushes:
+   finished page []KV slices are handed directly to the interval cache instead
+   of being copied during cache installation; the next page gets a fresh slice.
+
+7. bulkRadixInsertionCutoff = 8:
+   retested in the current retained regime and slightly faster than 16.
+```
+
+Representative result after retained changes:
+
+```text
+Focused correctness tests: PASS.
+Full suite: go test ./... -count=1 -timeout=600s PASS.
+
+Random YogaDB, count=12, 50x each:
+  20.53-22.79 ms/op, average about 21.5 ms/op.
+
+Paired random run:
+  YogaDB: 20.97-23.24 ms/op, average about 21.9 ms/op.
+  Pebble: 81.16-85.65 ms/op, average about 84.2 ms/op.
+  Ratio:  about 3.8-3.9x faster than Pebble.
+
+Iterator read guardrail:
+  Usually 3.7-4.0 ns/key with 1320 B/op and 3 allocs/op. Occasional first-run
+  outliers still appear, but the prior 50 ns/key regression is gone.
+```
+
+Rejected and reverted in this pass:
+
+```text
+8 KB slotted pages:
+  Random writes did not improve and iterator reads regressed badly
+  (roughly 10-23 ns/key with MB-scale allocations).
+
+One-byte uvarint fast path:
+  Kept the same page format, but did not statistically improve random writes.
+
+Order-only radix sorter:
+  Reduced allocation, but extra ref-to-key lookups outweighed the saved
+  keyAux writes. Random regressed to about 24-26 ms/op.
+
+FlexSpace fdatasync/SyncData trial on FLEXSPACE.KV128.BLOCKS:
+  Focused tests passed, but write throughput did not improve clearly and read
+  guardrail samples were less stable. Restored full Sync().
+
+Fixed-min-HLC page base for value-is-key pages:
+  Correct, but no measurable win and no reason to keep the added branches.
+
+Bounded parallel radix sorting:
+  Correct, but allocation count more than doubled and wall time did not improve.
+
+bulkRadixInsertionCutoff = 32:
+  Slower than 8/16 in the current retained path.
+```
+
+Current pause point:
+
+```text
+The code is in a shippable state with tests green. The 5x goal is not met for
+random NewCallID writes; the retained path is about 3.8-3.9x faster than Pebble
+on the paired Linux benchmark. The remaining gap is likely structural: sorting,
+page encoding/installation, key copying, and final data-file sync dominate.
+```
