@@ -1014,7 +1014,7 @@ type Config struct {
 	// AutoVacuumPct enables background vacuum when > 0. The value is the
 	// fraction of deleted logical bytes over resident+deleted bytes that
 	// should trigger automatic VacuumVLOG and VacuumKV. Values above 1 are
-	// clamped to 1.
+	// clamped to 1. The default of 0 means off (no auto-vacuuming).
 	AutoVacuumPct float64
 
 	// AutoVacuumDeletedAboveKB is the minimum deleted logical data threshold
