@@ -149,7 +149,7 @@ func (m *memtable) logAppendBatchLocked(kvs []KV, valueIsKey bool) (bool, error)
 	if valueIsKey {
 		payloadSize = compactBatchHLCValueIsKeyPayloadSize(kvs, hlc)
 	} else {
-		payloadSize = compactBatchHLCPayloadMaxSize(kvs)
+		payloadSize = compactBatchHLCPayloadSize(kvs, hlc)
 	}
 	recordSize := msgpackByteSliceFrameSize(payloadSize) + msgpackByteSliceFrameSize(8)
 	if recordSize >= memtableWalBufCap {

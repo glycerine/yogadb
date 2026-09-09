@@ -156,3 +156,48 @@ func TestCompactBatchHLCValueIsKeyPayloadRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestCompactBatchHLCPayloadSizeMatchesEncoding(t *testing.T) {
+	kvs := []KV{
+		{Key: "k001", Value: []byte("value-001"), Vptr: VPtr{Length: 9}, Hlc: 123},
+		{Key: "k002-longer", Value: []byte("v2"), Vptr: VPtr{Length: 2, Offset: 1 << 14}, Hlc: 123},
+		{Key: "k003", Value: nil, Vptr: VPtr{Length: rawVlenTombstone}, Hlc: 123},
+	}
+	payload := appendCompactBatchHLCPayload(nil, kvs, kvs[0].Hlc)
+	if got, want := compactBatchHLCPayloadSize(kvs, kvs[0].Hlc), len(payload); got != want {
+		t.Fatalf("compactBatchHLCPayloadSize = %d, want encoded len %d", got, want)
+	}
+	var g GreenMEMWAL_KV
+	ok, err := compactPayloadToGreenMEMWAL(payload, &g)
+	if err != nil {
+		t.Fatalf("compactPayloadToGreenMEMWAL: %v", err)
+	}
+	if !ok || g.WalRecordType != MEMWAL_BATCH_KV_HLC {
+		t.Fatalf("decoded record type = %d ok=%v", g.WalRecordType, ok)
+	}
+	got, err := compactBatchHLCPayloadToKVs(g.InlineVal, nil)
+	if err != nil {
+		t.Fatalf("compactBatchHLCPayloadToKVs: %v", err)
+	}
+	if len(got) != len(kvs) {
+		t.Fatalf("decoded len = %d, want %d", len(got), len(kvs))
+	}
+	for i := range kvs {
+		if got[i].Key != kvs[i].Key || string(got[i].Value) != string(kvs[i].Value) ||
+			got[i].Vptr != kvs[i].Vptr || got[i].Hlc != kvs[i].Hlc {
+			t.Fatalf("decoded[%d] = %#v, want %#v", i, got[i], kvs[i])
+		}
+	}
+}
+
+func TestCompactBatchHLCValueIsKeyPayloadSizeMatchesEncoding(t *testing.T) {
+	kvs := []KV{
+		{Key: "k001", Value: []byte("k001"), Vptr: VPtr{Length: 4}, Hlc: 123},
+		{Key: "k002-longer", Value: []byte("k002-longer"), Vptr: VPtr{Length: 11, Offset: 1 << 14}, Hlc: 123},
+		{Key: "k003", Value: []byte("k003"), Vptr: VPtr{Length: 4, Offset: 1 << 20}, Hlc: 123},
+	}
+	payload := appendCompactBatchHLCValueIsKeyPayload(nil, kvs, kvs[0].Hlc)
+	if got, want := compactBatchHLCValueIsKeyPayloadSize(kvs, kvs[0].Hlc), len(payload); got != want {
+		t.Fatalf("compactBatchHLCValueIsKeyPayloadSize = %d, want encoded len %d", got, want)
+	}
+}
