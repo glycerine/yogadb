@@ -140,17 +140,28 @@ func (m *memtable) logAppendGreenLocked(g *GreenMEMWAL_KV) error {
 	return m.logAppendPayloadLocked(payload)
 }
 
-func (m *memtable) logAppendBatchLocked(kvs []KV) (bool, error) {
+func (m *memtable) logAppendBatchLocked(kvs []KV, valueIsKey bool) (bool, error) {
 	payloadSize := compactBatchHLCPayloadMaxSize(kvs)
-	recordSize := msgpackByteSliceFrameSize(payloadSize) + msgpackByteSliceFrameSize(8)
-	if recordSize >= memtableWalBufCap {
-		return false, nil
-	}
 	var hlc HLC
 	if len(kvs) > 0 {
 		hlc = kvs[0].Hlc
 	}
-	payload := appendCompactBatchHLCPayload(m.memWalEncodeBuf[:0], kvs, hlc)
+	if valueIsKey {
+		payloadSize = compactBatchHLCValueIsKeyPayloadSize(kvs, hlc)
+	}
+	recordSize := msgpackByteSliceFrameSize(payloadSize) + msgpackByteSliceFrameSize(8)
+	if recordSize >= memtableWalBufCap {
+		return false, nil
+	}
+	if cap(m.memWalEncodeBuf) < payloadSize {
+		m.memWalEncodeBuf = make([]byte, 0, payloadSize)
+	}
+	var payload []byte
+	if valueIsKey {
+		payload = appendCompactBatchHLCValueIsKeyPayload(m.memWalEncodeBuf[:0], kvs, hlc)
+	} else {
+		payload = appendCompactBatchHLCPayload(m.memWalEncodeBuf[:0], kvs, hlc)
+	}
 	m.memWalEncodeBuf = payload
 	return true, m.logAppendPayloadLocked(payload)
 }

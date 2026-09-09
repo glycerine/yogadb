@@ -120,3 +120,39 @@ func TestGreenMEMWAL_SaveToSliceRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestCompactBatchHLCValueIsKeyPayloadRoundTrip(t *testing.T) {
+	kvs := []KV{
+		{Key: "k001", Value: []byte("k001"), Vptr: VPtr{Length: 4}, Hlc: 123},
+		{Key: "k002", Value: []byte("k002"), Vptr: VPtr{Length: 4}, Hlc: 123},
+		{Key: "k003", Value: []byte("k003"), Vptr: VPtr{Length: 4}, Hlc: 123},
+	}
+	if !compactBatchHLCValueIsKey(kvs) {
+		t.Fatal("compactBatchHLCValueIsKey rejected value-is-key batch")
+	}
+	payload := appendCompactBatchHLCValueIsKeyPayload(nil, kvs, kvs[0].Hlc)
+	if !bytes.HasPrefix(payload, []byte(compactMEMWALMagic)) {
+		t.Fatal("payload missing compact MEMWAL magic")
+	}
+	var g GreenMEMWAL_KV
+	ok, err := compactPayloadToGreenMEMWAL(payload, &g)
+	if err != nil {
+		t.Fatalf("compactPayloadToGreenMEMWAL: %v", err)
+	}
+	if !ok || g.WalRecordType != MEMWAL_BATCH_KV_HLC_VALUE_IS_KEY {
+		t.Fatalf("decoded record type = %d ok=%v", g.WalRecordType, ok)
+	}
+	got, err := compactBatchHLCValueIsKeyPayloadToKVs(g.InlineVal, nil)
+	if err != nil {
+		t.Fatalf("compactBatchHLCValueIsKeyPayloadToKVs: %v", err)
+	}
+	if len(got) != len(kvs) {
+		t.Fatalf("decoded len = %d, want %d", len(got), len(kvs))
+	}
+	for i := range kvs {
+		if got[i].Key != kvs[i].Key || string(got[i].Value) != kvs[i].Key ||
+			got[i].Vptr != kvs[i].Vptr || got[i].Hlc != kvs[i].Hlc {
+			t.Fatalf("decoded[%d] = %#v, want key/value-is-key/vptr/hlc from %#v", i, got[i], kvs[i])
+		}
+	}
+}

@@ -2,6 +2,7 @@ package yogadb
 
 import (
 	"fmt"
+	"reflect"
 	"time"
 	"unsafe"
 
@@ -692,6 +693,47 @@ func TestFlexTree_TaggedExtentDoesNotMergeWithUntaggedSequentialAppend(t *testin
 	}
 	if exts[1].Loff != 10 || exts[1].Len != 5 || exts[1].Poff != 1010 || exts[1].Tag != 0 {
 		t.Fatalf("second extent = %#v, want untagged [10,15) -> 1010", exts[1])
+	}
+}
+
+func TestFlexTree_InsertWTagAppendMatchesInsertWTag(t *testing.T) {
+	fs, dirFast := newTestFS(t)
+	fast, err := OpenFlexTreeCoW(dirFast, fs)
+	if err != nil {
+		t.Fatalf("OpenFlexTreeCoW fast: %v", err)
+	}
+	defer fast.CloseCoW()
+
+	_, dirRef := newTestFS(t)
+	ref, err := OpenFlexTreeCoW(dirRef, fs)
+	if err != nil {
+		t.Fatalf("OpenFlexTreeCoW ref: %v", err)
+	}
+	defer ref.CloseCoW()
+
+	var total uint64
+	for i := 0; i < 5000; i++ {
+		length := uint32(i%97 + 1)
+		poff := uint64(i * 128)
+		tag := uint16(i % 0x7fff)
+		if tag == 0 {
+			tag = 1
+		}
+		if rc := fast.InsertWTagAppend(poff, length, tag); rc != 0 {
+			t.Fatalf("fast InsertWTagAppend #%d rc=%d", i, rc)
+		}
+		if rc := ref.InsertWTag(total, poff, length, tag); rc != 0 {
+			t.Fatalf("ref InsertWTag #%d rc=%d", i, rc)
+		}
+		total += uint64(length)
+	}
+	if fast.GetMaxLoff() != ref.GetMaxLoff() {
+		t.Fatalf("MaxLoff fast=%d ref=%d", fast.GetMaxLoff(), ref.GetMaxLoff())
+	}
+	fastExts := fast.allExtents()
+	refExts := ref.allExtents()
+	if !reflect.DeepEqual(fastExts, refExts) {
+		t.Fatalf("append extents differ:\nfast=%#v\nref=%#v", fastExts, refExts)
 	}
 }
 

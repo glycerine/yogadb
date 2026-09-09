@@ -329,6 +329,49 @@ func slottedKVEncodedSizeSmallInlineZeroVtyp(kv KV, baseHLC HLC) int {
 	return 4 + binary.PutUvarint(hlcBuf[:], delta) + len(kv.Key) + len(kv.Value)
 }
 
+func slottedKVEncodedSizeSmallInlineZeroVtypKnown(kv KV, baseHLC HLC) int {
+	return 4 + uvarintLen64(uint64(kv.Hlc-baseHLC)) + len(kv.Key) + len(kv.Value)
+}
+
+func uvarintLen64(x uint64) int {
+	if x < 1<<7 {
+		return 1
+	}
+	if x < 1<<14 {
+		return 2
+	}
+	if x < 1<<21 {
+		return 3
+	}
+	if x < 1<<28 {
+		return 4
+	}
+	if x < 1<<35 {
+		return 5
+	}
+	if x < 1<<42 {
+		return 6
+	}
+	if x < 1<<49 {
+		return 7
+	}
+	if x < 1<<56 {
+		return 8
+	}
+	if x < 1<<63 {
+		return 9
+	}
+	return 10
+}
+
+func varintLen64(x int64) int {
+	ux := uint64(x) << 1
+	if x < 0 {
+		ux = ^ux
+	}
+	return uvarintLen64(ux)
+}
+
 func slottedPageEncodeKnownSizeSmallInlineZeroVtyp(dst []byte, kvs []KV, baseHLC HLC, totalSize int) []byte {
 	count := len(kvs)
 	if count == 0 {
@@ -789,6 +832,14 @@ func intervalCacheEntrySlottedKVsSize(kvs []KV, baseHLC HLC) int {
 	size := slottedPageHeaderSize + slottedPageCRCSize
 	for i := range kvs {
 		size += slottedKVEncodedSize(kvs[i], baseHLC)
+	}
+	return size
+}
+
+func intervalCacheEntrySlottedKVsSizeSmallInlineZeroVtyp(kvs []KV, baseHLC HLC) int {
+	size := slottedPageHeaderSize + slottedPageCRCSize
+	for i := range kvs {
+		size += slottedKVEncodedSizeSmallInlineZeroVtypKnown(kvs[i], baseHLC)
 	}
 	return size
 }

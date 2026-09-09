@@ -68,6 +68,7 @@ type Batch struct {
 	valueArena            []byte
 	logicalBytes          int64
 	recordsNeedValidation bool
+	allValuesAliasKeys    bool
 	err                   error
 }
 
@@ -80,8 +81,9 @@ const (
 // NewBatch returns an empty new Batch.
 func (db *FlexDB) NewBatch() (b *Batch) {
 	b = &Batch{
-		db:   db,
-		puts: make([]KV, 0, batchInitialPutCap),
+		db:                 db,
+		puts:               make([]KV, 0, batchInitialPutCap),
+		allValuesAliasKeys: true,
 	}
 	return
 }
@@ -100,6 +102,7 @@ func (s *Batch) Set(key string, value []byte, vtyp uint64) (err error) {
 	// String keys are immutable - no copy needed.
 	// Nil and empty values are the same zero-length live value.
 	var valueCopy []byte
+	s.allValuesAliasKeys = false
 	if len(value) > 0 {
 		if len(value) > vlogInlineThreshold {
 			s.recordsNeedValidation = true
@@ -164,6 +167,7 @@ func (s *Batch) SetBytes(key []byte, value []byte, vtyp uint64) (err error) {
 		if len(value) == len(key) && unsafe.SliceData(value) == unsafe.SliceData(key) {
 			valueCopy = keyCopy
 		} else {
+			s.allValuesAliasKeys = false
 			if s.valueArena == nil {
 				capHint := batchInitialValueArenaCap
 				if len(value) > capHint {
@@ -175,6 +179,8 @@ func (s *Batch) SetBytes(key []byte, value []byte, vtyp uint64) (err error) {
 			s.valueArena = append(s.valueArena, value...)
 			valueCopy = s.valueArena[start:]
 		}
+	} else {
+		s.allValuesAliasKeys = false
 	}
 	kv := KV{
 		Key:   keyString,
@@ -199,6 +205,7 @@ func (s *Batch) Delete(key string) {
 		Key:  key,
 		Vptr: VPtr{Length: rawVlenTombstone},
 	})
+	s.allValuesAliasKeys = false
 	s.logicalBytes += int64(len(key))
 }
 
@@ -244,6 +251,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		s.valueArena = nil
 		s.logicalBytes = 0
 		s.recordsNeedValidation = false
+		s.allValuesAliasKeys = true
 		s.err = nil
 		return HLCInterval{}, nil, err
 	}
@@ -287,6 +295,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 			}
 		}
 		if len(largeValues) > 0 {
+			s.allValuesAliasKeys = false
 			// Batch write + single fsync with blake3 dedup.
 			ptrs, _, err := db.vlog.appendBatchDedupAndSync(largeValues, largeHLCs, oldVPs, db.cfg.OmitMemWalFsync)
 			if err != nil {
@@ -314,6 +323,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 				s.keyArena = nil
 				s.valueArena = nil
 				s.recordsNeedValidation = false
+				s.allValuesAliasKeys = true
 				return HLCInterval{}, nil, err
 			}
 		}
@@ -332,7 +342,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	batchWalAppended := false
 	if useBulkInitial {
 		var ok bool
-		ok, err = mt.logAppendBatchLocked(s.puts)
+		ok, err = mt.logAppendBatchLocked(s.puts, s.allValuesAliasKeys)
 		if err != nil {
 			return HLCInterval{}, nil, fmt.Errorf("flexdb: batch append compact memwal: %w", err)
 		}
@@ -356,6 +366,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 			s.valueArena = nil
 			s.logicalBytes = 0
 			s.recordsNeedValidation = false
+			s.allValuesAliasKeys = true
 			interv = HLCInterval{Begin: curHLC, Endx: curHLC + 1}
 			return
 		}
@@ -428,6 +439,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	s.valueArena = nil
 	s.logicalBytes = 0
 	s.recordsNeedValidation = false
+	s.allValuesAliasKeys = true
 
 	if wantMetrics {
 		if useBulkInitial && mt.bulk.dirty {
@@ -446,6 +458,7 @@ func (s *Batch) Reset() {
 	s.valueArena = nil
 	s.logicalBytes = 0
 	s.recordsNeedValidation = false
+	s.allValuesAliasKeys = true
 	s.err = nil
 }
 
@@ -457,6 +470,7 @@ func (s *Batch) Close() {
 	s.valueArena = nil
 	s.logicalBytes = 0
 	s.recordsNeedValidation = false
+	s.allValuesAliasKeys = true
 	s.err = nil
 }
 
@@ -4581,10 +4595,12 @@ func (db *FlexDB) logRedo(fd vfs.File, fileSize int64) error {
 				vv("flexdb: logRedo: putPassthrough error at offset %d: %v", offset-int64(n), err)
 				return fmt.Errorf("flexdb: logRedo: replay at offset %d: %w", offset-int64(n), err)
 			}
-		case MEMWAL_BATCH_KV, MEMWAL_BATCH_KV_HLC:
+		case MEMWAL_BATCH_KV, MEMWAL_BATCH_KV_HLC, MEMWAL_BATCH_KV_HLC_VALUE_IS_KEY:
 			var kvs []KV
 			if g.WalRecordType == MEMWAL_BATCH_KV_HLC {
 				kvs, err = compactBatchHLCPayloadToKVs(g.InlineVal, kvs)
+			} else if g.WalRecordType == MEMWAL_BATCH_KV_HLC_VALUE_IS_KEY {
+				kvs, err = compactBatchHLCValueIsKeyPayloadToKVs(g.InlineVal, kvs)
 			} else {
 				kvs, err = compactBatchPayloadToKVs(g.InlineVal, kvs)
 			}
@@ -4804,7 +4820,7 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 	pageSmallInlineZeroVtyp := true
 	pageSize := 0
 	pageApproxSize := 0
-	var pageBuf []byte
+	allSmallInlineZeroVtyp := m.bulk.count > 0 && m.bulk.allSmallInlineZeroVtyp
 	var nh memSparseIndexTreeHandler
 	nh.node = db.tree.root
 	nh.idx = db.tree.root.count
@@ -4814,20 +4830,49 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 		if len(page) == 0 {
 			return nil
 		}
-		if pageSmallInlineZeroVtyp {
-			pageBuf = slottedPageEncodeKnownSizeSmallInlineZeroVtyp(pageBuf[:0], page, pageBase, pageSize)
-		} else {
-			pageBuf = slottedPageEncodeKnownSize(pageBuf[:0], page, pageBase, pageSize)
-		}
-		buf := pageBuf
-		if len(buf) > slottedPageMaxSize {
+		if pageSize > slottedPageMaxSize {
 			return fmt.Errorf("bulk initial flush built overlarge slotted page: size=%d max=%d count=%d firstKey=%q",
-				len(buf), slottedPageMaxSize, len(page), page[0].Key)
+				pageSize, slottedPageMaxSize, len(page), page[0].Key)
 		}
-		loff := db.ff.Size()
-		if _, err := db.ff.InsertWTag(buf, loff, uint64(len(buf)), tag); err != nil {
-			return fmt.Errorf("bulk initial flush insert loff=%d psize=%d firstKey=%q: %w",
-				loff, len(buf), page[0].Key, err)
+		ff := db.ff
+		ff.gc.writeBetweenStages = true
+		ff.globalEpoch++
+		if !ff.bm.blockFit(uint64(pageSize)) {
+			ff.bm.nextBlock(false)
+		}
+		loff := ff.Size()
+		poff := ff.bm.offset()
+		start := ff.bm.blkoff
+		dst := ff.bm.buf[start:start]
+		var buf []byte
+		if pageSmallInlineZeroVtyp {
+			buf = slottedPageEncodeKnownSizeSmallInlineZeroVtyp(dst, page, pageBase, pageSize)
+		} else {
+			buf = slottedPageEncodeKnownSize(dst, page, pageBase, pageSize)
+		}
+		if len(buf) != pageSize {
+			return fmt.Errorf("bulk initial flush encoded size mismatch: got=%d want=%d count=%d firstKey=%q",
+				len(buf), pageSize, len(page), page[0].Key)
+		}
+		ff.bm.blkoff += uint64(pageSize)
+		ff.bm.updateBlkUsage(ff.bm.blkid, int32(pageSize))
+		if ff.bm.blkoff == FLEXSPACE_BLOCK_SIZE {
+			ff.bm.nextBlock(false)
+		}
+		atomic.AddInt64(&ff.insertCount, 1)
+		atomic.AddInt64(&ff.insertBytes, int64(pageSize))
+		if r := ff.tree.InsertWTagAppend(poff, uint32(pageSize), tag); r != 0 {
+			return fmt.Errorf("bulk initial flush tree append loff=%d poff=%d psize=%d firstKey=%q failed",
+				loff, poff, pageSize, page[0].Key)
+		}
+		if !ff.omitRedoLog {
+			ff.logWrite(flexOpTreeInsert, loff, poff, uint64(pageSize))
+			if tag != 0 {
+				ff.logWrite(flexOpSetTag, loff, uint64(tag), 0)
+			}
+			if ff.logFull() {
+				ff.Sync()
+			}
 		}
 		var anchor *dbAnchor
 		if loff == 0 {
@@ -4857,8 +4902,14 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 
 	var err error
 	consumeItem := func(item KV) bool {
-		if item.HasVPtr() {
-			flushedBig++
+		itemSmallInlineZeroVtyp := allSmallInlineZeroVtyp
+		if !allSmallInlineZeroVtyp {
+			if item.HasVPtr() {
+				flushedBig++
+			} else {
+				flushedSmall++
+			}
+			itemSmallInlineZeroVtyp = slottedKVSmallInlineZeroVtyp(item)
 		} else {
 			flushedSmall++
 		}
@@ -4875,18 +4926,22 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 			pageSize = slottedPageHeaderSize + slottedPageCRCSize
 			pageSmallInlineZeroVtyp = true
 		}
-		itemSmallInlineZeroVtyp := slottedKVSmallInlineZeroVtyp(item)
 		itemSize := 0
 		if itemSmallInlineZeroVtyp {
-			itemSize = slottedKVEncodedSizeSmallInlineZeroVtyp(item, pageBase)
+			itemSize = slottedKVEncodedSizeSmallInlineZeroVtypKnown(item, pageBase)
 		} else {
 			itemSize = slottedKVEncodedSize(item, pageBase)
 		}
 		if len(page) > 0 && item.Hlc < pageBase {
 			newBase := item.Hlc
-			newPageSize := intervalCacheEntrySlottedKVsSize(page, newBase)
+			newPageSize := 0
+			if pageSmallInlineZeroVtyp {
+				newPageSize = intervalCacheEntrySlottedKVsSizeSmallInlineZeroVtyp(page, newBase)
+			} else {
+				newPageSize = intervalCacheEntrySlottedKVsSize(page, newBase)
+			}
 			if itemSmallInlineZeroVtyp {
-				itemSize = slottedKVEncodedSizeSmallInlineZeroVtyp(item, newBase)
+				itemSize = slottedKVEncodedSizeSmallInlineZeroVtypKnown(item, newBase)
 			} else {
 				itemSize = slottedKVEncodedSize(item, newBase)
 			}
@@ -4898,7 +4953,7 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 				pageSize = slottedPageHeaderSize + slottedPageCRCSize
 				pageSmallInlineZeroVtyp = true
 				if itemSmallInlineZeroVtyp {
-					itemSize = slottedKVEncodedSizeSmallInlineZeroVtyp(item, pageBase)
+					itemSize = slottedKVEncodedSizeSmallInlineZeroVtypKnown(item, pageBase)
 				} else {
 					itemSize = slottedKVEncodedSize(item, pageBase)
 				}
@@ -4914,7 +4969,7 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 			pageSize = slottedPageHeaderSize + slottedPageCRCSize
 			pageSmallInlineZeroVtyp = true
 			if itemSmallInlineZeroVtyp {
-				itemSize = slottedKVEncodedSizeSmallInlineZeroVtyp(item, pageBase)
+				itemSize = slottedKVEncodedSizeSmallInlineZeroVtypKnown(item, pageBase)
 			} else {
 				itemSize = slottedKVEncodedSize(item, pageBase)
 			}
@@ -4929,11 +4984,12 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 	}
 	if m.bulk.count > 0 {
 		order := m.bulk.buildOrder()
+		keys := m.bulk.keys
 		for i := 0; i < len(order); {
 			best := order[i]
 			j := i + 1
-			firstKey := m.bulk.kv(order[i]).Key
-			for j < len(order) && m.bulk.kv(order[j]).Key == firstKey {
+			firstKey := keys[i]
+			for j < len(order) && keys[j] == firstKey {
 				cand := order[j]
 				if m.bulk.kv(cand).Hlc >= m.bulk.kv(best).Hlc {
 					best = cand

@@ -7,15 +7,16 @@ type bulkIngestSegment struct {
 }
 
 type bulkIngestBuilder struct {
-	segments []bulkIngestSegment
-	order    []bulkIngestRef
-	sortAux  []bulkIngestRef
-	keys     []string
-	keyAux   []string
-	index    map[string]bulkIngestRef
-	dirty    bool
-	count    int
-	size     int64
+	segments               []bulkIngestSegment
+	order                  []bulkIngestRef
+	sortAux                []bulkIngestRef
+	keys                   []string
+	keyAux                 []string
+	index                  map[string]bulkIngestRef
+	dirty                  bool
+	allSmallInlineZeroVtyp bool
+	count                  int
+	size                   int64
 }
 
 const invalidBulkIngestRef bulkIngestRef = ^bulkIngestRef(0)
@@ -40,6 +41,7 @@ func (b *bulkIngestBuilder) reset() {
 	b.keyAux = b.keyAux[:0]
 	b.index = nil
 	b.dirty = false
+	b.allSmallInlineZeroVtyp = true
 	b.count = 0
 	b.size = 0
 }
@@ -48,10 +50,16 @@ func (b *bulkIngestBuilder) appendBatch(kvs []KV) {
 	if len(kvs) == 0 {
 		return
 	}
+	if b.count == 0 && len(b.segments) == 0 {
+		b.allSmallInlineZeroVtyp = true
+	}
 	b.segments = append(b.segments, bulkIngestSegment{kvs: kvs})
 	b.count += len(kvs)
 	for i := range kvs {
 		b.size += int64(kvSizeApprox(&kvs[i]))
+		if !slottedKVSmallInlineZeroVtyp(kvs[i]) {
+			b.allSmallInlineZeroVtyp = false
+		}
 	}
 	b.index = nil
 	b.dirty = true
@@ -115,10 +123,11 @@ func (b *bulkIngestBuilder) buildOrder() []bulkIngestRef {
 		kvs := b.segments[si].kvs
 		for ki := range kvs {
 			b.order = append(b.order, makeBulkIngestRef(si, ki))
-			b.keys = append(b.keys, kvs[ki].Key)
+			key := kvs[ki].Key
+			b.keys = append(b.keys, key)
 			if fixedKeyLen < 0 {
-				fixedKeyLen = len(kvs[ki].Key)
-			} else if fixedKeyLenOK && len(kvs[ki].Key) != fixedKeyLen {
+				fixedKeyLen = len(key)
+			} else if fixedKeyLenOK && len(key) != fixedKeyLen {
 				fixedKeyLenOK = false
 			}
 		}

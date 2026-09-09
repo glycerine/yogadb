@@ -837,7 +837,13 @@ func (ff *FlexSpace) insertWithTagR(buf []byte, loff, length uint64, tag uint16,
 		if oloff == loff {
 			extentTag = tag
 		}
-		if r := ff.tree.InsertWTag(oloff, poff, uint32(tlen), extentTag); r != 0 {
+		var r int
+		if oloff == ff.tree.MaxLoff {
+			r = ff.tree.InsertWTagAppend(poff, uint32(tlen), extentTag)
+		} else {
+			r = ff.tree.InsertWTag(oloff, poff, uint32(tlen), extentTag)
+		}
+		if r != 0 {
 			return -1, fmt.Errorf("flexspace: insert loff=%d poff=%d len=%d tag=0x%04x failed",
 				oloff, poff, tlen, extentTag)
 		}

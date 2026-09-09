@@ -228,6 +228,11 @@ type FlexTree struct {
 	nodesVisited   int64 // nodes touched during findLeafNode + shiftUpPropagate
 	splitCount     int64 // leaf + internal splits triggered
 	shiftPropNodes int64 // internal nodes updated by shiftUpPropagate
+
+	// Transient append cursor. Not serialized; rebuilt lazily from MaxLoff.
+	appendLeaf  NodeID
+	appendPath  FlexTreePath
+	appendValid bool
 }
 
 func (tree *FlexTree) resetOpCounters() {
@@ -238,6 +243,12 @@ func (tree *FlexTree) resetOpCounters() {
 
 func (tree *FlexTree) opCounters() (visited, splits, shiftNodes int64) {
 	return tree.nodesVisited, tree.splitCount, tree.shiftPropNodes
+}
+
+func (tree *FlexTree) invalidateAppendCursor() {
+	tree.appendLeaf = IllegalID
+	tree.appendPath = FlexTreePath{}
+	tree.appendValid = false
 }
 
 // allExtents walks the leaf linked list and returns all extents
@@ -1113,6 +1124,7 @@ func (tree *FlexTree) insertToLeafNode(le *LeafNode, loff uint32, poff uint64, l
 }
 
 func (tree *FlexTree) insertR(loff, poff uint64, length uint32, tag uint16) int {
+	tree.invalidateAppendCursor()
 	if length == 0 {
 		return 0
 	}
@@ -1220,6 +1232,54 @@ func (tree *FlexTree) Sync() {}
 func (tree *FlexTree) Insert(loff, poff uint64, len uint32) int {
 	tree.resetOpCounters()
 	return tree.insertR(loff, poff, len, 0)
+}
+
+func (tree *FlexTree) appendR(poff uint64, length uint32, tag uint16) int {
+	if length == 0 {
+		return 0
+	}
+	if length > tree.MaxExtentSize {
+		return -1
+	}
+
+	var path FlexTreePath
+	var node *LeafNode
+	var localLoff uint64
+	if tree.appendValid && tree.appendLeaf.IsLeaf() {
+		node = tree.GetLeaf(tree.appendLeaf)
+		path = tree.appendPath
+		if node.Count == 0 {
+			localLoff = 0
+		} else {
+			last := &node.Extents[node.Count-1]
+			localLoff = uint64(last.Loff) + uint64(last.Len)
+		}
+	} else {
+		node, localLoff = tree.findLeafNode(&path, tree.MaxLoff)
+	}
+
+	tree.insertToLeafNode(node, uint32(localLoff), poff, length, tag)
+
+	if path.Level > 0 {
+		tree.rebase(node.NodeID, &path)
+	}
+	node.Dirty = true
+	tree.markPathDirty(&path)
+	tree.MaxLoff += uint64(length)
+	if node.isFull() {
+		tree.splitLeafNode(node, &path)
+		tree.invalidateAppendCursor()
+	} else {
+		tree.appendLeaf = node.NodeID
+		tree.appendPath = path
+		tree.appendValid = true
+	}
+	return 0
+}
+
+func (tree *FlexTree) InsertWTagAppend(poff uint64, len uint32, tag uint16) int {
+	tree.resetOpCounters()
+	return tree.appendR(poff, len, tag)
 }
 
 func (tree *FlexTree) recycleLinkedList(removeMe *LeafNode) {
@@ -1375,6 +1435,7 @@ func (tree *FlexTree) recycleNode(nodeID NodeID, path *FlexTreePath) {
 }
 
 func (tree *FlexTree) Delete(loff, length uint64) int {
+	tree.invalidateAppendCursor()
 	tree.resetOpCounters()
 	if loff+length > tree.MaxLoff {
 		return -1
@@ -1499,6 +1560,7 @@ func (tree *FlexTree) GetMaxLoff() uint64 {
 }
 
 func (tree *FlexTree) SetTag(loff uint64, tag uint16) int {
+	tree.invalidateAppendCursor()
 	tree.resetOpCounters()
 	if loff >= tree.MaxLoff {
 		return -1
