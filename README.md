@@ -42,7 +42,7 @@ Here YogaDB is 2x faster than BoltDB for a full-table-scan, and 15x faster than 
 
 Update: 2026 Sept 9 update to compare versus the github.com/facebook/RocksDB LSM tree:
 
-~~
+~~~
 Results from rocksdb_bench_test.go, averaged from the 3 reported 10x samples:
   
 DB         avg load time          ns/key    full table scan keys/sec
