@@ -207,9 +207,17 @@ func (p *intervalCachePartition) installCleanEntry(anchor *dbAnchor, kvs []KV, b
 }
 
 func (p *intervalCachePartition) installCleanEntryWithSize(anchor *dbAnchor, kvs []KV, baseHLC HLC, slotSize int, approxSize int) {
+	p.installCleanEntryWithSizeMaybeOwned(anchor, append([]KV(nil), kvs...), baseHLC, slotSize, approxSize)
+}
+
+func (p *intervalCachePartition) installCleanEntryOwnedWithSize(anchor *dbAnchor, kvs []KV, baseHLC HLC, slotSize int, approxSize int) {
+	p.installCleanEntryWithSizeMaybeOwned(anchor, kvs, baseHLC, slotSize, approxSize)
+}
+
+func (p *intervalCachePartition) installCleanEntryWithSizeMaybeOwned(anchor *dbAnchor, kvs []KV, baseHLC HLC, slotSize int, approxSize int) {
 	fce := &intervalCacheEntry{
 		anchor:    anchor,
-		kvs:       append([]KV(nil), kvs...),
+		kvs:       kvs,
 		baseHLC:   baseHLC,
 		slotSize:  slotSize,
 		slotValid: true,

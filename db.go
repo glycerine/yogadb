@@ -38,7 +38,7 @@ const (
 	MaxKeySize                        = MAX_KEY_BYTES
 	flexMemSparseIndexTreeLeafCap     = 100                   // 100                   // (5s benchtime) 122=>5.888; 100=>5.477; 80=>8.557; 90=>5.165,6.598,7.288; 95=>5.675; 85=>8.322; 110=>6.070; 120=>5.308; 150=>5.582; 100=>5.638
 	flexMemSparseIndexTreeInternalCap = 40                    // was 40;
-	flexdbSparseIntervalCount         = 1000                  //2000(6.3); 100(8.974); 1000(5.894, 5.6) ; 1500(7.993), 4000(10.35), 500(7.142);                  // with flexdbUnsortedWriteQuota=6;              // old:500=>15.77 ; 2000=>14.64 ; 1000=>16.4; 3000=>14.53; 2000=>14.24; 200=>16.68; 4000(2000 flexdbUnsortedWriteQuota)=>
+	flexdbSparseIntervalCount         = 2000                  //2000(6.3); 100(8.974); 1000(5.894, 5.6) ; 1500(7.993), 4000(10.35), 500(7.142);                  // with flexdbUnsortedWriteQuota=6;              // old:500=>15.77 ; 2000=>14.64 ; 3000=>14.53; 1000=>16.4; 200=>16.68; 4000(2000 flexdbUnsortedWriteQuota)=>
 	flexdbSparseIntervalSize          = SLOTTED_PAGE_KB << 10 // 64 KB
 	memtableCap                       = 1 << 30               // 1 GB
 	memtableWalBufCap                 = 8 << 20               // 8 MB log buffer (must be at least 2x than MaxKeySize + space for a KV struct) so we don't deadlock trying to flush the memtable and write a new large key.
@@ -82,10 +82,15 @@ const (
 func (db *FlexDB) NewBatch() (b *Batch) {
 	b = &Batch{
 		db:                 db,
-		puts:               make([]KV, 0, batchInitialPutCap),
 		allValuesAliasKeys: true,
 	}
 	return
+}
+
+func (s *Batch) ensurePutsCap() {
+	if s.puts == nil {
+		s.puts = make([]KV, 0, batchInitialPutCap)
+	}
 }
 
 // Set copies key and value internally, so the
@@ -127,6 +132,7 @@ func (s *Batch) Set(key string, value []byte, vtyp uint64) (err error) {
 	// we have written to the VLOG at all(!)
 	kv.Vptr.Offset = vtyp
 	kv.Vptr.Length = uint64(len(value))
+	s.ensurePutsCap()
 	s.puts = append(s.puts, kv)
 	s.logicalBytes += int64(len(key) + len(value))
 	return nil
@@ -188,6 +194,7 @@ func (s *Batch) SetBytes(key []byte, value []byte, vtyp uint64) (err error) {
 	}
 	kv.Vptr.Offset = vtyp
 	kv.Vptr.Length = uint64(len(value))
+	s.ensurePutsCap()
 	s.puts = append(s.puts, kv)
 	s.logicalBytes += int64(len(key) + len(value))
 	return nil
@@ -201,6 +208,7 @@ func (s *Batch) Delete(key string) {
 		}
 		return
 	}
+	s.ensurePutsCap()
 	s.puts = append(s.puts, KV{
 		Key:  key,
 		Vptr: VPtr{Length: rawVlenTombstone},
@@ -341,14 +349,18 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	useBulkInitial := db.bulkInitialBatchLoad && db.ff.Size() == 0
 	batchWalAppended := false
 	if useBulkInitial {
-		var ok bool
-		ok, err = mt.logAppendBatchLocked(s.puts, s.allValuesAliasKeys)
-		if err != nil {
-			return HLCInterval{}, nil, fmt.Errorf("flexdb: batch append compact memwal: %w", err)
+		if doFsync {
+			var ok bool
+			ok, err = mt.logAppendBatchLocked(s.puts, s.allValuesAliasKeys)
+			if err != nil {
+				return HLCInterval{}, nil, fmt.Errorf("flexdb: batch append compact memwal: %w", err)
+			}
+			batchWalAppended = ok
+		} else {
+			batchWalAppended = true
 		}
-		batchWalAppended = ok
 		if batchWalAppended {
-			mt.appendBulkBatch(s.puts)
+			mt.appendBulkBatch(s.puts, s.allValuesAliasKeys)
 			mt.empty = false
 			if doFsync && !db.cfg.OmitMemWalFsync {
 				if err := mt.logSyncLocked(); err != nil {
@@ -570,7 +582,15 @@ type HLCInterval struct {
 func kvLess(a, b KV) bool { return a.Key < b.Key }
 
 // kvSizeApprox returns the approximate in-memory size of a KV (matches C kv_size).
-func kvSizeApprox(kv *KV) int { return 24 + len(kv.Key) + len(kv.Value) }
+func kvSizeApprox(kv *KV) int {
+	size := 24 + len(kv.Key) + len(kv.Value)
+	if len(kv.Value) > 0 &&
+		len(kv.Value) == len(kv.Key) &&
+		unsafe.StringData(kv.Key) == unsafe.SliceData(kv.Value) {
+		size -= len(kv.Value)
+	}
+	return size
+}
 
 // isTombstone returns true if this KV is a deletion marker.
 // A tombstone is marked by the sentinel VPtr.Length == rawVlenTombstone.
@@ -4839,18 +4859,7 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 
 	eligible := true
 	if m.bulk.count > 0 {
-		for si := range m.bulk.segments {
-			kvs := m.bulk.segments[si].kvs
-			for i := range kvs {
-				if kvs[i].isTombstone() {
-					eligible = false
-					break
-				}
-			}
-			if !eligible {
-				break
-			}
-		}
+		eligible = !m.bulk.hasTombstones
 	} else {
 		m.bt.Ascend(KV{}, func(item KV) bool {
 			if item.isTombstone() {
@@ -4869,29 +4878,31 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 	if bulkPageCount < 1 {
 		bulkPageCount = 1
 	}
+	allSmallInlineZeroVtyp := m.bulk.count > 0 && m.bulk.allSmallInlineZeroVtyp
+	allValuesAliasKeys := allSmallInlineZeroVtyp && m.bulk.allValuesAliasKeys
 	page := make([]KV, 0, 128)
 	var pageBase HLC
 	pageSmallInlineZeroVtyp := true
+	pageValuesAliasKeys := allValuesAliasKeys
 	pageSize := 0
 	pageApproxSize := 0
-	allSmallInlineZeroVtyp := m.bulk.count > 0 && m.bulk.allSmallInlineZeroVtyp
 	var nh memSparseIndexTreeHandler
 	nh.node = db.tree.root
 	nh.idx = db.tree.root.count
 	var flushedBig, flushedSmall int64
 
-	flushPage := func() error {
-		if len(page) == 0 {
+	flushPageItems := func(pageItems []KV, itemsBase HLC, itemsSize int, itemsApproxSize int, cacheOwnsItems bool, itemsValuesAliasKeys bool) error {
+		if len(pageItems) == 0 {
 			return nil
 		}
-		if pageSize > slottedPageMaxSize {
+		if itemsSize > slottedPageMaxSize {
 			return fmt.Errorf("bulk initial flush built overlarge slotted page: size=%d max=%d count=%d firstKey=%q",
-				pageSize, slottedPageMaxSize, len(page), page[0].Key)
+				itemsSize, slottedPageMaxSize, len(pageItems), pageItems[0].Key)
 		}
 		ff := db.ff
 		ff.gc.writeBetweenStages = true
 		ff.globalEpoch++
-		if !ff.bm.blockFit(uint64(pageSize)) {
+		if !ff.bm.blockFit(uint64(itemsSize)) {
 			ff.bm.nextBlock(false)
 		}
 		loff := ff.Size()
@@ -4899,28 +4910,30 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 		start := ff.bm.blkoff
 		dst := ff.bm.buf[start:start]
 		var buf []byte
-		if pageSmallInlineZeroVtyp {
-			buf = slottedPageEncodeKnownSizeSmallInlineZeroVtyp(dst, page, pageBase, pageSize)
+		if itemsValuesAliasKeys {
+			buf = slottedPageEncodeKnownSizeSmallInlineZeroVtypValueIsKey(dst, pageItems, itemsBase, itemsSize)
+		} else if pageSmallInlineZeroVtyp {
+			buf = slottedPageEncodeKnownSizeSmallInlineZeroVtyp(dst, pageItems, itemsBase, itemsSize)
 		} else {
-			buf = slottedPageEncodeKnownSize(dst, page, pageBase, pageSize)
+			buf = slottedPageEncodeKnownSize(dst, pageItems, itemsBase, itemsSize)
 		}
-		if len(buf) != pageSize {
+		if len(buf) != itemsSize {
 			return fmt.Errorf("bulk initial flush encoded size mismatch: got=%d want=%d count=%d firstKey=%q",
-				len(buf), pageSize, len(page), page[0].Key)
+				len(buf), itemsSize, len(pageItems), pageItems[0].Key)
 		}
-		ff.bm.blkoff += uint64(pageSize)
-		ff.bm.updateBlkUsage(ff.bm.blkid, int32(pageSize))
+		ff.bm.blkoff += uint64(itemsSize)
+		ff.bm.updateBlkUsage(ff.bm.blkid, int32(itemsSize))
 		if ff.bm.blkoff == FLEXSPACE_BLOCK_SIZE {
 			ff.bm.nextBlock(false)
 		}
 		atomic.AddInt64(&ff.insertCount, 1)
-		atomic.AddInt64(&ff.insertBytes, int64(pageSize))
-		if r := ff.tree.InsertWTagAppend(poff, uint32(pageSize), tag); r != 0 {
+		atomic.AddInt64(&ff.insertBytes, int64(itemsSize))
+		if r := ff.tree.InsertWTagAppend(poff, uint32(itemsSize), tag); r != 0 {
 			return fmt.Errorf("bulk initial flush tree append loff=%d poff=%d psize=%d firstKey=%q failed",
-				loff, poff, pageSize, page[0].Key)
+				loff, poff, itemsSize, pageItems[0].Key)
 		}
 		if !ff.omitRedoLog {
-			ff.logWrite(flexOpTreeInsert, loff, poff, uint64(pageSize))
+			ff.logWrite(flexOpTreeInsert, loff, poff, uint64(itemsSize))
 			if tag != 0 {
 				ff.logWrite(flexOpSetTag, loff, uint64(tag), 0)
 			}
@@ -4937,20 +4950,32 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 			nh.idx = db.tree.root.count
 			nh.shift = 0
 		} else {
-			anchor = nh.handlerAppend(page[0].Key, loff, uint32(len(buf)))
+			anchor = nh.handlerAppend(pageItems[0].Key, loff, uint32(len(buf)))
 			if anchor == nil {
 				return fmt.Errorf("bulk initial flush append anchor returned nil loff=%d psize=%d firstKey=%q",
-					loff, len(buf), page[0].Key)
+					loff, len(buf), pageItems[0].Key)
 			}
 		}
 		if anchor != nil && db.cache != nil {
-			db.cache.getPartition(anchor).installCleanEntryWithSize(anchor, page, pageBase, len(buf), pageApproxSize)
+			if cacheOwnsItems {
+				db.cache.getPartition(anchor).installCleanEntryOwnedWithSize(anchor, pageItems, itemsBase, len(buf), itemsApproxSize)
+			} else {
+				db.cache.getPartition(anchor).installCleanEntryWithSize(anchor, pageItems, itemsBase, len(buf), itemsApproxSize)
+			}
+		}
+		return nil
+	}
+
+	flushPage := func() error {
+		if err := flushPageItems(page, pageBase, pageSize, pageApproxSize, false, pageValuesAliasKeys); err != nil {
+			return err
 		}
 		page = page[:0]
 		pageSize = 0
 		pageApproxSize = 0
 		pageBase = 0
 		pageSmallInlineZeroVtyp = true
+		pageValuesAliasKeys = allValuesAliasKeys
 		return nil
 	}
 
@@ -4967,10 +4992,12 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 		} else {
 			flushedSmall++
 		}
+		itemValuesAliasKeys := itemSmallInlineZeroVtyp && allValuesAliasKeys
 		if len(page) == 0 {
 			pageBase = item.Hlc
 			pageSize = slottedPageHeaderSize + slottedPageCRCSize
 			pageSmallInlineZeroVtyp = true
+			pageValuesAliasKeys = itemValuesAliasKeys
 		}
 		if len(page) > 0 && len(page) >= bulkPageCount {
 			if err = flushPage(); err != nil {
@@ -4979,9 +5006,12 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 			pageBase = item.Hlc
 			pageSize = slottedPageHeaderSize + slottedPageCRCSize
 			pageSmallInlineZeroVtyp = true
+			pageValuesAliasKeys = itemValuesAliasKeys
 		}
 		itemSize := 0
-		if itemSmallInlineZeroVtyp {
+		if itemValuesAliasKeys {
+			itemSize = slottedKVEncodedSizeSmallInlineZeroVtypValueIsKey(item, pageBase)
+		} else if itemSmallInlineZeroVtyp {
 			itemSize = slottedKVEncodedSizeSmallInlineZeroVtypKnown(item, pageBase)
 		} else {
 			itemSize = slottedKVEncodedSize(item, pageBase)
@@ -4989,12 +5019,16 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 		if len(page) > 0 && item.Hlc < pageBase {
 			newBase := item.Hlc
 			newPageSize := 0
-			if pageSmallInlineZeroVtyp {
+			if pageValuesAliasKeys {
+				newPageSize = intervalCacheEntrySlottedKVsSizeSmallInlineZeroVtypValueIsKey(page, newBase)
+			} else if pageSmallInlineZeroVtyp {
 				newPageSize = intervalCacheEntrySlottedKVsSizeSmallInlineZeroVtyp(page, newBase)
 			} else {
 				newPageSize = intervalCacheEntrySlottedKVsSize(page, newBase)
 			}
-			if itemSmallInlineZeroVtyp {
+			if itemValuesAliasKeys {
+				itemSize = slottedKVEncodedSizeSmallInlineZeroVtypValueIsKey(item, newBase)
+			} else if itemSmallInlineZeroVtyp {
 				itemSize = slottedKVEncodedSizeSmallInlineZeroVtypKnown(item, newBase)
 			} else {
 				itemSize = slottedKVEncodedSize(item, newBase)
@@ -5006,7 +5040,10 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 				pageBase = item.Hlc
 				pageSize = slottedPageHeaderSize + slottedPageCRCSize
 				pageSmallInlineZeroVtyp = true
-				if itemSmallInlineZeroVtyp {
+				pageValuesAliasKeys = itemValuesAliasKeys
+				if itemValuesAliasKeys {
+					itemSize = slottedKVEncodedSizeSmallInlineZeroVtypValueIsKey(item, pageBase)
+				} else if itemSmallInlineZeroVtyp {
 					itemSize = slottedKVEncodedSizeSmallInlineZeroVtypKnown(item, pageBase)
 				} else {
 					itemSize = slottedKVEncodedSize(item, pageBase)
@@ -5022,7 +5059,10 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 			pageBase = item.Hlc
 			pageSize = slottedPageHeaderSize + slottedPageCRCSize
 			pageSmallInlineZeroVtyp = true
-			if itemSmallInlineZeroVtyp {
+			pageValuesAliasKeys = itemValuesAliasKeys
+			if itemValuesAliasKeys {
+				itemSize = slottedKVEncodedSizeSmallInlineZeroVtypValueIsKey(item, pageBase)
+			} else if itemSmallInlineZeroVtyp {
 				itemSize = slottedKVEncodedSizeSmallInlineZeroVtypKnown(item, pageBase)
 			} else {
 				itemSize = slottedKVEncodedSize(item, pageBase)
@@ -5032,12 +5072,63 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 		if !itemSmallInlineZeroVtyp {
 			pageSmallInlineZeroVtyp = false
 		}
+		if !itemValuesAliasKeys {
+			pageValuesAliasKeys = false
+		}
 		pageSize += itemSize
 		pageApproxSize += kvSizeApprox(&item)
 		return true
 	}
 	if m.bulk.count > 0 {
-		if m.bulk.sorted {
+		if m.bulk.sorted && !m.bulk.sortedHasDuplicates && allSmallInlineZeroVtyp {
+			pageSmallInlineZeroVtyp = true
+			for si := range m.bulk.segments {
+				kvs := m.bulk.segments[si].kvs
+				for start := 0; start < len(kvs); {
+					chunkBase := kvs[start].Hlc
+					chunkSize := slottedPageHeaderSize + slottedPageCRCSize
+					chunkApproxSize := 0
+					end := start
+					for end < len(kvs) && end-start < bulkPageCount {
+						item := kvs[end]
+						if end > start && item.Hlc < chunkBase {
+							break
+						}
+						itemSize := 0
+						if allValuesAliasKeys {
+							itemSize = slottedKVEncodedSizeSmallInlineZeroVtypValueIsKey(item, chunkBase)
+						} else {
+							itemSize = slottedKVEncodedSizeSmallInlineZeroVtypKnown(item, chunkBase)
+						}
+						if end > start && chunkSize+itemSize > slottedPageMaxSize {
+							break
+						}
+						chunkSize += itemSize
+						chunkApproxSize += kvSizeApprox(&item)
+						end++
+					}
+					if end == start {
+						item := kvs[start]
+						if allValuesAliasKeys {
+							chunkSize += slottedKVEncodedSizeSmallInlineZeroVtypValueIsKey(item, chunkBase)
+						} else {
+							chunkSize += slottedKVEncodedSizeSmallInlineZeroVtypKnown(item, chunkBase)
+						}
+						chunkApproxSize += kvSizeApprox(&item)
+						end++
+					}
+					chunk := kvs[start:end:end]
+					if err = flushPageItems(chunk, chunkBase, chunkSize, chunkApproxSize, true, allValuesAliasKeys); err != nil {
+						break
+					}
+					flushedSmall += int64(end - start)
+					start = end
+				}
+				if err != nil {
+					break
+				}
+			}
+		} else if m.bulk.sorted {
 			var best KV
 			haveBest := false
 			flushBest := func() bool {

@@ -205,7 +205,8 @@ func (bm *blockManager) write(buf []byte, size uint64, isGC bool) uint64 {
 // Called only when the current block is full (from write()).
 func (bm *blockManager) nextBlock(isGC bool) {
 	oldBlkid := bm.blkid
-	newBlkid := bm.findEmptyBlock(oldBlkid, isGC)
+	newBlkid := uint64(0)
+	newBlkid = bm.findEmptyBlock(oldBlkid, isGC)
 	if oldBlkid == newBlkid {
 		return // current block is already empty (blkoff==0), nothing to do
 	}

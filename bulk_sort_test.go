@@ -16,7 +16,7 @@ func TestSortBulkOrderByKey(t *testing.T) {
 		{Key: "aba"},
 	}
 	var builder bulkIngestBuilder
-	builder.appendBatch(kvs)
+	builder.appendBatch(kvs, false)
 	order := builder.buildOrder()
 	got := make([]string, len(order))
 	for i, ref := range order {
@@ -38,7 +38,7 @@ func TestSortBulkOrderByFixedWidthKey(t *testing.T) {
 		{Key: "k002"},
 	}
 	var builder bulkIngestBuilder
-	builder.appendBatch(kvs)
+	builder.appendBatch(kvs, false)
 	order := builder.buildOrder()
 	got := make([]string, len(order))
 	for i, ref := range order {
@@ -52,8 +52,8 @@ func TestSortBulkOrderByFixedWidthKey(t *testing.T) {
 
 func TestBulkIngestBuildOrderSkipsSortWhenAlreadySorted(t *testing.T) {
 	var builder bulkIngestBuilder
-	builder.appendBatch([]KV{{Key: "a001"}, {Key: "a002"}})
-	builder.appendBatch([]KV{{Key: "a002"}, {Key: "a003"}})
+	builder.appendBatch([]KV{{Key: "a001"}, {Key: "a002"}}, false)
+	builder.appendBatch([]KV{{Key: "a002"}, {Key: "a003"}}, false)
 	if !builder.sorted {
 		t.Fatal("builder should recognize nondecreasing batch input as sorted")
 	}
@@ -70,7 +70,7 @@ func TestBulkIngestBuildOrderSkipsSortWhenAlreadySorted(t *testing.T) {
 
 func TestBulkIngestBuildOrderSortsAfterDisorder(t *testing.T) {
 	var builder bulkIngestBuilder
-	builder.appendBatch([]KV{{Key: "b"}, {Key: "a"}, {Key: "c"}})
+	builder.appendBatch([]KV{{Key: "b"}, {Key: "a"}, {Key: "c"}}, false)
 	if builder.sorted {
 		t.Fatal("builder should detect out-of-order input")
 	}

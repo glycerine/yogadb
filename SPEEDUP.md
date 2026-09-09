@@ -2506,3 +2506,710 @@ in compact arenas plus offset metadata, then materializing pointer-bearing KVs
 only where a warmed cache entry needs them. That is the Go analogue of Pebble's
 arena skiplist advantage, but it is a larger format/internal-memory change and
 needs its own correctness pass.
+
+### 2026-09-09: Experiment 73, Recheck Smaller Batch Puts Cap
+
+Patch:
+
+```text
+Retested lowering batchInitialPutCap from 10000 to 1024.
+```
+
+Result:
+
+```text
+Rejected. The benchmark commits every 10000 keys, so the smaller starting cap
+caused avoidable grows/copies and did not improve write throughput.
+```
+
+### 2026-09-09: Experiment 74, Append-Only nextBlock Fast Path
+
+Patch:
+
+```text
+Tried avoiding the FlexSpace empty-block search when bulk initial load is
+append-only.
+```
+
+Result:
+
+```text
+Rejected and reverted. It did not improve the write benchmarks and made the
+read/noise picture worse.
+
+Post-revert reference:
+  Random YogaDB:    39.15, 40.88, 40.12 ms/op.
+  Random Pebble:    88.04, 93.51, 94.82 ms/op.
+  Ascending YogaDB: 19.86, 19.59, 25.83 ms/op.
+  Ascending Pebble: 62.67, 71.53, 61.90 ms/op.
+```
+
+### 2026-09-09: Experiment 75, Sorted Unique Small-Page Direct Flush
+
+Patch:
+
+```text
+For already-sorted, duplicate-free, all-small-inline-zero-vtyp bulk input,
+flushMemtableBulkInitial chunks each bulk segment directly instead of going
+through the generic consumeItem page builder. Cache installation can own the
+segment subslice, avoiding the per-page KV copy.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+
+Ascending load improved into the 16.8-18.8 ms/op range in repeated paired
+runs, with iterator reads still mostly 3.9-4.2 ns/key.
+```
+
+Kept: yes. This is specific to sorted input but does not depend on fixed-width
+random keys.
+
+### 2026-09-09: Experiment 76, Sparse Interval Retune
+
+Patch:
+
+```text
+Retuned flexdbSparseIntervalCount around the new bulk path.
+```
+
+Result:
+
+```text
+1500 before value-is-key:
+  Random YogaDB:    37.35-45.80 ms/op.
+  Ascending YogaDB: 17.63-20.96 ms/op.
+  Rejected.
+
+2000 after value-is-key/cache accounting fix:
+  Random YogaDB:    31.68-41.57 ms/op in paired samples.
+  Ascending YogaDB: 17.16-20.02 ms/op.
+  Kept.
+
+3000 after value-is-key:
+  Random YogaDB:    37.59-41.51 ms/op.
+  Ascending YogaDB: 17.21-19.86 ms/op.
+  Rejected and reverted to 2000.
+```
+
+### 2026-09-09: Experiment 77, Bulk Tombstone Metadata
+
+Patch:
+
+```text
+bulkIngestBuilder now tracks hasTombstones during appendBatch, allowing
+flushMemtableBulkInitial to avoid a full tombstone eligibility scan when data
+arrived through the bulk builder.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+Random samples:    38.38-43.80 ms/op.
+Ascending samples: 17.63-20.75 ms/op.
+```
+
+Kept: yes. Mostly neutral timing, but it removes a redundant pass and preserves
+the correctness gate for tombstones.
+
+### 2026-09-09: Experiment 78, Slotted Value-Is-Key Marker
+
+Patch:
+
+```text
+Added slottedValInfoValueIsKey, used when an inline value is byte-identical to
+the key and Vtyp is zero. The slotted encoder stores only the key bytes plus
+the marker; decode reconstructs Value from Key. No backwards-compatibility
+fallback was added, per direction.
+```
+
+Important fix:
+
+```text
+The first version hurt reads badly because interval cache accounting
+double-counted aliased key/value bytes and evicted hot pages. kvSizeApprox now
+does not double-count value bytes when Value aliases Key.
+```
+
+Result after the cache accounting fix:
+
+```text
+Focused correctness tests: PASS.
+
+Iterator read:
+  3.70-3.82 ns/key, 1320 B/op, 3 allocs/op.
+
+Random load:
+  37.30-44.02 ms/op, about 22.53 MB/op, about 3560 allocs/op.
+
+Ascending load:
+  17.54-18.59 ms/op, about 10.29 MB/op, about 1403 allocs/op.
+```
+
+Kept: yes. It reduced encoded data volume and allocation pressure while keeping
+the read path at the original fast-cache speed.
+
+### 2026-09-09: Experiment 79, Specialized Value-Is-Key Page Encoder
+
+Patch:
+
+```text
+Threaded allValuesAliasKeys through Batch -> memtable -> bulkIngestBuilder and
+added slottedPageEncodeKnownSizeSmallInlineZeroVtypValueIsKey. For all-value-
+is-key pages, the encoder no longer rechecks aliasing per KV and has no value
+copy loop.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+
+Paired 20x count=5:
+  Iterator read:    3.83-4.34 ns/key, 1320 B/op, 3 allocs/op.
+  Random YogaDB:    32.44, 35.94, 37.99, 34.21, 35.22 ms/op.
+  Random Pebble:    86.33, 96.85, 100.91, 87.90, 94.86 ms/op.
+  Ascending YogaDB: 14.49-20.85 ms/op.
+  Ascending Pebble: 61.63-65.17 ms/op.
+```
+
+Kept: yes. The win is modest on random but significant on ascending and it
+removes format work that was provably redundant for this workload.
+
+### 2026-09-09: Experiment 80, Skip MEMWAL Serialization for Initial Commit(false)
+
+Patch:
+
+```text
+During pristine bulk initial load, Batch.Commit(false) now appends to the bulk
+builder without serializing the batch to MEMWAL. Batch.Commit(true) still uses
+the compact MEMWAL path and syncs as before. This follows the documented
+durability boundary: Commit(false) is not durable until db.Sync() returns.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+Full suite: go test ./... -count=1 -timeout=600s: PASS.
+
+Paired 20x count=5:
+  Random YogaDB:    26.85, 30.43, 28.65, 29.82, 30.08 ms/op.
+  Random Pebble:    83.62, 85.86, 84.25, 85.41, 85.72 ms/op.
+  Ascending YogaDB: 11.72-13.90 ms/op.
+  Ascending Pebble: 58.90-62.38 ms/op.
+
+Later retained-code 100x profile:
+  Random YogaDB: 28.73 ms/op, 21.52 MB/op, 3536 allocs/op.
+```
+
+Kept: yes. This is the largest retained win from this round. It removes
+short-lived MEMWAL payload construction and write traffic that is unnecessary
+for Commit(false) before the final Sync.
+
+### 2026-09-09: Experiment 81, No-Dedup Bulk Flush
+
+Patch:
+
+```text
+Tried streaming sorted refs directly after sort without duplicate-key collapse.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+Random YogaDB: 26.43-33.05 ms/op, average about 30.0 ms/op.
+```
+
+Rejected and reverted. Even after accepting that duplicate checking can be
+removed semantically, this did not improve random write throughput.
+
+### 2026-09-09: Experiment 82, Narrow Timed Directory Sync
+
+Patch:
+
+```text
+Tried changing the Sync-time repeat directory sync from syncing every ancestor
+to syncing only the database directory. Open-time syncDir remained unchanged.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+Random-only 50x count=8 averaged about 30.3 ms/op.
+```
+
+Rejected and reverted. The syscall count changed in the expected direction, but
+random write throughput did not improve.
+
+### 2026-09-09: Experiment 83, Direct Checkpoint Instead of FlexSpace Redo for Bulk Initial
+
+Patch:
+
+```text
+Temporarily set FlexSpace omitRedoLog during pristine bulk flush and forced the
+final Sync to checkpoint the FlexTree directly.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+Random YogaDB:    28.23-33.91 ms/op.
+Ascending YogaDB: 12.64-15.57 ms/op.
+```
+
+Rejected and reverted. The checkpoint path was slower than buffered redo for
+this load size.
+
+### 2026-09-09: Experiment 84, 8 KB Slotted Pages
+
+Patch:
+
+```text
+Changed SLOTTED_PAGE_KB from 4 to 8 to reduce page/anchor/pwrite count.
+```
+
+Result:
+
+```text
+Focused correctness tests, including load-bloat coverage: PASS.
+Random YogaDB: 27.93-32.30 ms/op.
+Iterator read: 10.56-20.21 ns/key, with MB-scale allocations.
+```
+
+Rejected and reverted. Write speed was not better and read speed regressed by
+roughly 3-5x.
+
+### 2026-09-09: Experiment 85, Direct Ref Paging After Sort
+
+Patch:
+
+```text
+Tried building cache-owned pages directly from sorted bulk refs after an
+in-place dedup pass, avoiding the temporary page slice plus cache copy pattern.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+Random YogaDB: 27.52-31.18 ms/op, average about 29.5 ms/op.
+```
+
+Rejected and reverted. It did not beat the retained path and added too much
+page-boundary complexity.
+
+### 2026-09-09: Experiment 86, xxhash Slotted Page Checksum
+
+Patch:
+
+```text
+Tried replacing slotted-page CRC32c with the existing xxhash dependency,
+truncated to the current 4-byte checksum field. WAL/VLOG CRCs were unchanged.
+```
+
+Result:
+
+```text
+Focused slotted/recovery tests: PASS.
+Random YogaDB:    29.00-31.67 ms/op.
+Ascending YogaDB: 11.87-13.13 ms/op.
+```
+
+Rejected and reverted. The CPU profile showed hardware CRC32c was already a
+small cost, and xxhash did not improve throughput.
+
+### 2026-09-09: Experiment 87, Lazy Batch Puts Allocation
+
+Patch:
+
+```text
+NewBatch no longer allocates the 10000-entry puts slice immediately. The first
+Set/SetBytes/Delete allocates it with the same batchInitialPutCap. This avoids
+the final empty-batch allocation in benchmarks and makes empty batches cheap.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+
+Random/ascending/write-read 50x count=6:
+  Random YogaDB:    27.09-31.17 ms/op, about 21.52 MB/op.
+  Ascending YogaDB: 11.06-12.78 ms/op, about 9.48 MB/op.
+  Iterator read:    mostly 3.70-3.86 ns/key, with noisy outliers.
+```
+
+Kept provisionally. The timing gain is small/noisy, but it removes a real
+timed allocation and does not change nonempty batch capacity.
+
+### 2026-09-09: Experiment 88, Pool No-Pointer Sort Ref Arrays
+
+Patch:
+
+```text
+Tried sync.Pool reuse for the no-pointer []bulkIngestRef order/sortAux arrays.
+String scratch arrays were not pooled to avoid retaining key arenas.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+Random YogaDB: 29.80-31.77 ms/op.
+```
+
+Rejected and reverted. Allocation dropped, but write throughput did not improve.
+
+### 2026-09-09: Experiment 89, Sort Refs Without Key Scratch Arrays
+
+Patch:
+
+```text
+Tried removing keys/keyAux scratch arrays and sorting refs by looking keys up
+from bulk segments during radix passes.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+Random YogaDB: 31.29-34.56 ms/op, about 18.3 MB/op.
+Ascending YogaDB: 11.23-12.32 ms/op.
+```
+
+Rejected and reverted. It reduced allocation by about 3.2 MB/op but made random
+write throughput materially worse; the extra key indirections beat the saved
+memclr.
+
+## Current State After Experiment 89
+
+Retained current-code state:
+
+```text
+Full suite:
+  go test ./... -count=1 -timeout=600s: PASS.
+
+Current paired 20x count=5:
+  Iterator read:    3.68-3.80 ns/key, 1320 B/op, 3 allocs/op.
+  Random YogaDB:    28.07, 29.38, 31.43, 31.72, 31.81 ms/op.
+  Random Pebble:    82.91, 83.95, 85.67, 86.30, 87.68 ms/op.
+  Ascending YogaDB: 11.72, 11.76, 11.95, 12.49, 13.04 ms/op.
+  Ascending Pebble: 60.88, 64.10, 64.56, 65.14, 65.24 ms/op.
+
+Best retained random profile sample:
+  Benchmark_LoadOnly_YogaDB: 28.73 ms/op, 21.52 MB/op, 3536 allocs/op.
+```
+
+Interpretation:
+
+```text
+Ascending writes now meet the 5x target against Pebble while preserving the
+fast read path.
+
+Random writes are still about 2.8-3.0x faster than Pebble, not 5x. The
+remaining random path profile is split across:
+  - sorting sorted-ref/key scratch and MSD radix passes;
+  - Batch.SetBytes key copying and KV append/zeroing;
+  - slotted page assembly/encoding/cache installation;
+  - final Sync/syscall work.
+
+The arena skiplist/wormhole idea is unlikely to help the current initial-load
+benchmark by itself because this path already bypasses the B-tree memtable.
+It could matter for non-pristine or read-before-sync workloads, but the current
+random load bottleneck is not B-tree insertion.
+```
+
+Next credible large targets:
+
+```text
+1. Compact bulk staging representation for value-is-key batches:
+   store key arena offsets/HLCs instead of full pointer-heavy KV structs, then
+   materialize KVs only for cache-owned pages. This attacks Batch.SetBytes,
+   GC scanning, and cache-copy pressure.
+
+2. Optional bulk-load API or mode:
+   let callers promise sorted/unique input, or value-is-key input, so YogaDB
+   can avoid duplicate handling and generic validation paths without guessing.
+
+3. Parallel bulk sort/page encode:
+   only worth trying after target workloads are broader than NewCallID random;
+   sort remains a real cost, but prior allocation-only sort changes worsened
+   throughput.
+
+4. Revisit page/cache layout:
+   8 KB pages reduced allocations but destroyed read speed, so any larger-page
+   attempt must fix cache residency/accounting first.
+```
+
+### 2026-09-09: Experiment 90, Stable Bulk Minimum HLC Page Base
+
+Patch:
+
+```text
+Tracked the minimum HLC in bulkIngestBuilder and used it as the slotted page
+base for compact all-small initial-load pages. The hypothesis was that random
+key sort order mixes batch HLCs and causes repeated page-size recomputation
+when a lower HLC appears after page assembly has started.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+
+All compact pages:
+  Random YogaDB:    25.43-33.26 ms/op, average about 29.3 ms/op.
+  Ascending YogaDB: 12.88-14.41 ms/op.
+
+Unsorted-only compact pages:
+  Random YogaDB:    28.66-32.63 ms/op, average about 30.9 ms/op.
+  Ascending YogaDB: 11.49-12.94 ms/op.
+```
+
+Rejected and reverted. The all-page version hurt ascending writes, and the
+unsorted-only version did not produce a reliable random-write improvement.
+
+### 2026-09-09: Experiment 91, Preallocate Transient Page Slice To Interval Count
+
+Patch:
+
+```text
+Changed the generic flushMemtableBulkInitial page assembly slice from cap 128
+to cap flexdbSparseIntervalCount, avoiding grow-slice steps while assembling
+random sorted pages.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+Random YogaDB:    28.32-31.06 ms/op, average about 30.0 ms/op.
+Ascending YogaDB: 11.00-12.39 ms/op.
+Allocation rose by about 120 KiB/op.
+```
+
+Rejected and reverted. The larger zeroed allocation did not give a clear
+throughput win.
+
+### 2026-09-09: Experiment 92, Approximate-Size Fast Paths
+
+Patch:
+
+```text
+Avoided kvSizeApprox's per-record alias check when the caller already knew a
+batch/page was value-is-key.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+
+appendBatch-only:
+  Random YogaDB:    28.24-31.74 ms/op, average about 30.3 ms/op.
+  Ascending YogaDB: 11.22-13.23 ms/op.
+
+appendBatch plus page-cache sizing:
+  Random YogaDB:    29.82-32.50 ms/op, average about 31.3 ms/op.
+  Ascending YogaDB: 11.89-13.20 ms/op.
+```
+
+Rejected and reverted. This was instruction-count cleanup but not a
+statistically useful write-throughput improvement.
+
+### 2026-09-09: Experiment 93, Zero-HLC-Delta Encoder Branch
+
+Patch:
+
+```text
+Special-cased HLC delta 0 in the value-is-key slotted size and encode loops.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+Combined with Experiment 92 page-cache sizing:
+  Random YogaDB:    28.27-33.30 ms/op, average about 31.0 ms/op.
+  Ascending YogaDB: 12.05-13.43 ms/op.
+```
+
+Rejected and reverted. The branch was in the hottest encoder loop and did not
+pay for itself.
+
+### 2026-09-09: Experiment 94, In-Place MSD Radix Sort
+
+Patch:
+
+```text
+Added an American-flag-style in-place MSD radix sorter using the existing key
+sidecar. This removed sortAux/keyAux allocations from unsorted bulk loads and
+worked for both fixed-width and variable-width keys.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+Random YogaDB:    28.29-34.03 ms/op, average about 30.8 ms/op.
+Ascending YogaDB: 11.53-12.92 ms/op.
+Random allocation dropped from about 21.5 MB/op to about 19.1 MB/op.
+```
+
+Rejected and reverted. Allocation improved, but wall time did not; the extra
+swap traffic was slower than the current out-of-place radix copy.
+
+### 2026-09-09: Experiment 95, Nil Value-Is-Key KV Representation
+
+Patch:
+
+```text
+Tried storing value-is-key KVs with nil Value and Vptr.Length == len(Key),
+restoring the alias when reading from bulk or installing cache-owned pages.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+Random YogaDB:    29.74-34.30 ms/op, average about 31.9 ms/op.
+Ascending YogaDB: 11.25-12.87 ms/op.
+Iterator read:    mostly 3.7-3.8 ns/key but with more 5.5-6.1 ns/key outliers.
+```
+
+Rejected and reverted. Reducing pointer pressure was not enough to offset the
+extra restoration logic and read-path noise.
+
+### 2026-09-09: Experiment 96, Disable Sync-Time Anchor Tag Verification
+
+Patch:
+
+```text
+Temporarily skipped the unconditional verifyAnchorTags() call in
+writeLockHeldSync(), leaving Close-time verification intact.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+Random YogaDB:    27.07-33.10 ms/op, average about 30.0 ms/op.
+Ascending YogaDB: 10.80-12.22 ms/op.
+```
+
+Rejected and reverted. It may slightly help sorted loads, but random throughput
+did not move enough to justify weakening an always-on invariant check,
+especially after the recent anchor/tag recovery warnings.
+
+### 2026-09-09: Experiment 97, 6 KB Slotted Pages And Cache Shard Retuning
+
+Patch:
+
+```text
+Changed SLOTTED_PAGE_KB from 4 to 6 as a middle point below the previously
+rejected 8 KB pages. Then tried reducing intervalCachePartitionCount from 1024
+to 512 to double per-shard cache capacity, because 6 KB decoded pages caused
+immediate iterator cache churn under the default 32 MB cache.
+```
+
+Result:
+
+```text
+6 KB pages, 1024 cache partitions:
+  Focused tests: PASS.
+  Random YogaDB:    27.94-30.06 ms/op, average about 28.9 ms/op.
+  Ascending YogaDB: 11.48-12.79 ms/op.
+  Iterator read:    regressed to 5.2-13.8 ns/key with MB-scale allocations.
+
+6 KB pages, 512 cache partitions:
+  Random YogaDB:    29.56-31.76 ms/op, average about 30.7 ms/op.
+  Ascending YogaDB: 11.19-13.09 ms/op.
+  Iterator read:    restored to 3.58-3.73 ns/key, 1320 B/op.
+```
+
+Rejected and reverted. Larger pages can reduce allocation and sometimes improve
+random writes, but the cache geometry must also preserve reads; after retuning
+the cache shards, the random write win disappeared.
+
+### 2026-09-09: Experiment 98, Bounded Parallel MSD Radix Sort
+
+Patch:
+
+```text
+Added bounded goroutine recursion to the existing MSD radix sorter for both
+fixed-width and variable-width keys. First threshold was 4096 entries; then
+512 entries so the current random benchmark actually spawned bucket workers.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+
+Threshold 4096:
+  Random YogaDB:    27.99-31.68 ms/op, average about 29.3 ms/op.
+  Ascending YogaDB: 11.60-12.92 ms/op.
+  This likely spawned little or no work after the top partition.
+
+Threshold 512:
+  Random YogaDB:    29.17-31.59 ms/op, average about 30.4 ms/op.
+  Allocation increased to about 21.55 MB/op and 3660-3690 allocs/op.
+```
+
+Rejected and reverted. Real parallelism added overhead and did not improve
+write throughput. The apparent threshold-4096 gain did not survive analysis
+because the first-byte buckets were too small to spawn recursive workers.
+
+### 2026-09-09: Experiment 99, uint32 Fixed-Radix Counters
+
+Patch:
+
+```text
+Changed the fixed-key MSD radix count array from [256]int to [256]uint32,
+halving the counter array zeroing footprint per recursion. The variable-width
+path was left unchanged.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+Random-only 50x count=10: 27.88-30.67 ms/op, average about 29.0 ms/op.
+Wider paired run:         26.96-32.43 ms/op, average about 30.1 ms/op.
+Profile run:              30.72 ms/op.
+```
+
+Rejected and reverted. The random-only sample looked promising, but the wider
+run and profile sample did not show a reliable improvement.
+
+### 2026-09-09: Experiment 100, Two-Byte Fixed-Key Radix Pass
+
+Patch:
+
+```text
+Added a fixed-length-key MSD radix helper that buckets two bytes at a time
+using a 65536-entry count table, falling back to the existing 8-bit MSD path
+for small buckets and one-byte tails.
+```
+
+Result:
+
+```text
+Focused correctness tests: PASS.
+Random YogaDB:    26.47-30.66 ms/op, average about 29.2 ms/op.
+Ascending YogaDB: 11.34-12.32 ms/op.
+Iterator read:    normal 3.58-3.92 ns/key, one 5.5 ns/key outlier.
+Profile run:      29.10 ms/op, but sort time did not actually fall.
+Allocation rose by about 1 MB/op from the large count table.
+```
+
+Rejected and reverted. The wall-clock samples looked attractive, but line
+profiling showed the total sort cost remained about the same; the 16-bit pass
+mostly moved work around and increased allocation.

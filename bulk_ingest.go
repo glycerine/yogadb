@@ -15,9 +15,12 @@ type bulkIngestBuilder struct {
 	index                  map[string]bulkIngestRef
 	fixedKeyLen            int
 	sorted                 bool
+	sortedHasDuplicates    bool
+	hasTombstones          bool
 	lastKey                string
 	dirty                  bool
 	allSmallInlineZeroVtyp bool
+	allValuesAliasKeys     bool
 	count                  int
 	size                   int64
 }
@@ -45,32 +48,47 @@ func (b *bulkIngestBuilder) reset() {
 	b.index = nil
 	b.fixedKeyLen = -1
 	b.sorted = true
+	b.sortedHasDuplicates = false
+	b.hasTombstones = false
 	b.lastKey = ""
 	b.dirty = false
 	b.allSmallInlineZeroVtyp = true
+	b.allValuesAliasKeys = true
 	b.count = 0
 	b.size = 0
 }
 
-func (b *bulkIngestBuilder) appendBatch(kvs []KV) {
+func (b *bulkIngestBuilder) appendBatch(kvs []KV, valuesAliasKeys bool) {
 	if len(kvs) == 0 {
 		return
 	}
 	if b.count == 0 && len(b.segments) == 0 {
 		b.allSmallInlineZeroVtyp = true
+		b.allValuesAliasKeys = true
 		b.sorted = true
+		b.sortedHasDuplicates = false
+		b.hasTombstones = false
 		b.lastKey = ""
+	}
+	if !valuesAliasKeys {
+		b.allValuesAliasKeys = false
 	}
 	b.segments = append(b.segments, bulkIngestSegment{kvs: kvs})
 	for i := range kvs {
 		if b.sorted {
 			if b.count > 0 && b.lastKey > kvs[i].Key {
 				b.sorted = false
+			} else if b.count > 0 && b.lastKey == kvs[i].Key {
+				b.sortedHasDuplicates = true
+				b.lastKey = kvs[i].Key
 			} else {
 				b.lastKey = kvs[i].Key
 			}
 		}
 		b.size += int64(kvSizeApprox(&kvs[i]))
+		if kvs[i].isTombstone() {
+			b.hasTombstones = true
+		}
 		if !slottedKVSmallInlineZeroVtyp(kvs[i]) {
 			b.allSmallInlineZeroVtyp = false
 		}
@@ -81,7 +99,7 @@ func (b *bulkIngestBuilder) appendBatch(kvs []KV) {
 }
 
 func (b *bulkIngestBuilder) appendKV(kv KV) {
-	b.appendBatch([]KV{kv})
+	b.appendBatch([]KV{kv}, slottedInlineValueAliasesKey(kv))
 }
 
 func (b *bulkIngestBuilder) kv(ref bulkIngestRef) KV {

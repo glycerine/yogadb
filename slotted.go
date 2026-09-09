@@ -81,6 +81,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"strings"
+	"unsafe"
 )
 
 // slottedPageMagic is a 16-byte signature at the start of
@@ -124,6 +125,7 @@ const (
 	// valInfo sentinels and flags
 	slottedValInfoNilValue       = 0x0000 // live key, zero-length value, no Vtyp
 	slottedValInfoInlineVtypFlag = 0x8000 // inline value carries a Uvarint nonzero Vtyp in the entry record
+	slottedValInfoValueIsKey     = 0xFFFC // inline value bytes are identical to the key bytes, Vtyp == 0
 	slottedValInfoVPtrWithVtyp   = 0xFFFD // VPtr with a Uvarint nonzero Vtyp in the entry record
 	slottedValInfoTombstone      = 0xFFFE // deletion marker
 	slottedValInfoVPtr           = 0xFFFF // value in VLOG, no Vtyp
@@ -330,11 +332,15 @@ func slottedKVSmallInlineZeroVtyp(kv KV) bool {
 func slottedKVEncodedSizeSmallInlineZeroVtyp(kv KV, baseHLC HLC) int {
 	var hlcBuf [binary.MaxVarintLen64]byte
 	delta := uint64(kv.Hlc - baseHLC)
-	return 4 + binary.PutUvarint(hlcBuf[:], delta) + len(kv.Key) + len(kv.Value)
+	return 4 + binary.PutUvarint(hlcBuf[:], delta) + len(kv.Key) + slottedValBytes(kv)
 }
 
 func slottedKVEncodedSizeSmallInlineZeroVtypKnown(kv KV, baseHLC HLC) int {
-	return 4 + uvarintLen64(uint64(kv.Hlc-baseHLC)) + len(kv.Key) + len(kv.Value)
+	return 4 + uvarintLen64(uint64(kv.Hlc-baseHLC)) + len(kv.Key) + slottedValBytes(kv)
+}
+
+func slottedKVEncodedSizeSmallInlineZeroVtypValueIsKey(kv KV, baseHLC HLC) int {
+	return 4 + uvarintLen64(uint64(kv.Hlc-baseHLC)) + len(kv.Key)
 }
 
 func uvarintLen64(x uint64) int {
@@ -404,7 +410,9 @@ func slottedPageEncodeKnownSizeSmallInlineZeroVtyp(dst []byte, kvs []KV, baseHLC
 		kv := kvs[i]
 		binary.LittleEndian.PutUint16(buf[entryOff:entryOff+2], uint16(len(kv.Key)))
 		vi := uint16(slottedValInfoNilValue)
-		if len(kv.Value) != 0 {
+		if slottedInlineValueAliasesKey(kv) {
+			vi = slottedValInfoValueIsKey
+		} else if len(kv.Value) != 0 {
 			vi = uint16(len(kv.Value) + 2)
 		}
 		binary.LittleEndian.PutUint16(buf[entryOff+2:entryOff+4], vi)
@@ -417,13 +425,58 @@ func slottedPageEncodeKnownSizeSmallInlineZeroVtyp(dst []byte, kvs []KV, baseHLC
 
 	valEnd := totalSize - slottedPageCRCSize
 	for i := 0; i < count; i++ {
-		v := kvs[i].Value
+		v := slottedValBytesOf(kvs[i])
 		valStart := valEnd - len(v)
 		copy(buf[valStart:], v)
 		valEnd = valStart
 	}
 	if entryOff > valEnd {
 		panic(fmt.Sprintf("slottedPageEncodeKnownSizeSmallInlineZeroVtyp: entry/value overlap entryOff=%d valEnd=%d total=%d", entryOff, valEnd, totalSize))
+	}
+
+	crcOff := totalSize - slottedPageCRCSize
+	checksum := slottedPageChecksum(buf[:crcOff])
+	binary.LittleEndian.PutUint32(buf[crcOff:], checksum)
+	return buf
+}
+
+func slottedPageEncodeKnownSizeSmallInlineZeroVtypValueIsKey(dst []byte, kvs []KV, baseHLC HLC, totalSize int) []byte {
+	count := len(kvs)
+	if count == 0 {
+		return nil
+	}
+	if count > 0xFFFF {
+		panic(fmt.Sprintf("slottedPageEncode: too many KVs: %d", count))
+	}
+	if totalSize < slottedPageHeaderSize+slottedPageCRCSize {
+		panic(fmt.Sprintf("slottedPageEncodeKnownSizeSmallInlineZeroVtypValueIsKey: invalid total size %d", totalSize))
+	}
+	var buf []byte
+	if cap(dst) >= totalSize {
+		buf = dst[:totalSize]
+	} else {
+		buf = make([]byte, totalSize)
+	}
+
+	copy(buf[0:slottedPageMagicSize], slottedPageMagic[:])
+	buf[16] = 0
+	binary.LittleEndian.PutUint16(buf[17:19], uint16(count))
+	binary.BigEndian.PutUint64(buf[19:27], uint64(baseHLC))
+
+	entryOff := slottedPageHeaderSize
+	valEnd := totalSize - slottedPageCRCSize
+	for i := 0; i < count; i++ {
+		kv := kvs[i]
+		binary.LittleEndian.PutUint16(buf[entryOff:entryOff+2], uint16(len(kv.Key)))
+		binary.LittleEndian.PutUint16(buf[entryOff+2:entryOff+4], slottedValInfoValueIsKey)
+		entryOff += 4
+		delta := uint64(kv.Hlc - baseHLC)
+		entryOff += binary.PutUvarint(buf[entryOff:], delta)
+		copy(buf[entryOff:], kv.Key)
+		entryOff += len(kv.Key)
+	}
+	if entryOff > valEnd {
+		panic(fmt.Sprintf("slottedPageEncodeKnownSizeSmallInlineZeroVtypValueIsKey: entry/value overlap entryOff=%d valEnd=%d total=%d", entryOff, valEnd, totalSize))
 	}
 
 	crcOff := totalSize - slottedPageCRCSize
@@ -549,6 +602,9 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 		} else if baseValInfo == slottedValInfoNilValue {
 			// live key, zero-length value: Value stays nil, Vptr stays zero
 			kvs[i].Vptr.Offset = entries[i].entryVtyp
+		} else if baseValInfo == slottedValInfoValueIsKey {
+			kvs[i].Vptr.Length = uint64(len(kvs[i].Key))
+			kvs[i].Value = []byte(kvs[i].Key)
 		} else if baseValInfo == slottedValInfoVPtr {
 			kvs[i].Vptr = decodeVPtr(src[valStart : valStart+vptrSize])
 		} else if baseValInfo == slottedValInfoVPtrWithVtyp {
@@ -612,6 +668,8 @@ func slottedValInfo(kv KV) uint16 {
 	var vi uint16
 	if len(kv.Value) == 0 {
 		vi = slottedValInfoNilValue
+	} else if kv.Vptr.Offset == 0 && slottedInlineValueAliasesKey(kv) {
+		vi = slottedValInfoValueIsKey
 	} else {
 		vi = uint16(len(kv.Value) + 2)
 	}
@@ -623,7 +681,7 @@ func slottedValInfo(kv KV) uint16 {
 
 func slottedValInfoHasInlineVtyp(vi uint16) bool {
 	switch vi {
-	case slottedValInfoTombstone, slottedValInfoVPtr, slottedValInfoVPtrWithVtyp:
+	case slottedValInfoValueIsKey, slottedValInfoTombstone, slottedValInfoVPtr, slottedValInfoVPtrWithVtyp:
 		return false
 	default:
 		return vi&slottedValInfoInlineVtypFlag != 0
@@ -676,6 +734,9 @@ func slottedValBytes(kv KV) int {
 	if kv.HasVPtr() {
 		return vptrSize
 	}
+	if kv.Vptr.Offset == 0 && slottedInlineValueAliasesKey(kv) {
+		return 0
+	}
 	return len(kv.Value)
 }
 
@@ -689,7 +750,16 @@ func slottedValBytesOf(kv KV) []byte {
 		kv.Vptr.encode(buf[:])
 		return buf[:]
 	}
+	if kv.Vptr.Offset == 0 && slottedInlineValueAliasesKey(kv) {
+		return nil
+	}
 	return kv.Value
+}
+
+func slottedInlineValueAliasesKey(kv KV) bool {
+	return len(kv.Value) > 0 &&
+		len(kv.Value) == len(kv.Key) &&
+		unsafe.StringData(kv.Key) == unsafe.SliceData(kv.Value)
 }
 
 // slottedPageFirstKey extracts the first key from a slotted page without
@@ -731,7 +801,7 @@ func slottedPageFirstKey(src []byte) (string, bool) {
 
 // slottedValInfoToLen returns the number of value bytes for a valInfo.
 func slottedValInfoToLen(vi uint16) int {
-	if vi == slottedValInfoNilValue || vi == slottedValInfoTombstone {
+	if vi == slottedValInfoNilValue || vi == slottedValInfoValueIsKey || vi == slottedValInfoTombstone {
 		return 0
 	}
 	if vi == slottedValInfoVPtr {
@@ -842,6 +912,14 @@ func intervalCacheEntrySlottedKVsSizeSmallInlineZeroVtyp(kvs []KV, baseHLC HLC) 
 	size := slottedPageHeaderSize + slottedPageCRCSize
 	for i := range kvs {
 		size += slottedKVEncodedSizeSmallInlineZeroVtypKnown(kvs[i], baseHLC)
+	}
+	return size
+}
+
+func intervalCacheEntrySlottedKVsSizeSmallInlineZeroVtypValueIsKey(kvs []KV, baseHLC HLC) int {
+	size := slottedPageHeaderSize + slottedPageCRCSize
+	for i := range kvs {
+		size += slottedKVEncodedSizeSmallInlineZeroVtypValueIsKey(kvs[i], baseHLC)
 	}
 	return size
 }
@@ -1024,6 +1102,8 @@ func slottedPageDumpImpl(src []byte, vlog *valueLog) string {
 		switch {
 		case baseValInfo == slottedValInfoNilValue:
 			valDesc = "zero-length"
+		case baseValInfo == slottedValInfoValueIsKey:
+			valDesc = "value-is-key"
 		case baseValInfo == slottedValInfoTombstone:
 			valDesc = "tombstone"
 		case baseValInfo == slottedValInfoVPtr:

@@ -69,7 +69,7 @@ func (m *memtable) put(kv KV) (KV, bool) {
 }
 
 func (m *memtable) putBulk(kv KV) (KV, bool) {
-	m.bulk.appendBatch([]KV{kv})
+	m.bulk.appendBatch([]KV{kv}, slottedInlineValueAliasesKey(kv))
 	m.size = m.bulk.size
 	if m.size <= 0 {
 		panicf("bad: memtable with some content should have size(%v) > 0: %#v", m.size, m)
@@ -77,8 +77,8 @@ func (m *memtable) putBulk(kv KV) (KV, bool) {
 	return KV{}, false
 }
 
-func (m *memtable) appendBulkBatch(kvs []KV) {
-	m.bulk.appendBatch(kvs)
+func (m *memtable) appendBulkBatch(kvs []KV, valuesAliasKeys bool) {
+	m.bulk.appendBatch(kvs, valuesAliasKeys)
 	m.size = m.bulk.size
 	if m.size <= 0 {
 		panicf("bad: memtable with some content should have size(%v) > 0: %#v", m.size, m)
