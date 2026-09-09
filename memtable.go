@@ -18,13 +18,10 @@ import (
 type memtable struct {
 	// backing in memory B-tree (was skiplist in C).
 	bt *btree.BTreeG[KV]
-	// bulkKVs/bulkIndex are used only for pristine initial batch loads. They
+	// bulk is used only for pristine initial batch loads. It
 	// avoid per-key B-tree insertion until a read requires materialization or
 	// Sync streams the sorted entries directly to FlexSpace.
-	bulkKVs         []KV
-	bulkIndex       bulkKVIndex
-	bulkOrder       []int
-	bulkCountsDirty bool
+	bulk bulkIngestBuilder
 
 	memWalFD          vfs.File // FLEXDB.MEMWAL
 	memWalBuf         []byte
@@ -53,10 +50,7 @@ func newMemtable(memWalFD vfs.File) *memtable {
 func (m *memtable) reset() {
 	m.empty = true
 	m.size = 0
-	m.bulkKVs = m.bulkKVs[:0]
-	m.bulkIndex.reset()
-	m.bulkOrder = m.bulkOrder[:0]
-	m.bulkCountsDirty = false
+	m.bulk.reset()
 }
 
 // caller should set m.empty to false after calling put()
@@ -75,92 +69,40 @@ func (m *memtable) put(kv KV) (KV, bool) {
 }
 
 func (m *memtable) putBulk(kv KV) (KV, bool) {
-	m.bulkKVs = append(m.bulkKVs, kv)
-	m.size += int64(kvSizeApprox(&kv))
-	m.bulkIndex.reset()
-	m.bulkCountsDirty = true
+	m.bulk.appendBatch([]KV{kv})
+	m.size = m.bulk.size
 	if m.size <= 0 {
 		panicf("bad: memtable with some content should have size(%v) > 0: %#v", m.size, m)
 	}
 	return KV{}, false
 }
 
-func (m *memtable) ensureBulkIndexCap(n int) {
-	if cap(m.bulkKVs) < n {
-		next := 1
-		for next < n {
-			next <<= 1
-		}
-		newBulk := make([]KV, len(m.bulkKVs), next)
-		copy(newBulk, m.bulkKVs)
-		m.bulkKVs = newBulk
+func (m *memtable) appendBulkBatch(kvs []KV) {
+	m.bulk.appendBatch(kvs)
+	m.size = m.bulk.size
+	if m.size <= 0 {
+		panicf("bad: memtable with some content should have size(%v) > 0: %#v", m.size, m)
 	}
 }
 
 func (m *memtable) materializeBulk() {
-	if len(m.bulkKVs) == 0 {
+	if m.bulk.count == 0 {
 		return
 	}
-	for i := range m.bulkKVs {
-		m.bt.Set(m.bulkKVs[i])
+	for si := range m.bulk.segments {
+		kvs := m.bulk.segments[si].kvs
+		for i := range kvs {
+			m.bt.Set(kvs[i])
+		}
 	}
-	m.bulkKVs = m.bulkKVs[:0]
-	m.bulkIndex.reset()
-	m.bulkCountsDirty = false
+	m.bulk.reset()
 }
 
 func (m *memtable) get(key string) (KV, bool) {
-	m.ensureBulkIndex()
-	if idx, ok := m.bulkIndex.get(key); ok {
-		return m.bulkKVs[idx], true
+	if kv, ok := m.bulk.get(key); ok {
+		return kv, true
 	}
 	return m.bt.Get(KV{Key: key})
-}
-
-func (m *memtable) ensureBulkIndex() {
-	if len(m.bulkKVs) == 0 || m.bulkIndex.m != nil {
-		return
-	}
-	m.bulkIndex.ensureCap(len(m.bulkKVs))
-	for i := range m.bulkKVs {
-		m.bulkIndex.set(m.bulkKVs[i].Key, i)
-	}
-}
-
-type bulkKVIndex struct {
-	m map[string]int
-}
-
-func (x *bulkKVIndex) reset() {
-	x.m = nil
-}
-
-func (x *bulkKVIndex) clear() {
-	clear(x.m)
-}
-
-func (x *bulkKVIndex) ensureCap(n int) {
-	if n <= 0 {
-		return
-	}
-	if x.m == nil {
-		x.m = make(map[string]int, n)
-	}
-}
-
-func (x *bulkKVIndex) get(key string) (int, bool) {
-	if x.m == nil {
-		return 0, false
-	}
-	idx, ok := x.m[key]
-	return idx, ok
-}
-
-func (x *bulkKVIndex) set(key string, idx int) {
-	if x.m == nil {
-		x.m = make(map[string]int, 16)
-	}
-	x.m[key] = idx
 }
 
 func (m *memtable) logAppend(kv KV) error {

@@ -226,6 +226,12 @@ func TestFlexDB_WriteValidationRejectsEmptyKeysEverywhere(t *testing.T) {
 		wantErr(t, "Batch.Set", batch.Set("", []byte("value"), 0))
 	})
 
+	t.Run("batch set bytes", func(t *testing.T) {
+		db, _ := openTestDB(t, nil)
+		batch := db.NewBatch()
+		wantErr(t, "Batch.SetBytes", batch.SetBytes(nil, []byte("value"), 0))
+	})
+
 	t.Run("batch delete", func(t *testing.T) {
 		db, _ := openTestDB(t, nil)
 		batch := db.NewBatch()
@@ -566,6 +572,28 @@ func TestFlexDB_GetKVReportsAccurateVptrLength(t *testing.T) {
 		t.Fatalf("batch memtable inline Vptr.Length = %d, want %d", kv.Vptr.Length, len(smallBatch))
 	}
 	kv.Close()
+
+	byteKey := []byte("bytes-batch")
+	byteVal := []byte("bytes-value")
+	batch = db.NewBatch()
+	if err := batch.SetBytes(byteKey, byteVal, 0); err != nil {
+		t.Fatal(err)
+	}
+	byteKey[0] = 'X'
+	byteVal[0] = 'X'
+	if _, err := batch.Commit(false); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, _, _, err := db.Get("bytes-batch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("bytes-batch not found")
+	}
+	if string(got) != "bytes-value" {
+		t.Fatalf("SetBytes did not copy caller buffers: got %q", got)
+	}
 
 	if _, err := db.Put("nil-value", nil, 0); err != nil {
 		t.Fatal(err)

@@ -43,7 +43,7 @@ func Benchmark_Iter_YogaDB_Ascend(b *testing.B) {
 	t0 := time.Now()
 	batch := db.NewBatch()
 	for i, k := range keys {
-		batch.Set(string(k), k, 0)
+		batch.SetBytes(k, k, 0)
 		if (i+1)%10000 == 0 {
 			batch.Commit(false)
 			batch = db.NewBatch()
@@ -97,7 +97,7 @@ func Benchmark_Iter_YogaDB_Descend(b *testing.B) {
 	t0 := time.Now()
 	batch := db.NewBatch()
 	for i, k := range keys {
-		batch.Set(string(k), k, 0)
+		batch.SetBytes(k, k, 0)
 		if (i+1)%10000 == 0 {
 			batch.Commit(false)
 			batch = db.NewBatch()
@@ -191,7 +191,7 @@ func Benchmark_LoadOnly_YogaDB(b *testing.B) {
 
 		batch := db.NewBatch()
 		for i, k := range keys {
-			panicOn(batch.Set(string(k), k, 0))
+			panicOn(batch.SetBytes(k, k, 0))
 			if (i+1)%10000 == 0 {
 				_, err := batch.Commit(false)
 				panicOn(err)

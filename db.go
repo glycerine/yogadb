@@ -64,13 +64,15 @@ var sep = string(os.PathSeparator)
 type Batch struct {
 	db         *FlexDB
 	puts       []KV
+	keyArena   []byte
 	valueArena []byte
 	err        error
 }
 
 const (
 	batchInitialPutCap        = 1024
-	batchInitialValueArenaCap = 64 << 10
+	batchInitialKeyArenaCap   = 512 << 10
+	batchInitialValueArenaCap = 512 << 10
 )
 
 // NewBatch returns an empty new Batch.
@@ -115,6 +117,60 @@ func (s *Batch) Set(key string, value []byte, vtyp uint64) (err error) {
 	// Note the strangeness! We
 	// store vtyp type information in Offset even for large values, before
 	// we have written to the VLOG at all(!)
+	kv.Vptr.Offset = vtyp
+	kv.Vptr.Length = uint64(len(value))
+	s.puts = append(s.puts, kv)
+	return nil
+}
+
+func (s *Batch) SetBytes(key []byte, value []byte, vtyp uint64) (err error) {
+	if len(key) == 0 {
+		err = ErrKeyEmpty
+		if s.err == nil {
+			s.err = err
+		}
+		return err
+	}
+	if len(key) > MaxKeySize {
+		err = fmt.Errorf("flexdb: key too large (max %d bytes)", MaxKeySize)
+		if s.err == nil {
+			s.err = err
+		}
+		return err
+	}
+	if s.keyArena == nil {
+		capHint := batchInitialKeyArenaCap
+		if len(key) > capHint {
+			capHint = len(key)
+		}
+		s.keyArena = make([]byte, 0, capHint)
+	}
+	start := len(s.keyArena)
+	s.keyArena = append(s.keyArena, key...)
+	keyCopy := s.keyArena[start:]
+	keyString := unsafe.String(unsafe.SliceData(keyCopy), len(keyCopy))
+
+	var valueCopy []byte
+	if len(value) > 0 {
+		if len(value) == len(key) && unsafe.SliceData(value) == unsafe.SliceData(key) {
+			valueCopy = keyCopy
+		} else {
+			if s.valueArena == nil {
+				capHint := batchInitialValueArenaCap
+				if len(value) > capHint {
+					capHint = len(value)
+				}
+				s.valueArena = make([]byte, 0, capHint)
+			}
+			start := len(s.valueArena)
+			s.valueArena = append(s.valueArena, value...)
+			valueCopy = s.valueArena[start:]
+		}
+	}
+	kv := KV{
+		Key:   keyString,
+		Value: valueCopy,
+	}
 	kv.Vptr.Offset = vtyp
 	kv.Vptr.Length = uint64(len(value))
 	s.puts = append(s.puts, kv)
@@ -173,6 +229,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	if s.err != nil {
 		err := s.err
 		s.puts = nil
+		s.keyArena = nil
 		s.valueArena = nil
 		s.err = nil
 		return HLCInterval{}, nil, err
@@ -244,6 +301,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	for i := range s.puts {
 		if err := validateKV128RecordSizeAfterUserKey(s.puts[i]); err != nil {
 			s.puts = nil
+			s.keyArena = nil
 			s.valueArena = nil
 			return HLCInterval{}, nil, err
 		}
@@ -261,13 +319,32 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	useBulkInitial := db.bulkInitialBatchLoad && db.ff.Size() == 0
 	batchWalAppended := false
 	if useBulkInitial {
-		mt.ensureBulkIndexCap(len(mt.bulkKVs) + len(s.puts))
 		var ok bool
 		ok, err = mt.logAppendBatchLocked(s.puts)
 		if err != nil {
 			return HLCInterval{}, nil, fmt.Errorf("flexdb: batch append compact memwal: %w", err)
 		}
 		batchWalAppended = ok
+		if batchWalAppended {
+			mt.appendBulkBatch(s.puts)
+			mt.empty = false
+			if doFsync && !db.cfg.OmitMemWalFsync {
+				if err := mt.logSyncLocked(); err != nil {
+					return HLCInterval{}, nil, fmt.Errorf("flexdb: batch sync memwal: %w", err)
+				}
+			}
+			if wantMetrics {
+				if mt.bulk.dirty {
+					db.reconcileBulkInitialCountsLocked(mt)
+				}
+				metrics = db.writeLockHeldSessionMetrics()
+			}
+			s.puts = nil
+			s.keyArena = nil
+			s.valueArena = nil
+			interv = HLCInterval{Begin: curHLC, Endx: curHLC + 1}
+			return
+		}
 	}
 
 	for idx := 0; idx < len(s.puts); idx++ {
@@ -333,10 +410,11 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 
 	// make ready for immediate reuse after a Commit.
 	s.puts = nil
+	s.keyArena = nil
 	s.valueArena = nil
 
 	if wantMetrics {
-		if useBulkInitial && mt.bulkCountsDirty {
+		if useBulkInitial && mt.bulk.dirty {
 			db.reconcileBulkInitialCountsLocked(mt)
 		}
 		metrics = db.writeLockHeldSessionMetrics()
@@ -348,6 +426,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 // Reset forgets any existing queued up puts.
 func (s *Batch) Reset() {
 	s.puts = nil
+	s.keyArena = nil
 	s.valueArena = nil
 	s.err = nil
 }
@@ -356,6 +435,7 @@ func (s *Batch) Reset() {
 // frees any other resources associated with the Batch.
 func (s *Batch) Close() {
 	s.puts = nil
+	s.keyArena = nil
 	s.valueArena = nil
 	s.err = nil
 }
@@ -892,7 +972,7 @@ func (db *FlexDB) lookupOldVPtr(key string) VPtr {
 // Goroutine safe.
 func (db *FlexDB) Len() int64 {
 	db.topMutRW.Lock()
-	if db.bulkInitialBatchLoad && len(db.mt.bulkKVs) > 0 && db.mt.bulkCountsDirty {
+	if db.bulkInitialBatchLoad && db.mt.bulk.count > 0 && db.mt.bulk.dirty {
 		db.reconcileBulkInitialCountsLocked(&db.mt)
 	}
 	v := db.liveKeys
@@ -907,7 +987,7 @@ func (db *FlexDB) Len() int64 {
 // Goroutine safe.
 func (db *FlexDB) LenBigSmall() (big int64, small int64) {
 	db.topMutRW.Lock()
-	if db.bulkInitialBatchLoad && len(db.mt.bulkKVs) > 0 && db.mt.bulkCountsDirty {
+	if db.bulkInitialBatchLoad && db.mt.bulk.count > 0 && db.mt.bulk.dirty {
 		db.reconcileBulkInitialCountsLocked(&db.mt)
 	}
 	big = db.liveBigKeys
@@ -919,17 +999,17 @@ func (db *FlexDB) LenBigSmall() (big int64, small int64) {
 // reconcileBulkInitialCountsLocked computes exact counters for the pristine
 // append-only bulk memtable. Caller holds topMutRW.Lock().
 func (db *FlexDB) reconcileBulkInitialCountsLocked(m *memtable) {
-	if len(m.bulkKVs) == 0 {
+	if m.bulk.count == 0 {
 		db.liveKeys = 0
 		db.liveSmallKeys = 0
 		db.liveBigKeys = 0
-		m.bulkCountsDirty = false
+		m.bulk.dirty = false
 		return
 	}
-	m.ensureBulkIndex()
+	m.bulk.ensureIndex()
 	var big, small int64
-	for _, idx := range m.bulkIndex.m {
-		kv := m.bulkKVs[idx]
+	for _, ref := range m.bulk.index {
+		kv := m.bulk.kv(ref)
 		if kv.isTombstone() {
 			continue
 		}
@@ -942,11 +1022,11 @@ func (db *FlexDB) reconcileBulkInitialCountsLocked(m *memtable) {
 	db.liveBigKeys = big
 	db.liveSmallKeys = small
 	db.liveKeys = big + small
-	m.bulkCountsDirty = false
+	m.bulk.dirty = false
 }
 
 func (db *FlexDB) materializeBulkInitialLocked() {
-	if db.bulkInitialBatchLoad && len(db.mt.bulkKVs) > 0 && db.mt.bulkCountsDirty {
+	if db.bulkInitialBatchLoad && db.mt.bulk.count > 0 && db.mt.bulk.dirty {
 		db.reconcileBulkInitialCountsLocked(&db.mt)
 	}
 	db.mt.materializeBulk()
@@ -4665,10 +4745,16 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 	}
 
 	eligible := true
-	if len(m.bulkKVs) > 0 {
-		for i := range m.bulkKVs {
-			if m.bulkKVs[i].isTombstone() {
-				eligible = false
+	if m.bulk.count > 0 {
+		for si := range m.bulk.segments {
+			kvs := m.bulk.segments[si].kvs
+			for i := range kvs {
+				if kvs[i].isTombstone() {
+					eligible = false
+					break
+				}
+			}
+			if !eligible {
 				break
 			}
 		}
@@ -4701,7 +4787,7 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 		if len(page) == 0 {
 			return nil
 		}
-		pageBuf = slottedPageEncodeIntoBuffer(pageBuf[:0], page, 0, 0)
+		pageBuf = slottedPageEncodeKnownSize(pageBuf[:0], page, pageBase, pageSize)
 		buf := pageBuf
 		if len(buf) > slottedPageMaxSize {
 			return fmt.Errorf("bulk initial flush built overlarge slotted page: size=%d max=%d count=%d firstKey=%q",
@@ -4741,12 +4827,31 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 		if len(page) == 0 {
 			pageBase = item.Hlc
 			pageSize = slottedPageHeaderSize + slottedPageCRCSize
-		} else if item.Hlc < pageBase {
+		}
+		if len(page) > 0 && len(page) >= bulkPageCount {
+			if err = flushPage(); err != nil {
+				return false
+			}
 			pageBase = item.Hlc
-			pageSize = intervalCacheEntrySlottedKVsSize(page, pageBase)
+			pageSize = slottedPageHeaderSize + slottedPageCRCSize
 		}
 		itemSize := slottedKVEncodedSize(item, pageBase)
-		if len(page) > 0 && (len(page) >= bulkPageCount || pageSize+itemSize > slottedPageMaxSize) {
+		if len(page) > 0 && item.Hlc < pageBase {
+			newBase := item.Hlc
+			newPageSize := intervalCacheEntrySlottedKVsSize(page, newBase)
+			itemSize = slottedKVEncodedSize(item, newBase)
+			if newPageSize+itemSize > slottedPageMaxSize {
+				if err = flushPage(); err != nil {
+					return false
+				}
+				pageBase = item.Hlc
+				pageSize = slottedPageHeaderSize + slottedPageCRCSize
+				itemSize = slottedKVEncodedSize(item, pageBase)
+			} else {
+				pageBase = newBase
+				pageSize = newPageSize
+			}
+		} else if len(page) > 0 && pageSize+itemSize > slottedPageMaxSize {
 			if err = flushPage(); err != nil {
 				return false
 			}
@@ -4758,23 +4863,20 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 		pageSize += itemSize
 		return true
 	}
-	if len(m.bulkKVs) > 0 {
-		m.bulkOrder = m.bulkOrder[:0]
-		for i := range m.bulkKVs {
-			m.bulkOrder = append(m.bulkOrder, i)
-		}
-		sortBulkOrderByKey(m.bulkOrder, m.bulkKVs)
-		for i := 0; i < len(m.bulkOrder); {
-			best := m.bulkOrder[i]
+	if m.bulk.count > 0 {
+		order := m.bulk.buildOrder()
+		for i := 0; i < len(order); {
+			best := order[i]
 			j := i + 1
-			for j < len(m.bulkOrder) && m.bulkKVs[m.bulkOrder[j]].Key == m.bulkKVs[m.bulkOrder[i]].Key {
-				cand := m.bulkOrder[j]
-				if m.bulkKVs[cand].Hlc >= m.bulkKVs[best].Hlc {
+			firstKey := m.bulk.kv(order[i]).Key
+			for j < len(order) && m.bulk.kv(order[j]).Key == firstKey {
+				cand := order[j]
+				if m.bulk.kv(cand).Hlc >= m.bulk.kv(best).Hlc {
 					best = cand
 				}
 				j++
 			}
-			if !consumeItem(m.bulkKVs[best]) {
+			if !consumeItem(m.bulk.kv(best)) {
 				break
 			}
 			i = j
@@ -4792,10 +4894,7 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 	db.liveSmallKeys = flushedSmall
 	db.liveKeys = flushedBig + flushedSmall
 	db.bulkInitialBatchLoad = false
-	m.bulkKVs = m.bulkKVs[:0]
-	m.bulkIndex.reset()
-	m.bulkOrder = m.bulkOrder[:0]
-	m.bulkCountsDirty = false
+	m.bulk.reset()
 	return true, nil
 }
 

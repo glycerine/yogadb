@@ -15,14 +15,12 @@ func TestSortBulkOrderByKey(t *testing.T) {
 		{Key: "b"},
 		{Key: "aba"},
 	}
-	order := make([]int, len(kvs))
-	for i := range order {
-		order[i] = i
-	}
-	sortBulkOrderByKey(order, kvs)
+	var builder bulkIngestBuilder
+	builder.appendBatch(kvs)
+	order := builder.buildOrder()
 	got := make([]string, len(order))
-	for i, idx := range order {
-		got[i] = kvs[idx].Key
+	for i, ref := range order {
+		got[i] = builder.kv(ref).Key
 	}
 	want := []string{"", "a", "aa", "ab", "aba", "b", "z"}
 	if !slices.Equal(got, want) {
