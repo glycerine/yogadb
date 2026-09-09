@@ -747,6 +747,35 @@ func flexdbTagGenerate(isAnchor bool, unsorted uint8) uint16 {
 func flexdbTagIsAnchor(tag uint16) bool  { return tag&1 != 0 }
 func flexdbTagUnsorted(tag uint16) uint8 { return uint8((tag >> 1) & 0x7f) }
 
+func (db *FlexDB) clearInteriorAnchorTags(anchorLoff uint64, psize uint64) error {
+	if psize <= 1 || db == nil || db.ff == nil || db.ff.tree == nil {
+		return nil
+	}
+	fp := db.ff.tree.PosGet(anchorLoff)
+	if !fp.Valid() {
+		return nil
+	}
+	end := anchorLoff + psize
+	var loffs []uint64
+	fp.ForwardExtent()
+	for fp.Valid() {
+		loff := fp.GetLoff()
+		if loff >= end {
+			break
+		}
+		if tag, ok := fp.GetTag(); ok && flexdbTagIsAnchor(tag) {
+			loffs = append(loffs, loff)
+		}
+		fp.ForwardExtent()
+	}
+	for _, loff := range loffs {
+		if err := db.ff.setTagR(loff, 0, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (db *FlexDB) updateAnchorPage(anchor *dbAnchor, anchorLoff uint64, buf []byte, oldPSize uint32) (int, error) {
 	if anchor == nil {
 		return -1, fmt.Errorf("flexdb: cannot update nil anchor at loff=%d", anchorLoff)
@@ -756,6 +785,10 @@ func (db *FlexDB) updateAnchorPage(anchor *dbAnchor, anchorLoff uint64, buf []by
 	if err != nil {
 		return -1, fmt.Errorf("flexdb: update anchor page key=%q loff=%d oldPSize=%d newPSize=%d tag=0x%04x: %w",
 			anchor.key, anchorLoff, oldPSize, len(buf), tag, err)
+	}
+	if err := db.clearInteriorAnchorTags(anchorLoff, uint64(len(buf))); err != nil {
+		return -1, fmt.Errorf("flexdb: clear interior anchor tags key=%q loff=%d psize=%d: %w",
+			anchor.key, anchorLoff, len(buf), err)
 	}
 	return n, nil
 }
@@ -2180,6 +2213,33 @@ func (e IntegrityError) Error() string {
 	return fmt.Sprintf("[%s] %s", e.Check, e.Detail)
 }
 
+func (db *FlexDB) extraAnchorTagsInInterval(anchorLoff uint64, psize uint64) []uint64 {
+	if psize <= 1 || db.ff == nil || db.ff.tree == nil {
+		return nil
+	}
+	end := anchorLoff + psize
+	fp := db.ff.tree.PosGet(anchorLoff)
+	if !fp.Valid() {
+		return nil
+	}
+	var extras []uint64
+	for fp.Valid() {
+		ext := &fp.node.Extents[fp.Idx]
+		extStart := fp.GetLoff()
+		if extStart >= end {
+			break
+		}
+		if extStart > anchorLoff && flexdbTagIsAnchor(ext.Tag()) {
+			extras = append(extras, extStart)
+			if len(extras) >= 8 {
+				break
+			}
+		}
+		fp.ForwardExtent()
+	}
+	return extras
+}
+
 // CheckIntegrity performs a read-only consistency check of the FlexDB.
 // It flushes the memtable first, then acquires a read lock on FlexSpace.
 //
@@ -2407,6 +2467,11 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 				addErr("anchor_tag",
 					fmt.Sprintf("anchor %d (key=%q): loff=%d psize=%d missing FlexTree anchor tag: tag=0x%04x err=%v",
 						anchorCount, anchor.key, anchorLoff, psize, tag, tagErr), false)
+			}
+			if extras := db.extraAnchorTagsInInterval(anchorLoff, psize); len(extras) > 0 {
+				addErr("extra_anchor_tag",
+					fmt.Sprintf("anchor %d (key=%q): interval loff=%d psize=%d has extra FlexTree anchor tags at loffs=%v",
+						anchorCount, anchor.key, anchorLoff, psize, extras), false)
 			}
 
 			// Verify the interval is within FlexSpace bounds

@@ -142,6 +142,10 @@ func (c *intervalCache) flushDirtyPages() error {
 					return fmt.Errorf("flushDirtyPages overwrite anchor key=%q loff=%d shift=%d absLoff=%d psize=%d maxLoff=%d count=%d: %w",
 						anchor.key, anchor.loff, shift, absLoff, anchor.psize, c.db.ff.tree.MaxLoff, fce.count, err)
 				}
+				if err := c.db.clearInteriorAnchorTags(absLoff, uint64(anchor.psize)); err != nil {
+					return fmt.Errorf("flushDirtyPages clear interior anchor tags key=%q loff=%d psize=%d: %w",
+						anchor.key, absLoff, anchor.psize, err)
+				}
 				flushOverwrites++
 			} else {
 				// Content exceeds current psize. This happens when:
@@ -306,6 +310,10 @@ func (p *intervalCachePartition) flushDirtyEntry(fce *intervalCacheEntry) error 
 		if err != nil {
 			return fmt.Errorf("flushDirtyEntry overwrite anchor key=%q loff=%d absLoff=%d psize=%d maxLoff=%d: %w",
 				anchor.key, anchor.loff, absLoff, anchor.psize, p.db.ff.tree.MaxLoff, err)
+		}
+		if err := p.db.clearInteriorAnchorTags(absLoff, uint64(anchor.psize)); err != nil {
+			return fmt.Errorf("flushDirtyEntry clear interior anchor tags key=%q loff=%d psize=%d: %w",
+				anchor.key, absLoff, anchor.psize, err)
 		}
 	} else {
 		// Content exceeds current psize: see flushDirtyPages for explanation.

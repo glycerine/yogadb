@@ -141,13 +141,15 @@ func (m *memtable) logAppendGreenLocked(g *GreenMEMWAL_KV) error {
 }
 
 func (m *memtable) logAppendBatchLocked(kvs []KV, valueIsKey bool) (bool, error) {
-	payloadSize := compactBatchHLCPayloadMaxSize(kvs)
 	var hlc HLC
 	if len(kvs) > 0 {
 		hlc = kvs[0].Hlc
 	}
+	var payloadSize int
 	if valueIsKey {
 		payloadSize = compactBatchHLCValueIsKeyPayloadSize(kvs, hlc)
+	} else {
+		payloadSize = compactBatchHLCPayloadMaxSize(kvs)
 	}
 	recordSize := msgpackByteSliceFrameSize(payloadSize) + msgpackByteSliceFrameSize(8)
 	if recordSize >= memtableWalBufCap {
