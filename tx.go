@@ -370,9 +370,17 @@ func (tx *WriteTx) Commit() (err error) {
 		return nil
 	}
 	defer func() {
-		tx.finish()
+		tx.done = true
+		tx.closeAll()
+		if tx.managedByUpdate {
+			return
+		}
+		autoVacuumHandoff := false
 		if err == nil {
-			tx.db.maybeScheduleAutoVacuum()
+			autoVacuumHandoff = tx.db.maybeStartAutoVacuumLocked()
+		}
+		if !autoVacuumHandoff {
+			tx.db.topMutRW.Unlock()
 		}
 	}()
 	if err := tx.commitWalTxn(); err != nil {
@@ -757,8 +765,13 @@ func (db *FlexDB) Update(fn func(rw *WriteTx) error) (err error) {
 		db.topMutRW.Unlock()
 		return err
 	}
+	autoVacuumHandoff := false
 	defer func() {
-		defer db.topMutRW.Unlock()
+		defer func() {
+			if !autoVacuumHandoff {
+				db.topMutRW.Unlock()
+			}
+		}()
 		defer tx.closeAll()
 
 		if r := recover(); r != nil {
@@ -771,6 +784,9 @@ func (db *FlexDB) Update(fn func(rw *WriteTx) error) (err error) {
 			return
 		}
 		if tx.done {
+			if err == nil {
+				autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+			}
 			return
 		}
 		if err != nil {
@@ -778,6 +794,9 @@ func (db *FlexDB) Update(fn func(rw *WriteTx) error) (err error) {
 			return
 		}
 		err = tx.Commit()
+		if err == nil {
+			autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+		}
 	}()
 	return fn(tx)
 }

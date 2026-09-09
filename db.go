@@ -274,9 +274,6 @@ func (s *Batch) Delete(key string) {
 // to view them. Commit() itself now skips them for speed.
 func (s *Batch) Commit(doFsync bool) (interv HLCInterval, err error) {
 	interv, _, err = s.commitMaybeMetrics(doFsync, false)
-	if err == nil {
-		s.db.maybeScheduleAutoVacuum()
-	}
 	return
 }
 
@@ -285,18 +282,22 @@ func (s *Batch) Commit(doFsync bool) (interv HLCInterval, err error) {
 // hence it is slower. It does a linear scan through all the
 // FLEXSPACE.KV.SLOT_BLOCKS to see how much free space could be reclaimed.
 func (s *Batch) CommitGetMetrics(doFsync bool) (HLCInterval, *Metrics, error) {
-	interv, metrics, err := s.commitMaybeMetrics(doFsync, true)
-	if err == nil {
-		s.db.maybeScheduleAutoVacuum()
-	}
-	return interv, metrics, err
+	return s.commitMaybeMetrics(doFsync, true)
 }
 
 func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCInterval, metrics *Metrics, err error) {
 	db := s.db
 
 	db.topMutRW.Lock()
-	defer db.topMutRW.Unlock()
+	autoVacuumHandoff := false
+	defer func() {
+		if err == nil {
+			autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+		}
+		if !autoVacuumHandoff {
+			db.topMutRW.Unlock()
+		}
+	}()
 
 	if s.err != nil {
 		err := s.err
@@ -1063,10 +1064,6 @@ type FlexDB struct {
 	flushTrigger chan struct{}
 	flushHalt    *idem.Halter
 
-	autoVacuumTrigger chan struct{}
-	autoVacuumHalt    *idem.Halter
-	autoVacuumRunning int32
-
 	// scratch buffers (reused; protected by ffMu write lock)
 	kvbuf1 []byte
 	itvbuf []byte
@@ -1416,8 +1413,6 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 		itvbuf:               make([]byte, 0, flexdbSparseIntervalSize+MaxKeySize),
 		flushTrigger:         make(chan struct{}, 1),
 		flushHalt:            idem.NewHalterNamed("flushWorker-orig"),
-		autoVacuumTrigger:    make(chan struct{}, 1),
-		autoVacuumHalt:       idem.NewHalterNamed("autoVacuumWorker"),
 		bulkInitialBatchLoad: true,
 	}
 	db.cache.db = db
@@ -1486,9 +1481,6 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	if !db.cfg.DisableBackgroundFlush {
 		go db.flushWorker()
 	}
-	if db.cfg.AutoVacuumPct > 0 {
-		go db.autoVacuumWorker()
-	}
 
 	return db, nil
 }
@@ -1503,10 +1495,6 @@ func (db *FlexDB) Close() *Metrics {
 		// on it rather than getting our halt request.
 		db.flushHalt.RequestStop()
 		<-db.flushHalt.Done.Chan
-	}
-	if db.cfg.AutoVacuumPct > 0 {
-		db.autoVacuumHalt.RequestStop()
-		<-db.autoVacuumHalt.Done.Chan
 	}
 
 	db.topMutRW.Lock()
@@ -2781,13 +2769,18 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 // Sync flushes all in-memory data in the active memtable to
 // disk in FLEXSPACE.KV128.BLOCKS and fsyncs it.
 // Users must call Sync after Puts for them to be durable.
-func (db *FlexDB) Sync() error {
+func (db *FlexDB) Sync() (err error) {
 	db.topMutRW.Lock()
-	err := db.writeLockHeldSync()
-	db.topMutRW.Unlock()
-	if err == nil {
-		db.maybeScheduleAutoVacuum()
-	}
+	autoVacuumHandoff := false
+	defer func() {
+		if err == nil {
+			autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+		}
+		if !autoVacuumHandoff {
+			db.topMutRW.Unlock()
+		}
+	}()
+	err = db.writeLockHeldSync()
 	return err
 }
 
@@ -2820,22 +2813,6 @@ func (db *FlexDB) maybePiggybackGC() {
 	//vv("piggyback GC done in %v. db.piggyGCStats.TotalGCRuns=%v", db.piggyGCStats.LastGCDuration, db.piggyGCStats.TotalGCRuns)
 }
 
-func (db *FlexDB) maybeScheduleAutoVacuum() {
-	if db.cfg.AutoVacuumPct <= 0 {
-		return
-	}
-	if atomic.LoadInt64(&db.autoVacuumDeletedBytes) < db.autoVacuumDeletedThresholdBytes() {
-		return
-	}
-	if atomic.LoadInt32(&db.autoVacuumRunning) != 0 {
-		return
-	}
-	select {
-	case db.autoVacuumTrigger <- struct{}{}:
-	default:
-	}
-}
-
 func (db *FlexDB) autoVacuumDeletedThresholdBytes() int64 {
 	kb := db.cfg.AutoVacuumDeletedAboveKB
 	if kb <= 0 {
@@ -2861,6 +2838,17 @@ func (db *FlexDB) autoVacuumShouldRunLocked() bool {
 		return false
 	}
 	return float64(deleted)/float64(denom) >= db.cfg.AutoVacuumPct
+}
+
+// maybeStartAutoVacuumLocked starts a one-shot background vacuum by handing
+// off the caller's topMutRW write lock. If it returns true, the caller must
+// not unlock topMutRW; the autovacuum goroutine now owns that responsibility.
+func (db *FlexDB) maybeStartAutoVacuumLocked() bool {
+	if !db.autoVacuumShouldRunLocked() {
+		return false
+	}
+	go db.autoVacuumWorkerLocked()
+	return true
 }
 
 func (db *FlexDB) writeLockHeldSync() error {
@@ -2988,14 +2976,18 @@ func recoverIterIOErr(errp *error) {
 // completed a db.Sync() call. This allows the user to control
 // the rate of fsyncs and trade that against their durability
 // requirements.
-func (db *FlexDB) Put(key string, value []byte, vtyp uint64) (HLC, error) {
+func (db *FlexDB) Put(key string, value []byte, vtyp uint64) (hlc HLC, err error) {
 	db.topMutRW.Lock()
-	hlc, err := db.writeLockHeldPutWithHook(nil, key, value, vtyp, false)
-	db.topMutRW.Unlock()
-	if err == nil {
-		db.maybeScheduleAutoVacuum()
-	}
-	return hlc, err
+	autoVacuumHandoff := false
+	defer func() {
+		if err == nil {
+			autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+		}
+		if !autoVacuumHandoff {
+			db.topMutRW.Unlock()
+		}
+	}()
+	return db.writeLockHeldPutWithHook(nil, key, value, vtyp, false)
 }
 
 func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string, value []byte, vtyp uint64, doDelete bool) (HLC, error) {
@@ -3550,9 +3542,12 @@ func (db *FlexDB) someLockHeldGet(key string) (val []byte, found bool, vtyp uint
 func (db *FlexDB) Delete(key string) error {
 	db.topMutRW.Lock()
 	_, err := db.writeLockHeldPutWithHook(nil, key, nil, 0, true)
-	db.topMutRW.Unlock()
+	autoVacuumHandoff := false
 	if err == nil {
-		db.maybeScheduleAutoVacuum()
+		autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+	}
+	if !autoVacuumHandoff {
+		db.topMutRW.Unlock()
 	}
 	return err
 }
@@ -3582,11 +3577,16 @@ func (db *FlexDB) Delete(key string) error {
 // previously held iterators, cursors, and references are invalidated.
 func (db *FlexDB) DeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
 	db.topMutRW.Lock()
+	autoVacuumHandoff := false
+	defer func() {
+		if err == nil {
+			autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+		}
+		if !autoVacuumHandoff {
+			db.topMutRW.Unlock()
+		}
+	}()
 	n, allGone, err = db.writeLockHeldDeleteRange(includeLarge, begKey, endKey, begInclusive, endInclusive)
-	db.topMutRW.Unlock()
-	if err == nil {
-		db.maybeScheduleAutoVacuum()
-	}
 	return n, allGone, err
 }
 
@@ -3667,11 +3667,16 @@ func (db *FlexDB) writeLockHeldDeleteRangeWithHook(beforeWrite func() error, inc
 // duration of the call, serializing against all other operations.
 func (db *FlexDB) Clear(includeLarge bool) (allGone bool, err error) {
 	db.topMutRW.Lock()
+	autoVacuumHandoff := false
+	defer func() {
+		if err == nil {
+			autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+		}
+		if !autoVacuumHandoff {
+			db.topMutRW.Unlock()
+		}
+	}()
 	allGone, err = db.writeLockHeldClear(includeLarge)
-	db.topMutRW.Unlock()
-	if err == nil {
-		db.maybeScheduleAutoVacuum()
-	}
 	return allGone, err
 }
 
@@ -5036,40 +5041,17 @@ func (db *FlexDB) safeDoFlush() {
 	if err := db.doFlush(); err != nil {
 		panicf("flushWorker: doFlush: %v", err)
 	}
-	db.maybeScheduleAutoVacuum()
 }
 
-func (db *FlexDB) autoVacuumWorker() {
-	defer func() {
-		db.autoVacuumHalt.ReqStop.Close()
-		db.autoVacuumHalt.Done.Close()
-	}()
-
-	for {
-		select {
-		case <-db.autoVacuumHalt.ReqStop.Chan:
-			return
-		case <-db.autoVacuumTrigger:
-			db.safeDoAutoVacuum()
-		}
-	}
-}
-
-func (db *FlexDB) safeDoAutoVacuum() {
-	if !atomic.CompareAndSwapInt32(&db.autoVacuumRunning, 0, 1) {
-		return
-	}
-	defer atomic.StoreInt32(&db.autoVacuumRunning, 0)
-	if err := db.doAutoVacuum(); err != nil {
+func (db *FlexDB) autoVacuumWorkerLocked() {
+	defer db.topMutRW.Unlock()
+	if err := db.doAutoVacuumLocked(); err != nil {
 		alwaysPrintf("autoVacuumWorker: %v", err)
 	}
 }
 
-func (db *FlexDB) doAutoVacuum() error {
+func (db *FlexDB) doAutoVacuumLocked() error {
 	start := time.Now()
-
-	db.topMutRW.Lock()
-	defer db.topMutRW.Unlock()
 
 	if db.closed || !db.autoVacuumShouldRunLocked() {
 		return nil
@@ -5098,15 +5080,20 @@ func (db *FlexDB) doAutoVacuum() error {
 }
 
 // only called by the flushWorker goroutine.
-func (db *FlexDB) doFlush() error {
+func (db *FlexDB) doFlush() (err error) {
 	db.topMutRW.Lock()
-	defer db.topMutRW.Unlock()
-
-	if true {
-		defer func() {
+	autoVacuumHandoff := false
+	defer func() {
+		if true {
 			vv("end of doFlush: sessionMetrics() = '%v'", db.writeLockHeldSessionMetrics())
-		}()
-	}
+		}
+		if err == nil {
+			autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+		}
+		if !autoVacuumHandoff {
+			db.topMutRW.Unlock()
+		}
+	}()
 
 	if db.mt.empty {
 		return nil

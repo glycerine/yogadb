@@ -2,6 +2,8 @@ package yogadb
 
 import (
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -175,5 +177,85 @@ func TestAutoVacuumReclaimsDeletedLargeValuesAndTombstones(t *testing.T) {
 			t.Fatalf("timed out waiting for AutoVacuum; metrics=%v", m)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestAutoVacuumHandoffBeatsQueuedWriters(t *testing.T) {
+	db, _ := openTestDB(t, &Config{
+		AutoVacuumPct:            0.05,
+		AutoVacuumDeletedAboveKB: 1,
+		DisableBackgroundFlush:   true,
+	})
+
+	const n = 500
+	for i := 0; i < n; i++ {
+		mustPut(t, db, fmt.Sprintf("handoff-victim-%04d", i), "small-inline-value")
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatalf("initial Sync: %v", err)
+	}
+
+	var started int64
+	var returnedBeforeVacuum int64
+	const writers = 32
+	release := make(chan struct{})
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(writers)
+	for i := 0; i < writers; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			<-release
+			atomic.AddInt64(&started, 1)
+			_, err := db.Put(fmt.Sprintf("queued-writer-%04d", i), []byte("after-vacuum"), 0)
+			if err != nil {
+				t.Errorf("queued Put: %v", err)
+				return
+			}
+			if atomic.LoadInt64(&db.autoVacuumRuns) == 0 {
+				atomic.StoreInt64(&returnedBeforeVacuum, 1)
+			}
+		}()
+	}
+
+	tx, err := db.BeginUpdate()
+	if err != nil {
+		t.Fatalf("BeginUpdate: %v", err)
+	}
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt64(&started) != writers {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for queued writers to block")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(10 * time.Millisecond)
+	for i := 0; i < n; i++ {
+		if err := tx.Delete(fmt.Sprintf("handoff-victim-%04d", i)); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for queued writers")
+	}
+
+	if atomic.LoadInt64(&returnedBeforeVacuum) != 0 {
+		t.Fatal("queued writer returned before autovacuum ran; threshold crossing writer did not hand off topMutRW")
+	}
+	if atomic.LoadInt64(&db.autoVacuumRuns) == 0 {
+		t.Fatal("autovacuum did not run")
 	}
 }
