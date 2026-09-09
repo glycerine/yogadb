@@ -805,14 +805,6 @@ func kvCRC32(key string) uint32 {
 	return crc32.Checksum(b, crc32cTable)
 }
 
-func fingerprint(h uint32) uint16 {
-	fp := uint16(h) ^ uint16(h>>16)
-	if fp == 0 {
-		fp = 1
-	}
-	return fp
-}
-
 func cachePartitionID(key string) int {
 	return int(kvCRC32(key) & uint32(intervalCachePartitionMask))
 }
@@ -3157,7 +3149,7 @@ func (db *FlexDB) findBuildKVZeroCopy(key string) (*KVcloser, error) {
 		return nil, err
 	}
 
-	idx, ok := intervalCacheEntryFindKeyEQ(fce, key)
+	idx, ok := intervalCacheEntryFindKeyGE(fce, key)
 	if !ok || fce.kvs[idx].isTombstone() {
 		partition.releaseEntry(fce)
 		return nil, nil
@@ -3987,7 +3979,7 @@ func (db *FlexDB) getPassthrough(key string) (val []byte, found bool, vtyp uint6
 	}
 	defer partition.releaseEntry(fce)
 
-	idx, ok := intervalCacheEntryFindKeyEQ(fce, key)
+	idx, ok := intervalCacheEntryFindKeyGE(fce, key)
 	if !ok {
 		return nil, false, 0, 0, nil
 	}
@@ -4021,7 +4013,7 @@ func (db *FlexDB) getPassthroughKV(key string) (KV, bool, error) {
 	}
 	defer partition.releaseEntry(fce)
 
-	idx, ok := intervalCacheEntryFindKeyEQ(fce, key)
+	idx, ok := intervalCacheEntryFindKeyGE(fce, key)
 	if !ok {
 		return KV{}, false, nil
 	}
@@ -4067,7 +4059,7 @@ func (db *FlexDB) putPassthroughInitial(kv KV, nh *memSparseIndexTreeHandler, an
 	anchorLoff := uint64(anchor.loff + nh.shift)
 
 	idx, eq := intervalCacheEntryFindKeyGE(fce, kv.Key)
-	kvs, fps, size := intervalCacheEntryPreviewUpsert(fce, kv, idx, eq)
+	kvs, size := intervalCacheEntryPreviewUpsert(fce, kv, idx, eq)
 
 	// Encode as tight (unpadded) page. Padding to slottedPageMaxSize is deferred
 	// until the first dirty flush that needs to grow the page, at which point
@@ -4082,7 +4074,7 @@ func (db *FlexDB) putPassthroughInitial(kv KV, nh *memSparseIndexTreeHandler, an
 			anchor.key, anchorLoff, psize, db.ff.tree.MaxLoff, err)
 	}
 
-	partition.replaceEntryContents(fce, kvs, fps, size)
+	partition.replaceEntryContents(fce, kvs, size)
 	nh.shiftUpPropagate(int64(psize))
 	anchor.psize = psize
 	anchor.unsorted = 0
@@ -4114,7 +4106,7 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 			// inflate delta encoding). Instead of splitting (which would
 			// allocate a new 4MB block for a half-page of data), grow the
 			// page in-place via ff.Update (collapse old + insert new).
-			kvs, fps, size := intervalCacheEntryPreviewUpsert(fce, kv, idx, eq)
+			kvs, size := intervalCacheEntryPreviewUpsert(fce, kv, idx, eq)
 			newSize := slottedPageComputeSize(kvs)
 			if newSize > int(anchor.psize) && newSize < 2*slottedPageMaxSize {
 				// Page genuinely grew - resize the extent in place.
@@ -4127,7 +4119,7 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 					return fmt.Errorf("putPassthroughR update anchor key=%q loff=%d oldPSize=%d newPSize=%d maxLoff=%d: %w",
 						anchor.key, anchorLoff, anchor.psize, len(buf), db.ff.tree.MaxLoff, err)
 				}
-				partition.replaceEntryContents(fce, kvs, fps, size)
+				partition.replaceEntryContents(fce, kvs, size)
 				nh.shiftUpPropagate(int64(len(buf)) - int64(anchor.psize))
 				anchor.psize = uint32(len(buf))
 				fce.dirty = false // just written
@@ -4135,7 +4127,7 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 			} else if newSize >= 2*slottedPageMaxSize {
 				// Pathological growth - fall through to split.
 				snap := partition.snapshotEntry(fce)
-				partition.replaceEntryContents(fce, kvs, fps, size)
+				partition.replaceEntryContents(fce, kvs, size)
 				if err := db.treeInsertAnchor(nh, partition, fce); err != nil {
 					partition.restoreEntry(fce, snap)
 					return err
@@ -4143,15 +4135,15 @@ func (db *FlexDB) putPassthroughR(kv KV, nh *memSparseIndexTreeHandler, anchor *
 				db.putPassthroughMarkDirty(nh, anchor, fce)
 			} else {
 				// Fits after replace (e.g., new value is smaller).
-				partition.replaceEntryContents(fce, kvs, fps, size)
+				partition.replaceEntryContents(fce, kvs, size)
 				db.putPassthroughMarkDirty(nh, anchor, fce)
 			}
 			return nil
 		}
 		// Inserting a new key - page genuinely full. Split.
-		kvs, fps, size := intervalCacheEntryPreviewUpsert(fce, kv, idx, eq)
+		kvs, size := intervalCacheEntryPreviewUpsert(fce, kv, idx, eq)
 		snap := partition.snapshotEntry(fce)
-		partition.replaceEntryContents(fce, kvs, fps, size)
+		partition.replaceEntryContents(fce, kvs, size)
 		if err := db.treeInsertAnchor(nh, partition, fce); err != nil {
 			partition.restoreEntry(fce, snap)
 			return err
@@ -4254,9 +4246,7 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 
 	rightSize := fce.size - leftSize
 	newFce.kvs = make([]KV, rightCount)
-	newFce.fps = make([]uint16, rightCount)
 	copy(newFce.kvs, fce.kvs[leftCount:fce.count])
-	copy(newFce.fps, fce.fps[leftCount:fce.count])
 	newFce.count = rightCount
 	newFce.size = rightSize
 	newFce.frag = fce.frag
@@ -4272,7 +4262,6 @@ func (db *FlexDB) treeInsertAnchor(nh *memSparseIndexTreeHandler, partition *int
 
 	// Update left fce
 	fce.kvs = fce.kvs[:leftCount]
-	fce.fps = fce.fps[:leftCount]
 	fce.count = leftCount
 	fce.size = leftSize
 
@@ -5048,42 +5037,80 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 		return true
 	}
 	if m.bulk.count > 0 {
-		order := m.bulk.buildOrder()
-		keys := m.bulk.keys
-		if fixedKeyLen := m.bulk.fixedKeyLen; fixedKeyLen > 0 {
-			last := fixedKeyLen - 1
-			for i := 0; i < len(order); {
-				best := order[i]
-				j := i + 1
-				firstKey := keys[i]
-				for j < len(order) && firstKey[last] == keys[j][last] && firstKey == keys[j] {
-					cand := order[j]
-					if m.bulk.kv(cand).Hlc >= m.bulk.kv(best).Hlc {
-						best = cand
-					}
-					j++
+		if m.bulk.sorted {
+			var best KV
+			haveBest := false
+			flushBest := func() bool {
+				if !haveBest {
+					return true
 				}
-				if !consumeItem(m.bulk.kv(best)) {
+				return consumeItem(best)
+			}
+			for si := range m.bulk.segments {
+				kvs := m.bulk.segments[si].kvs
+				for ki := range kvs {
+					item := kvs[ki]
+					if !haveBest {
+						best = item
+						haveBest = true
+						continue
+					}
+					if best.Key == item.Key {
+						if item.Hlc >= best.Hlc {
+							best = item
+						}
+						continue
+					}
+					if !flushBest() {
+						break
+					}
+					best = item
+				}
+				if err != nil {
 					break
 				}
-				i = j
+			}
+			if err == nil && !flushBest() {
+				// consumeItem records the real error in err.
 			}
 		} else {
-			for i := 0; i < len(order); {
-				best := order[i]
-				j := i + 1
-				firstKey := keys[i]
-				for j < len(order) && bulkIngestKeysEqual(firstKey, keys[j]) {
-					cand := order[j]
-					if m.bulk.kv(cand).Hlc >= m.bulk.kv(best).Hlc {
-						best = cand
+			order := m.bulk.buildOrder()
+			keys := m.bulk.keys
+			if fixedKeyLen := m.bulk.fixedKeyLen; fixedKeyLen > 0 {
+				last := fixedKeyLen - 1
+				for i := 0; i < len(order); {
+					best := order[i]
+					j := i + 1
+					firstKey := keys[i]
+					for j < len(order) && firstKey[last] == keys[j][last] && firstKey == keys[j] {
+						cand := order[j]
+						if m.bulk.kv(cand).Hlc >= m.bulk.kv(best).Hlc {
+							best = cand
+						}
+						j++
 					}
-					j++
+					if !consumeItem(m.bulk.kv(best)) {
+						break
+					}
+					i = j
 				}
-				if !consumeItem(m.bulk.kv(best)) {
-					break
+			} else {
+				for i := 0; i < len(order); {
+					best := order[i]
+					j := i + 1
+					firstKey := keys[i]
+					for j < len(order) && bulkIngestKeysEqual(firstKey, keys[j]) {
+						cand := order[j]
+						if m.bulk.kv(cand).Hlc >= m.bulk.kv(best).Hlc {
+							best = cand
+						}
+						j++
+					}
+					if !consumeItem(m.bulk.kv(best)) {
+						break
+					}
+					i = j
 				}
-				i = j
 			}
 		}
 	} else {

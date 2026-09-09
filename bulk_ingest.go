@@ -122,16 +122,6 @@ func (b *bulkIngestBuilder) buildOrder() []bulkIngestRef {
 	if cap(b.keys) < b.count {
 		b.keys = make([]string, 0, b.count)
 	}
-	if cap(b.sortAux) < b.count {
-		b.sortAux = make([]bulkIngestRef, b.count)
-	} else {
-		b.sortAux = b.sortAux[:b.count]
-	}
-	if cap(b.keyAux) < b.count {
-		b.keyAux = make([]string, b.count)
-	} else {
-		b.keyAux = b.keyAux[:b.count]
-	}
 	b.keys = b.keys[:0]
 	fixedKeyLen := -1
 	fixedKeyLenOK := true
@@ -151,15 +141,30 @@ func (b *bulkIngestBuilder) buildOrder() []bulkIngestRef {
 	if fixedKeyLenOK && fixedKeyLen >= 0 {
 		b.fixedKeyLen = fixedKeyLen
 		if !b.sorted {
+			b.ensureSortAux()
 			sortBulkIngestRefsByFixedKeyLen(b.order, b.sortAux, b.keys, b.keyAux, fixedKeyLen)
 		}
 	} else {
 		b.fixedKeyLen = -1
 		if !b.sorted {
+			b.ensureSortAux()
 			sortBulkIngestRefsByKey(b.order, b.sortAux, b.keys, b.keyAux)
 		}
 	}
 	return b.order
+}
+
+func (b *bulkIngestBuilder) ensureSortAux() {
+	if cap(b.sortAux) < b.count {
+		b.sortAux = make([]bulkIngestRef, b.count)
+	} else {
+		b.sortAux = b.sortAux[:b.count]
+	}
+	if cap(b.keyAux) < b.count {
+		b.keyAux = make([]string, b.count)
+	} else {
+		b.keyAux = b.keyAux[:b.count]
+	}
 }
 
 func sortBulkIngestRefsByKey(order, aux []bulkIngestRef, keys, keyAux []string) {

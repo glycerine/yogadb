@@ -560,12 +560,9 @@ func TestFlexDB_HLC_DedupByHLC(t *testing.T) {
 		{Key: "ccc", Value: []byte("second"), Hlc: 250},
 		{Key: "ccc", Value: []byte("third"), Hlc: 350},
 	}
-	out, fps, size := intervalCacheDedup(kvs)
+	out, size := intervalCacheDedup(kvs)
 	if len(out) != 3 {
 		t.Fatalf("expected 3 unique keys, got %d", len(out))
-	}
-	if len(fps) != 3 {
-		t.Fatalf("expected 3 fingerprints, got %d", len(fps))
 	}
 	if size == 0 {
 		t.Fatal("expected non-zero size")

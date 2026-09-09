@@ -385,8 +385,8 @@ func TestSlottedPage_Dump(t *testing.T) {
 	if !strings.Contains(out, "baseHLC=1000") {
 		t.Error("missing baseHLC=1000")
 	}
-	if !strings.Contains(out, "CRC=OK") {
-		t.Error("missing CRC=OK")
+	if !strings.Contains(out, "Checksum=OK") {
+		t.Error("missing Checksum=OK")
 	}
 
 	// Entry lines.
@@ -434,8 +434,8 @@ func TestSlottedPage_Dump_Empty(t *testing.T) {
 	if !strings.Contains(out, "count=0") {
 		t.Error("missing count=0")
 	}
-	if !strings.Contains(out, "CRC=OK") {
-		t.Error("missing CRC=OK for empty page")
+	if !strings.Contains(out, "Checksum=OK") {
+		t.Error("missing Checksum=OK for empty page")
 	}
 }
 
@@ -452,8 +452,8 @@ func TestSlottedPage_Dump_CorruptedCRC(t *testing.T) {
 	out := slottedPageDump(corrupted)
 	t.Logf("corrupted dump:\n%s", out)
 
-	if !strings.Contains(out, "CRC=INVALID") {
-		t.Error("expected CRC=INVALID for corrupted page")
+	if !strings.Contains(out, "Checksum=INVALID") {
+		t.Error("expected Checksum=INVALID for corrupted page")
 	}
 }
 
@@ -531,8 +531,8 @@ func TestSlottedPage_DumpWithVLog(t *testing.T) {
 	if !strings.Contains(outWithVLog, "count=4") {
 		t.Error("missing count=4")
 	}
-	if !strings.Contains(outWithVLog, "CRC=OK") {
-		t.Error("missing CRC=OK")
+	if !strings.Contains(outWithVLog, "Checksum=OK") {
+		t.Error("missing Checksum=OK")
 	}
 
 	// Inline entry.

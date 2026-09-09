@@ -21,7 +21,7 @@ import (
 //      sparse index finds anchor ->
 //      cache partition (by key hash) ->
 //      getEntry() (cache hit or FlexSpace load) ->
-//      FindKeyEQ (linear scan with fingerprints) -> value
+//      FindKeyGE (binary search) -> value
 //
 
 type dbAnchor struct {
@@ -52,7 +52,6 @@ func (a *dbAnchor) storeFce(fce *intervalCacheEntry) {
 type intervalCacheEntry struct {
 	anchor    *dbAnchor
 	kvs       []KV                    // decoded KV slice (sorted when unsorted==0)
-	fps       []uint16                // fingerprints per KV
 	size      int                     // sum of kvSizeApprox for all kvs
 	baseHLC   HLC                     // minimum HLC used by cached slottedSize
 	slotSize  int                     // cached slotted-page encoded size
@@ -211,7 +210,6 @@ func (p *intervalCachePartition) installCleanEntryWithSize(anchor *dbAnchor, kvs
 	fce := &intervalCacheEntry{
 		anchor:    anchor,
 		kvs:       append([]KV(nil), kvs...),
-		fps:       make([]uint16, len(kvs)),
 		baseHLC:   baseHLC,
 		slotSize:  slotSize,
 		slotValid: true,
@@ -221,7 +219,6 @@ func (p *intervalCachePartition) installCleanEntryWithSize(anchor *dbAnchor, kvs
 		fce.size = approxSize
 	}
 	for i := range fce.kvs {
-		fce.fps[i] = fingerprint(kvCRC32(fce.kvs[i].Key))
 		if approxSize < 0 {
 			fce.size += kvSizeApprox(&fce.kvs[i])
 		}
@@ -438,7 +435,6 @@ func (p *intervalCachePartition) getEntryUnsorted(anchor *dbAnchor, anchorLoff u
 // loadInterval reads the FlexSpace interval and populates fce.
 func (p *intervalCachePartition) loadInterval(fce *intervalCacheEntry, anchor *dbAnchor, anchorLoff uint64, db *FlexDB) error {
 	fce.kvs = fce.kvs[:0]
-	fce.fps = fce.fps[:0]
 	fce.size = 0
 	fce.count = 0
 	if anchor.psize == 0 {
@@ -465,7 +461,6 @@ func (p *intervalCachePartition) loadInterval(fce *intervalCacheEntry, anchor *d
 		}
 		for _, kv := range kvs {
 			fce.kvs = append(fce.kvs, kv)
-			fce.fps = append(fce.fps, fingerprint(kvCRC32(kv.Key)))
 			fce.size += kvSizeApprox(&kv)
 			fce.count++
 		}
@@ -487,7 +482,7 @@ func (p *intervalCachePartition) loadInterval(fce *intervalCacheEntry, anchor *d
 		sort.SliceStable(fce.kvs, func(i, j int) bool {
 			return kvLess(fce.kvs[i], fce.kvs[j])
 		})
-		fce.kvs, fce.fps, fce.size = intervalCacheDedup(fce.kvs)
+		fce.kvs, fce.size = intervalCacheDedup(fce.kvs)
 		fce.count = len(fce.kvs)
 	}
 
@@ -500,9 +495,9 @@ func (p *intervalCachePartition) loadInterval(fce *intervalCacheEntry, anchor *d
 
 // intervalCacheDedup deduplicates a sorted KV slice (keeps highest HLC per key).
 // PRE: kvs must be sorted by ascending Key.
-func intervalCacheDedup(kvs []KV) ([]KV, []uint16, int) {
+func intervalCacheDedup(kvs []KV) ([]KV, int) {
 	if len(kvs) == 0 {
-		return kvs, nil, 0
+		return kvs, 0
 	}
 	out := kvs[:0]
 	i := 0
@@ -530,13 +525,11 @@ func intervalCacheDedup(kvs []KV) ([]KV, []uint16, int) {
 		}
 		i = j
 	}
-	fps := make([]uint16, len(out))
 	size := 0
-	for i, kv := range out {
-		fps[i] = fingerprint(kvCRC32(kv.Key))
+	for _, kv := range out {
 		size += kvSizeApprox(&kv)
 	}
-	return out, fps, size
+	return out, size
 }
 
 // intervalCacheEntryFindKeyGE: binary search for first position >= key. Returns (idx, exact).
@@ -555,26 +548,17 @@ func intervalCacheEntryFindKeyGE(fce *intervalCacheEntry, key string) (int, bool
 	return lo, false
 }
 
-// intervalCacheEntryFindKeyEQ: linear scan using fingerprints for exact match.
+// intervalCacheEntryFindKeyEQ returns an exact key match, if present.
 func intervalCacheEntryFindKeyEQ(fce *intervalCacheEntry, key string) (int, bool) {
-	fp := fingerprint(kvCRC32(key))
-	for i := 0; i < fce.count; i++ {
-		if fce.fps[i] == fp && key == fce.kvs[i].Key {
-			return i, true
-		}
-	}
-	return -1, false
+	return intervalCacheEntryFindKeyGE(fce, key)
 }
 
 func (p *intervalCachePartition) cacheEntryInsert(fce *intervalCacheEntry, kv KV, idx int) {
 	slotWasValid := fce.slotValid
 	oldBaseHLC := fce.baseHLC
 	fce.kvs = append(fce.kvs, KV{})
-	fce.fps = append(fce.fps, 0)
 	copy(fce.kvs[idx+1:], fce.kvs[idx:])
-	copy(fce.fps[idx+1:], fce.fps[idx:])
 	fce.kvs[idx] = kv
-	fce.fps[idx] = fingerprint(kvCRC32(kv.Key))
 	approx := kvSizeApprox(&kv)
 	fce.size += approx
 	fce.count++
@@ -593,7 +577,6 @@ func (p *intervalCachePartition) cacheEntryReplace(fce *intervalCacheEntry, kv K
 	oldSz := kvSizeApprox(&old)
 	newSz := kvSizeApprox(&kv)
 	fce.kvs[idx] = kv
-	fce.fps[idx] = fingerprint(kvCRC32(kv.Key))
 	diff := newSz - oldSz
 	fce.size += diff
 	fce.slotValid = false
@@ -604,7 +587,6 @@ func (p *intervalCachePartition) cacheEntryReplace(fce *intervalCacheEntry, kv K
 
 type intervalCacheEntrySnapshot struct {
 	kvs           []KV
-	fps           []uint16
 	count         int
 	size          int
 	baseHLC       HLC
@@ -619,7 +601,6 @@ func (p *intervalCachePartition) snapshotEntry(fce *intervalCacheEntry) interval
 	p.mu.Unlock()
 	return intervalCacheEntrySnapshot{
 		kvs:           append([]KV(nil), fce.kvs[:fce.count]...),
-		fps:           append([]uint16(nil), fce.fps[:fce.count]...),
 		count:         fce.count,
 		size:          fce.size,
 		baseHLC:       fce.baseHLC,
@@ -631,7 +612,6 @@ func (p *intervalCachePartition) snapshotEntry(fce *intervalCacheEntry) interval
 
 func (p *intervalCachePartition) restoreEntry(fce *intervalCacheEntry, snap intervalCacheEntrySnapshot) {
 	fce.kvs = snap.kvs
-	fce.fps = snap.fps
 	fce.count = snap.count
 	fce.size = snap.size
 	fce.baseHLC = snap.baseHLC
@@ -642,10 +622,9 @@ func (p *intervalCachePartition) restoreEntry(fce *intervalCacheEntry, snap inte
 	p.mu.Unlock()
 }
 
-func (p *intervalCachePartition) replaceEntryContents(fce *intervalCacheEntry, kvs []KV, fps []uint16, size int) {
+func (p *intervalCachePartition) replaceEntryContents(fce *intervalCacheEntry, kvs []KV, size int) {
 	diff := size - fce.size
 	fce.kvs = kvs
-	fce.fps = fps
 	fce.count = len(kvs)
 	fce.size = size
 	fce.slotValid = false
@@ -654,7 +633,7 @@ func (p *intervalCachePartition) replaceEntryContents(fce *intervalCacheEntry, k
 	p.mu.Unlock()
 }
 
-func intervalCacheEntryPreviewUpsert(fce *intervalCacheEntry, kv KV, idx int, eq bool) ([]KV, []uint16, int) {
+func intervalCacheEntryPreviewUpsert(fce *intervalCacheEntry, kv KV, idx int, eq bool) ([]KV, int) {
 	var kvs []KV
 	if eq {
 		kvs = append([]KV(nil), fce.kvs[:fce.count]...)
@@ -665,22 +644,18 @@ func intervalCacheEntryPreviewUpsert(fce *intervalCacheEntry, kv KV, idx int, eq
 		kvs[idx] = kv
 		copy(kvs[idx+1:], fce.kvs[idx:fce.count])
 	}
-	fps := make([]uint16, len(kvs))
 	size := 0
 	for i := range kvs {
-		fps[i] = fingerprint(kvCRC32(kvs[i].Key))
 		size += kvSizeApprox(&kvs[i])
 	}
-	return kvs, fps, size
+	return kvs, size
 }
 
 func (p *intervalCachePartition) cacheEntryDelete(fce *intervalCacheEntry, idx int) {
 	old := fce.kvs[idx]
 	sz := kvSizeApprox(&old)
 	copy(fce.kvs[idx:], fce.kvs[idx+1:fce.count])
-	copy(fce.fps[idx:], fce.fps[idx+1:fce.count])
 	fce.kvs = fce.kvs[:fce.count-1]
-	fce.fps = fce.fps[:fce.count-1]
 	fce.size -= sz
 	fce.count--
 	fce.slotValid = false

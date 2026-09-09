@@ -38,7 +38,7 @@ package yogadb
 // On-disk layout:
 //
 //  --------------------------------------------------------------------------
-// |Header | Entry Records ->>>                              |free|<<- Values|CRC32C|
+// |Header | Entry Records ->>>                              |free|<<- Values|Checksum|
 // | 27B   | N x [keyLen valInfo entryVtyp? hlcDelta key]    |    |          | 4B   |
 //  --------------------------------------------------------------------------
 //
@@ -70,7 +70,7 @@ package yogadb
 //   Value[0] is closest to CRC, value[N-1] is closest to the entries.
 //   Value[i] offset = totalSize - 4 - sum(valBytes[0..i])
 //
-// CRC32C (4 bytes): covers bytes [0 .. totalSize-4).
+// Checksum (4 bytes): covers bytes [0 .. totalSize-4).
 //
 // The interleaved entry record layout (slot+HLC+key together) enables
 // O(1) appends: extend forward with a new entry record, extend backward
@@ -129,6 +129,10 @@ const (
 	slottedValInfoVPtr           = 0xFFFF // value in VLOG, no Vtyp
 )
 
+func slottedPageChecksum(b []byte) uint32 {
+	return crc32.Checksum(b, crc32cTable)
+}
+
 // slottedPageEncode encodes a sorted slice of KVs into a slotted page.
 // Returns the encoded page bytes. The input kvs must be sorted by key.
 func slottedPageEncode(kvs []KV) []byte {
@@ -162,7 +166,7 @@ func slottedPageEncodeIntoBuffer(dst []byte, kvs []KV, unsorted uint8, targetSiz
 			copy(buf[0:slottedPageMagicSize], slottedPageMagic[:])
 			// count=0, unsorted=0, baseHLC=0 - all zero is fine
 			crcOff := targetSize - slottedPageCRCSize
-			checksum := crc32.Checksum(buf[:crcOff], crc32cTable)
+			checksum := slottedPageChecksum(buf[:crcOff])
 			binary.LittleEndian.PutUint32(buf[crcOff:], checksum)
 			return buf
 		}
@@ -255,7 +259,7 @@ func slottedPageEncodeIntoBuffer(dst []byte, kvs []KV, unsorted uint8, targetSiz
 
 	// --- CRC32C ---
 	crcOff := totalSize - slottedPageCRCSize
-	checksum := crc32.Checksum(buf[:crcOff], crc32cTable)
+	checksum := slottedPageChecksum(buf[:crcOff])
 	binary.LittleEndian.PutUint32(buf[crcOff:], checksum)
 
 	return buf
@@ -311,7 +315,7 @@ func slottedPageEncodeKnownSize(dst []byte, kvs []KV, baseHLC HLC, totalSize int
 	}
 
 	crcOff := totalSize - slottedPageCRCSize
-	checksum := crc32.Checksum(buf[:crcOff], crc32cTable)
+	checksum := slottedPageChecksum(buf[:crcOff])
 	binary.LittleEndian.PutUint32(buf[crcOff:], checksum)
 	return buf
 }
@@ -423,7 +427,7 @@ func slottedPageEncodeKnownSizeSmallInlineZeroVtyp(dst []byte, kvs []KV, baseHLC
 	}
 
 	crcOff := totalSize - slottedPageCRCSize
-	checksum := crc32.Checksum(buf[:crcOff], crc32cTable)
+	checksum := slottedPageChecksum(buf[:crcOff])
 	binary.LittleEndian.PutUint32(buf[crcOff:], checksum)
 	return buf
 }
@@ -495,7 +499,7 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 		totalValsSize += slottedValInfoToLen(entries[i].valInfo)
 	}
 
-	// Total content size = entries region end + values + CRC (no padding).
+	// Total content size = entries region end + values + checksum (no padding).
 	entriesEnd := off
 	tightSize := entriesEnd + totalValsSize + slottedPageCRCSize
 
@@ -503,27 +507,25 @@ func slottedPageDecode(src []byte) ([]KV, int, error) {
 		return nil, 0, fmt.Errorf("slotted page: truncated (%d < %d)", len(src), tightSize)
 	}
 
-	// Verify CRC. Try tight layout first; if that fails and the buffer is
-	// larger (padded page), try CRC at the end of the full buffer.
+	// Verify checksum. Try tight layout first; if that fails and the buffer is
+	// larger (padded page), try the checksum at the end of the full buffer.
 	totalSize := tightSize
 	crcOff := totalSize - slottedPageCRCSize
 	storedCRC := binary.LittleEndian.Uint32(src[crcOff : crcOff+4])
-	computedCRC := crc32.Checksum(src[:crcOff], crc32cTable)
-	if storedCRC != computedCRC {
-		// Try padded layout: CRC and values at end of full buffer.
+	if storedCRC != slottedPageChecksum(src[:crcOff]) {
+		// Try padded layout: checksum and values at end of full buffer.
 		if len(src) > tightSize {
 			paddedSize := len(src)
 			paddedCRCOff := paddedSize - slottedPageCRCSize
 			paddedStoredCRC := binary.LittleEndian.Uint32(src[paddedCRCOff : paddedCRCOff+4])
-			paddedComputedCRC := crc32.Checksum(src[:paddedCRCOff], crc32cTable)
-			if paddedStoredCRC == paddedComputedCRC {
+			if paddedStoredCRC == slottedPageChecksum(src[:paddedCRCOff]) {
 				totalSize = paddedSize
 				crcOff = paddedCRCOff
 			} else {
-				return nil, 0, fmt.Errorf("slotted page: CRC mismatch (stored %08x, computed %08x)", storedCRC, computedCRC)
+				return nil, 0, fmt.Errorf("slotted page: checksum mismatch (stored %08x)", storedCRC)
 			}
 		} else {
-			return nil, 0, fmt.Errorf("slotted page: CRC mismatch (stored %08x, computed %08x)", storedCRC, computedCRC)
+			return nil, 0, fmt.Errorf("slotted page: checksum mismatch (stored %08x)", storedCRC)
 		}
 	}
 
@@ -909,28 +911,27 @@ func slottedPageDumpImpl(src []byte, vlog *valueLog) string {
 	count := int(binary.LittleEndian.Uint16(src[17:19]))
 	baseHLC := HLC(binary.BigEndian.Uint64(src[19:27]))
 
-	// Verify CRC (try tight first, then padded).
+	// Verify checksum (try tight first, then padded).
 	crcStatus := "OK"
 	crcOff := -1
-	// We need to scan entries to find tight size, but also want CRC status in the header.
-	// Do a quick CRC check at the end of the full buffer (works for both padded and tight).
+	// We need to scan entries to find tight size, but also want checksum status in the header.
+	// Do a quick checksum check at the end of the full buffer (works for both padded and tight).
 	{
 		off := totalSize - slottedPageCRCSize
 		stored := binary.LittleEndian.Uint32(src[off : off+4])
-		computed := crc32.Checksum(src[:off], crc32cTable)
-		if stored == computed {
+		if stored == slottedPageChecksum(src[:off]) {
 			crcOff = off
 		}
 	}
-	// If that failed and buffer might be tight, we'll update after scanning entries.
+	// If that failed and buffer might be tight, update after scanning entries.
 
 	fmt.Fprintf(&b, "SlottedPage [%dB] count=%d unsorted=%d baseHLC=%d", totalSize, count, unsorted, baseHLC)
 
 	if count == 0 {
 		if crcOff >= 0 {
-			fmt.Fprintf(&b, " CRC=OK\n")
+			fmt.Fprintf(&b, " Checksum=OK\n")
 		} else {
-			fmt.Fprintf(&b, " CRC=INVALID\n")
+			fmt.Fprintf(&b, " Checksum=INVALID\n")
 		}
 		return b.String()
 	}
@@ -983,14 +984,13 @@ func slottedPageDumpImpl(src []byte, vlog *valueLog) string {
 	}
 	entriesEnd := off
 
-	// Now try tight CRC if full-buffer CRC failed.
+	// Now try tight checksum if full-buffer checksum failed.
 	if crcOff < 0 && scanOK {
 		tightSize := entriesEnd + totalValsSize + slottedPageCRCSize
 		if tightSize <= totalSize {
 			tOff := tightSize - slottedPageCRCSize
 			stored := binary.LittleEndian.Uint32(src[tOff : tOff+4])
-			computed := crc32.Checksum(src[:tOff], crc32cTable)
-			if stored == computed {
+			if stored == slottedPageChecksum(src[:tOff]) {
 				crcOff = tOff
 				crcStatus = "OK"
 			}
@@ -1000,7 +1000,7 @@ func slottedPageDumpImpl(src []byte, vlog *valueLog) string {
 		crcStatus = "INVALID"
 	}
 
-	fmt.Fprintf(&b, " CRC=%s\n", crcStatus)
+	fmt.Fprintf(&b, " Checksum=%s\n", crcStatus)
 
 	// Determine values region start.
 	valRegionEnd := totalSize - slottedPageCRCSize
