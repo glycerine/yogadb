@@ -40,6 +40,25 @@ YogaDB        7.6 iter_ns/key
 
 Here YogaDB is 2x faster than BoltDB for a full-table-scan, and 15x faster than Pebble.
 
+Update: 2026 Sept 9 update to include github.com/facebook/RocksDB:
+
+~~
+Results from rocksdb_bench_test.go, averaged from the 3 reported 10x samples:
+  
+DB         avg load time          ns/key    full table scan keys/sec
+━━━━━━━━━  ━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━  ━━━━━━━━━━
+YogaDB          23.84 ms      238 ns/key     4.19M/s
+─────────  ───────────────  ──────────────  ──────────
+Pebble          85.36 ms      854 ns/key     1.17M/s
+─────────  ───────────────  ──────────────  ──────────
+RocksDB        169.01 ms    1,690 ns/key     0.59M/s
+					
+So on this current tree and benchmark shape:
+
+- YogaDB is about 7.1x faster than Facebook's RocksDB LSM tree at writing new keys.
+- YogaDB is about 3.6x faster than CockroachDB's Pebble LSM tree at writing new keys.
+~~~
+
 # what is YogaDB?
 
 YogaDB is a Go port of the https://github.com/flexible-address-space/flexspace FlexSpace C project. YogaDB is an embedded key-value engine-as-a-library, similar in form to BoltDB(bbolt), Sqlite3, RocksDB, and LevelDB. YogaDB offers sorted-order key-range iteration methods Ascend/Descend alongside simple Put, Get, and Delete. Write batching and transactions are available. Large values are stored in a separate VLOG. Small values are stored inline with their keys.
