@@ -40,7 +40,7 @@ YogaDB        7.6 iter_ns/key
 
 Here YogaDB is 2x faster than BoltDB for a full-table-scan, and 15x faster than Pebble.
 
-Update: 2026 Sept 9 update to include github.com/facebook/RocksDB:
+Update: 2026 Sept 9 update to compare versus the github.com/facebook/RocksDB LSM tree:
 
 ~~
 Results from rocksdb_bench_test.go, averaged from the 3 reported 10x samples:
