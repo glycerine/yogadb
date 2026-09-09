@@ -66,12 +66,13 @@ type Batch struct {
 	puts                  []KV
 	keyArena              []byte
 	valueArena            []byte
+	logicalBytes          int64
 	recordsNeedValidation bool
 	err                   error
 }
 
 const (
-	batchInitialPutCap        = 1024
+	batchInitialPutCap        = 4096
 	batchInitialKeyArenaCap   = 512 << 10
 	batchInitialValueArenaCap = 512 << 10
 )
@@ -124,6 +125,7 @@ func (s *Batch) Set(key string, value []byte, vtyp uint64) (err error) {
 	kv.Vptr.Offset = vtyp
 	kv.Vptr.Length = uint64(len(value))
 	s.puts = append(s.puts, kv)
+	s.logicalBytes += int64(len(key) + len(value))
 	return nil
 }
 
@@ -181,6 +183,7 @@ func (s *Batch) SetBytes(key []byte, value []byte, vtyp uint64) (err error) {
 	kv.Vptr.Offset = vtyp
 	kv.Vptr.Length = uint64(len(value))
 	s.puts = append(s.puts, kv)
+	s.logicalBytes += int64(len(key) + len(value))
 	return nil
 }
 
@@ -196,6 +199,7 @@ func (s *Batch) Delete(key string) {
 		Key:  key,
 		Vptr: VPtr{Length: rawVlenTombstone},
 	})
+	s.logicalBytes += int64(len(key))
 }
 
 // Commit applies the batch as a grouped write path for load efficiency.
@@ -238,6 +242,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		s.puts = nil
 		s.keyArena = nil
 		s.valueArena = nil
+		s.logicalBytes = 0
 		s.recordsNeedValidation = false
 		s.err = nil
 		return HLCInterval{}, nil, err
@@ -254,11 +259,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	}
 
 	// Track logical bytes for write amplification metrics.
-	var logicalBytes int64
-	for _, kv := range s.puts {
-		logicalBytes += int64(len(kv.Key) + len(kv.Value))
-	}
-	atomic.AddInt64(&db.LogicalBytesWritten, logicalBytes)
+	atomic.AddInt64(&db.LogicalBytesWritten, s.logicalBytes)
 
 	// One HLC identifies the whole batch. Duplicate keys within the same batch
 	// are resolved by normal last-write-wins replacement in the memtable.
@@ -353,6 +354,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 			s.puts = nil
 			s.keyArena = nil
 			s.valueArena = nil
+			s.logicalBytes = 0
 			s.recordsNeedValidation = false
 			interv = HLCInterval{Begin: curHLC, Endx: curHLC + 1}
 			return
@@ -424,6 +426,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	s.puts = nil
 	s.keyArena = nil
 	s.valueArena = nil
+	s.logicalBytes = 0
 	s.recordsNeedValidation = false
 
 	if wantMetrics {
@@ -441,6 +444,7 @@ func (s *Batch) Reset() {
 	s.puts = nil
 	s.keyArena = nil
 	s.valueArena = nil
+	s.logicalBytes = 0
 	s.recordsNeedValidation = false
 	s.err = nil
 }
@@ -451,6 +455,7 @@ func (s *Batch) Close() {
 	s.puts = nil
 	s.keyArena = nil
 	s.valueArena = nil
+	s.logicalBytes = 0
 	s.recordsNeedValidation = false
 	s.err = nil
 }
@@ -4794,8 +4799,9 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 	if bulkPageCount < 1 {
 		bulkPageCount = 1
 	}
-	var page []KV
+	page := make([]KV, 0, 128)
 	var pageBase HLC
+	pageSmallInlineZeroVtyp := true
 	pageSize := 0
 	var pageBuf []byte
 	var nh memSparseIndexTreeHandler
@@ -4805,7 +4811,11 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 		if len(page) == 0 {
 			return nil
 		}
-		pageBuf = slottedPageEncodeKnownSize(pageBuf[:0], page, pageBase, pageSize)
+		if pageSmallInlineZeroVtyp {
+			pageBuf = slottedPageEncodeKnownSizeSmallInlineZeroVtyp(pageBuf[:0], page, pageBase, pageSize)
+		} else {
+			pageBuf = slottedPageEncodeKnownSize(pageBuf[:0], page, pageBase, pageSize)
+		}
 		buf := pageBuf
 		if len(buf) > slottedPageMaxSize {
 			return fmt.Errorf("bulk initial flush built overlarge slotted page: size=%d max=%d count=%d firstKey=%q",
@@ -4832,6 +4842,7 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 		page = page[:0]
 		pageSize = 0
 		pageBase = 0
+		pageSmallInlineZeroVtyp = true
 		return nil
 	}
 
@@ -4845,6 +4856,7 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 		if len(page) == 0 {
 			pageBase = item.Hlc
 			pageSize = slottedPageHeaderSize + slottedPageCRCSize
+			pageSmallInlineZeroVtyp = true
 		}
 		if len(page) > 0 && len(page) >= bulkPageCount {
 			if err = flushPage(); err != nil {
@@ -4852,19 +4864,35 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 			}
 			pageBase = item.Hlc
 			pageSize = slottedPageHeaderSize + slottedPageCRCSize
+			pageSmallInlineZeroVtyp = true
 		}
-		itemSize := slottedKVEncodedSize(item, pageBase)
+		itemSmallInlineZeroVtyp := slottedKVSmallInlineZeroVtyp(item)
+		itemSize := 0
+		if itemSmallInlineZeroVtyp {
+			itemSize = slottedKVEncodedSizeSmallInlineZeroVtyp(item, pageBase)
+		} else {
+			itemSize = slottedKVEncodedSize(item, pageBase)
+		}
 		if len(page) > 0 && item.Hlc < pageBase {
 			newBase := item.Hlc
 			newPageSize := intervalCacheEntrySlottedKVsSize(page, newBase)
-			itemSize = slottedKVEncodedSize(item, newBase)
+			if itemSmallInlineZeroVtyp {
+				itemSize = slottedKVEncodedSizeSmallInlineZeroVtyp(item, newBase)
+			} else {
+				itemSize = slottedKVEncodedSize(item, newBase)
+			}
 			if newPageSize+itemSize > slottedPageMaxSize {
 				if err = flushPage(); err != nil {
 					return false
 				}
 				pageBase = item.Hlc
 				pageSize = slottedPageHeaderSize + slottedPageCRCSize
-				itemSize = slottedKVEncodedSize(item, pageBase)
+				pageSmallInlineZeroVtyp = true
+				if itemSmallInlineZeroVtyp {
+					itemSize = slottedKVEncodedSizeSmallInlineZeroVtyp(item, pageBase)
+				} else {
+					itemSize = slottedKVEncodedSize(item, pageBase)
+				}
 			} else {
 				pageBase = newBase
 				pageSize = newPageSize
@@ -4875,9 +4903,17 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 			}
 			pageBase = item.Hlc
 			pageSize = slottedPageHeaderSize + slottedPageCRCSize
-			itemSize = slottedKVEncodedSize(item, pageBase)
+			pageSmallInlineZeroVtyp = true
+			if itemSmallInlineZeroVtyp {
+				itemSize = slottedKVEncodedSizeSmallInlineZeroVtyp(item, pageBase)
+			} else {
+				itemSize = slottedKVEncodedSize(item, pageBase)
+			}
 		}
 		page = append(page, item)
+		if !itemSmallInlineZeroVtyp {
+			pageSmallInlineZeroVtyp = false
+		}
 		pageSize += itemSize
 		return true
 	}

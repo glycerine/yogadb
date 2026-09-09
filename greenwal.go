@@ -227,6 +227,18 @@ func compactBatchPayloadSize(kvs []KV) int {
 	return size
 }
 
+func compactBatchHLCPayloadMaxSize(kvs []KV) int {
+	size := len(compactMEMWALMagic) + binary.MaxVarintLen64 + binary.MaxVarintLen64 + binary.MaxVarintLen64
+	for i := range kvs {
+		kv := &kvs[i]
+		size += binary.MaxVarintLen64 // VptrLength
+		size += binary.MaxVarintLen64 // VptrOffset
+		size += binary.MaxVarintLen64 + len(kv.Key)
+		size += binary.MaxVarintLen64 + len(kv.Value)
+	}
+	return size
+}
+
 func compactBatchHLCPayloadToKVs(payload []byte, out []KV) ([]KV, error) {
 	count, n := binary.Uvarint(payload)
 	if n <= 0 {

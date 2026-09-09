@@ -316,6 +316,75 @@ func slottedPageEncodeKnownSize(dst []byte, kvs []KV, baseHLC HLC, totalSize int
 	return buf
 }
 
+func slottedKVSmallInlineZeroVtyp(kv KV) bool {
+	return kv.Vptr.Length <= vlogInlineThreshold &&
+		kv.Vptr.Length != rawVlenTombstone &&
+		kv.Vptr.Offset == 0 &&
+		len(kv.Value) == int(kv.Vptr.Length)
+}
+
+func slottedKVEncodedSizeSmallInlineZeroVtyp(kv KV, baseHLC HLC) int {
+	var hlcBuf [binary.MaxVarintLen64]byte
+	delta := uint64(kv.Hlc - baseHLC)
+	return 4 + binary.PutUvarint(hlcBuf[:], delta) + len(kv.Key) + len(kv.Value)
+}
+
+func slottedPageEncodeKnownSizeSmallInlineZeroVtyp(dst []byte, kvs []KV, baseHLC HLC, totalSize int) []byte {
+	count := len(kvs)
+	if count == 0 {
+		return nil
+	}
+	if count > 0xFFFF {
+		panic(fmt.Sprintf("slottedPageEncode: too many KVs: %d", count))
+	}
+	if totalSize < slottedPageHeaderSize+slottedPageCRCSize {
+		panic(fmt.Sprintf("slottedPageEncodeKnownSizeSmallInlineZeroVtyp: invalid total size %d", totalSize))
+	}
+	var buf []byte
+	if cap(dst) >= totalSize {
+		buf = dst[:totalSize]
+	} else {
+		buf = make([]byte, totalSize)
+	}
+
+	copy(buf[0:slottedPageMagicSize], slottedPageMagic[:])
+	buf[16] = 0
+	binary.LittleEndian.PutUint16(buf[17:19], uint16(count))
+	binary.BigEndian.PutUint64(buf[19:27], uint64(baseHLC))
+
+	entryOff := slottedPageHeaderSize
+	for i := 0; i < count; i++ {
+		kv := kvs[i]
+		binary.LittleEndian.PutUint16(buf[entryOff:entryOff+2], uint16(len(kv.Key)))
+		vi := uint16(slottedValInfoNilValue)
+		if len(kv.Value) != 0 {
+			vi = uint16(len(kv.Value) + 2)
+		}
+		binary.LittleEndian.PutUint16(buf[entryOff+2:entryOff+4], vi)
+		entryOff += 4
+		delta := uint64(kv.Hlc - baseHLC)
+		entryOff += binary.PutUvarint(buf[entryOff:], delta)
+		copy(buf[entryOff:], kv.Key)
+		entryOff += len(kv.Key)
+	}
+
+	valEnd := totalSize - slottedPageCRCSize
+	for i := 0; i < count; i++ {
+		v := kvs[i].Value
+		valStart := valEnd - len(v)
+		copy(buf[valStart:], v)
+		valEnd = valStart
+	}
+	if entryOff > valEnd {
+		panic(fmt.Sprintf("slottedPageEncodeKnownSizeSmallInlineZeroVtyp: entry/value overlap entryOff=%d valEnd=%d total=%d", entryOff, valEnd, totalSize))
+	}
+
+	crcOff := totalSize - slottedPageCRCSize
+	checksum := crc32.Checksum(buf[:crcOff], crc32cTable)
+	binary.LittleEndian.PutUint32(buf[crcOff:], checksum)
+	return buf
+}
+
 // slottedPageDecode decodes a slotted page into a slice of KVs.
 // Returns the decoded KVs and the total bytes consumed, or an error.
 func slottedPageDecode(src []byte) ([]KV, int, error) {

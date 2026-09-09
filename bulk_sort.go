@@ -1,6 +1,6 @@
 package yogadb
 
-const bulkRadixInsertionCutoff = 32
+const bulkRadixInsertionCutoff = 16
 
 func sortBulkOrderByKey(order []int, kvs []KV) {
 	if len(order) < 2 {
