@@ -1005,9 +1005,7 @@ type PiggybackGCStats struct {
 
 // ====================== FlexDB ======================
 
-// FlexDB is a persistent ordered key-value store backed by FlexSpace. It is
-// thread-safe, except for iteration via Ascend/Descend--which allows deletions
-// and updates on the fly.
+// FlexDB is a persistent ordered key-value store backed by FlexSpace.
 type FlexDB struct {
 	// hlc must be first field for 64-bit alignment on 32-bit architectures.
 	hlc HLC // hybrid logical clock for timestamping every KV

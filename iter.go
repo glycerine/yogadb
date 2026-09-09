@@ -83,7 +83,8 @@ type prefetchSpan struct {
 //
 // Iter is a stateful, prefetching iterator over the merged view of:
 //   - Active memtable (highest priority)
-//   - Inactive memtable
+//   - Inactive memtable (currently does not exists; it removed
+//     completely for simplicity and correctness)
 //   - FlexSpace via sparse index (lowest priority)
 //
 // Iterators are created within a transaction via rwDB.NewIter() or
