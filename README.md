@@ -55,8 +55,8 @@ RocksDB        169.01 ms    1,690 ns/key     0.59M/s
 					
 Here:
 
-- YogaDB is about 7.1x faster than Facebook's RocksDB LSM tree at writing new keys.
-- YogaDB is about 3.6x faster than CockroachDB's Pebble LSM tree at writing new keys.
+- YogaDB is about 7.1x faster than Facebook's RocksDB at writing.
+- YogaDB is about 3.6x faster than CockroachDB's Pebble at writing.
 
 See 'make rocks' to benchmark. Requires linux and having built the rocksdb library
 from source in ~/go/src/github.com/facebook/rocksdb ; see also rocksdb_cgo.go.
