@@ -64,6 +64,9 @@ var sep = string(os.PathSeparator)
 type Batch struct {
 	db                    *FlexDB
 	puts                  []KV
+	aliasKeys             []string
+	aliasSorted           bool
+	aliasLastKey          string
 	keyArena              []byte
 	valueArena            []byte
 	logicalBytes          int64
@@ -82,6 +85,7 @@ const (
 func (db *FlexDB) NewBatch() (b *Batch) {
 	b = &Batch{
 		db:                 db,
+		aliasSorted:        true,
 		allValuesAliasKeys: true,
 	}
 	return
@@ -91,6 +95,27 @@ func (s *Batch) ensurePutsCap() {
 	if s.puts == nil {
 		s.puts = make([]KV, 0, batchInitialPutCap)
 	}
+}
+
+func (s *Batch) ensureAliasKeysCap() {
+	if s.aliasKeys == nil {
+		s.aliasKeys = make([]string, 0, batchInitialPutCap)
+	}
+}
+
+func (s *Batch) materializeAliasKeys() {
+	if len(s.aliasKeys) == 0 {
+		return
+	}
+	if s.puts == nil {
+		s.puts = make([]KV, 0, len(s.aliasKeys))
+	}
+	for _, key := range s.aliasKeys {
+		s.puts = append(s.puts, valueIsKeyKV(key, 0))
+	}
+	s.aliasKeys = nil
+	s.aliasSorted = true
+	s.aliasLastKey = ""
 }
 
 // Set copies key and value internally, so the
@@ -107,6 +132,7 @@ func (s *Batch) Set(key string, value []byte, vtyp uint64) (err error) {
 	// String keys are immutable - no copy needed.
 	// Nil and empty values are the same zero-length live value.
 	var valueCopy []byte
+	s.materializeAliasKeys()
 	s.allValuesAliasKeys = false
 	if len(value) > 0 {
 		if len(value) > vlogInlineThreshold {
@@ -171,8 +197,19 @@ func (s *Batch) SetBytes(key []byte, value []byte, vtyp uint64) (err error) {
 			s.recordsNeedValidation = true
 		}
 		if len(value) == len(key) && unsafe.SliceData(value) == unsafe.SliceData(key) {
+			if vtyp == 0 && len(value) <= vlogInlineThreshold && len(s.puts) == 0 && s.allValuesAliasKeys {
+				s.ensureAliasKeysCap()
+				if s.aliasSorted && len(s.aliasKeys) > 0 && s.aliasLastKey > keyString {
+					s.aliasSorted = false
+				}
+				s.aliasLastKey = keyString
+				s.aliasKeys = append(s.aliasKeys, keyString)
+				s.logicalBytes += int64(len(key) + len(value))
+				return nil
+			}
 			valueCopy = keyCopy
 		} else {
+			s.materializeAliasKeys()
 			s.allValuesAliasKeys = false
 			if s.valueArena == nil {
 				capHint := batchInitialValueArenaCap
@@ -186,6 +223,7 @@ func (s *Batch) SetBytes(key []byte, value []byte, vtyp uint64) (err error) {
 			valueCopy = s.valueArena[start:]
 		}
 	} else {
+		s.materializeAliasKeys()
 		s.allValuesAliasKeys = false
 	}
 	kv := KV{
@@ -208,6 +246,7 @@ func (s *Batch) Delete(key string) {
 		}
 		return
 	}
+	s.materializeAliasKeys()
 	s.ensurePutsCap()
 	s.puts = append(s.puts, KV{
 		Key:  key,
@@ -255,6 +294,9 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	if s.err != nil {
 		err := s.err
 		s.puts = nil
+		s.aliasKeys = nil
+		s.aliasSorted = true
+		s.aliasLastKey = ""
 		s.keyArena = nil
 		s.valueArena = nil
 		s.logicalBytes = 0
@@ -264,7 +306,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		return HLCInterval{}, nil, err
 	}
 
-	if len(s.puts) == 0 {
+	if len(s.puts) == 0 && len(s.aliasKeys) == 0 {
 		if wantMetrics {
 			return HLCInterval{}, db.writeLockHeldSessionMetrics(), nil
 		}
@@ -328,6 +370,9 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		for i := range s.puts {
 			if err := validateKV128RecordSizeAfterUserKey(s.puts[i]); err != nil {
 				s.puts = nil
+				s.aliasKeys = nil
+				s.aliasSorted = true
+				s.aliasLastKey = ""
 				s.keyArena = nil
 				s.valueArena = nil
 				s.recordsNeedValidation = false
@@ -349,6 +394,34 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	useBulkInitial := db.bulkInitialBatchLoad && db.ff.Size() == 0
 	batchWalAppended := false
 	if useBulkInitial {
+		if len(s.puts) == 0 && len(s.aliasKeys) > 0 {
+			if doFsync || s.aliasSorted {
+				s.materializeAliasKeys()
+				for i := range s.puts {
+					s.puts[i].Hlc = curHLC
+				}
+			} else {
+				mt.appendBulkValueIsKeyBatch(s.aliasKeys, curHLC)
+				mt.empty = false
+				if wantMetrics {
+					if mt.bulk.dirty {
+						db.reconcileBulkInitialCountsLocked(mt)
+					}
+					metrics = db.writeLockHeldSessionMetrics()
+				}
+				s.puts = nil
+				s.aliasKeys = nil
+				s.aliasSorted = true
+				s.aliasLastKey = ""
+				s.keyArena = nil
+				s.valueArena = nil
+				s.logicalBytes = 0
+				s.recordsNeedValidation = false
+				s.allValuesAliasKeys = true
+				interv = HLCInterval{Begin: curHLC, Endx: curHLC + 1}
+				return
+			}
+		}
 		if doFsync {
 			var ok bool
 			ok, err = mt.logAppendBatchLocked(s.puts, s.allValuesAliasKeys)
@@ -374,6 +447,9 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 				metrics = db.writeLockHeldSessionMetrics()
 			}
 			s.puts = nil
+			s.aliasKeys = nil
+			s.aliasSorted = true
+			s.aliasLastKey = ""
 			s.keyArena = nil
 			s.valueArena = nil
 			s.logicalBytes = 0
@@ -381,6 +457,13 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 			s.allValuesAliasKeys = true
 			interv = HLCInterval{Begin: curHLC, Endx: curHLC + 1}
 			return
+		}
+	}
+
+	s.materializeAliasKeys()
+	for i := range s.puts {
+		if s.puts[i].Hlc == 0 {
+			s.puts[i].Hlc = curHLC
 		}
 	}
 
@@ -447,6 +530,9 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 
 	// make ready for immediate reuse after a Commit.
 	s.puts = nil
+	s.aliasKeys = nil
+	s.aliasSorted = true
+	s.aliasLastKey = ""
 	s.keyArena = nil
 	s.valueArena = nil
 	s.logicalBytes = 0
@@ -466,6 +552,9 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 // Reset forgets any existing queued up puts.
 func (s *Batch) Reset() {
 	s.puts = nil
+	s.aliasKeys = nil
+	s.aliasSorted = true
+	s.aliasLastKey = ""
 	s.keyArena = nil
 	s.valueArena = nil
 	s.logicalBytes = 0
@@ -478,6 +567,9 @@ func (s *Batch) Reset() {
 // frees any other resources associated with the Batch.
 func (s *Batch) Close() {
 	s.puts = nil
+	s.aliasKeys = nil
+	s.aliasSorted = true
+	s.aliasLastKey = ""
 	s.keyArena = nil
 	s.valueArena = nil
 	s.logicalBytes = 0
@@ -4886,6 +4978,7 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 	pageValuesAliasKeys := allValuesAliasKeys
 	pageSize := 0
 	pageApproxSize := 0
+	cacheOwnsPageOnFlush := false
 	var nh memSparseIndexTreeHandler
 	nh.node = db.tree.root
 	nh.idx = db.tree.root.count
@@ -4967,10 +5060,14 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 	}
 
 	flushPage := func() error {
-		if err := flushPageItems(page, pageBase, pageSize, pageApproxSize, false, pageValuesAliasKeys); err != nil {
+		if err := flushPageItems(page, pageBase, pageSize, pageApproxSize, cacheOwnsPageOnFlush, pageValuesAliasKeys); err != nil {
 			return err
 		}
-		page = page[:0]
+		if cacheOwnsPageOnFlush {
+			page = make([]KV, 0, 128)
+		} else {
+			page = page[:0]
+		}
 		pageSize = 0
 		pageApproxSize = 0
 		pageBase = 0
@@ -5076,21 +5173,76 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 			pageValuesAliasKeys = false
 		}
 		pageSize += itemSize
-		pageApproxSize += kvSizeApprox(&item)
+		if itemValuesAliasKeys {
+			pageApproxSize += 24 + len(item.Key)
+		} else {
+			pageApproxSize += kvSizeApprox(&item)
+		}
+		return true
+	}
+	consumeAliasKey := func(key string, hlc HLC) bool {
+		flushedSmall++
+		if len(page) == 0 {
+			pageBase = hlc
+			pageSize = slottedPageHeaderSize + slottedPageCRCSize
+			pageSmallInlineZeroVtyp = true
+			pageValuesAliasKeys = true
+		}
+		if len(page) > 0 && len(page) >= bulkPageCount {
+			if err = flushPage(); err != nil {
+				return false
+			}
+			pageBase = hlc
+			pageSize = slottedPageHeaderSize + slottedPageCRCSize
+			pageSmallInlineZeroVtyp = true
+			pageValuesAliasKeys = true
+		}
+		itemSize := 4 + uvarintLen64(uint64(hlc-pageBase)) + len(key)
+		if len(page) > 0 && hlc < pageBase {
+			newBase := hlc
+			newPageSize := intervalCacheEntrySlottedKVsSizeSmallInlineZeroVtypValueIsKey(page, newBase)
+			itemSize = 4 + uvarintLen64(uint64(hlc-newBase)) + len(key)
+			if newPageSize+itemSize > slottedPageMaxSize {
+				if err = flushPage(); err != nil {
+					return false
+				}
+				pageBase = hlc
+				pageSize = slottedPageHeaderSize + slottedPageCRCSize
+				pageSmallInlineZeroVtyp = true
+				pageValuesAliasKeys = true
+				itemSize = 4 + uvarintLen64(uint64(hlc-pageBase)) + len(key)
+			} else {
+				pageBase = newBase
+				pageSize = newPageSize
+			}
+		} else if len(page) > 0 && pageSize+itemSize > slottedPageMaxSize {
+			if err = flushPage(); err != nil {
+				return false
+			}
+			pageBase = hlc
+			pageSize = slottedPageHeaderSize + slottedPageCRCSize
+			pageSmallInlineZeroVtyp = true
+			pageValuesAliasKeys = true
+			itemSize = 4 + uvarintLen64(uint64(hlc-pageBase)) + len(key)
+		}
+		page = append(page, valueIsKeyKV(key, hlc))
+		pageSize += itemSize
+		pageApproxSize += 24 + len(key)
 		return true
 	}
 	if m.bulk.count > 0 {
 		if m.bulk.sorted && !m.bulk.sortedHasDuplicates && allSmallInlineZeroVtyp {
 			pageSmallInlineZeroVtyp = true
 			for si := range m.bulk.segments {
-				kvs := m.bulk.segments[si].kvs
-				for start := 0; start < len(kvs); {
-					chunkBase := kvs[start].Hlc
+				seg := &m.bulk.segments[si]
+				for start, segLen := 0, seg.len(); start < segLen; {
+					first := seg.kv(start)
+					chunkBase := first.Hlc
 					chunkSize := slottedPageHeaderSize + slottedPageCRCSize
 					chunkApproxSize := 0
 					end := start
-					for end < len(kvs) && end-start < bulkPageCount {
-						item := kvs[end]
+					for end < segLen && end-start < bulkPageCount {
+						item := seg.kv(end)
 						if end > start && item.Hlc < chunkBase {
 							break
 						}
@@ -5108,7 +5260,7 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 						end++
 					}
 					if end == start {
-						item := kvs[start]
+						item := first
 						if allValuesAliasKeys {
 							chunkSize += slottedKVEncodedSizeSmallInlineZeroVtypValueIsKey(item, chunkBase)
 						} else {
@@ -5117,7 +5269,15 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 						chunkApproxSize += kvSizeApprox(&item)
 						end++
 					}
-					chunk := kvs[start:end:end]
+					var chunk []KV
+					if len(seg.aliasKeys) > 0 {
+						chunk = make([]KV, end-start)
+						for i := range chunk {
+							chunk[i] = seg.kv(start + i)
+						}
+					} else {
+						chunk = seg.kvs[start:end:end]
+					}
 					if err = flushPageItems(chunk, chunkBase, chunkSize, chunkApproxSize, true, allValuesAliasKeys); err != nil {
 						break
 					}
@@ -5138,9 +5298,9 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 				return consumeItem(best)
 			}
 			for si := range m.bulk.segments {
-				kvs := m.bulk.segments[si].kvs
-				for ki := range kvs {
-					item := kvs[ki]
+				seg := &m.bulk.segments[si]
+				for ki, segLen := 0, seg.len(); ki < segLen; ki++ {
+					item := seg.kv(ki)
 					if !haveBest {
 						best = item
 						haveBest = true
@@ -5167,6 +5327,7 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 		} else {
 			order := m.bulk.buildOrder()
 			keys := m.bulk.keys
+			cacheOwnsPageOnFlush = allValuesAliasKeys
 			if fixedKeyLen := m.bulk.fixedKeyLen; fixedKeyLen > 0 {
 				last := fixedKeyLen - 1
 				for i := 0; i < len(order); {
@@ -5175,12 +5336,16 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 					firstKey := keys[i]
 					for j < len(order) && firstKey[last] == keys[j][last] && firstKey == keys[j] {
 						cand := order[j]
-						if m.bulk.kv(cand).Hlc >= m.bulk.kv(best).Hlc {
+						if m.bulk.hlc(cand) >= m.bulk.hlc(best) {
 							best = cand
 						}
 						j++
 					}
-					if !consumeItem(m.bulk.kv(best)) {
+					if allValuesAliasKeys {
+						if !consumeAliasKey(firstKey, m.bulk.hlc(best)) {
+							break
+						}
+					} else if !consumeItem(m.bulk.kv(best)) {
 						break
 					}
 					i = j
@@ -5192,12 +5357,16 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 					firstKey := keys[i]
 					for j < len(order) && bulkIngestKeysEqual(firstKey, keys[j]) {
 						cand := order[j]
-						if m.bulk.kv(cand).Hlc >= m.bulk.kv(best).Hlc {
+						if m.bulk.hlc(cand) >= m.bulk.hlc(best) {
 							best = cand
 						}
 						j++
 					}
-					if !consumeItem(m.bulk.kv(best)) {
+					if allValuesAliasKeys {
+						if !consumeAliasKey(firstKey, m.bulk.hlc(best)) {
+							break
+						}
+					} else if !consumeItem(m.bulk.kv(best)) {
 						break
 					}
 					i = j

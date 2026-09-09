@@ -1,9 +1,35 @@
 package yogadb
 
+import "unsafe"
+
 type bulkIngestRef uint64
 
 type bulkIngestSegment struct {
-	kvs []KV
+	kvs          []KV
+	aliasKeys    []string
+	aliasKeysHLC HLC
+}
+
+func (s *bulkIngestSegment) len() int {
+	if len(s.aliasKeys) > 0 {
+		return len(s.aliasKeys)
+	}
+	return len(s.kvs)
+}
+
+func (s *bulkIngestSegment) key(i int) string {
+	if len(s.aliasKeys) > 0 {
+		return s.aliasKeys[i]
+	}
+	return s.kvs[i].Key
+}
+
+func (s *bulkIngestSegment) kv(i int) KV {
+	if len(s.aliasKeys) > 0 {
+		key := s.aliasKeys[i]
+		return valueIsKeyKV(key, s.aliasKeysHLC)
+	}
+	return s.kvs[i]
 }
 
 type bulkIngestBuilder struct {
@@ -98,12 +124,54 @@ func (b *bulkIngestBuilder) appendBatch(kvs []KV, valuesAliasKeys bool) {
 	b.dirty = true
 }
 
+func (b *bulkIngestBuilder) appendValueIsKeyBatch(keys []string, hlc HLC) {
+	if len(keys) == 0 {
+		return
+	}
+	if b.count == 0 && len(b.segments) == 0 {
+		b.allSmallInlineZeroVtyp = true
+		b.allValuesAliasKeys = true
+		b.sorted = true
+		b.sortedHasDuplicates = false
+		b.hasTombstones = false
+		b.lastKey = ""
+	}
+	b.segments = append(b.segments, bulkIngestSegment{aliasKeys: keys, aliasKeysHLC: hlc})
+	for i := range keys {
+		if b.sorted {
+			if b.count > 0 && b.lastKey > keys[i] {
+				b.sorted = false
+			} else if b.count > 0 && b.lastKey == keys[i] {
+				b.sortedHasDuplicates = true
+				b.lastKey = keys[i]
+			} else {
+				b.lastKey = keys[i]
+			}
+		}
+		b.size += int64(24 + len(keys[i]))
+		if len(keys[i]) > vlogInlineThreshold {
+			b.allSmallInlineZeroVtyp = false
+		}
+		b.count++
+	}
+	b.index = nil
+	b.dirty = true
+}
+
 func (b *bulkIngestBuilder) appendKV(kv KV) {
 	b.appendBatch([]KV{kv}, slottedInlineValueAliasesKey(kv))
 }
 
 func (b *bulkIngestBuilder) kv(ref bulkIngestRef) KV {
-	return b.segments[bulkIngestRefSeg(ref)].kvs[bulkIngestRefIdx(ref)]
+	return b.segments[bulkIngestRefSeg(ref)].kv(bulkIngestRefIdx(ref))
+}
+
+func (b *bulkIngestBuilder) hlc(ref bulkIngestRef) HLC {
+	seg := &b.segments[bulkIngestRefSeg(ref)]
+	if len(seg.aliasKeys) > 0 {
+		return seg.aliasKeysHLC
+	}
+	return seg.kvs[bulkIngestRefIdx(ref)].Hlc
 }
 
 func (b *bulkIngestBuilder) ensureIndex() {
@@ -112,9 +180,9 @@ func (b *bulkIngestBuilder) ensureIndex() {
 	}
 	b.index = make(map[string]bulkIngestRef, b.count)
 	for si := range b.segments {
-		kvs := b.segments[si].kvs
-		for ki := range kvs {
-			b.index[kvs[ki].Key] = makeBulkIngestRef(si, ki)
+		seg := &b.segments[si]
+		for ki, n := 0, seg.len(); ki < n; ki++ {
+			b.index[seg.key(ki)] = makeBulkIngestRef(si, ki)
 		}
 	}
 }
@@ -144,10 +212,10 @@ func (b *bulkIngestBuilder) buildOrder() []bulkIngestRef {
 	fixedKeyLen := -1
 	fixedKeyLenOK := true
 	for si := range b.segments {
-		kvs := b.segments[si].kvs
-		for ki := range kvs {
+		seg := &b.segments[si]
+		for ki, n := 0, seg.len(); ki < n; ki++ {
 			b.order = append(b.order, makeBulkIngestRef(si, ki))
-			key := kvs[ki].Key
+			key := seg.key(ki)
 			b.keys = append(b.keys, key)
 			if fixedKeyLen < 0 {
 				fixedKeyLen = len(key)
@@ -172,6 +240,19 @@ func (b *bulkIngestBuilder) buildOrder() []bulkIngestRef {
 	return b.order
 }
 
+func valueIsKeyKV(key string, hlc HLC) KV {
+	var value []byte
+	if len(key) > 0 {
+		value = unsafe.Slice(unsafe.StringData(key), len(key))
+	}
+	return KV{
+		Key:   key,
+		Value: value,
+		Vptr:  VPtr{Length: uint64(len(key))},
+		Hlc:   hlc,
+	}
+}
+
 func (b *bulkIngestBuilder) ensureSortAux() {
 	if cap(b.sortAux) < b.count {
 		b.sortAux = make([]bulkIngestRef, b.count)
@@ -189,20 +270,26 @@ func sortBulkIngestRefsByKey(order, aux []bulkIngestRef, keys, keyAux []string) 
 	if len(order) < 2 {
 		return
 	}
-	sortBulkIngestRefsByKeyMSD(order, aux, keys, keyAux, 0)
+	if sortBulkIngestRefsByKeyMSD(order, aux, keys, keyAux, 0) {
+		copy(order, aux[:len(order)])
+		copy(keys, keyAux[:len(keys)])
+	}
 }
 
 func sortBulkIngestRefsByFixedKeyLen(order, aux []bulkIngestRef, keys, keyAux []string, keyLen int) {
 	if len(order) < 2 || keyLen == 0 {
 		return
 	}
-	sortBulkIngestRefsByFixedKeyLenMSD(order, aux, keys, keyAux, 0, keyLen)
+	if sortBulkIngestRefsByFixedKeyLenMSD(order, aux, keys, keyAux, 0, keyLen) {
+		copy(order, aux[:len(order)])
+		copy(keys, keyAux[:len(keys)])
+	}
 }
 
-func sortBulkIngestRefsByFixedKeyLenMSD(order, aux []bulkIngestRef, keys, keyAux []string, depth, keyLen int) {
+func sortBulkIngestRefsByFixedKeyLenMSD(order, aux []bulkIngestRef, keys, keyAux []string, depth, keyLen int) bool {
 	if len(order) <= bulkRadixInsertionCutoff || depth >= keyLen {
 		insertionSortBulkIngestRefs(order, keys)
-		return
+		return false
 	}
 
 	var count [256]int
@@ -223,22 +310,24 @@ func sortBulkIngestRefsByFixedKeyLenMSD(order, aux []bulkIngestRef, keys, keyAux
 		keyAux[count[c]] = key
 		count[c]++
 	}
-	copy(order, aux[:len(order)])
-	copy(keys, keyAux[:len(keys)])
 
 	for c := 0; c < 256; c++ {
 		lo := start[c]
 		hi := count[c]
 		if hi-lo > 1 {
-			sortBulkIngestRefsByFixedKeyLenMSD(order[lo:hi], aux[lo:hi], keys[lo:hi], keyAux[lo:hi], depth+1, keyLen)
+			if sortBulkIngestRefsByFixedKeyLenMSD(aux[lo:hi], order[lo:hi], keyAux[lo:hi], keys[lo:hi], depth+1, keyLen) {
+				copy(aux[lo:hi], order[lo:hi])
+				copy(keyAux[lo:hi], keys[lo:hi])
+			}
 		}
 	}
+	return true
 }
 
-func sortBulkIngestRefsByKeyMSD(order, aux []bulkIngestRef, keys, keyAux []string, depth int) {
+func sortBulkIngestRefsByKeyMSD(order, aux []bulkIngestRef, keys, keyAux []string, depth int) bool {
 	if len(order) <= bulkRadixInsertionCutoff {
 		insertionSortBulkIngestRefs(order, keys)
-		return
+		return false
 	}
 
 	var count [258]int
@@ -256,16 +345,18 @@ func sortBulkIngestRefsByKeyMSD(order, aux []bulkIngestRef, keys, keyAux []strin
 		keyAux[count[c]] = key
 		count[c]++
 	}
-	copy(order, aux[:len(order)])
-	copy(keys, keyAux[:len(keys)])
 
 	for c := 1; c < 257; c++ {
 		lo := start[c]
 		hi := count[c]
 		if hi-lo > 1 {
-			sortBulkIngestRefsByKeyMSD(order[lo:hi], aux[lo:hi], keys[lo:hi], keyAux[lo:hi], depth+1)
+			if sortBulkIngestRefsByKeyMSD(aux[lo:hi], order[lo:hi], keyAux[lo:hi], keys[lo:hi], depth+1) {
+				copy(aux[lo:hi], order[lo:hi])
+				copy(keyAux[lo:hi], keys[lo:hi])
+			}
 		}
 	}
+	return true
 }
 
 func insertionSortBulkIngestRefs(order []bulkIngestRef, keys []string) {

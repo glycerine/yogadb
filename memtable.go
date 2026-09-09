@@ -85,14 +85,22 @@ func (m *memtable) appendBulkBatch(kvs []KV, valuesAliasKeys bool) {
 	}
 }
 
+func (m *memtable) appendBulkValueIsKeyBatch(keys []string, hlc HLC) {
+	m.bulk.appendValueIsKeyBatch(keys, hlc)
+	m.size = m.bulk.size
+	if m.size <= 0 {
+		panicf("bad: memtable with some content should have size(%v) > 0: %#v", m.size, m)
+	}
+}
+
 func (m *memtable) materializeBulk() {
 	if m.bulk.count == 0 {
 		return
 	}
 	for si := range m.bulk.segments {
-		kvs := m.bulk.segments[si].kvs
-		for i := range kvs {
-			m.bt.Set(kvs[i])
+		seg := &m.bulk.segments[si]
+		for i, n := 0, seg.len(); i < n; i++ {
+			m.bt.Set(seg.kv(i))
 		}
 	}
 	m.bulk.reset()
