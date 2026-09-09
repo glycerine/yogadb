@@ -5050,21 +5050,41 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 	if m.bulk.count > 0 {
 		order := m.bulk.buildOrder()
 		keys := m.bulk.keys
-		for i := 0; i < len(order); {
-			best := order[i]
-			j := i + 1
-			firstKey := keys[i]
-			for j < len(order) && keys[j] == firstKey {
-				cand := order[j]
-				if m.bulk.kv(cand).Hlc >= m.bulk.kv(best).Hlc {
-					best = cand
+		if fixedKeyLen := m.bulk.fixedKeyLen; fixedKeyLen > 0 {
+			last := fixedKeyLen - 1
+			for i := 0; i < len(order); {
+				best := order[i]
+				j := i + 1
+				firstKey := keys[i]
+				for j < len(order) && firstKey[last] == keys[j][last] && firstKey == keys[j] {
+					cand := order[j]
+					if m.bulk.kv(cand).Hlc >= m.bulk.kv(best).Hlc {
+						best = cand
+					}
+					j++
 				}
-				j++
+				if !consumeItem(m.bulk.kv(best)) {
+					break
+				}
+				i = j
 			}
-			if !consumeItem(m.bulk.kv(best)) {
-				break
+		} else {
+			for i := 0; i < len(order); {
+				best := order[i]
+				j := i + 1
+				firstKey := keys[i]
+				for j < len(order) && bulkIngestKeysEqual(firstKey, keys[j]) {
+					cand := order[j]
+					if m.bulk.kv(cand).Hlc >= m.bulk.kv(best).Hlc {
+						best = cand
+					}
+					j++
+				}
+				if !consumeItem(m.bulk.kv(best)) {
+					break
+				}
+				i = j
 			}
-			i = j
 		}
 	} else {
 		m.bt.Ascend(KV{}, consumeItem)

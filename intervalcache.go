@@ -239,7 +239,6 @@ func (p *intervalCachePartition) installCleanEntryWithSize(anchor *dbAnchor, kvs
 	p.calibrate()
 	p.mu.Unlock()
 }
-
 func (p *intervalCachePartition) insertIntoClock(fce *intervalCacheEntry) {
 	if p.tick == nil {
 		p.tick = fce

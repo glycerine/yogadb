@@ -13,6 +13,9 @@ type bulkIngestBuilder struct {
 	keys                   []string
 	keyAux                 []string
 	index                  map[string]bulkIngestRef
+	fixedKeyLen            int
+	sorted                 bool
+	lastKey                string
 	dirty                  bool
 	allSmallInlineZeroVtyp bool
 	count                  int
@@ -40,6 +43,9 @@ func (b *bulkIngestBuilder) reset() {
 	b.keys = b.keys[:0]
 	b.keyAux = b.keyAux[:0]
 	b.index = nil
+	b.fixedKeyLen = -1
+	b.sorted = true
+	b.lastKey = ""
 	b.dirty = false
 	b.allSmallInlineZeroVtyp = true
 	b.count = 0
@@ -52,14 +58,23 @@ func (b *bulkIngestBuilder) appendBatch(kvs []KV) {
 	}
 	if b.count == 0 && len(b.segments) == 0 {
 		b.allSmallInlineZeroVtyp = true
+		b.sorted = true
+		b.lastKey = ""
 	}
 	b.segments = append(b.segments, bulkIngestSegment{kvs: kvs})
-	b.count += len(kvs)
 	for i := range kvs {
+		if b.sorted {
+			if b.count > 0 && b.lastKey > kvs[i].Key {
+				b.sorted = false
+			} else {
+				b.lastKey = kvs[i].Key
+			}
+		}
 		b.size += int64(kvSizeApprox(&kvs[i]))
 		if !slottedKVSmallInlineZeroVtyp(kvs[i]) {
 			b.allSmallInlineZeroVtyp = false
 		}
+		b.count++
 	}
 	b.index = nil
 	b.dirty = true
@@ -97,6 +112,7 @@ func (b *bulkIngestBuilder) get(key string) (KV, bool) {
 
 func (b *bulkIngestBuilder) buildOrder() []bulkIngestRef {
 	b.order = b.order[:0]
+	b.fixedKeyLen = -1
 	if b.count == 0 {
 		return b.order
 	}
@@ -133,9 +149,15 @@ func (b *bulkIngestBuilder) buildOrder() []bulkIngestRef {
 		}
 	}
 	if fixedKeyLenOK && fixedKeyLen >= 0 {
-		sortBulkIngestRefsByFixedKeyLen(b.order, b.sortAux, b.keys, b.keyAux, fixedKeyLen)
+		b.fixedKeyLen = fixedKeyLen
+		if !b.sorted {
+			sortBulkIngestRefsByFixedKeyLen(b.order, b.sortAux, b.keys, b.keyAux, fixedKeyLen)
+		}
 	} else {
-		sortBulkIngestRefsByKey(b.order, b.sortAux, b.keys, b.keyAux)
+		b.fixedKeyLen = -1
+		if !b.sorted {
+			sortBulkIngestRefsByKey(b.order, b.sortAux, b.keys, b.keyAux)
+		}
 	}
 	return b.order
 }
@@ -236,4 +258,17 @@ func insertionSortBulkIngestRefs(order []bulkIngestRef, keys []string) {
 		order[j+1] = v
 		keys[j+1] = vk
 	}
+}
+
+func bulkIngestKeysEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if len(a) == 0 {
+		return true
+	}
+	if a[len(a)-1] != b[len(b)-1] {
+		return false
+	}
+	return a == b
 }
