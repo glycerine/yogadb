@@ -109,14 +109,25 @@ func (b *bulkIngestBuilder) buildOrder() []bulkIngestRef {
 		b.keyAux = b.keyAux[:b.count]
 	}
 	b.keys = b.keys[:0]
+	fixedKeyLen := -1
+	fixedKeyLenOK := true
 	for si := range b.segments {
 		kvs := b.segments[si].kvs
 		for ki := range kvs {
 			b.order = append(b.order, makeBulkIngestRef(si, ki))
 			b.keys = append(b.keys, kvs[ki].Key)
+			if fixedKeyLen < 0 {
+				fixedKeyLen = len(kvs[ki].Key)
+			} else if fixedKeyLenOK && len(kvs[ki].Key) != fixedKeyLen {
+				fixedKeyLenOK = false
+			}
 		}
 	}
-	sortBulkIngestRefsByKey(b.order, b.sortAux, b.keys, b.keyAux)
+	if fixedKeyLenOK && fixedKeyLen >= 0 {
+		sortBulkIngestRefsByFixedKeyLen(b.order, b.sortAux, b.keys, b.keyAux, fixedKeyLen)
+	} else {
+		sortBulkIngestRefsByKey(b.order, b.sortAux, b.keys, b.keyAux)
+	}
 	return b.order
 }
 
@@ -125,6 +136,49 @@ func sortBulkIngestRefsByKey(order, aux []bulkIngestRef, keys, keyAux []string) 
 		return
 	}
 	sortBulkIngestRefsByKeyMSD(order, aux, keys, keyAux, 0)
+}
+
+func sortBulkIngestRefsByFixedKeyLen(order, aux []bulkIngestRef, keys, keyAux []string, keyLen int) {
+	if len(order) < 2 || keyLen == 0 {
+		return
+	}
+	sortBulkIngestRefsByFixedKeyLenMSD(order, aux, keys, keyAux, 0, keyLen)
+}
+
+func sortBulkIngestRefsByFixedKeyLenMSD(order, aux []bulkIngestRef, keys, keyAux []string, depth, keyLen int) {
+	if len(order) <= bulkRadixInsertionCutoff || depth >= keyLen {
+		insertionSortBulkIngestRefs(order, keys)
+		return
+	}
+
+	var count [256]int
+	for _, key := range keys {
+		count[key[depth]]++
+	}
+	sum := 0
+	for i := 0; i < 256; i++ {
+		n := count[i]
+		count[i] = sum
+		sum += n
+	}
+	start := count
+	for i, ref := range order {
+		key := keys[i]
+		c := key[depth]
+		aux[count[c]] = ref
+		keyAux[count[c]] = key
+		count[c]++
+	}
+	copy(order, aux[:len(order)])
+	copy(keys, keyAux[:len(keys)])
+
+	for c := 0; c < 256; c++ {
+		lo := start[c]
+		hi := count[c]
+		if hi-lo > 1 {
+			sortBulkIngestRefsByFixedKeyLenMSD(order[lo:hi], aux[lo:hi], keys[lo:hi], keyAux[lo:hi], depth+1, keyLen)
+		}
+	}
 }
 
 func sortBulkIngestRefsByKeyMSD(order, aux []bulkIngestRef, keys, keyAux []string, depth int) {

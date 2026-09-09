@@ -200,6 +200,10 @@ func (p *intervalCachePartition) allocEntryForNewAnchor(anchor *dbAnchor) *inter
 }
 
 func (p *intervalCachePartition) installCleanEntry(anchor *dbAnchor, kvs []KV, baseHLC HLC, slotSize int) {
+	p.installCleanEntryWithSize(anchor, kvs, baseHLC, slotSize, -1)
+}
+
+func (p *intervalCachePartition) installCleanEntryWithSize(anchor *dbAnchor, kvs []KV, baseHLC HLC, slotSize int, approxSize int) {
 	fce := &intervalCacheEntry{
 		anchor:    anchor,
 		kvs:       append([]KV(nil), kvs...),
@@ -209,9 +213,14 @@ func (p *intervalCachePartition) installCleanEntry(anchor *dbAnchor, kvs []KV, b
 		slotValid: true,
 		count:     len(kvs),
 	}
+	if approxSize >= 0 {
+		fce.size = approxSize
+	}
 	for i := range fce.kvs {
 		fce.fps[i] = fingerprint(kvCRC32(fce.kvs[i].Key))
-		fce.size += kvSizeApprox(&fce.kvs[i])
+		if approxSize < 0 {
+			fce.size += kvSizeApprox(&fce.kvs[i])
+		}
 	}
 
 	p.mu.Lock()

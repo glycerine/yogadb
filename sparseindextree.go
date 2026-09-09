@@ -1,6 +1,5 @@
 package yogadb
 
-
 // ========== Sparse index tree: memSparseIndexTree ==========
 //
 // In-memory B-tree mapping keys to FlexSpace intervals (anchors).
@@ -143,6 +142,20 @@ func (nh *memSparseIndexTreeHandler) handlerInsert(key string, loff uint64, psiz
 	if memSparseIndexTreeNodeFull(node) {
 		memSparseIndexTreeSplitLeaf(node)
 	}
+	return anchor
+}
+
+func (nh *memSparseIndexTreeHandler) handlerAppend(key string, loff uint64, psize uint32) *dbAnchor {
+	if nh.node == nil {
+		return nil
+	}
+	nh.idx = nh.node.count
+	anchor := nh.handlerInsert(key, loff, psize)
+	for nh.node.next != nil && key >= nh.node.next.anchors[0].key {
+		nh.node = nh.node.next
+	}
+	nh.idx = nh.node.count
+	memSparseIndexTreeHandlerInfoUpdate(nh)
 	return anchor
 }
 

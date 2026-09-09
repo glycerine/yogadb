@@ -72,8 +72,8 @@ type Batch struct {
 }
 
 const (
-	batchInitialPutCap        = 4096
-	batchInitialKeyArenaCap   = 512 << 10
+	batchInitialPutCap        = 10000
+	batchInitialKeyArenaCap   = 280 << 10
 	batchInitialValueArenaCap = 512 << 10
 )
 
@@ -4803,8 +4803,11 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 	var pageBase HLC
 	pageSmallInlineZeroVtyp := true
 	pageSize := 0
+	pageApproxSize := 0
 	var pageBuf []byte
 	var nh memSparseIndexTreeHandler
+	nh.node = db.tree.root
+	nh.idx = db.tree.root.count
 	var flushedBig, flushedSmall int64
 
 	flushPage := func() error {
@@ -4831,16 +4834,22 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 			anchor = db.tree.root.anchors[0]
 			anchor.psize = uint32(len(buf))
 			anchor.unsorted = 0
+			nh.node = db.tree.root
+			nh.idx = db.tree.root.count
+			nh.shift = 0
 		} else {
-			db.tree.findAnchorPos(page[0].Key, &nh)
-			nh.idx++
-			anchor = nh.handlerInsert(page[0].Key, loff, uint32(len(buf)))
+			anchor = nh.handlerAppend(page[0].Key, loff, uint32(len(buf)))
+			if anchor == nil {
+				return fmt.Errorf("bulk initial flush append anchor returned nil loff=%d psize=%d firstKey=%q",
+					loff, len(buf), page[0].Key)
+			}
 		}
 		if anchor != nil && db.cache != nil {
-			db.cache.getPartition(anchor).installCleanEntry(anchor, page, pageBase, len(buf))
+			db.cache.getPartition(anchor).installCleanEntryWithSize(anchor, page, pageBase, len(buf), pageApproxSize)
 		}
 		page = page[:0]
 		pageSize = 0
+		pageApproxSize = 0
 		pageBase = 0
 		pageSmallInlineZeroVtyp = true
 		return nil
@@ -4915,6 +4924,7 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 			pageSmallInlineZeroVtyp = false
 		}
 		pageSize += itemSize
+		pageApproxSize += kvSizeApprox(&item)
 		return true
 	}
 	if m.bulk.count > 0 {
