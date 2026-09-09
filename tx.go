@@ -3,6 +3,7 @@ package yogadb
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -229,6 +230,8 @@ type WriteTx struct {
 	beginLiveKeys   int64
 	beginBigKeys    int64
 	beginSmallKeys  int64
+	beginAutoDel    int64
+	beginAutoVLOG   int64
 }
 
 var _ WritableDB = (*WriteTx)(nil)
@@ -295,6 +298,8 @@ func (tx *WriteTx) rollbackOpen() error {
 	db.liveKeys = tx.beginLiveKeys
 	db.liveBigKeys = tx.beginBigKeys
 	db.liveSmallKeys = tx.beginSmallKeys
+	atomic.StoreInt64(&db.autoVacuumDeletedBytes, tx.beginAutoDel)
+	atomic.StoreInt64(&db.autoVacuumVLOGDeletedBytes, tx.beginAutoVLOG)
 	tx.walTxnBegun = false
 	db.flushSeq++
 
@@ -309,6 +314,8 @@ func (tx *WriteTx) resetRollbackBaseline() {
 	tx.beginLiveKeys = tx.db.liveKeys
 	tx.beginBigKeys = tx.db.liveBigKeys
 	tx.beginSmallKeys = tx.db.liveSmallKeys
+	tx.beginAutoDel = atomic.LoadInt64(&tx.db.autoVacuumDeletedBytes)
+	tx.beginAutoVLOG = atomic.LoadInt64(&tx.db.autoVacuumVLOGDeletedBytes)
 }
 
 // Get retrieves the value for key. Returns (nil, false, nil) if not found
@@ -358,11 +365,16 @@ func (tx *WriteTx) Delete(key string) error {
 
 // Commit durably commits this WriteTx. It is terminal: if Rollback already won,
 // Commit is a no-op.
-func (tx *WriteTx) Commit() error {
+func (tx *WriteTx) Commit() (err error) {
 	if tx.done {
 		return nil
 	}
-	defer tx.finish()
+	defer func() {
+		tx.finish()
+		if err == nil {
+			tx.db.maybeScheduleAutoVacuum()
+		}
+	}()
 	if err := tx.commitWalTxn(); err != nil {
 		return errors.Join(err, tx.rollbackOpen())
 	}
@@ -780,6 +792,8 @@ func (db *FlexDB) beginWriteTxLocked(managedByUpdate bool) (*WriteTx, error) {
 		beginLiveKeys:   db.liveKeys,
 		beginBigKeys:    db.liveBigKeys,
 		beginSmallKeys:  db.liveSmallKeys,
+		beginAutoDel:    atomic.LoadInt64(&db.autoVacuumDeletedBytes),
+		beginAutoVLOG:   atomic.LoadInt64(&db.autoVacuumVLOGDeletedBytes),
 	}, nil
 }
 

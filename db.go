@@ -274,6 +274,9 @@ func (s *Batch) Delete(key string) {
 // to view them. Commit() itself now skips them for speed.
 func (s *Batch) Commit(doFsync bool) (interv HLCInterval, err error) {
 	interv, _, err = s.commitMaybeMetrics(doFsync, false)
+	if err == nil {
+		s.db.maybeScheduleAutoVacuum()
+	}
 	return
 }
 
@@ -282,7 +285,11 @@ func (s *Batch) Commit(doFsync bool) (interv HLCInterval, err error) {
 // hence it is slower. It does a linear scan through all the
 // FLEXSPACE.KV.SLOT_BLOCKS to see how much free space could be reclaimed.
 func (s *Batch) CommitGetMetrics(doFsync bool) (HLCInterval, *Metrics, error) {
-	return s.commitMaybeMetrics(doFsync, true)
+	interv, metrics, err := s.commitMaybeMetrics(doFsync, true)
+	if err == nil {
+		s.db.maybeScheduleAutoVacuum()
+	}
+	return interv, metrics, err
 }
 
 func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCInterval, metrics *Metrics, err error) {
@@ -506,11 +513,19 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		}
 		mt.empty = false
 		oldState := ksNotExists
+		oldKV := old
+		oldKVFound := replaced
 		if replaced {
 			oldState = kvToState(old)
 		} else if !useBulkInitial {
-			oldState = db.writeLockHeldKeyState(putKV.Key)
+			if db.ff.Size() != 0 {
+				oldKV, oldKVFound, _ = db.getPassthroughKV(putKV.Key)
+				if oldKVFound {
+					oldState = kvToState(oldKV)
+				}
+			}
 		}
+		db.noteAutoVacuumObsoleteKV(oldKV, oldKVFound, putKV)
 		if !useBulkInitial {
 			db.adjustKeyCounters(oldState, newState)
 		}
@@ -994,6 +1009,17 @@ type Config struct {
 	// occur, making key updates more efficient. The trade-off
 	// is pre-allocating space for new additions.
 	PaddedSplits bool
+
+	// AutoVacuumPct enables background vacuum when > 0. The value is the
+	// fraction of deleted logical bytes over resident+deleted bytes that
+	// should trigger automatic VacuumVLOG and VacuumKV. Values above 1 are
+	// clamped to 1.
+	AutoVacuumPct float64
+
+	// AutoVacuumDeletedAboveKB is the minimum deleted logical data threshold
+	// before AutoVacuumPct can trigger. If AutoVacuumPct > 0 and this is zero
+	// or negative, the default is 100 MB.
+	AutoVacuumDeletedAboveKB int64
 }
 
 // PiggybackGCStats tracks statistics for piggyback GC runs.
@@ -1037,6 +1063,10 @@ type FlexDB struct {
 	flushTrigger chan struct{}
 	flushHalt    *idem.Halter
 
+	autoVacuumTrigger chan struct{}
+	autoVacuumHalt    *idem.Halter
+	autoVacuumRunning int32
+
 	// scratch buffers (reused; protected by ffMu write lock)
 	kvbuf1 []byte
 	itvbuf []byte
@@ -1049,6 +1079,12 @@ type FlexDB struct {
 	// Current total = base + session delta.
 	totalLogicalBase  int64
 	totalPhysicalBase int64
+
+	autoVacuumDeletedBytes     int64
+	autoVacuumVLOGDeletedBytes int64
+	autoVacuumRuns             int64
+	autoVacuumLastDurMs        int64
+	autoVacuumLastErr          string
 
 	// (iterator support - pfSpans are embedded in Iter, no free list needed)
 
@@ -1096,6 +1132,38 @@ func (db *FlexDB) adjustKeyCounters(oldState, newState keyState) {
 	case ksLiveBig:
 		db.liveBigKeys++
 		db.liveKeys++
+	}
+}
+
+func (db *FlexDB) noteAutoVacuumObsoleteKV(oldKV KV, oldFound bool, newKV KV) {
+	if !oldFound || oldKV.isTombstone() {
+		return
+	}
+	if newKV.isTombstone() {
+		db.noteAutoVacuumDeletedLogical(oldKV, true)
+		return
+	}
+	if oldKV.HasVPtr() && (!newKV.HasVPtr() || oldKV.Vptr != newKV.Vptr) {
+		db.noteAutoVacuumDeletedLogical(oldKV, false)
+	}
+}
+
+func (db *FlexDB) noteAutoVacuumDeletedLogical(kv KV, includeKey bool) {
+	if db.cfg.AutoVacuumPct <= 0 {
+		return
+	}
+	var n int64
+	if includeKey {
+		n += int64(len(kv.Key))
+	}
+	if kv.HasVPtr() {
+		n += int64(kv.Vptr.Length)
+		atomic.AddInt64(&db.autoVacuumVLOGDeletedBytes, int64(vlogEntryHeaderSize)+int64(kv.Vptr.Length))
+	} else {
+		n += int64(len(kv.Value))
+	}
+	if n > 0 {
+		atomic.AddInt64(&db.autoVacuumDeletedBytes, n)
 	}
 }
 
@@ -1270,6 +1338,12 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	if cfg.LowBlockUtilizationPct <= 0 || cfg.LowBlockUtilizationPct > 1 {
 		cfg.LowBlockUtilizationPct = 0.50
 	}
+	if cfg.AutoVacuumPct > 1 {
+		cfg.AutoVacuumPct = 1
+	}
+	if cfg.AutoVacuumPct > 0 && cfg.AutoVacuumDeletedAboveKB <= 0 {
+		cfg.AutoVacuumDeletedAboveKB = 100 * 1024
+	}
 	//vv("using cfg.LowBlockUtilizationPct = %v", cfg.LowBlockUtilizationPct)
 
 	// Resolve VFS: explicit FS > NoDisk > RealVFS.
@@ -1342,6 +1416,8 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 		itvbuf:               make([]byte, 0, flexdbSparseIntervalSize+MaxKeySize),
 		flushTrigger:         make(chan struct{}, 1),
 		flushHalt:            idem.NewHalterNamed("flushWorker-orig"),
+		autoVacuumTrigger:    make(chan struct{}, 1),
+		autoVacuumHalt:       idem.NewHalterNamed("autoVacuumWorker"),
 		bulkInitialBatchLoad: true,
 	}
 	db.cache.db = db
@@ -1410,6 +1486,9 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	if !db.cfg.DisableBackgroundFlush {
 		go db.flushWorker()
 	}
+	if db.cfg.AutoVacuumPct > 0 {
+		go db.autoVacuumWorker()
+	}
 
 	return db, nil
 }
@@ -1424,6 +1503,10 @@ func (db *FlexDB) Close() *Metrics {
 		// on it rather than getting our halt request.
 		db.flushHalt.RequestStop()
 		<-db.flushHalt.Done.Chan
+	}
+	if db.cfg.AutoVacuumPct > 0 {
+		db.autoVacuumHalt.RequestStop()
+		<-db.autoVacuumHalt.Done.Chan
 	}
 
 	db.topMutRW.Lock()
@@ -1540,6 +1623,23 @@ type Metrics struct {
 
 	// PiggybackGCLastDurMs is the duration of the last piggyback GC run in milliseconds.
 	PiggybackGCLastDurMs int64
+
+	// AutoVacuumRuns is the number of background autovacuum runs completed.
+	AutoVacuumRuns int64
+
+	// AutoVacuumLastDurMs is the duration of the last autovacuum run in milliseconds.
+	AutoVacuumLastDurMs int64
+
+	// AutoVacuumDeletedBytes is the current deleted logical byte estimate
+	// waiting to be reclaimed by autovacuum.
+	AutoVacuumDeletedBytes int64
+
+	// AutoVacuumVLOGDeletedBytes is the portion of AutoVacuumDeletedBytes
+	// associated with obsolete VLOG value entries.
+	AutoVacuumVLOGDeletedBytes int64
+
+	// AutoVacuumLastErr is the last background autovacuum error, if any.
+	AutoVacuumLastErr string
 }
 
 func (z *Metrics) String() (r string) {
@@ -1570,6 +1670,16 @@ func (z *Metrics) String() (r string) {
 		r += fmt.Sprintf("\n   -------- piggyback GC --------  \n")
 		r += fmt.Sprintf("          PiggybackGCRuns: %v\n", formatInt64Under(z.PiggybackGCRuns))
 		r += fmt.Sprintf("     PiggybackGCLastDurMs: %v\n", z.PiggybackGCLastDurMs)
+	}
+	if z.AutoVacuumRuns > 0 || z.AutoVacuumDeletedBytes > 0 || z.AutoVacuumLastErr != "" {
+		r += fmt.Sprintf("\n   -------- auto vacuum --------  \n")
+		r += fmt.Sprintf("          AutoVacuumRuns: %v\n", formatInt64Under(z.AutoVacuumRuns))
+		r += fmt.Sprintf("     AutoVacuumLastDurMs: %v\n", z.AutoVacuumLastDurMs)
+		r += fmt.Sprintf("     AutoVacuumDeletedBy: %v\n", formatInt64Under(z.AutoVacuumDeletedBytes))
+		r += fmt.Sprintf(" AutoVacuumVLOGDeletedBy: %v\n", formatInt64Under(z.AutoVacuumVLOGDeletedBytes))
+		if z.AutoVacuumLastErr != "" {
+			r += fmt.Sprintf("       AutoVacuumLastErr: %v\n", z.AutoVacuumLastErr)
+		}
 	}
 	r += fmt.Sprintf("\n   -------- on disk big files summary --------  \n")
 
@@ -1618,6 +1728,7 @@ func (db *FlexDB) writeLockHeldSessionMetrics() *Metrics {
 
 	m.PiggybackGCRuns = db.piggyGCStats.TotalGCRuns
 	m.PiggybackGCLastDurMs = db.piggyGCStats.LastGCDuration.Milliseconds()
+	db.writeLockHeldAutoVacuumMetrics(m)
 
 	m.KVBlocksOnDiskFootprintBytes = mustStatFileSize(db.ff.fdKV128blocks)
 	m.VlogOnDiskFootprintBytes = mustStatFileSize(db.vlog.fd)
@@ -1696,6 +1807,7 @@ func (db *FlexDB) writeLockHeldFinalMetrics(kvFoot, vlogFoot int64) *Metrics {
 
 	m.PiggybackGCRuns = db.piggyGCStats.TotalGCRuns
 	m.PiggybackGCLastDurMs = db.piggyGCStats.LastGCDuration.Milliseconds()
+	db.writeLockHeldAutoVacuumMetrics(m)
 
 	m.KVBlocksOnDiskFootprintBytes = kvFoot
 	m.VlogOnDiskFootprintBytes = vlogFoot
@@ -1772,8 +1884,17 @@ func (db *FlexDB) CumulativeMetrics() *Metrics {
 
 	m.PiggybackGCRuns = db.piggyGCStats.TotalGCRuns
 	m.PiggybackGCLastDurMs = db.piggyGCStats.LastGCDuration.Milliseconds()
+	db.writeLockHeldAutoVacuumMetrics(m)
 
 	return m
+}
+
+func (db *FlexDB) writeLockHeldAutoVacuumMetrics(m *Metrics) {
+	m.AutoVacuumRuns = atomic.LoadInt64(&db.autoVacuumRuns)
+	m.AutoVacuumLastDurMs = atomic.LoadInt64(&db.autoVacuumLastDurMs)
+	m.AutoVacuumDeletedBytes = atomic.LoadInt64(&db.autoVacuumDeletedBytes)
+	m.AutoVacuumVLOGDeletedBytes = atomic.LoadInt64(&db.autoVacuumVLOGDeletedBytes)
+	m.AutoVacuumLastErr = db.autoVacuumLastErr
 }
 
 // resolveVPtr reads the value from the VLOG file for a KV that has HasVPtr() true.
@@ -1853,7 +1974,10 @@ func (z *VacuumVLOGStats) String() (r string) {
 func (db *FlexDB) VacuumVLOG() (*VacuumVLOGStats, error) {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
+	return db.vacuumVLOGLocked()
+}
 
+func (db *FlexDB) vacuumVLOGLocked() (*VacuumVLOGStats, error) {
 	if db.vlog == nil {
 		return nil, fmt.Errorf("flexdb: VLOG is disabled")
 	}
@@ -2048,7 +2172,10 @@ func (z *VacuumKVStats) String() (r string) {
 func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
+	return db.vacuumKVLocked()
+}
 
+func (db *FlexDB) vacuumKVLocked() (*VacuumKVStats, error) {
 	stats := &VacuumKVStats{}
 
 	// Flush memtable so all live data is in FlexSpace.
@@ -2121,15 +2248,25 @@ func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
 				return stats, fmt.Errorf("vacuumkv: read poff=%d len=%d: %w", poff, oldLen, readErr)
 			}
 
-			// Try to compact slotted pages by removing zero-padding.
+			// Compact slotted pages by removing tombstones and zero-padding.
 			writeBuf := buf
 			if slottedPageIsSlotted(buf) {
 				kvs, _, decErr := slottedPageDecode(buf)
 				if decErr == nil && len(kvs) > 0 {
-					tight := slottedPageEncode(kvs)
+					live := kvs[:0]
+					for _, kv := range kvs {
+						if !kv.isTombstone() {
+							live = append(live, kv)
+						}
+					}
+					if len(live) == 0 {
+						stats.PaddingReclaimed += int64(oldLen)
+						continue
+					}
+					tight := slottedPageEncode(live)
+					writeBuf = tight
 					if len(tight) < len(buf) {
 						stats.PaddingReclaimed += int64(len(buf) - len(tight))
-						writeBuf = tight
 					}
 				}
 			}
@@ -2646,9 +2783,12 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 // Users must call Sync after Puts for them to be durable.
 func (db *FlexDB) Sync() error {
 	db.topMutRW.Lock()
-	defer db.topMutRW.Unlock()
-
-	return db.writeLockHeldSync()
+	err := db.writeLockHeldSync()
+	db.topMutRW.Unlock()
+	if err == nil {
+		db.maybeScheduleAutoVacuum()
+	}
+	return err
 }
 
 // maybePiggybackGC runs GC if PiggybackGC_on_SyncOrFlush is enabled
@@ -2678,6 +2818,49 @@ func (db *FlexDB) maybePiggybackGC() {
 	db.piggyGCStats.LastGCDuration = time.Since(start)
 	db.piggyGCStats.TotalGCRuns++
 	//vv("piggyback GC done in %v. db.piggyGCStats.TotalGCRuns=%v", db.piggyGCStats.LastGCDuration, db.piggyGCStats.TotalGCRuns)
+}
+
+func (db *FlexDB) maybeScheduleAutoVacuum() {
+	if db.cfg.AutoVacuumPct <= 0 {
+		return
+	}
+	if atomic.LoadInt64(&db.autoVacuumDeletedBytes) < db.autoVacuumDeletedThresholdBytes() {
+		return
+	}
+	if atomic.LoadInt32(&db.autoVacuumRunning) != 0 {
+		return
+	}
+	select {
+	case db.autoVacuumTrigger <- struct{}{}:
+	default:
+	}
+}
+
+func (db *FlexDB) autoVacuumDeletedThresholdBytes() int64 {
+	kb := db.cfg.AutoVacuumDeletedAboveKB
+	if kb <= 0 {
+		kb = 100 * 1024
+	}
+	return kb * 1024
+}
+
+func (db *FlexDB) autoVacuumShouldRunLocked() bool {
+	if db.cfg.AutoVacuumPct <= 0 {
+		return false
+	}
+	deleted := atomic.LoadInt64(&db.autoVacuumDeletedBytes)
+	if deleted < db.autoVacuumDeletedThresholdBytes() {
+		return false
+	}
+	resident := mustStatFileSize(db.ff.fdKV128blocks)
+	if db.vlog != nil {
+		resident += db.vlog.size()
+	}
+	denom := resident + deleted
+	if denom <= 0 {
+		return false
+	}
+	return float64(deleted)/float64(denom) >= db.cfg.AutoVacuumPct
 }
 
 func (db *FlexDB) writeLockHeldSync() error {
@@ -2807,8 +2990,12 @@ func recoverIterIOErr(errp *error) {
 // requirements.
 func (db *FlexDB) Put(key string, value []byte, vtyp uint64) (HLC, error) {
 	db.topMutRW.Lock()
-	defer db.topMutRW.Unlock()
-	return db.writeLockHeldPutWithHook(nil, key, value, vtyp, false)
+	hlc, err := db.writeLockHeldPutWithHook(nil, key, value, vtyp, false)
+	db.topMutRW.Unlock()
+	if err == nil {
+		db.maybeScheduleAutoVacuum()
+	}
+	return hlc, err
 }
 
 func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string, value []byte, vtyp uint64, doDelete bool) (HLC, error) {
@@ -2912,11 +3099,20 @@ func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string,
 	old, replaced := db.mt.put(kv)
 	db.mt.empty = false
 	oldState := ksNotExists
+	oldKV := old
+	oldKVFound := replaced
 	if replaced {
 		oldState = kvToState(old)
 	} else {
-		oldState = db.writeLockHeldKeyState(key)
+		if db.ff.Size() != 0 {
+			var getErr error
+			oldKV, oldKVFound, getErr = db.getPassthroughKV(key)
+			if getErr == nil && oldKVFound {
+				oldState = kvToState(oldKV)
+			}
+		}
 	}
+	db.noteAutoVacuumObsoleteKV(oldKV, oldKVFound, kv)
 	db.adjustKeyCounters(oldState, newState)
 
 	return hlcVal, nil
@@ -3353,8 +3549,11 @@ func (db *FlexDB) someLockHeldGet(key string) (val []byte, found bool, vtyp uint
 // Delete removes key from the store.
 func (db *FlexDB) Delete(key string) error {
 	db.topMutRW.Lock()
-	defer db.topMutRW.Unlock()
 	_, err := db.writeLockHeldPutWithHook(nil, key, nil, 0, true)
+	db.topMutRW.Unlock()
+	if err == nil {
+		db.maybeScheduleAutoVacuum()
+	}
 	return err
 }
 
@@ -3383,8 +3582,12 @@ func (db *FlexDB) Delete(key string) error {
 // previously held iterators, cursors, and references are invalidated.
 func (db *FlexDB) DeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
 	db.topMutRW.Lock()
-	defer db.topMutRW.Unlock()
-	return db.writeLockHeldDeleteRange(includeLarge, begKey, endKey, begInclusive, endInclusive)
+	n, allGone, err = db.writeLockHeldDeleteRange(includeLarge, begKey, endKey, begInclusive, endInclusive)
+	db.topMutRW.Unlock()
+	if err == nil {
+		db.maybeScheduleAutoVacuum()
+	}
+	return n, allGone, err
 }
 
 // writeLockHeldDeleteRange is the lock-held body of DeleteRange.
@@ -3464,8 +3667,12 @@ func (db *FlexDB) writeLockHeldDeleteRangeWithHook(beforeWrite func() error, inc
 // duration of the call, serializing against all other operations.
 func (db *FlexDB) Clear(includeLarge bool) (allGone bool, err error) {
 	db.topMutRW.Lock()
-	defer db.topMutRW.Unlock()
-	return db.writeLockHeldClear(includeLarge)
+	allGone, err = db.writeLockHeldClear(includeLarge)
+	db.topMutRW.Unlock()
+	if err == nil {
+		db.maybeScheduleAutoVacuum()
+	}
+	return allGone, err
 }
 
 // writeLockHeldClear is the lock-held body of Clear.
@@ -3655,6 +3862,8 @@ func (db *FlexDB) writeLockHeldDeleteAll() error {
 	db.totalPhysicalBase = 0
 	atomic.StoreInt64(&db.LogicalBytesWritten, 0)
 	atomic.StoreInt64(&db.MemWALBytesWritten, 0)
+	atomic.StoreInt64(&db.autoVacuumDeletedBytes, 0)
+	atomic.StoreInt64(&db.autoVacuumVLOGDeletedBytes, 0)
 	db.liveKeys = 0
 	db.liveBigKeys = 0
 	db.liveSmallKeys = 0
@@ -4500,6 +4709,7 @@ func (db *FlexDB) rebuildAnchorsFromTags(panicOnFailure bool) {
 
 	ffSize := db.ff.Size()
 	if ffSize == 0 {
+		db.tree = memSparseIndexTreeCreate()
 		return
 	}
 
@@ -4826,6 +5036,65 @@ func (db *FlexDB) safeDoFlush() {
 	if err := db.doFlush(); err != nil {
 		panicf("flushWorker: doFlush: %v", err)
 	}
+	db.maybeScheduleAutoVacuum()
+}
+
+func (db *FlexDB) autoVacuumWorker() {
+	defer func() {
+		db.autoVacuumHalt.ReqStop.Close()
+		db.autoVacuumHalt.Done.Close()
+	}()
+
+	for {
+		select {
+		case <-db.autoVacuumHalt.ReqStop.Chan:
+			return
+		case <-db.autoVacuumTrigger:
+			db.safeDoAutoVacuum()
+		}
+	}
+}
+
+func (db *FlexDB) safeDoAutoVacuum() {
+	if !atomic.CompareAndSwapInt32(&db.autoVacuumRunning, 0, 1) {
+		return
+	}
+	defer atomic.StoreInt32(&db.autoVacuumRunning, 0)
+	if err := db.doAutoVacuum(); err != nil {
+		alwaysPrintf("autoVacuumWorker: %v", err)
+	}
+}
+
+func (db *FlexDB) doAutoVacuum() error {
+	start := time.Now()
+
+	db.topMutRW.Lock()
+	defer db.topMutRW.Unlock()
+
+	if db.closed || !db.autoVacuumShouldRunLocked() {
+		return nil
+	}
+
+	var err error
+	if atomic.LoadInt64(&db.autoVacuumVLOGDeletedBytes) > 0 && db.vlog != nil {
+		_, err = db.vacuumVLOGLocked()
+		if err != nil {
+			db.autoVacuumLastErr = err.Error()
+			return fmt.Errorf("autovacuum VacuumVLOG: %w", err)
+		}
+	}
+	_, err = db.vacuumKVLocked()
+	if err != nil {
+		db.autoVacuumLastErr = err.Error()
+		return fmt.Errorf("autovacuum VacuumKV: %w", err)
+	}
+
+	atomic.StoreInt64(&db.autoVacuumDeletedBytes, 0)
+	atomic.StoreInt64(&db.autoVacuumVLOGDeletedBytes, 0)
+	atomic.StoreInt64(&db.autoVacuumLastDurMs, time.Since(start).Milliseconds())
+	atomic.AddInt64(&db.autoVacuumRuns, 1)
+	db.autoVacuumLastErr = ""
+	return nil
 }
 
 // only called by the flushWorker goroutine.
