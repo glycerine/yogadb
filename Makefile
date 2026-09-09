@@ -23,3 +23,11 @@ fuzz:
 	go test -fuzz FuzzFlexSpace -fuzztime 30m -run=xxx -timeout 35m -tags memfs || true
 	go test -fuzz FuzzRecoveryFlexSpace -fuzztime 30m -run=xxx -timeout 35m -tags memfs || true
 	go test -fuzz FuzzFlexDBVtypRoundTrip -fuzztime 1m -run=xxx -timeout 1m -tags memfs || true
+
+rocks:
+	# benchmark versus RocksDB and CockroachDB/Pebble. Requires rocksdb source installed locally on linux.
+	# note that the benchmem allocations will be off for rocksdb since most are in opqaque C/C++.
+	CGO_ENABLED=1 go test -tags rocksdb -run '^$$' \
+	-bench 'Benchmark_LoadOnly_RocksDB|Benchmark_Iter_RocksDB_Ascend' \
+	-benchtime=10x -count=3 -benchmem
+
