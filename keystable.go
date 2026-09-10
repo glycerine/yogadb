@@ -13,7 +13,7 @@ import (
 // key i>0 is stored in s.keys[s.stable[i-1], s.stable[i]]
 type keyStable struct {
 	keys   []byte // arena with a copy of all keys, stacked end to end.
-	stable []int  // stable store, this never changes, is only appeneded to. says where to find the string
+	stable []int  // stable store, this never changes, is only appended to. says where to find the string
 	sorted []int  // sorted indexes of stable in ascending key order.
 	tomb   []int  // index in stable of all deleted keys
 }
@@ -43,14 +43,15 @@ func (s *keyStable) addKey(key []byte) (whereInStable int) {
 	if found {
 		return s.sorted[w]
 	}
-	// not present, add it
+	// not present, add it at the binary-search insertion point.
 	whereInStable = len(s.stable)
 	s.stable = append(s.stable, len(s.keys)+len(key))
-	s.sorted = append(s.sorted, whereInStable)
 	s.keys = append(s.keys, key...)
-	if whereInStable > 0 {
-		sort.Sort(s)
+	s.sorted = append(s.sorted, 0)
+	if w < len(s.sorted)-1 {
+		copy(s.sorted[w+1:], s.sorted[w:])
 	}
+	s.sorted[w] = whereInStable
 	return
 }
 
@@ -58,8 +59,8 @@ func (s *keyStable) Less(i, j int) bool {
 	if i == j {
 		return false
 	}
-	ib := s.at(i)
-	jb := s.at(j)
+	ib := s.at(s.sorted[i])
+	jb := s.at(s.sorted[j])
 	return bytes.Compare(ib, jb) < 0
 }
 
@@ -79,8 +80,8 @@ func (s *keyStable) Len() int {
 }
 
 func (s *keyStable) findKey(needle []byte) (where int, found bool) {
-	return sort.Find(len(s.stable), func(i int) int {
-		return bytes.Compare(needle, s.at(i))
+	return sort.Find(len(s.sorted), func(i int) int {
+		return bytes.Compare(needle, s.at(s.sorted[i]))
 	})
 }
 
@@ -90,8 +91,15 @@ func (s *keyStable) delKey(needle []byte) (found bool) {
 	if !found {
 		return
 	}
-	s.tomb = append(s.tomb, s.sorted[w])
-	sort.Sort((*stableTombType)(s))
+	deleted := s.sorted[w]
+	tw, _ := sort.Find(len(s.tomb), func(i int) int {
+		return bytes.Compare(s.at(deleted), s.at(s.tomb[i]))
+	})
+	s.tomb = append(s.tomb, 0)
+	if tw < len(s.tomb)-1 {
+		copy(s.tomb[tw+1:], s.tomb[tw:])
+	}
+	s.tomb[tw] = deleted
 
 	last := len(s.sorted) - 1
 	if w < last {
@@ -99,23 +107,4 @@ func (s *keyStable) delKey(needle []byte) (found bool) {
 	}
 	s.sorted = s.sorted[:last]
 	return
-}
-
-type stableTombType keyStable
-
-func (s *stableTombType) Less(i, j int) bool {
-	if i == j {
-		return false
-	}
-	ib := ((*keyStable)(s)).at(s.tomb[i])
-	jb := ((*keyStable)(s)).at(s.tomb[j])
-	return bytes.Compare(ib, jb) < 0
-}
-
-func (s *stableTombType) Swap(i, j int) {
-	s.tomb[i], s.tomb[j] = s.tomb[j], s.tomb[i]
-}
-
-func (s *stableTombType) Len() int {
-	return len(s.tomb)
 }
