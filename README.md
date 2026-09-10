@@ -315,9 +315,23 @@ there are two Config flags. See db.go:
 
 The trade-off for using AutoVacuumPct and AutoVacuumDeletedAboveKB is that
 when a vacuum occurs becomes data dependent. It is not under your full 
-control. Almost all operations will be fast, but some few writes will
-get blocked on a longer vacuum. You should expect to see this in
-your P999 write latency percentages if you take advantage of automatic vacuuming.
+control. Almost all operations will be fast, but some few reads and/or writes will
+get blocked on a vacuum. You should expect to see this in
+your P999 latency percentages if you take advantage of automatic vacuuming.
+Since we only allow a single writer at a time (vacuuming is a writer), and that writer blocks
+other readers to maintain linearizability, the vacuum process will block
+all reads and writes. 
+
+Automatic vacuuming is piggy-backed on the
+write that crosses the established threshold. We borrow the database sync.RWMutex from
+that last write, start the vacuuming in the background, and then 
+return to the writer (or deleter). So the write that we are piggy-backing
+on is not itself slow to return, but the next read or write will block until
+the vacuum finishes and releases the RMutex. We auto-vacuum both key space and VLOG space. To
+take finer grain conrol (maybe you only want to vacuum one of those spaces),
+use the manual vacuuming API calls instead. Call db.VacuumVLOG() and/or db.VacuumKV()
+when you wish. db.CommitGetMetrics() returns alot of metrics regarding
+the status of the database.
 
 # getting started
 
