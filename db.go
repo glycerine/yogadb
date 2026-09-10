@@ -87,11 +87,11 @@ const (
 // NewBatch returns an empty new Batch.
 //
 // Before AllowReads is called, the only supported data-loading operations are:
-// create a Batch, call Batch.Set (or SetBytes), and Commit it. db.Sync is also
-// allowed. On a newly-created empty database these batches use the optimized
-// initial bulk builder. On a database reopened with existing data, the same
-// pre-AllowReads batch API is safe but uses the normal ordered memtable path so
-// overlapping keys are handled correctly. Batch.Delete and the general-purpose
+// create a Batch, call Batch.Set, SetBytes, and/or Delete, and Commit it.
+// db.Sync is also allowed. On a newly-created empty database these batches use
+// the optimized initial bulk builder. On a database reopened with existing data,
+// the pre-AllowReads batch data is kept as a sorted reload run and merged into
+// the existing database when AllowReads or Sync is called. The general-purpose
 // DB/transaction write APIs require AllowReads first.
 func (db *FlexDB) NewBatch() (b *Batch) {
 	b = &Batch{
@@ -254,10 +254,10 @@ func (s *Batch) SetBytes(key []byte, value []byte, vtyp uint64) (err error) {
 	return nil
 }
 
-// Delete marks key for deletion in this batch. Batch deletes require
-// AllowReads; before AllowReads, only Batch.Set/SetBytes loading is supported.
+// Delete marks key for deletion in this batch. During the read-disabled load
+// phase before AllowReads, Batch.Delete is treated as a reload tombstone and is
+// merged with any existing database contents when AllowReads is called.
 func (s *Batch) Delete(key string) {
-	s.db.requireReadsAllowed()
 	if err := validateUserKey(key); err != nil {
 		if s.err == nil {
 			s.err = err
@@ -1272,15 +1272,19 @@ func (db *FlexDB) reconcileBulkInitialCountsLocked(m *memtable) {
 	m.bulk.dirty = false
 }
 
-func (db *FlexDB) materializeBulkInitialLocked() {
+func (db *FlexDB) materializeBulkInitialLocked() error {
+	if db.mt.bulk.count > 0 && db.ff.Size() > 0 {
+		return db.mergeReloadBulkLocked()
+	}
 	if db.mt.bulk.count > 0 && db.mt.bulk.dirty {
 		db.reconcileBulkInitialCountsLocked(&db.mt)
 	}
 	db.mt.materializeBulk()
+	return nil
 }
 
 func (db *FlexDB) bulkInitialFastPathEligibleLocked(m *memtable) bool {
-	return !db.allowReads.Load() && db.ff.Size() == 0 && m.bt.Len() == 0
+	return !db.allowReads.Load() && m.bt.Len() == 0
 }
 
 func (db *FlexDB) requireReadsAllowed() {
@@ -1343,10 +1347,11 @@ func (db *FlexDB) recomputeKeyCountsLocked() {
 // cacheMB is the cache capacity in megabytes.
 //
 // Every newly opened handle starts in a read-disabled load phase. During this
-// phase only Batch.Set(), Batch.SetBytes(), Batch.Commit(), and db.Sync() are
-// supported. The optimized bulk builder is used only when the database is empty;
-// if the directory already contains data, pre-AllowReads batches are still safe
-// but use the normal ordered memtable path so overlapping keys remain correct.
+// phase only Batch.Set(), Batch.SetBytes(), Batch.Delete(), Batch.Commit(), and
+// db.Sync() are supported. The optimized bulk builder is used when the database
+// is empty; if the directory already contains data, pre-AllowReads batches are
+// kept as a sorted reload run and merged into the existing database when
+// AllowReads or Sync is called.
 //
 // The user must call FlexDB.AllowReads() to end the load phase and enable
 // Get/Find, singleton Put/Delete, transactions, range deletes, Clear, Merge,
@@ -3136,8 +3141,8 @@ func recoverIterIOErr(errp *error) {
 // the rate of fsyncs and trade that against their durability
 // requirements.
 //
-// Put requires AllowReads. Before AllowReads, load initial data through
-// Batch.Set/SetBytes only.
+// Put requires AllowReads. Before AllowReads, load data through Batch.Set,
+// Batch.SetBytes, and Batch.Delete only.
 func (db *FlexDB) Put(key string, value []byte, vtyp uint64) (hlc HLC, err error) {
 	db.requireReadsAllowed()
 	db.topMutRW.Lock()
@@ -5309,6 +5314,9 @@ func (db *FlexDB) doFlush() (err error) {
 
 func (db *FlexDB) flushMemtable() error {
 	m := &db.mt
+	if !db.allowReads.Load() && m.bulk.count > 0 && db.ff.Size() > 0 {
+		return db.mergeReloadBulkLocked()
+	}
 	if ok, err := db.flushMemtableBulkInitial(m); ok || err != nil {
 		return err
 	}
@@ -5348,22 +5356,6 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 		!db.tree.root.isLeaf || db.tree.root.count != 1 ||
 		db.tree.root.anchors[0] == nil || db.tree.root.anchors[0].key != "" ||
 		db.tree.root.anchors[0].psize != 0 {
-		return false, nil
-	}
-
-	eligible := true
-	if m.bulk.count > 0 {
-		eligible = !m.bulk.hasTombstones
-	} else {
-		m.bt.Ascend(KV{}, func(item KV) bool {
-			if item.isTombstone() {
-				eligible = false
-				return false
-			}
-			return true
-		})
-	}
-	if !eligible {
 		return false, nil
 	}
 
@@ -5481,7 +5473,9 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 	var err error
 	consumeItem := func(item KV) bool {
 		itemSmallInlineZeroVtyp := allSmallInlineZeroVtyp
-		if !allSmallInlineZeroVtyp {
+		if item.isTombstone() {
+			itemSmallInlineZeroVtyp = false
+		} else if !allSmallInlineZeroVtyp {
 			if item.HasVPtr() {
 				flushedBig++
 			} else {
@@ -5830,18 +5824,20 @@ func syncDir(fs vfs.FS, path string) error {
 // general-purpose reads and writes. For an empty database, this keeps the
 // initial batch load fast by allowing the database to defer materializing its
 // bulk ingest representation. For a reopened non-empty database, pre-AllowReads
-// batches are accepted but use the normal ordered memtable path.
+// batches are kept as a sorted reload run and merged into the existing
+// FlexSpace at this transition.
 //
 // Before AllowReads, the only supported data-loading sequence is:
 //
 //	b := db.NewBatch()
 //	b.Set(key, value, vtyp) // or b.SetBytes(...)
+//	b.Delete(key)
 //	b.Commit(doFsync)
 //
 // Additional batches and db.Sync are also allowed before AllowReads. All reads,
-// transactions, single-key Put/Delete, DeleteRange, Clear, Merge, Batch.Delete,
-// vacuum, and integrity operations require AllowReads first and will panic if
-// used during the initial load phase.
+// transactions, single-key Put/Delete, DeleteRange, Clear, Merge, vacuum, and
+// integrity operations require AllowReads first and will panic if used during
+// the initial load phase.
 //
 // Idempotent. The second call is ignored.
 func (db *FlexDB) AllowReads() {
@@ -5857,6 +5853,8 @@ func (db *FlexDB) AllowReads() {
 	if db.allowReads.Load() {
 		return
 	}
-	db.materializeBulkInitialLocked()
+	if err := db.materializeBulkInitialLocked(); err != nil {
+		panicf("db.AllowReads(): %v", err)
+	}
 	db.allowReads.Store(true)
 }

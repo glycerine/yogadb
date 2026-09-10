@@ -225,7 +225,7 @@ func TestBatchSetBytesAllowedBeforeAllowReads(t *testing.T) {
 	}
 }
 
-func TestReopenedExistingDBBatchSetBeforeAllowReadsIsSafeNormalPath(t *testing.T) {
+func TestReopenedExistingDBBatchSetDeleteBeforeAllowReadsMergesAtAllowReads(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{
 		OmitMemWalFsync:        true,
@@ -278,22 +278,35 @@ func TestReopenedExistingDBBatchSetBeforeAllowReadsIsSafeNormalPath(t *testing.T
 	if err := b.Set("k002", []byte("new-2"), 0); err != nil {
 		t.Fatal(err)
 	}
+	b.Delete("k003")
+	b.Delete("k404")
 	if _, err := b.Commit(false); err != nil {
 		t.Fatal(err)
 	}
 	b.Close()
 
-	if db.mt.bulk.count != 0 {
-		t.Fatalf("reopened non-empty DB used empty-database bulk builder: bulk.count=%d", db.mt.bulk.count)
+	if db.mt.bulk.count != 4 {
+		t.Fatalf("reopened pre-AllowReads batch should use reload bulk builder: bulk.count=%d, want 4", db.mt.bulk.count)
 	}
-	if db.mt.bt.Len() != 2 {
-		t.Fatalf("reopened pre-AllowReads batch should use normal memtable path: bt.Len()=%d, want 2", db.mt.bt.Len())
+	if db.mt.bt.Len() != 0 {
+		t.Fatalf("reopened pre-AllowReads batch should not use normal memtable path: bt.Len()=%d, want 0", db.mt.bt.Len())
+	}
+
+	if err := db.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if db.allowReads.Load() {
+		t.Fatal("db.Sync before AllowReads should merge reload data but keep reads disabled")
+	}
+	if db.mt.bulk.count != 0 {
+		t.Fatalf("db.Sync before AllowReads should clear reload bulk after merge: bulk.count=%d", db.mt.bulk.count)
 	}
 
 	db.AllowReads()
 	mustGet(t, db, "k001", "new-1")
 	mustGet(t, db, "k002", "new-2")
-	mustGet(t, db, "k003", "old-3")
+	mustNotGet(t, db, "k003")
+	mustNotGet(t, db, "k404")
 
 	if err := db.Sync(); err != nil {
 		t.Fatal(err)
@@ -308,10 +321,11 @@ func TestReopenedExistingDBBatchSetBeforeAllowReadsIsSafeNormalPath(t *testing.T
 	db.AllowReads()
 	mustGet(t, db, "k001", "new-1")
 	mustGet(t, db, "k002", "new-2")
-	mustGet(t, db, "k003", "old-3")
+	mustNotGet(t, db, "k003")
+	mustNotGet(t, db, "k404")
 }
 
-func TestBatchDeleteBeforeAllowReadsPanics(t *testing.T) {
+func TestBatchDeleteBeforeAllowReadsAllowedForInitialLoad(t *testing.T) {
 	dir := t.TempDir()
 	db, err := OpenFlexDB(dir, &Config{OmitMemWalFsync: true})
 	if err != nil {
@@ -320,9 +334,15 @@ func TestBatchDeleteBeforeAllowReadsPanics(t *testing.T) {
 	defer db.Close()
 
 	b := db.NewBatch()
-	expectBeforeAllowReadsPanic(t, func() {
-		b.Delete("bulk-key")
-	})
+	b.Delete("bulk-key")
+	if _, err := b.Commit(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	db.AllowReads()
+	mustNotGet(t, db, "bulk-key")
 }
 
 func TestReadOnlyViewsCanOverlapAfterAllowReads(t *testing.T) {

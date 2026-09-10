@@ -761,8 +761,8 @@ func (roTx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, callback f
 // (topMutRW.Lock()) is held for the duration of fn, blocking all other
 // readers and writers including the flush worker.
 //
-// Update requires AllowReads. Before AllowReads, initial data must be loaded
-// with Batch.Set/SetBytes only.
+// Update requires AllowReads. Before AllowReads, data must be loaded with
+// Batch.Set, Batch.SetBytes, and Batch.Delete only.
 //
 // All iterators created within fn via rwDB.NewIter() or rwDB.FindIt()
 // are automatically closed when fn returns.

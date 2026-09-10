@@ -119,6 +119,18 @@ func mustGet(t *testing.T, db *FlexDB, key, wantValue string) {
 	}
 }
 
+func mustNotGet(t *testing.T, db *FlexDB, key string) {
+	t.Helper()
+	db.AllowReads()
+	val, ok, _, _, err := db.Get(key)
+	if err != nil {
+		t.Fatalf("Get(%q): %v", key, err)
+	}
+	if ok {
+		t.Fatalf("Get(%q) = %q, want not found", key, val)
+	}
+}
+
 func mustMiss(t *testing.T, db *FlexDB, key string) {
 	t.Helper()
 	db.AllowReads()
