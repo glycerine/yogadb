@@ -2,9 +2,12 @@ package yogadb
 
 import (
 	"bytes"
+	"os"
 	"slices"
 	"testing"
 	"time"
+
+	"runtime/pprof"
 )
 
 func generateBenchKeysNseed(n int, seed0 byte) [][]byte {
@@ -35,8 +38,8 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	panicOn(err)
 	defer db.Close()
 
-	N := 20_000 // less than 1 sec.
-	//N := 2_000_000 // about 2 minutes
+	//N := 20_000 // less than 1 sec.
+	N := 1_000_000 // about 2 minutes
 	keys := generateBenchKeysNseed(N, 0)
 	vals := make([][]byte, len(keys))
 	for i := range keys {
@@ -82,6 +85,17 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 		}
 	}
 
+	// --- START PROFILING ---
+	f, err := os.Create("cpu_afterbulk_new_writes.out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	if err := pprof.StartCPUProfile(f); err != nil {
+		t.Fatal(err)
+	}
+
 	t0 := time.Now()
 	batch = db.NewBatch()
 	for i, k := range keys2 {
@@ -94,6 +108,9 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 			batch = db.NewBatch()
 		}
 	}
+
+	pprof.StopCPUProfile()
+
 	_, metrics, err := batch.CommitGetMetrics(true)
 	insertElapsed := time.Since(t0)
 	panicOn(err)
@@ -166,8 +183,8 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 	panicOn(err)
 	defer db.Close()
 
-	N := 20_000
-	//N := 200_000 // 40 sec
+	//N := 20_000
+	N := 200_000 // 40 sec
 	//N := 10_000_000
 	keys := generateBenchKeysNseed(N, 0)
 	vals := make([][]byte, len(keys))
@@ -211,6 +228,17 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 		}
 	}
 
+	// --- START PROFILING ---
+	f, err := os.Create("cpu_afterbulk_replacement.out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	if err := pprof.StartCPUProfile(f); err != nil {
+		t.Fatal(err)
+	}
+
 	t0 := time.Now()
 	batch = db.NewBatch()
 
@@ -226,6 +254,9 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 			batch = db.NewBatch()
 		}
 	}
+
+	pprof.StopCPUProfile()
+
 	_, metrics, err := batch.CommitGetMetrics(true)
 	insertElapsed := time.Since(t0)
 	panicOn(err)
