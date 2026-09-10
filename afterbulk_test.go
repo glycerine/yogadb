@@ -37,7 +37,7 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 		vals[i] = make([]byte, 100)
 		n := 0
 		for range 5 {
-			n += copy(vals[i][:n], keys[i])
+			n += copy(vals[i][n:], keys[i])
 		}
 	}
 
@@ -64,27 +64,37 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 		vals2[i] = make([]byte, 100)
 		n := 0
 		for range 5 {
-			n += copy(vals2[i][:n], keys2[i])
+			n += copy(vals2[i][n:], keys2[i])
 		}
 	}
 
 	t0 := time.Now()
+	expectedVals := make(map[string][]byte, len(keys)+len(keys2))
+	expectedVtyps := make(map[string]uint64, len(keys)+len(keys2))
+	for i, k := range keys {
+		expectedVals[string(k)] = vals[i]
+		expectedVtyps[string(k)] = 0
+	}
 	batch = db.NewBatch()
 	for i, k := range keys2 {
-		batch.SetBytes(k, vals2[i], uint64(len(keys)+i+1))
+		vtyp := uint64(len(keys) + i + 1)
+		batch.SetBytes(k, vals2[i], vtyp)
+		expectedVals[string(k)] = vals2[i]
+		expectedVtyps[string(k)] = vtyp
 		if (i+1)%10000 == 0 {
 			batch.Commit(false)
 			batch = db.NewBatch()
 		}
 	}
 	_, metrics, err := batch.CommitGetMetrics(true)
-	insertElapsed := int64(time.Since(t0)) // nanosec elapsed
+	insertElapsed := time.Since(t0)
 	panicOn(err)
-	rate := float64(len(keys)) * float64(insertElapsed) / 1e9
+	rate := float64(len(keys2)) / insertElapsed.Seconds()
 
 	vv("after bulkload terminated with AllowReads: yogadb insert %v writes/sec\n%s\n", rate, metrics)
 
-	allkeys := append(keys, keys2...)
+	allkeys := append([][]byte{}, keys...)
+	allkeys = append(allkeys, keys2...)
 	slices.SortFunc(allkeys, bytes.Compare)
 	for i := range allkeys {
 		if i == 0 {
@@ -108,14 +118,15 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 			if string(allkeys[j]) != string(got) {
 				t.Fatalf("at j=%v, expected key '%v', got '%v'", j, string(allkeys[j]), string(got))
 			}
-			if vtyp < 1_000_000 {
-				if 0 != bytes.Compare(gotv, vals[vtyp]) {
-					t.Fatalf("at j=%v, expected value '%v', got '%v'", j, string(vals[vtyp]), gotv)
-				}
-			} else {
-				if 0 != bytes.Compare(gotv, vals2[vtyp-1]) {
-					t.Fatalf("at j=%v, expected value '%v', got '%v'", j, string(vals2[vtyp-1]), gotv)
-				}
+			wantv, ok := expectedVals[string(got)]
+			if !ok {
+				t.Fatalf("at j=%v, unexpected key '%v'", j, string(got))
+			}
+			if 0 != bytes.Compare(gotv, wantv) {
+				t.Fatalf("at j=%v, expected value '%v', got '%v'", j, string(wantv), gotv)
+			}
+			if wantVtyp := expectedVtyps[string(got)]; vtyp != wantVtyp {
+				t.Fatalf("at j=%v, key '%v' got vtyp %v, want %v", j, string(got), vtyp, wantVtyp)
 			}
 			j++
 			it.Next()

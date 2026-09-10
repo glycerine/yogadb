@@ -360,7 +360,11 @@ func (p *intervalCachePartition) flushDirtyEntry(fce *intervalCacheEntry) error 
 	return nil
 }
 
-// calibrate evicts entries until size <= cap. Caller holds p.mu.
+// calibrate evicts clean entries until size <= cap. Caller holds p.mu.
+// Dirty entries are flushed at explicit Sync/flush checkpoints, where the
+// caller recomputes sparse-index offsets in a controlled tree walk. Evicting a
+// dirty entry here can resize FlexSpace in the middle of a write operation whose
+// current anchor handler was computed before eviction.
 func (p *intervalCachePartition) calibrate() {
 	if p.size <= p.cap {
 		return
@@ -368,8 +372,8 @@ func (p *intervalCachePartition) calibrate() {
 	for p.size > p.cap && p.tick != nil {
 		victim := p.tick
 		start := victim // save starting point for full-circle detection
-		for atomic.LoadInt32(&victim.refcnt) > 0 || atomic.LoadInt32(&victim.access) > 0 {
-			if atomic.LoadInt32(&victim.refcnt) == 0 {
+		for victim.dirty || atomic.LoadInt32(&victim.refcnt) > 0 || atomic.LoadInt32(&victim.access) > 0 {
+			if !victim.dirty && atomic.LoadInt32(&victim.refcnt) == 0 {
 				atomic.AddInt32(&victim.access, -1)
 			}
 			victim = victim.next
@@ -378,7 +382,7 @@ func (p *intervalCachePartition) calibrate() {
 				break // full circle, give up
 			}
 		}
-		if atomic.LoadInt32(&victim.refcnt) > 0 {
+		if victim.dirty || atomic.LoadInt32(&victim.refcnt) > 0 || atomic.LoadInt32(&victim.access) > 0 {
 			break
 		}
 		freed := p.freeEntry(victim)
@@ -674,10 +678,10 @@ func (p *intervalCachePartition) cacheEntryDelete(fce *intervalCacheEntry, idx i
 
 func (c *intervalCache) destroyAll() {
 	for i := range c.partitions {
-			p := &c.partitions[i]
-			p.mu.Lock()
-			p.tick = nil // let GC clean up
-			p.size = 0
-			p.mu.Unlock()
-		}
+		p := &c.partitions[i]
+		p.mu.Lock()
+		p.tick = nil // let GC clean up
+		p.size = 0
+		p.mu.Unlock()
 	}
+}

@@ -694,14 +694,14 @@ func TestIntervalCache_CalibrateAccessChance(t *testing.T) {
 
 	sizeBefore := p.size
 	p.calibrate()
-	// With the fixed full-circle detection, calibrate should now properly
-	// decrement access counters and eventually evict
-	if p.size > p.cap && p.tick != nil {
-		// All remaining must have refcnt > 0
+	if p.size != sizeBefore {
+		t.Fatalf("first calibrate evicted entries with access chances: size %d -> %d", sizeBefore, p.size)
+	}
+	if p.tick != nil {
 		node := p.tick
 		for {
-			if node.refcnt == 0 {
-				t.Fatalf("unpinned entry with access decremented remains above cap")
+			if node.access != 1 {
+				t.Fatalf("access = %d, want 1 after first calibrate", node.access)
 			}
 			node = node.next
 			if node == p.tick {
@@ -709,7 +709,30 @@ func TestIntervalCache_CalibrateAccessChance(t *testing.T) {
 			}
 		}
 	}
-	_ = sizeBefore
+
+	p.calibrate()
+	if p.size > p.cap {
+		t.Fatalf("second calibrate size = %d, want <= cap %d after access chances are consumed", p.size, p.cap)
+	}
+}
+
+func TestIntervalCache_CalibrateDoesNotEvictDirty(t *testing.T) {
+	p := makePartition(50) // tiny cap
+
+	for i := 0; i < 3; i++ {
+		fce := makeCacheEntry([]KV{makeKV(fmt.Sprintf("k%d", i), "value", int64(i))})
+		fce.dirty = true
+		fce.access = 0
+		p.insertIntoClock(fce)
+		p.size += int64(32 + fce.size)
+	}
+
+	sizeBefore := p.size
+	p.calibrate()
+	if p.size != sizeBefore {
+		t.Fatalf("calibrate evicted dirty entries: size %d -> %d", sizeBefore, p.size)
+	}
+	checkClockListIntegrity(t, p, 3)
 }
 
 func TestIntervalCache_PartitionID(t *testing.T) {
