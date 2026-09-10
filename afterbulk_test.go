@@ -38,8 +38,7 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	panicOn(err)
 	defer db.Close()
 
-	//N := 20_000 // less than 1 sec.
-	N := 1_000_000 // about 2 minutes
+	N := 2_000_000
 	keys := generateBenchKeysNseed(N, 0)
 	vals := make([][]byte, len(keys))
 	for i := range keys {
@@ -110,15 +109,16 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 			batch = db.NewBatch()
 		}
 	}
-
+	batch.Commit(true)
 	pprof.StopCPUProfile()
 
-	_, metrics, err := batch.CommitGetMetrics(true)
+	//_, metrics, err := batch.CommitGetMetrics(true)
 	insertElapsed := time.Since(t0)
 	panicOn(err)
 	rate := float64(len(keys2)) / insertElapsed.Seconds()
 
-	vv("after bulkload terminated with AllowReads: yogadb insert %v writes/sec\n%s\n", rate, metrics)
+	//vv("after bulkload terminated with AllowReads: yogadb insert %v writes/sec\n%s\n", rate, metrics)
+	vv("after bulkload terminated with AllowReads: yogadb insert %v writes/sec\n", rate)
 
 	allkeys := append([][]byte{}, keys...)
 	allkeys = append(allkeys, keys2...)
@@ -186,7 +186,7 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 	defer db.Close()
 
 	//N := 20_000
-	N := 200_000 // 40 sec
+	N := 2_000_000
 	//N := 10_000_000
 	keys := generateBenchKeysNseed(N, 0)
 	vals := make([][]byte, len(keys))
@@ -256,15 +256,16 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 			batch = db.NewBatch()
 		}
 	}
-
+	batch.Commit(true)
 	pprof.StopCPUProfile()
 
-	_, metrics, err := batch.CommitGetMetrics(true)
+	//_, metrics, err := batch.CommitGetMetrics(true)
 	insertElapsed := time.Since(t0)
 	panicOn(err)
 	rate := float64(len(keys)) / insertElapsed.Seconds()
 
-	vv("after bulkload terminated with AllowReads: yogadb replacements: %v writes/sec\n%s\n", rate, metrics)
+	//vv("after bulkload terminated with AllowReads: yogadb replacements: %v writes/sec\n%s\n", rate, metrics)
+	vv("after bulkload terminated with AllowReads: yogadb replacements: %v writes/sec\n", rate)
 
 	allkeys := append([][]byte{}, keys...)
 	slices.SortFunc(allkeys, bytes.Compare)
