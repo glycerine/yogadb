@@ -290,9 +290,10 @@ x
 
 Use `ymerge_into [-ties-to-dest] <destination-db> <source-db>` to merge the source
 complete YogaDB database into the destination db from the command line. The destination is
-mutated. The highest HLC-timestamped record wins for overlapping keys. Keys with equal-HLC ties
-default to the source database, but the ymerge_into flag `-ties-to-dest` can reverse this default
-and keep the destination record instead when the identical key's HLC is also identical.
+mutated. The highest HLC-timestamped record wins for colliding keys. Equal keys with equal-HLC 
+default to the source database (the dest value is replaced by the source's value), but 
+the ymerge_into flag `-ties-to-dest` can reverse this default
+and keep the destination value instead when the colliding key's HLC is also identical.
 
 ## automatic vacuuming
 
