@@ -225,6 +225,92 @@ func TestBatchSetBytesAllowedBeforeAllowReads(t *testing.T) {
 	}
 }
 
+func TestReopenedExistingDBBatchSetBeforeAllowReadsIsSafeNormalPath(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{
+		OmitMemWalFsync:        true,
+		DisableBackgroundFlush: true,
+	}
+
+	db, err := OpenFlexDB(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := db.NewBatch()
+	for _, kv := range []struct {
+		key   string
+		value string
+	}{
+		{"k001", "old-1"},
+		{"k003", "old-3"},
+	} {
+		if err := b.Set(kv.key, []byte(kv.value), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := b.Commit(false); err != nil {
+		t.Fatal(err)
+	}
+	b.Close()
+	if db.mt.bulk.count == 0 {
+		t.Fatal("initial empty-database load did not use bulk builder")
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	db, err = OpenFlexDB(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db.allowReads.Load() {
+		t.Fatal("reopened handle unexpectedly allowed reads before AllowReads")
+	}
+	if db.ff.Size() == 0 {
+		t.Fatal("test setup expected existing FlexSpace data after reopen")
+	}
+
+	b = db.NewBatch()
+	if err := b.Set("k001", []byte("new-1"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Set("k002", []byte("new-2"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Commit(false); err != nil {
+		t.Fatal(err)
+	}
+	b.Close()
+
+	if db.mt.bulk.count != 0 {
+		t.Fatalf("reopened non-empty DB used empty-database bulk builder: bulk.count=%d", db.mt.bulk.count)
+	}
+	if db.mt.bt.Len() != 2 {
+		t.Fatalf("reopened pre-AllowReads batch should use normal memtable path: bt.Len()=%d, want 2", db.mt.bt.Len())
+	}
+
+	db.AllowReads()
+	mustGet(t, db, "k001", "new-1")
+	mustGet(t, db, "k002", "new-2")
+	mustGet(t, db, "k003", "old-3")
+
+	if err := db.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	db, err = OpenFlexDB(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.AllowReads()
+	mustGet(t, db, "k001", "new-1")
+	mustGet(t, db, "k002", "new-2")
+	mustGet(t, db, "k003", "old-3")
+}
+
 func TestBatchDeleteBeforeAllowReadsPanics(t *testing.T) {
 	dir := t.TempDir()
 	db, err := OpenFlexDB(dir, &Config{OmitMemWalFsync: true})

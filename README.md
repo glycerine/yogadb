@@ -269,6 +269,20 @@ The Extent Map (FlexSpace/FlexTree): The FlexTree maps those logical blocks to p
 * API notes: all Go API calls are goroutine safe. At most one writer at
 a time is enforced with a top-level sync.RWMutex.
 
+db, err := OpenFlexDB(...) opens or creates a FlexDB at the given directory path.
+
+Every opened handle starts in a read-disabled load phase where only
+Batch.Set(), Batch.SetBytes(), Batch.Commit(), and db.Sync() are supported.
+On an empty database these batches use the optimized initial bulk builder.
+On a database reopened with existing data, the same pre-AllowReads batch API is
+safe but uses the normal ordered memtable path so overlapping keys remain
+correct.
+
+The user must call db.AllowReads() to end the load phase and enable reading
+Get/Find, singleton Put/Delete, transactions, range deletes, Clear, Merge,
+vacuum, and integrity checks. Violations of this contract will panic
+immediately to teach the expected use pattern.
+
 # getting started
 
 go get github.com/glycerine/yogadb

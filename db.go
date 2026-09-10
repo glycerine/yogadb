@@ -87,8 +87,12 @@ const (
 // NewBatch returns an empty new Batch.
 //
 // Before AllowReads is called, the only supported data-loading operations are:
-// create a Batch, call Batch.Set (or SetBytes), and Commit it. Batch.Delete and
-// the general-purpose DB/transaction write APIs require AllowReads first.
+// create a Batch, call Batch.Set (or SetBytes), and Commit it. db.Sync is also
+// allowed. On a newly-created empty database these batches use the optimized
+// initial bulk builder. On a database reopened with existing data, the same
+// pre-AllowReads batch API is safe but uses the normal ordered memtable path so
+// overlapping keys are handled correctly. Batch.Delete and the general-purpose
+// DB/transaction write APIs require AllowReads first.
 func (db *FlexDB) NewBatch() (b *Batch) {
 	b = &Batch{
 		db:                 db,
@@ -129,8 +133,8 @@ func (s *Batch) materializeAliasKeys() {
 // original memory is safe to be re-used by the
 // caller immediately after Set returns.
 //
-// During the initial write-only load phase before AllowReads, Batch.Set is the
-// only supported data mutation, along with its byte-slice form SetBytes.
+// During the read-disabled load phase before AllowReads, Batch.Set is the only
+// supported data mutation, along with its byte-slice form SetBytes.
 func (s *Batch) Set(key string, value []byte, vtyp uint64) (err error) {
 	if err := validateUserKey(key); err != nil {
 		if s.err == nil {
@@ -175,7 +179,7 @@ func (s *Batch) Set(key string, value []byte, vtyp uint64) (err error) {
 }
 
 // SetBytes is the byte-slice form of Set. It is also allowed during the
-// initial write-only load phase before AllowReads.
+// read-disabled load phase before AllowReads.
 func (s *Batch) SetBytes(key []byte, value []byte, vtyp uint64) (err error) {
 	if len(key) == 0 {
 		err = ErrKeyEmpty
@@ -1281,7 +1285,7 @@ func (db *FlexDB) bulkInitialFastPathEligibleLocked(m *memtable) bool {
 
 func (db *FlexDB) requireReadsAllowed() {
 	if !db.allowReads.Load() {
-		panic("must call db.AllowReads() first. AllowReads() marks the end of an optimized, fast, initial write-only database load phase.")
+		panic("must call db.AllowReads() first. AllowReads() marks the end of the read-disabled load phase.")
 	}
 }
 
@@ -1338,14 +1342,16 @@ func (db *FlexDB) recomputeKeyCountsLocked() {
 // OpenFlexDB opens or creates a FlexDB at the given directory path.
 // cacheMB is the cache capacity in megabytes.
 //
-// A newly opened database starts in bulk-insert mode where only
-// Batch.Set() and Batch.SetBytes(), Batch.Commit() and db.Sync() calls
-// are allowed so that these writes can be fast.
+// Every newly opened handle starts in a read-disabled load phase. During this
+// phase only Batch.Set(), Batch.SetBytes(), Batch.Commit(), and db.Sync() are
+// supported. The optimized bulk builder is used only when the database is empty;
+// if the directory already contains data, pre-AllowReads batches are still safe
+// but use the normal ordered memtable path so overlapping keys remain correct.
 //
-// The user must call AllowReads() to terminate this initial bulk
-// loading phase and enable reading Get/Find and singleton Put()s on the database.
-// Violations of this contract will panic immediately to teach the expected
-// use pattern.
+// The user must call FlexDB.AllowReads() to end the load phase and enable
+// Get/Find, singleton Put/Delete, transactions, range deletes, Clear, Merge,
+// vacuum, and integrity checks. Violations of this contract panic immediately to
+// teach the expected use pattern.
 func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 
 	//fmt.Printf("rnd0 = '%v'\n rnd1 = '%v'\n", cryRand33B(), cryRand33B())
@@ -5820,15 +5826,17 @@ func syncDir(fs vfs.FS, path string) error {
 	return nil
 }
 
-// AllowReads transitions the database from its initial write-only load phase to
-// general-purpose reads and writes. This keeps the initial batch load fast by
-// allowing the database to defer materializing its bulk ingest representation.
+// AllowReads transitions the database from its read-disabled load phase to
+// general-purpose reads and writes. For an empty database, this keeps the
+// initial batch load fast by allowing the database to defer materializing its
+// bulk ingest representation. For a reopened non-empty database, pre-AllowReads
+// batches are accepted but use the normal ordered memtable path.
 //
 // Before AllowReads, the only supported data-loading sequence is:
 //
 //	b := db.NewBatch()
 //	b.Set(key, value, vtyp) // or b.SetBytes(...)
-//	b.Commit(false)
+//	b.Commit(doFsync)
 //
 // Additional batches and db.Sync are also allowed before AllowReads. All reads,
 // transactions, single-key Put/Delete, DeleteRange, Clear, Merge, Batch.Delete,
