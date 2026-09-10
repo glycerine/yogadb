@@ -31,7 +31,8 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	panicOn(err)
 	defer db.Close()
 
-	keys := generateBenchKeysNseed(1_000_000, 0)
+	N := 1_000_000
+	keys := generateBenchKeysNseed(N, 0)
 	vals := make([][]byte, len(keys))
 	for i := range keys {
 		vals[i] = make([]byte, 100)
@@ -41,10 +42,18 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 		}
 	}
 
+	expectedVals := make(map[string][]byte, N*2)
+	expectedVtyps := make(map[string]uint64, N*2)
+
 	// Insert first batch of keys, ignoring insert time.
 	batch := db.NewBatch()
 	for i, k := range keys {
-		batch.SetBytes(k, vals[i], 0)
+		vtyp := uint64(i)
+
+		expectedVals[string(k)] = vals[i]
+		expectedVtyps[string(k)] = vtyp
+
+		batch.SetBytes(k, vals[i], vtyp)
 		if (i+1)%10000 == 0 {
 			batch.Commit(false)
 			batch = db.NewBatch()
@@ -57,7 +66,7 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 
 	// what we care about is this second fresh batch.
 	// this is extremely unlikely to have any collisions with the first batch.
-	keys2 := generateBenchKeysNseed(1_000_000, 1)
+	keys2 := generateBenchKeysNseed(N, 1)
 
 	vals2 := make([][]byte, len(keys2))
 	for i := range keys2 {
@@ -69,15 +78,9 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	}
 
 	t0 := time.Now()
-	expectedVals := make(map[string][]byte, len(keys)+len(keys2))
-	expectedVtyps := make(map[string]uint64, len(keys)+len(keys2))
-	for i, k := range keys {
-		expectedVals[string(k)] = vals[i]
-		expectedVtyps[string(k)] = 0
-	}
 	batch = db.NewBatch()
 	for i, k := range keys2 {
-		vtyp := uint64(len(keys) + i + 1)
+		vtyp := uint64(N + i + 1)
 		batch.SetBytes(k, vals2[i], vtyp)
 		expectedVals[string(k)] = vals2[i]
 		expectedVtyps[string(k)] = vtyp
@@ -110,7 +113,10 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 		it := roDB.NewIter()
 		it.SeekFirst()
 		j := 0
-		for it.Valid() {
+		for j < len(allkeys) {
+			if !it.Valid() {
+				t.Fatalf("invalid it at only j=%v", j)
+			}
 			got := it.Key()
 			gotv, vtyp, _, err := it.FetchV()
 			panicOn(err)
@@ -128,10 +134,13 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 			if wantVtyp := expectedVtyps[string(got)]; vtyp != wantVtyp {
 				t.Fatalf("at j=%v, key '%v' got vtyp %v, want %v", j, string(got), vtyp, wantVtyp)
 			}
-			j++
 			it.Next()
+			j++
 		}
-		it.Close()
+		if it.Valid() {
+			t.Fatalf("iterator should be invalid after %v", len(allkeys))
+		}
+		//it.Close()
 		if j == len(allkeys) {
 			vv("good: verified all %v keys", j)
 		} else {
