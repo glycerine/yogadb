@@ -215,7 +215,7 @@ func parallelFillBatch(db *yogadb.FlexDB, nKeys int64, nThreads int, klen, vlen 
 
 // printHeader prints a header for benchmark output.
 func printHeader(benchName string, cf *CommonFlags) {
-	fmt.Printf("=== %s === dataset=%s klen=%d vlen=%d threads=%d count=%d dist=%s\n",
+	fmt.Printf("=== %s === dataset=%s klen=%d vlen=%d threads=%d count=%d gb=%g dist=%s\n",
 		benchName, cf.Profile.Name, cf.Profile.KeyLen, cf.Profile.ValLen,
-		cf.Threads, cf.Count, cf.Dist)
+		cf.Threads, cf.Count, cf.GB, cf.Dist)
 }

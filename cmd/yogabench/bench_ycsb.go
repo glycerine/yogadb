@@ -62,7 +62,7 @@ func runYCSBBench(args []string) {
 		workloads = []YCSBWorkload{w}
 	}
 
-	fmt.Printf("=== YCSB === dataset=%s\n", p.Name)
+	printHeader("YCSB", cf)
 
 	db, err := openDB(cf.Dir, cf)
 	if err != nil {
@@ -73,6 +73,10 @@ func runYCSBBench(args []string) {
 	// Fill
 	fmt.Println("--- Fill ---")
 	parallelFill(db, cf.Count, cf.Threads, p.KeyLen, p.ValLen)
+	if err := db.Sync(); err != nil {
+		fmt.Fprintf(os.Stderr, "sync after fill: %v\n", err)
+		os.Exit(1)
+	}
 	db.AllowReads()
 
 	// Run each workload

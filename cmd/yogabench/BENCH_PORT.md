@@ -241,6 +241,7 @@ new: cd cmd/yogabench; go install; go build
 | `-dir` | `/tmp/yogabench` | Database directory (on disk) |
 | `-threads` | `NumCPU` | Goroutine count |
 | `-count` | from dataset | Override operation/fill count |
+| `-gb` | `500` | Scale the dataset's default count to a nominal size in GB; ignored when `-count` is set |
 | `-nodisk` | false | Run in-memory (no disk I/O) |
 | `-dist` | `zipf` | Distribution: `seq`, `zipf`, `czipf` |
 | `-duration` | `60s` | Duration for timed benchmark phases |

@@ -353,6 +353,8 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	for i := range s.puts {
 		s.puts[i].Hlc = curHLC
 	}
+	mt := &db.mt
+	useBulkInitial := db.bulkInitialFastPathEligibleLocked(mt)
 
 	// Write large values to VLOG with a single batch fsync. The WAL then
 	// stores VPtrs (not full values), so large values are written exactly once.
@@ -369,7 +371,11 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 				largeIndices = append(largeIndices, i)
 				largeValues = append(largeValues, kv.Value)
 				largeHLCs = append(largeHLCs, kv.Hlc)
-				oldVPs = append(oldVPs, db.lookupOldVPtr(kv.Key))
+				if useBulkInitial {
+					oldVPs = append(oldVPs, db.lookupOldFlexSpaceVPtr(kv.Key))
+				} else {
+					oldVPs = append(oldVPs, db.lookupOldVPtr(kv.Key))
+				}
 			}
 		}
 		if len(largeValues) > 0 {
@@ -415,11 +421,8 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	// batch WAL writes under a single mt.memWalMut hold.
 	// This amortizes both mutex acquisitions across the entire batch.
 
-	mt := &db.mt
-
 	mt.memWalMut.Lock()
 	defer mt.memWalMut.Unlock()
-	useBulkInitial := db.bulkInitialFastPathEligibleLocked(mt)
 	batchWalAppended := false
 	if useBulkInitial {
 		if len(s.puts) == 0 && len(s.aliasKeys) > 0 {
@@ -1210,6 +1213,23 @@ func (db *FlexDB) lookupOldVPtr(key string) VPtr {
 		return VPtr{}
 	}
 	// Check FlexSpace (loads interval cache if needed).
+	if db.ff.Size() == 0 {
+		return VPtr{}
+	}
+	kv, ok, _ := db.getPassthroughKV(key)
+	if ok && kv.HasVPtr() {
+		return kv.Vptr
+	}
+	return VPtr{}
+}
+
+// lookupOldFlexSpaceVPtr searches only the already-materialized FlexSpace.
+// Pre-AllowReads batch ingest keeps new writes in an append-only bulk builder;
+// asking that builder for old VPtrs forces a large transient index and defeats
+// the load path. During pristine initial bulk loads there is no old FlexSpace
+// value anyway, and during reload/merge loads this still permits dedup against
+// the previously materialized database.
+func (db *FlexDB) lookupOldFlexSpaceVPtr(key string) VPtr {
 	if db.ff.Size() == 0 {
 		return VPtr{}
 	}

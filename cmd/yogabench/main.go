@@ -16,6 +16,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -79,6 +80,7 @@ Common flags:
   -dir         Database directory (default: /tmp/yogabench)
   -threads     Number of goroutines (default: %d)
   -count       Override operation count (default: from dataset)
+  -gb          Nominal dataset size in GB (default: 500; ignored when -count is set)
   -nodisk      Run in-memory only (no disk I/O)
 `, runtime.NumCPU())
 }
@@ -88,8 +90,10 @@ type DatasetProfile struct {
 	Name    string
 	KeyLen  int
 	ValLen  int
-	FillOps int64 // default fill count
+	FillOps int64 // default fill count for defaultDatasetGB
 }
+
+const defaultDatasetGB = 500.0
 
 var datasets = map[string]DatasetProfile{
 	"udb":     {Name: "udb", KeyLen: 27, ValLen: 127, FillOps: 420_000_000},
@@ -103,6 +107,7 @@ type CommonFlags struct {
 	Dir         string
 	Threads     int
 	Count       int64
+	GB          float64
 	NoDisk      bool
 	Dist        string
 	Profile     DatasetProfile
@@ -118,6 +123,7 @@ func parseCommonFlags(args []string) (*CommonFlags, *flag.FlagSet) {
 	fs.StringVar(&cf.Dir, "dir", filepath.Join(os.TempDir(), "yogabench"), "Database directory")
 	fs.IntVar(&cf.Threads, "threads", runtime.NumCPU(), "Goroutine count")
 	fs.Int64Var(&cf.Count, "count", 0, "Override operation count (0 = use dataset default)")
+	fs.Float64Var(&cf.GB, "gb", defaultDatasetGB, "Nominal dataset size in GB (ignored when -count is set)")
 	fs.BoolVar(&cf.NoDisk, "nodisk", false, "Run in-memory (no disk)")
 	fs.StringVar(&cf.Dist, "dist", "zipf", "Distribution: seq, zipf, czipf")
 	fs.Uint64Var(&cf.CacheMB, "cache", 32, "Cache size in MB")
@@ -130,16 +136,25 @@ func parseCommonFlags(args []string) (*CommonFlags, *flag.FlagSet) {
 	fs.StringVar(&op, "op", "set", "Operation: set or get (latency benchmark)")
 	fs.StringVar(&workload, "workload", "ALL", "YCSB workload: A-F or ALL")
 	fs.StringVar(&threadList, "thread-list", "", "Comma-separated thread counts (scale benchmarks)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
 
 	p, ok := datasets[cf.Dataset]
 	if !ok {
 		fmt.Fprintf(os.Stderr, "unknown dataset: %s\n", cf.Dataset)
 		os.Exit(1)
 	}
+	if cf.GB <= 0 {
+		fmt.Fprintf(os.Stderr, "-gb must be > 0, got %g\n", cf.GB)
+		os.Exit(1)
+	}
 	cf.Profile = p
 	if cf.Count == 0 {
-		cf.Count = p.FillOps
+		cf.Count = int64(math.Ceil(float64(p.FillOps) * cf.GB / defaultDatasetGB))
+		if cf.Count < 1 {
+			cf.Count = 1
+		}
 	}
 	return cf, fs
 }
