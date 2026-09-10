@@ -105,6 +105,31 @@ func TestValueLogAppendRejectsShortWriteAt(t *testing.T) {
 	}
 }
 
+func TestValueLogCloseThenReopenIsSafe(t *testing.T) {
+	fs := vfs.NewMem()
+	dir := "/db"
+	path := filepath.Join(dir, "LARGE.VLOG")
+	if err := fs.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	vl, err := openValueLog(path, fs)
+	if err != nil {
+		t.Fatalf("openValueLog: %v", err)
+	}
+	if _, err := vl.close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if err := vl.reopen(path); err != nil {
+		t.Fatalf("reopen after close: %v", err)
+	}
+	if vl.fd == nil || isNil(vl.fd) {
+		t.Fatalf("reopen left valueLog with nil fd")
+	}
+	if _, err := vl.close(); err != nil {
+		t.Fatalf("final close: %v", err)
+	}
+}
+
 func TestValueLogReadRejectsShortReadAtCount(t *testing.T) {
 	fs, dir := newTestFS(t)
 	vl, err := openValueLog(filepath.Join(dir, "LARGE.VLOG"), fs)

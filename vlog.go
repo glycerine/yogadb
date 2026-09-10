@@ -400,8 +400,20 @@ func (vl *valueLog) syncFile() error {
 
 // close closes the VLOG file.
 func (vl *valueLog) close() (onDiskFootprintBytes int64, err error) {
+	vl.mu.Lock()
+	defer vl.mu.Unlock()
+	return vl.closeLocked()
+}
+
+func (vl *valueLog) closeLocked() (onDiskFootprintBytes int64, err error) {
+	if vl.fd == nil || isNil(vl.fd) {
+		return vl.tail, nil
+	}
 	onDiskFootprintBytes = mustStatFileSize(vl.fd)
 	err = vl.fd.Close()
+	if err == nil {
+		vl.fd = nil
+	}
 	return
 }
 
@@ -415,7 +427,9 @@ func (vl *valueLog) size() int64 {
 func (vl *valueLog) reopen(path string) error {
 	vl.mu.Lock()
 	defer vl.mu.Unlock()
-	vl.fd.Close()
+	if _, err := vl.closeLocked(); err != nil {
+		return err
+	}
 	//fd, err := vl.vfs.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
 	fd, err := vl.vfs.OpenReadWrite(path, vfs.WriteCategoryUnspecified)
 
