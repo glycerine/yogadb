@@ -59,6 +59,7 @@ func TestLoadBloat_SpaceAmplification(t *testing.T) {
 	}
 	batch.Close()
 	db.Sync()
+	db.AllowReads()
 
 	m := db.SessionMetrics()
 	sz := mustDirSize(fs, dir)

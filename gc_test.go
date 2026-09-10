@@ -599,6 +599,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	}
 
 	// Verify correctness.
+	db.AllowReads()
 	for i, k := range keys {
 		expected := fmt.Sprintf("val-round%d-%06d-padding-data-here", rounds, i)
 		got, ok, _, _, gerr := db.Get(k)
@@ -684,6 +685,7 @@ func TestGC_PartialOverwrite_NoBlockGrowth(t *testing.T) {
 
 	// Verify correctness: first half has latest round's value,
 	// second half still has round 1's value.
+	db.AllowReads()
 	for i, k := range keys {
 		var expected string
 		if i < nKeys/2 {
@@ -737,6 +739,7 @@ func TestGC_ReplaceWithLargerValue_Splits(t *testing.T) {
 	db.Sync()
 
 	// Verify the large value was stored correctly.
+	db.AllowReads()
 	got, ok, _, _, gerr := db.Get("key000100")
 	panicOn(gerr)
 	if !ok {
@@ -996,6 +999,7 @@ func TestGC_CrossSession_DiskGrowth(t *testing.T) {
 		if err != nil {
 			t.Fatalf("verify open: %v", err)
 		}
+		db.AllowReads()
 		for i, k := range keys {
 			expected := fmt.Sprintf("val-session%d-%06d-padding-data", sessions-1, i)
 			got, ok, _, _, gerr := db.Get(k)
@@ -1104,6 +1108,7 @@ func TestGC_CrossSession_BlockReuse(t *testing.T) {
 			usageAfterWrite, blocksAfterWrite, writeBlkAfterWrite)
 
 		// Verify data.
+		db.AllowReads()
 		for i := 0; i < nKeys; i++ {
 			k := fmt.Sprintf("key%06d", i)
 			expected := fmt.Sprintf("val-session%d-%06d-data-padding", s, i)
@@ -1179,6 +1184,7 @@ func TestGC_CrossSession_ManyReopens_SameDataset(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		db.AllowReads()
 		for i := 0; i < nKeys; i++ {
 			got, ok, _, _, gerr := db.Get(string(keys[i]))
 			panicOn(gerr)
@@ -1505,6 +1511,7 @@ func TestPiggybackGC_ReclaimsSpace(t *testing.T) {
 	}
 
 	// Deleted keys should be gone.
+	db.AllowReads()
 	for i := 0; i < nKeys/2; i++ {
 		k := fmt.Sprintf("key%06d", i)
 		_, ok, _, _, gerr := db.Get(k)
@@ -1555,6 +1562,7 @@ func Test_GC1K_write_1k_keys_with_large_values(t *testing.T) {
 	//met.BlocksWithLowUtilization was 5
 
 	// sanity
+	db.AllowReads()
 	v2, found2, _, _, gerr := db.Get(keys[0])
 	panicOn(gerr)
 	if !found2 {

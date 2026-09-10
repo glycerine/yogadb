@@ -56,6 +56,7 @@ func main() {
 	}
 	db, err := yogadb.OpenFlexDB(dbPath, cfg)
 	panicOn(err)
+	db.AllowReads()
 
 	if cmdCfg.StatsOnly {
 		errs := db.CheckIntegrity()

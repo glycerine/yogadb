@@ -155,6 +155,7 @@ func main() {
 	// needed? Yes, if Commit(false) above! one fdatasync at the end:
 	//vv("load_yogadb about to call db.Sync()")
 	db.Sync()
+	db.AllowReads()
 	//vv("load_yogadb back from db.Sync()")
 
 	if false {
@@ -180,6 +181,7 @@ func main() {
 }
 
 func justShowAll(db *yogadb.FlexDB, dbPath string) {
+	db.AllowReads()
 	saw := 0
 	buf := make([]byte, 0, 4<<20)
 	db.View(func(roDB *yogadb.ReadOnlyTx) error {

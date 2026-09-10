@@ -78,6 +78,7 @@ func TestTxPutReturnsMemWALBeginErrorBeforeApplyingWrite(t *testing.T) {
 	if _, ok := db.mt.get("wal-fail"); ok {
 		t.Fatal("failed transaction write was applied to memtable")
 	}
+	db.AllowReads()
 	if value, found, _, _, err := db.Get("wal-fail"); err != nil || found {
 		t.Fatalf("Get after failed WAL begin = (%q, %v, %v), want not found with nil error", value, found, err)
 	}

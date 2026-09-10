@@ -26,6 +26,7 @@ func TestCheckIntegrityReportsMissingAnchorTag(t *testing.T) {
 		t.Fatalf("clear anchor tag: %v", err)
 	}
 
+	db.AllowReads()
 	errs := db.CheckIntegrity()
 	restoreErr := db.ff.SetTag(0, flexdbTagGenerate(true, 0))
 	db.Close()

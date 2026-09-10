@@ -171,6 +171,7 @@ func crashAndRecover(t *testing.T, fs *vfs.MemFS, dir string, cfg *Config) (*Fle
 // syncedKVs maps key -> expected value. A nil value means the key was deleted.
 func verifyDurability(t *testing.T, db *FlexDB, syncedKVs map[string]string) {
 	t.Helper()
+	db.AllowReads()
 	for k, want := range syncedKVs {
 		got, found, _, _, gerr := db.Get(k)
 		panicOn(gerr)
@@ -193,6 +194,7 @@ func verifyDurability(t *testing.T, db *FlexDB, syncedKVs map[string]string) {
 // actually in the synced set (no fabricated data).
 func verifyNoPhantomKeys(t *testing.T, db *FlexDB, syncedKVs map[string]string) {
 	t.Helper()
+	db.AllowReads()
 	// Check a set of keys that should NOT be present.
 	// We can't do a full scan (no Scan API yet), so we probe
 	// a range of plausible keys.
@@ -356,6 +358,7 @@ func TestRecovery_LogRedoReplays20ByteGreenMEMWALBatchCommit(t *testing.T) {
 		t.Fatalf("OpenFlexDB after crash: %v", err)
 	}
 	defer db2.Close()
+	db2.AllowReads()
 
 	got, found, _, _, err := db2.Get("wal-small")
 	if err != nil {
@@ -437,6 +440,7 @@ func TestRecovery_LogRedoReplaysMaxKeyBoundaryRecords(t *testing.T) {
 		t.Fatalf("OpenFlexDB after crash: %v", err)
 	}
 	defer db2.Close()
+	db2.AllowReads()
 
 	for _, tc := range cases {
 		got, found, _, _, err := db2.Get(tc.key)
@@ -500,6 +504,7 @@ func TestRecovery_LogRedoAllowsTornTailButReportsCorruptCompleteRecord(t *testin
 			t.Fatalf("OpenFlexDB with torn WAL tail: %v", err)
 		}
 		defer db.Close()
+		db.AllowReads()
 
 		got, found, _, _, err := db.Get("good")
 		if err != nil {
@@ -558,6 +563,7 @@ func TestRecovery_LogRedoGreenMEMWALTransactionAtomicity(t *testing.T) {
 			t.Fatalf("OpenFlexDB with committed transaction: %v", err)
 		}
 		defer db.Close()
+		db.AllowReads()
 
 		for _, tc := range []struct {
 			key  string
@@ -597,6 +603,7 @@ func TestRecovery_LogRedoGreenMEMWALTransactionAtomicity(t *testing.T) {
 			t.Fatalf("OpenFlexDB with incomplete transaction: %v", err)
 		}
 		defer db.Close()
+		db.AllowReads()
 
 		got, found, _, _, err := db.Get("standalone")
 		if err != nil {
@@ -653,6 +660,7 @@ func TestRecovery_WriteTxUpdateUsesGreenMEMWALCommitMarkers(t *testing.T) {
 		t.Fatalf("OpenFlexDB after WAL-only crash clone: %v", err)
 	}
 	defer db2.Close()
+	db2.AllowReads()
 
 	for _, tc := range []struct {
 		key  string
@@ -708,6 +716,7 @@ func TestRecovery_BackgroundFlushPersistsDirtyCacheBeforeWALReset(t *testing.T) 
 		t.Fatalf("OpenFlexDB after manual background flush: %v", err)
 	}
 	defer db2.Close()
+	db2.AllowReads()
 
 	got, found, _, _, err := db2.Get("k")
 	if err != nil {
@@ -808,6 +817,7 @@ func TestRecovery_DeleteDurability(t *testing.T) {
 
 	db2, _ := crashAndRecover(t, fs, dir, nil)
 	defer db2.Close()
+	db2.AllowReads()
 
 	// "delme" should not be found.
 	if _, found, _, _, gerr := db2.Get("delme"); gerr != nil {
@@ -847,6 +857,7 @@ func TestRecovery_ProgressAfterRecovery(t *testing.T) {
 	// New operations after recovery should work.
 	_, err = db2.Put("after", []byte("recovery"), 0)
 	panicOn(err)
+	db2.AllowReads()
 	v, found, _, _, gerr := db2.Get("after")
 	panicOn(gerr)
 	if !found || string(v) != "recovery" {
@@ -944,6 +955,7 @@ func TestRecovery_KeyCountConsistency(t *testing.T) {
 
 	db2, _ := crashAndRecover(t, fs, dir, nil)
 	defer db2.Close()
+	db2.AllowReads()
 
 	reportedLen := db2.Len()
 
@@ -995,6 +1007,7 @@ func TestRecovery_UnsyncedDataLoss(t *testing.T) {
 
 	db2, _ := crashAndRecover(t, fs, dir, nil)
 	defer db2.Close()
+	db2.AllowReads()
 
 	// Synced data must survive.
 	v, found, _, _, gerr := db2.Get("synced_key")
@@ -1041,6 +1054,7 @@ func TestRecovery_LinearizabilitySingleKey(t *testing.T) {
 
 	// clientId 0 = writer, clientId 1..numReaders = readers
 	writerClient := 0
+	db.AllowReads()
 
 	// ---- Phase 1: pre-crash operations ----
 	for step := 0; step < preCrashSteps; step++ {
@@ -1094,6 +1108,7 @@ func TestRecovery_LinearizabilitySingleKey(t *testing.T) {
 	// ---- Crash and recover ----
 	db2, _ := crashAndRecover(t, fs, dir, nil)
 	defer db2.Close()
+	db2.AllowReads()
 
 	// The last synced value.
 	lastVal := fmt.Sprintf("v%d", preCrashSteps-1)
@@ -1214,6 +1229,7 @@ func TestRecovery_LinearizabilityMultiKey(t *testing.T) {
 	}
 
 	// ---- Phase 1: pre-crash ----
+	db.AllowReads()
 	for step := 0; step < preCrashSteps; step++ {
 		var wg sync.WaitGroup
 		for c := 0; c < numClients; c++ {
@@ -1266,6 +1282,7 @@ func TestRecovery_LinearizabilityMultiKey(t *testing.T) {
 	// ---- Crash and recover ----
 	db2, _ := crashAndRecover(t, fs, dir, nil)
 	defer db2.Close()
+	db2.AllowReads()
 
 	// After recovery, verify all keys have valid values by reading them.
 	// These reads extend the Porcupine history.
@@ -1426,6 +1443,7 @@ func TestRecovery_RepeatedCrashCycles(t *testing.T) {
 		if err != nil {
 			t.Fatalf("cycle %d: OpenFlexDB failed: %v", cycle, err)
 		}
+		db.AllowReads()
 
 		// Read all keys after recovery (extends history).
 		for _, key := range keys {
@@ -1612,6 +1630,7 @@ func (kt *keyTracker) promoteAllToSet() {
 // validate checks the recovered DB against tracked key states.
 func (kt *keyTracker) validate(t *testing.T, db *FlexDB) {
 	t.Helper()
+	db.AllowReads()
 	kt.mu.Lock()
 	defer kt.mu.Unlock()
 

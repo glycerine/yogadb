@@ -402,7 +402,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 
 	mt.memWalMut.Lock()
 	defer mt.memWalMut.Unlock()
-	useBulkInitial := db.bulkInitialBatchLoad && db.ff.Size() == 0
+	useBulkInitial := db.bulkInitialFastPathEligibleLocked(mt)
 	batchWalAppended := false
 	if useBulkInitial {
 		if len(s.puts) == 0 && len(s.aliasKeys) > 0 {
@@ -1055,13 +1055,11 @@ type FlexDB struct {
 
 	topMutRW sync.RWMutex
 
-	mt       memtable // single memtable (was dual; see commit history)
-	flushSeq uint64   // incremented on each memtable flush (inline or background)
-	// The bulk initial flush is only enabled for pristine batch loads. Direct
-	// Put workloads can interleave with Sync/recovery patterns that still need
-	// the conservative point-insert flush path.
-	bulkInitialBatchLoad bool
-	dirSyncNeeded        bool
+	allowReads atomic.Bool
+
+	mt            memtable // single memtable (was dual; see commit history)
+	flushSeq      uint64   // incremented on each memtable flush (inline or background)
+	dirSyncNeeded bool
 
 	// flush worker
 	flushTrigger chan struct{}
@@ -1209,12 +1207,10 @@ func (db *FlexDB) lookupOldVPtr(key string) VPtr {
 // O(1) - reads a pre-maintained counter.
 // Goroutine safe.
 func (db *FlexDB) Len() int64 {
-	db.topMutRW.Lock()
-	if db.bulkInitialBatchLoad && db.mt.bulk.count > 0 && db.mt.bulk.dirty {
-		db.reconcileBulkInitialCountsLocked(&db.mt)
-	}
+	db.requireReadsAllowed()
+	db.topMutRW.RLock()
 	v := db.liveKeys
-	db.topMutRW.Unlock()
+	db.topMutRW.RUnlock()
 	return v
 }
 
@@ -1224,13 +1220,11 @@ func (db *FlexDB) Len() int64 {
 // O(1) - reads pre-maintained counters.
 // Goroutine safe.
 func (db *FlexDB) LenBigSmall() (big int64, small int64) {
-	db.topMutRW.Lock()
-	if db.bulkInitialBatchLoad && db.mt.bulk.count > 0 && db.mt.bulk.dirty {
-		db.reconcileBulkInitialCountsLocked(&db.mt)
-	}
+	db.requireReadsAllowed()
+	db.topMutRW.RLock()
 	big = db.liveBigKeys
 	small = db.liveSmallKeys
-	db.topMutRW.Unlock()
+	db.topMutRW.RUnlock()
 	return
 }
 
@@ -1264,10 +1258,20 @@ func (db *FlexDB) reconcileBulkInitialCountsLocked(m *memtable) {
 }
 
 func (db *FlexDB) materializeBulkInitialLocked() {
-	if db.bulkInitialBatchLoad && db.mt.bulk.count > 0 && db.mt.bulk.dirty {
+	if db.mt.bulk.count > 0 && db.mt.bulk.dirty {
 		db.reconcileBulkInitialCountsLocked(&db.mt)
 	}
 	db.mt.materializeBulk()
+}
+
+func (db *FlexDB) bulkInitialFastPathEligibleLocked(m *memtable) bool {
+	return !db.allowReads.Load() && db.ff.Size() == 0 && m.bt.Len() == 0
+}
+
+func (db *FlexDB) requireReadsAllowed() {
+	if !db.allowReads.Load() {
+		panic("must call db.AllowReads() first. AllowReads() marks the end of an optimized, fast, initial write-only database load phase.")
+	}
 }
 
 // recomputeKeyCountsLocked walks all FlexSpace intervals via the sparse index
@@ -1406,17 +1410,16 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	}
 
 	db := &FlexDB{
-		cfg:                  cfg,
-		Path:                 path,
-		vfs:                  fs,
-		ff:                   ff,
-		vlog:                 vl,
-		cache:                newCache(nil, cfg.CacheMB),
-		kvbuf1:               make([]byte, 0, MaxKeySize),
-		itvbuf:               make([]byte, 0, flexdbSparseIntervalSize+MaxKeySize),
-		flushTrigger:         make(chan struct{}, 1),
-		flushHalt:            idem.NewHalterNamed("flushWorker-orig"),
-		bulkInitialBatchLoad: true,
+		cfg:          cfg,
+		Path:         path,
+		vfs:          fs,
+		ff:           ff,
+		vlog:         vl,
+		cache:        newCache(nil, cfg.CacheMB),
+		kvbuf1:       make([]byte, 0, MaxKeySize),
+		itvbuf:       make([]byte, 0, flexdbSparseIntervalSize+MaxKeySize),
+		flushTrigger: make(chan struct{}, 1),
+		flushHalt:    idem.NewHalterNamed("flushWorker-orig"),
 	}
 	db.cache.db = db
 	for i := range db.cache.partitions {
@@ -1934,6 +1937,7 @@ func (db *FlexDB) FetchLarge(kv *KV) (val []byte, vtyp uint64, hlc HLC, err erro
 	if kv == nil {
 		return nil, 0, 0, fmt.Errorf("flexdb: FetchLarge called with nil KV")
 	}
+	db.requireReadsAllowed()
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
 	return db.resolveVPtr(*kv)
@@ -2608,6 +2612,7 @@ func (db *FlexDB) extraAnchorTagsInInterval(anchorLoff uint64, psize uint64) []u
 //
 // Returns nil if no errors found.
 func (db *FlexDB) CheckIntegrity() []IntegrityError {
+	db.requireReadsAllowed()
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 
@@ -3116,7 +3121,6 @@ func (db *FlexDB) Put(key string, value []byte, vtyp uint64) (hlc HLC, err error
 
 func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string, value []byte, vtyp uint64, doDelete bool) (HLC, error) {
 	db.materializeBulkInitialLocked()
-	db.bulkInitialBatchLoad = false
 	if doDelete && len(value) > 0 {
 		return 0, fmt.Errorf("flexdb API use error: cannot supply a value and also delete it's key, this is a contradiction. Do not set a value on delete of a key: '%v'.", key)
 	}
@@ -3376,7 +3380,6 @@ func findBuildKV(it *Iter) *KV {
 //	  kvc.Close() // unpin from internal caches. Allows zero-copy reads.
 //	}
 //
-// The returned iterator is a locked iterator (holds the exclusive
 // Find looks up the first key matching the SearchModifier and returns
 // an owned copy of the KV (safe to retain indefinitely). For scanning
 // beyond the found key, use Find inside a View or Update transaction.
@@ -3391,9 +3394,9 @@ func findBuildKV(it *Iter) *KV {
 // However it is always fine to do the Close() even then, as
 // kvc.Close() is a no-op if kvc is nil.
 func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error) {
-	db.topMutRW.Lock()
-	db.materializeBulkInitialLocked()
-	defer db.topMutRW.Unlock()
+	db.requireReadsAllowed()
+	db.topMutRW.RLock()
+	defer db.topMutRW.RUnlock()
 	defer recoverIterIOErr(&err)
 
 	it := &Iter{db: db}
@@ -3604,6 +3607,7 @@ func (db *FlexDB) GetKV(key string) (kv *KVcloser, err error) {
 // immediately. This is tested at, for example, gc_test.go
 // Test_GC1K_write_1k_keys_with_large_values.
 func (db *FlexDB) Get(key string) (value []byte, found bool, vtyp uint64, hlc HLC, err error) {
+	db.requireReadsAllowed()
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
 	defer recoverIterIOErr(&err)
@@ -5299,7 +5303,7 @@ func (db *FlexDB) flushMemtable() error {
 }
 
 func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
-	if !db.bulkInitialBatchLoad || db.ff.Size() != 0 || db.tree == nil || db.tree.root != db.tree.leafHead ||
+	if !db.bulkInitialFastPathEligibleLocked(m) || db.tree == nil || db.tree.root != db.tree.leafHead ||
 		!db.tree.root.isLeaf || db.tree.root.count != 1 ||
 		db.tree.root.anchors[0] == nil || db.tree.root.anchors[0].key != "" ||
 		db.tree.root.anchors[0].psize != 0 {
@@ -5742,7 +5746,6 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 	db.liveBigKeys = flushedBig
 	db.liveSmallKeys = flushedSmall
 	db.liveKeys = flushedBig + flushedSmall
-	db.bulkInitialBatchLoad = false
 	m.bulk.reset()
 	return true, nil
 }
@@ -5780,4 +5783,31 @@ func syncDir(fs vfs.FS, path string) error {
 		path = parent
 	}
 	return nil
+}
+
+// AllowReads transitions the database from its "first load write-only mode" to
+// general purpose reads and writes allowed. This way we can optimize the
+// initial bulk/batch load of the database that is all writes and need not
+// serve reads and thus can exploit fast path write optimizations.
+//
+// Users must call db.AllowReads() at least once before doing any Get
+// or other read operation on the db.
+// Otherwise reads will panic to remind the user of the required use pattern.
+//
+// Idempotent. The second call is ignored.
+func (db *FlexDB) AllowReads() {
+	if db.allowReads.Load() {
+		// already done
+		return
+	}
+
+	// must grab write lock because materializeBulkInitialLocked() needs it.
+	db.topMutRW.Lock()
+	defer db.topMutRW.Unlock()
+
+	if db.allowReads.Load() {
+		return
+	}
+	db.materializeBulkInitialLocked()
+	db.allowReads.Store(true)
 }

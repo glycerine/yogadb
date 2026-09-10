@@ -240,6 +240,7 @@ func batchLoadAndReadOut(fs vfs.FS, t *testing.T, db *FlexDB, dataPath string) e
 		}
 	}
 	db.Sync()
+	db.AllowReads()
 
 	//vv("lines = %v; duplicates = %v; unique seen = %v", lines, duplicates, len(verify))
 

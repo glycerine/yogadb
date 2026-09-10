@@ -51,6 +51,7 @@ func Benchmark_Iter_YogaDB_Ascend(b *testing.B) {
 	}
 	batch.Commit(false)
 	db.Sync()
+	db.AllowReads()
 	insertElapsed := time.Since(t0)
 
 	slices.SortFunc(keys, bytes.Compare)
@@ -105,11 +106,12 @@ func Benchmark_Iter_YogaDB_Descend(b *testing.B) {
 	}
 	batch.Commit(false)
 	db.Sync()
+	db.AllowReads()
+	insertElapsed := time.Since(t0)
 
 	slices.SortFunc(keys, bytes.Compare)
 	slices.Reverse(keys) // compare to Descending
 
-	insertElapsed := time.Since(t0)
 	b.ReportMetric(float64(insertElapsed.Nanoseconds())/float64(len(keys)), "insert_ns/key")
 	vv("yogadb insert %v", insertElapsed)
 
@@ -201,6 +203,7 @@ func Benchmark_LoadOnly_YogaDB(b *testing.B) {
 		_, err = batch.Commit(false)
 		panicOn(err)
 		panicOn(db.Sync())
+		db.AllowReads()
 		b.StopTimer()
 		db.Close()
 		b.StartTimer()

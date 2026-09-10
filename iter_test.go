@@ -662,6 +662,7 @@ func TestFlexDB_HLC_Persistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db2.Close()
+	db2.AllowReads()
 
 	val, ok, _, _, gerr := db2.Get("pk1")
 	panicOn(gerr)
@@ -698,6 +699,7 @@ func TestFlexDB_HLC_VLOGRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db2.Close()
+	db2.AllowReads()
 
 	val, ok, _, _, gerr := db2.Get("bigkey")
 	panicOn(gerr)
@@ -712,6 +714,7 @@ func TestFlexDB_HLC_VLOGRoundTrip(t *testing.T) {
 // mustCheckIntegrity runs CheckIntegrity and fails the test if any errors are found.
 func mustCheckIntegrity(t *testing.T, db *FlexDB) {
 	t.Helper()
+	db.AllowReads()
 	errs := db.CheckIntegrity()
 	if len(errs) > 0 {
 		for _, e := range errs {
@@ -893,6 +896,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 			stats.OldFileSize, stats.NewFileSize, stats.BytesReclaimed, stats.ExtentsRewritten)
 
 		// Verify data after vacuum.
+		db.AllowReads()
 		for i := 0; i < nKeys; i++ {
 			key := fmt.Sprintf("k%06d", i)
 			expected := fmt.Sprintf("v%06d", i)
@@ -924,6 +928,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 			stats.OldFileSize, stats.NewFileSize, stats.BytesReclaimed, stats.ExtentsRewritten)
 
 		// Verify data after second vacuum.
+		db.AllowReads()
 		for i := 0; i < nKeys; i++ {
 			key := fmt.Sprintf("k%06d", i)
 			expected := fmt.Sprintf("v%06d", i)

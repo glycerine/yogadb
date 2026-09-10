@@ -37,9 +37,11 @@ func main() {
 	}
 	dbA, err := yogadb.OpenFlexDB(dbPathA, cfg)
 	panicOn(err)
+	dbA.AllowReads()
 
 	dbB, err := yogadb.OpenFlexDB(dbPathB, cfg)
 	panicOn(err)
+	dbB.AllowReads()
 
 	t0 := time.Now()
 	_ = t0

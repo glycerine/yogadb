@@ -756,8 +756,8 @@ func (roTx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, callback f
 // discard this transaction's memtable changes. If fn returns nil, Update calls
 // Commit. If fn returns an error, Update calls Rollback and returns the error.
 //
-// Do NOT call db.Put/db.Get/db.Delete/db.Sync inside fn - use rwDB
-// methods instead (to avoid deadlock).
+// Do NOT call db.Put/db.Get/db.Delete/db.Sync inside fn - use rw
+// methods on the WriteTx instead (to avoid deadlock).
 func (db *FlexDB) Update(fn func(rw *WriteTx) error) (err error) {
 	db.topMutRW.Lock()
 	tx, err := db.beginWriteTxLocked(true)
@@ -825,12 +825,12 @@ func (db *FlexDB) beginWriteTxLocked(managedByUpdate bool) (*WriteTx, error) {
 //
 // Do NOT call db.Get inside fn - use roDB methods instead (deadlock).
 func (db *FlexDB) View(fn func(ro *ReadOnlyTx) error) (err error) {
-	db.topMutRW.Lock()
-	db.materializeBulkInitialLocked()
+	db.requireReadsAllowed()
+	db.topMutRW.RLock()
 	tx := &ReadOnlyTx{txBase{db: db}}
 	defer func() {
 		tx.closeAll()
-		db.topMutRW.Unlock()
+		db.topMutRW.RUnlock()
 	}()
 	defer recoverIterIOErr(&err)
 	return fn(tx)
@@ -847,9 +847,7 @@ func (db *FlexDB) BeginUpdate() (*WriteTx, error) {
 }
 
 func (db *FlexDB) BeginView() *ReadOnlyTx {
-	db.topMutRW.Lock()
-	db.materializeBulkInitialLocked()
-	db.topMutRW.Unlock()
+	db.requireReadsAllowed()
 	db.topMutRW.RLock()
 	return &ReadOnlyTx{txBase{db: db}}
 }

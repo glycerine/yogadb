@@ -73,6 +73,7 @@ func runYCSBBench(args []string) {
 	// Fill
 	fmt.Println("--- Fill ---")
 	parallelFill(db, cf.Count, cf.Threads, p.KeyLen, p.ValLen)
+	db.AllowReads()
 
 	// Run each workload
 	for _, w := range workloads {

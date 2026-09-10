@@ -37,6 +37,7 @@ func runScanBench(args []string) {
 	// Fill
 	fmt.Println("--- Fill ---")
 	parallelFill(db, cf.Count, fillThreads, p.KeyLen, p.ValLen)
+	db.AllowReads()
 
 	// Scan with varying lengths
 	scanLens := []int{10, 20, 50, 100}

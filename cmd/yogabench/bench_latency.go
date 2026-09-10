@@ -41,6 +41,7 @@ func runLatencyBench(args []string) {
 		// Fill first, then measure get latency
 		fmt.Println("--- Fill ---")
 		parallelFill(db, cf.Count, cf.Threads, p.KeyLen, p.ValLen)
+		db.AllowReads()
 		fmt.Println("--- Get Latency ---")
 		runLatencyGet(db, cf, p, maxKey)
 	default:

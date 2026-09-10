@@ -43,6 +43,7 @@ func Test016_linz(t *testing.T) {
 	}
 	db, err := OpenFlexDB(dbPath, cfg)
 	panicOn(err)
+	db.AllowReads()
 
 	fin := make(map[string]bool)
 	var finmut sync.Mutex

@@ -55,6 +55,7 @@ func runReadBench(args []string) {
 		}
 		return success
 	}, db)
+	db.AllowReads()
 
 	// Phase 3: Zipfian point reads (timed, 60s)
 	fmt.Println("--- Phase 3: Zipfian Point Read ---")

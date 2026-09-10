@@ -331,12 +331,12 @@ func bmInit(bm *blockManager, tree *FlexTree, fd ...vfs.File) {
 		bm.blkid = bestBlk
 		bm.blkoff = blkHighWater[bestBlk]
 		bm.flushedOff = blkHighWater[bestBlk]
-			// Load existing data into the write buffer so that bm.read()
-			// and bm.flush() work correctly for the partial block.
-			if len(fd) > 0 && fd[0] != nil {
-				blkStart := int64(bestBlk << FLEXSPACE_BLOCK_BITS)
-				panicOn(readAtFull(fd[0], bm.buf[:bm.blkoff], blkStart, "flexspace block manager init"))
-			}
+		// Load existing data into the write buffer so that bm.read()
+		// and bm.flush() work correctly for the partial block.
+		if len(fd) > 0 && fd[0] != nil {
+			blkStart := int64(bestBlk << FLEXSPACE_BLOCK_BITS)
+			panicOn(readAtFull(fd[0], bm.buf[:bm.blkoff], blkStart, "flexspace block manager init"))
+		}
 	} else {
 		// isGC=true to avoid recursive GC call during initialization
 		bm.blkid = bm.findEmptyBlock(maxBlkid, true)
@@ -400,9 +400,7 @@ type FlexSpace struct {
 	bm            *blockManager
 	gc            gcCtx
 
-	// Sequential IO cache (replaces C thread-local seqio_fp/seqio_epoch)
-	seqioPos    Pos
-	seqioEpoch  uint64
+	// globalEpoch invalidates per-reader sequential IO cursors.
 	globalEpoch uint64
 
 	omitRedoLog bool // when true, skip redo log writes and SyncCoW on every Sync
@@ -416,6 +414,11 @@ type FlexSpace struct {
 	updateGarbageBytes int64
 	insertCount        int64
 	insertBytes        int64
+}
+
+type flexSpaceReadCursor struct {
+	pos   Pos
+	epoch uint64
 }
 
 // ======================== Log helpers ========================
@@ -476,9 +479,9 @@ func (ff *FlexSpace) logRedo() {
 
 	for {
 		off := int64(uint64(flexLogVersionSize) + i*uint64(flexLogEntrySize))
-			if err := readAtFull(ff.redoLogFD, entryBuf, off, "flexspace redo log"); err != nil {
-				break
-			}
+		if err := readAtFull(ff.redoLogFD, entryBuf, off, "flexspace redo log"); err != nil {
+			break
+		}
 		op, p1, p2, p3, ok := decodeLogEntry(entryBuf)
 		if !ok {
 			break // CRC32C mismatch - stop replay
@@ -596,12 +599,12 @@ func OpenFlexSpaceCoW(path string, omitRedoLog bool, fs vfs.FS) (*FlexSpace, err
 			tree.CloseCoW()
 			return nil, fmt.Errorf("flexspace: stat FLEXSPACE.REDO.LOG: %w", err)
 		}
-			if logStat.Size() > flexLogVersionSize {
-				var versionBuf [12]byte
-				if err := readAtFull(redoLogFD, versionBuf[:], 0, "flexspace redo log version"); err == nil {
-					logVersion := binary.LittleEndian.Uint64(versionBuf[:8])
-					logCRC := binary.LittleEndian.Uint32(versionBuf[8:12])
-					if logCRC == crc32.Checksum(versionBuf[:8], crc32cTable) && logVersion == tree.PersistentVersion {
+		if logStat.Size() > flexLogVersionSize {
+			var versionBuf [12]byte
+			if err := readAtFull(redoLogFD, versionBuf[:], 0, "flexspace redo log version"); err == nil {
+				logVersion := binary.LittleEndian.Uint64(versionBuf[:8])
+				logCRC := binary.LittleEndian.Uint32(versionBuf[8:12])
+				if logCRC == crc32.Checksum(versionBuf[:8], crc32cTable) && logVersion == tree.PersistentVersion {
 					ff.logRedo()
 				}
 			}
@@ -628,7 +631,6 @@ func OpenFlexSpaceCoW(path string, omitRedoLog bool, fs vfs.FS) (*FlexSpace, err
 	ff.gc.writeBetweenStages = false
 
 	ff.globalEpoch = 1
-	ff.seqioEpoch = 0
 
 	return ff, nil
 }
@@ -744,28 +746,34 @@ func (ff *FlexSpace) Size() uint64 {
 // Read reads len bytes from loff into buf.
 // Returns bytes read or -1 on error.
 func (ff *FlexSpace) Read(buf []byte, loff, length uint64) (int, error) {
-	return ff.readR(buf, loff, length, nil)
+	var cursor flexSpaceReadCursor
+	return ff.readR(buf, loff, length, nil, &cursor)
 }
 
 // ReadFragmentation reads and also returns the number of physical extents (frag).
 func (ff *FlexSpace) ReadFragmentation(buf []byte, loff, length uint64) (int, uint64, error) {
 	var frag uint64
-	n, err := ff.readR(buf, loff, length, &frag)
+	var cursor flexSpaceReadCursor
+	n, err := ff.readR(buf, loff, length, &frag, &cursor)
 	return n, frag, err
 }
 
-func (ff *FlexSpace) readR(buf []byte, loff, length uint64, frag *uint64) (int, error) {
+func (ff *FlexSpace) readR(buf []byte, loff, length uint64, frag *uint64, cursor *flexSpaceReadCursor) (int, error) {
 	if loff+length > ff.tree.MaxLoff {
 		return -1, fmt.Errorf("flexspace: read out of range loff=%d len=%d maxloff=%d", loff, length, ff.tree.MaxLoff)
 	}
 
 	// Sequential IO cache: reuse pos if epoch matches and loff matches
 	var fp *Pos
-	if ff.globalEpoch != ff.seqioEpoch || loff != ff.seqioPos.GetLoff() {
-		ff.seqioEpoch = ff.globalEpoch
-		ff.seqioPos = ff.tree.PosGet(loff)
+	if cursor == nil {
+		var local flexSpaceReadCursor
+		cursor = &local
 	}
-	fp = &ff.seqioPos
+	if ff.globalEpoch != cursor.epoch || loff != cursor.pos.GetLoff() {
+		cursor.epoch = ff.globalEpoch
+		cursor.pos = ff.tree.PosGet(loff)
+	}
+	fp = &cursor.pos
 
 	if !fp.Valid() {
 		return -1, fmt.Errorf("flexspace: read at loff=%d: no extent (maxloff=%d)", loff, ff.tree.MaxLoff)
@@ -787,13 +795,13 @@ func (ff *FlexSpace) readR(buf []byte, loff, length uint64, frag *uint64) (int, 
 		poff := ext.Address() + uint64(fp.Diff)
 
 		// Try in-memory buffer first, then disk
-			r := ff.bm.read(b, poff, slen)
-			if r == 0 {
-				if err := readAtFull(ff.fdKV128blocks, b[:slen], int64(poff), "flexspace pread"); err != nil {
-					return -1, err
-				}
-				r = slen
+		r := ff.bm.read(b, poff, slen)
+		if r == 0 {
+			if err := readAtFull(ff.fdKV128blocks, b[:slen], int64(poff), "flexspace pread"); err != nil {
+				return -1, err
 			}
+			r = slen
+		}
 		fp.Forward(slen)
 		b = b[slen:]
 		tlen -= slen
@@ -1049,18 +1057,18 @@ func (ff *FlexSpace) Overwrite(buf []byte, loff uint64, length uint64) error {
 			blkoff := poff & (FLEXSPACE_BLOCK_SIZE - 1)
 			copy(ff.bm.buf[blkoff:], b[:slen])
 			// If we're modifying the already-flushed region of the current
-				// block, we must also write to disk since flush() only writes
-				// buf[flushedOff:blkoff] (the new data appended after flushedOff).
-				if blkoff < ff.bm.flushedOff {
-					if err := writeAtFull(ff.fdKV128blocks, b[:slen], int64(poff), "flexspace overwrite"); err != nil {
-						return err
-					}
-				}
-			} else {
+			// block, we must also write to disk since flush() only writes
+			// buf[flushedOff:blkoff] (the new data appended after flushedOff).
+			if blkoff < ff.bm.flushedOff {
 				if err := writeAtFull(ff.fdKV128blocks, b[:slen], int64(poff), "flexspace overwrite"); err != nil {
 					return err
 				}
 			}
+		} else {
+			if err := writeAtFull(ff.fdKV128blocks, b[:slen], int64(poff), "flexspace overwrite"); err != nil {
+				return err
+			}
+		}
 		atomic.AddInt64(&ff.KV128BytesWritten, int64(slen))
 		fp.Forward(slen)
 		b = b[slen:]
@@ -1149,12 +1157,12 @@ func (fh *FlexSpaceHandler) Read(buf []byte, length uint64) (int, error) {
 		poff := ext.Address() + uint64(tfh.fp.Diff)
 		ff := tfh.file
 
-			r := ff.bm.read(b, poff, slen)
-			if r == 0 {
-				if err := readAtFull(ff.fdKV128blocks, b[:slen], int64(poff), "flexspace handler pread"); err != nil {
-					return -1, err
-				}
+		r := ff.bm.read(b, poff, slen)
+		if r == 0 {
+			if err := readAtFull(ff.fdKV128blocks, b[:slen], int64(poff), "flexspace handler pread"); err != nil {
+				return -1, err
 			}
+		}
 		b = b[slen:]
 		tlen -= slen
 		tfh.fp.Forward(slen)
@@ -1321,10 +1329,10 @@ func (ff *FlexSpace) gcAsyncPrepare(bitmap []bool) {
 
 		// Read the data now (before we move it)
 		buf := make([]byte, length)
-			r := ff.bm.read(buf, poff, uint64(length))
-			if r == 0 {
-				panicOn(readAtFull(ff.fdKV128blocks, buf, int64(poff), "flexspace gc read"))
-			}
+		r := ff.bm.read(buf, poff, uint64(length))
+		if r == 0 {
+			panicOn(readAtFull(ff.fdKV128blocks, buf, int64(poff), "flexspace gc read"))
+		}
 		ff.gc.queue[idx].buf = buf
 
 		if ff.gc.count >= FLEXSPACE_GC_QUEUE_DEPTH {

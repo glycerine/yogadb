@@ -96,6 +96,7 @@ func runScaleReadBench(args []string) {
 		}
 		return success
 	}, db)
+	db.AllowReads()
 
 	// Point read scalability
 	for _, nt := range threads {

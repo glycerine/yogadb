@@ -313,6 +313,7 @@ func TestFindIt_IteratorContinuation(t *testing.T) {
 // TestFind_EmptyDB tests Find on an empty database.
 func TestFind_EmptyDB(t *testing.T) {
 	db, _ := openTestDB(t, nil)
+	db.AllowReads()
 
 	for _, smod := range []SearchModifier{Exact, GTE, GT, LTE, LT} {
 		kvc, _, err := db.Find(smod, "anything")
@@ -432,6 +433,7 @@ func TestFind_LazyLarge(t *testing.T) {
 	_, err := db.Put("bigkey", bigVal, 0)
 	panicOn(err)
 	db.Sync()
+	db.AllowReads()
 
 	// Without LAZY_LARGE: value auto-fetched
 	kvc, _, err := db.Find(Exact, "bigkey")
@@ -477,6 +479,7 @@ func TestFind_LazySmall(t *testing.T) {
 		panicOn(err)
 	}
 	db.Sync()
+	db.AllowReads()
 
 	// LAZY_SMALL: zero-copy inline value
 	kvc, exact, err := db.Find(Exact|LAZY_SMALL, "key005")
@@ -568,6 +571,7 @@ func TestFind_SkipValues(t *testing.T) {
 	_, err := db.Put("large001", bigVal, 100)
 	panicOn(err)
 	db.Sync()
+	db.AllowReads()
 
 	// Find with SKIP_VALUES: inline value
 	kvc, exact, err := db.Find(Exact|SKIP_VALUES, "key005")
@@ -766,4 +770,5 @@ func populateFindTestDB(t *testing.T, db *FlexDB) {
 		v := fmt.Sprintf("val%03d", i)
 		mustPutVtyp(t, db, k, v, uint64(i))
 	}
+	db.AllowReads()
 }

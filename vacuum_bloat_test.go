@@ -161,6 +161,7 @@ func TestVacuumThenOverwrite_DiskSizeBounded(t *testing.T) {
 	}
 	batch.Close()
 	db.Sync()
+	db.AllowReads()
 	db.Close()
 
 	// Step 2: Reopen, VacuumVLOG, VacuumKV.
@@ -168,6 +169,7 @@ func TestVacuumThenOverwrite_DiskSizeBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db.AllowReads()
 
 	vstats, err := db.VacuumVLOG()
 	if err != nil {
@@ -206,6 +208,7 @@ func TestVacuumThenOverwrite_DiskSizeBounded(t *testing.T) {
 		}
 		batch.Close()
 		db.Sync()
+		db.AllowReads()
 
 		m := db.SessionMetrics()
 		uc := atomic.LoadInt64(&db.ff.updateCount)
@@ -240,6 +243,7 @@ func TestVacuumThenOverwrite_DiskSizeBounded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("round %d reopen: %v", r, err)
 		}
+		db.AllowReads()
 
 		if r == 0 {
 			sizeAfterRound0 = sz

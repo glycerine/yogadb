@@ -44,6 +44,7 @@ func openTestDB(t *testing.T, cfg *Config) (*FlexDB, vfs.FS) {
 		//vv("err = '%v'", err)
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
+	db.AllowReads()
 	t.Cleanup(func() { db.Close() })
 
 	return db, fs
@@ -60,6 +61,7 @@ func openTestDBreportSize(t *testing.T, cfg *Config) *FlexDB {
 	if err != nil {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
+	db.AllowReads()
 	t.Cleanup(func() {
 		alwaysPrintf("%v end of test, YogaDB DirSize='%v'", t.Name(), mustDirSize(fs, dir))
 		db.Close()
@@ -77,6 +79,7 @@ func openTestDBAt(fs vfs.FS, t *testing.T, dir string, cfg *Config) *FlexDB {
 	if err != nil {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
+	db.AllowReads()
 	return db
 }
 
@@ -103,6 +106,7 @@ func mustDelete(t *testing.T, db *FlexDB, key string) {
 
 func mustGet(t *testing.T, db *FlexDB, key, wantValue string) {
 	t.Helper()
+	db.AllowReads()
 	val, ok, _, _, err := db.Get(key)
 	if err != nil {
 		t.Fatalf("Get(%q): %v", key, err)
@@ -117,6 +121,7 @@ func mustGet(t *testing.T, db *FlexDB, key, wantValue string) {
 
 func mustMiss(t *testing.T, db *FlexDB, key string) {
 	t.Helper()
+	db.AllowReads()
 	val, ok, vtyp, _, err := db.Get(key)
 	_ = vtyp
 	if err != nil {
@@ -535,6 +540,7 @@ func TestFlexDB_GetKVReportsAccurateVptrLength(t *testing.T) {
 	if _, err := db.Put("small-direct", smallDirect, 0); err != nil {
 		t.Fatal(err)
 	}
+	db.AllowReads()
 	kv, err := db.GetKV("small-direct")
 	if err != nil {
 		t.Fatal(err)
@@ -655,6 +661,7 @@ func TestFlexDB_GetKVReportsAccurateVptrLength(t *testing.T) {
 	db.Close()
 	db = openTestDBAt(fs, t, dir, cfg)
 	defer db.Close()
+	db.AllowReads()
 
 	kv, err = db.GetKV("small-direct")
 	if err != nil {
@@ -1016,6 +1023,7 @@ func TestFlexDB_MergeIncrement(t *testing.T) {
 		}
 	}
 
+	db.AllowReads()
 	val, ok, _, _, err := db.Get("ctr")
 	panicOn(err)
 	if !ok || val[0] != 10 {
@@ -1115,6 +1123,7 @@ func populateDB(t *testing.T, db *FlexDB, doSync bool) {
 
 // collectAscend is a helper that collects all keys from db.Ascend.
 func collectAscend(db *FlexDB, pivot string) []string {
+	db.AllowReads()
 	var keys []string
 	db.View(func(roDB *ReadOnlyTx) error {
 		roDB.Ascend(pivot, func(key string, value []byte, vtyp uint64, hlc HLC) bool {
@@ -1128,6 +1137,7 @@ func collectAscend(db *FlexDB, pivot string) []string {
 
 // collectDescend is a helper that collects all keys from db.Descend.
 func collectDescend(db *FlexDB, pivot string) []string {
+	db.AllowReads()
 	var keys []string
 	db.View(func(roDB *ReadOnlyTx) error {
 		roDB.Descend(pivot, func(key string, value []byte, vtyp uint64, hlc HLC) bool {
@@ -1193,6 +1203,7 @@ func TestFlexDB_AscendEarlyStop(t *testing.T) {
 	populateDB(t, db, false)
 
 	var keys []string
+	db.AllowReads()
 	db.View(func(roDB *ReadOnlyTx) error {
 		roDB.Ascend("", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			keys = append(keys, key)
@@ -1233,6 +1244,7 @@ func TestFlexDB_DescendAll_big(t *testing.T) {
 	slices.SortFunc(keys, bytes.Compare)
 	slices.Reverse(keys) // compare to Descending
 
+	db.AllowReads()
 	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
 		it.SeekLast()
@@ -1285,6 +1297,7 @@ func TestFlexDB_DescendEarlyStop(t *testing.T) {
 	populateDB(t, db, false)
 
 	var keys []string
+	db.AllowReads()
 	db.View(func(roDB *ReadOnlyTx) error {
 		roDB.Descend("", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
 			keys = append(keys, key)
@@ -2249,6 +2262,7 @@ func TestFlexDB_GetReportsCorruptedSlottedInterval(t *testing.T) {
 	}
 	corruptFirstFlexSpaceIntervalCRC(t, db)
 
+	db.AllowReads()
 	val, found, _, _, err := db.Get("a")
 	if err == nil {
 		t.Fatalf("Get returned nil error after corrupted FlexSpace interval; found=%v val=%q", found, val)
@@ -2272,6 +2286,7 @@ func TestFlexDB_GetLoadErrorReleasesCacheEntry(t *testing.T) {
 		discardAllIntervalCacheForTest(db)
 	}()
 
+	db.AllowReads()
 	_, found, _, _, err := db.Get("a")
 	if err == nil {
 		t.Fatalf("Get returned nil error after oversized anchor psize; found=%v", found)
@@ -2315,6 +2330,7 @@ func TestFlexDB_IteratorReportsCachedLoadErrorOnForwardAdvance(t *testing.T) {
 	badPartition.mu.Unlock()
 	defer discardAllIntervalCacheForTest(db)
 
+	db.AllowReads()
 	err := db.View(func(ro *ReadOnlyTx) error {
 		it := ro.NewIter()
 		it.SeekFirst()
@@ -2549,6 +2565,7 @@ func TestDeleteRange_SkipLargeValues(t *testing.T) {
 			t.Fatalf("n=%d, want 0 (all keys are large)", n)
 		}
 		// Both keys survive.
+		db.AllowReads()
 		_, ok, _, _, err := db.Get("a")
 		panicOn(err)
 		if !ok {
@@ -2733,6 +2750,7 @@ func TestClear(t *testing.T) {
 func TestLen(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		db, _ := openTestDB(t, nil)
+		db.AllowReads()
 		if n := db.Len(); n != 0 {
 			t.Fatalf("empty DB Len() = %d, want 0", n)
 		}
@@ -2748,6 +2766,7 @@ func TestLen(t *testing.T) {
 		for i := 0; i < N; i++ {
 			db.Put(fmt.Sprintf("key%04d", i), []byte("val"), 0)
 		}
+		db.AllowReads()
 		if n := db.Len(); n != int64(N) {
 			t.Fatalf("Len() = %d, want %d", n, N)
 		}
@@ -2767,6 +2786,7 @@ func TestLen(t *testing.T) {
 		for i := 0; i < N; i++ {
 			db.Put(fmt.Sprintf("big%04d", i), largeVal, 0)
 		}
+		db.AllowReads()
 		if n := db.Len(); n != int64(N) {
 			t.Fatalf("Len() = %d, want %d", n, N)
 		}
@@ -2780,6 +2800,7 @@ func TestLen(t *testing.T) {
 		db, _ := openTestDB(t, nil)
 		key := "mykey"
 		db.Put(key, []byte("small"), 0)
+		db.AllowReads()
 		if big, small := db.LenBigSmall(); big != 0 || small != 1 {
 			t.Fatalf("after small put: (%d,%d), want (0,1)", big, small)
 		}
@@ -2799,6 +2820,7 @@ func TestLen(t *testing.T) {
 		key := "mykey"
 		largeVal := make([]byte, 128)
 		db.Put(key, largeVal, 0)
+		db.AllowReads()
 		if big, small := db.LenBigSmall(); big != 1 || small != 0 {
 			t.Fatalf("after big put: (%d,%d), want (1,0)", big, small)
 		}
@@ -2817,6 +2839,7 @@ func TestLen(t *testing.T) {
 		db.Put("a", []byte("1"), 0)
 		db.Put("b", []byte("2"), 0)
 		db.Put("c", []byte("3"), 0)
+		db.AllowReads()
 		if n := db.Len(); n != 3 {
 			t.Fatalf("Len() = %d, want 3", n)
 		}
@@ -2830,6 +2853,7 @@ func TestLen(t *testing.T) {
 		db, _ := openTestDB(t, nil)
 		db.Put("a", []byte("1"), 0)
 		db.Delete("nonexistent")
+		db.AllowReads()
 		if n := db.Len(); n != 1 {
 			t.Fatalf("Len() = %d, want 1", n)
 		}
@@ -2839,6 +2863,7 @@ func TestLen(t *testing.T) {
 		db, _ := openTestDB(t, nil)
 		db.Put("a", []byte("1"), 0)
 		db.Delete("a")
+		db.AllowReads()
 		if n := db.Len(); n != 0 {
 			t.Fatalf("after first Del: Len() = %d, want 0", n)
 		}
@@ -2852,6 +2877,7 @@ func TestLen(t *testing.T) {
 		db, _ := openTestDB(t, nil)
 		db.Put("a", []byte("1"), 0)
 		db.Delete("a")
+		db.AllowReads()
 		if n := db.Len(); n != 0 {
 			t.Fatalf("after Del: Len() = %d, want 0", n)
 		}
@@ -2866,6 +2892,7 @@ func TestLen(t *testing.T) {
 		for i := 0; i < 20; i++ {
 			db.Put(fmt.Sprintf("k%02d", i), []byte("v"), 0)
 		}
+		db.AllowReads()
 		if n := db.Len(); n != 20 {
 			t.Fatalf("Len() = %d, want 20", n)
 		}
@@ -2899,6 +2926,7 @@ func TestLen(t *testing.T) {
 		db.Delete("key0003")
 		db.Delete("key0006")
 
+		db.AllowReads()
 		wantLen := db.Len()
 		wantBig, wantSmall := db.LenBigSmall()
 		db.Close()
@@ -2908,6 +2936,7 @@ func TestLen(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer db2.Close()
+		db2.AllowReads()
 		if n := db2.Len(); n != wantLen {
 			t.Fatalf("after reopen: Len() = %d, want %d", n, wantLen)
 		}
@@ -2924,6 +2953,7 @@ func TestLen(t *testing.T) {
 			db.Put(fmt.Sprintf("key%04d", i), []byte("val"), 0)
 		}
 		db.Sync()
+		db.AllowReads()
 		if n := db.Len(); n != int64(N) {
 			t.Fatalf("after Sync: Len() = %d, want %d", n, N)
 		}
@@ -2956,6 +2986,7 @@ func TestLen(t *testing.T) {
 			db.Put(fmt.Sprintf("key%04d", i), []byte("val"), 0)
 		}
 		// Expected: 50 original - 5 deleted + 10 new = 55
+		db.AllowReads()
 		if n := db.Len(); n != 55 {
 			t.Fatalf("mixed: Len() = %d, want 55", n)
 		}
@@ -2968,6 +2999,7 @@ func TestLen(t *testing.T) {
 			b.Set(fmt.Sprintf("bk%04d", i), []byte("bv"), 0)
 		}
 		b.Commit(false)
+		db.AllowReads()
 		if n := db.Len(); n != 25 {
 			t.Fatalf("after batch: Len() = %d, want 25", n)
 		}
@@ -2988,6 +3020,7 @@ func TestLen(t *testing.T) {
 		for i := 0; i < 20; i++ {
 			db.Put(fmt.Sprintf("key%04d", i), []byte("val"), 0)
 		}
+		db.AllowReads()
 		if n := db.Len(); n != 20 {
 			t.Fatalf("Len() = %d, want 20", n)
 		}
@@ -3008,6 +3041,7 @@ func TestFlexDB_ZeroLengthValueEquivalence(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	db.AllowReads()
 	val, found, _, _, err := db.Get("setkey")
 	panicOn(err)
 	if !found {
