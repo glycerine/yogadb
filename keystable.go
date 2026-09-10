@@ -23,8 +23,10 @@ type keyStable struct {
 	kvs           []KV   // parallel to stable; Key is kept empty to avoid retaining caller key storage.
 	valueAliasKey []bool // true when kv.Value should alias the arena key bytes.
 	hashNext      []int  // collision chain for imap; parallel to stable.
-	imap          map[uint64]int
-	sortedDirty   bool
+
+	// xxhash.Sum64(key) -> index in stable.
+	imap        map[uint64]int
+	sortedDirty bool
 }
 
 func makeKeyStable(n int) keyStable {
@@ -389,7 +391,7 @@ func (s *keyStable) delKey(needle []byte) (found bool) {
 
 /*
 
-linux with keyStable:
+linux with keyStable:  WITH THE FLUSH WORKER ON!
 
 === RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB
 
@@ -413,8 +415,46 @@ afterbulk_test.go:268 [pid 3408587] 2026-09-10 16:55:22.887938873 +0000 UTC afte
 
 ---------
 
-// Performance improvements of keyStable versus tidwall.Btree:
-//
+// Performance improvements of keyStable versus tidwall.Btree, with background flush worker OFF!
+
+linux, master so tidwall Btree
+
+no background flush!
+
+=== RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB
+
+afterbulk_test.go:127 [pid 3447216] 2026-09-10 18:05:25.571037641 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 347489.31783522404 writes/sec
+afterbulk_test.go:127 [pid 3448197] 2026-09-10 18:07:12.181517326 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 361239.03865359817 writes/sec
+afterbulk_test.go:127 [pid 3448970] 2026-09-10 18:08:32.350211851 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 355542.4884051915 writes/sec
+
+=== RUN   Test_Replacement_After_Bulk_Load_YogaDB
+
+afterbulk_test.go:276 [pid 3447216] 2026-09-10 18:06:12.388077590 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 78691.83666816386 writes/sec
+afterbulk_test.go:276 [pid 3448197] 2026-09-10 18:07:59.627287917 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 76119.42318910093 writes/sec
+afterbulk_test.go:276 [pid 3448970] 2026-09-10 18:09:19.616095469 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 78531.6417831247 writes/sec
+
+------------------------
+versus
+
+branch: keystable, on linux, NO flush worker.
+
+=== RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB
+
+afterbulk_test.go:127 [pid 3451407] 2026-09-10 18:12:31.846136821 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 579224.8673116597 writes/sec
+afterbulk_test.go:127 [pid 3451921] 2026-09-10 18:13:18.923597476 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 611722.5271822995 writes/sec
+afterbulk_test.go:127 [pid 3452399] 2026-09-10 18:13:57.422257574 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 598945.6145828298 writes/sec
+afterbulk_test.go:127 [pid 3452874] 2026-09-10 18:14:33.402962839 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 608296.0492488866 writes/sec
+afterbulk_test.go:127 [pid 3453477] 2026-09-10 18:15:28.420317783 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 604677.0311693986 writes/sec
+afterbulk_test.go:127 [pid 3454160] 2026-09-10 18:16:39.211856161 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 607372.3811374991 writes/sec
+afterbulk_test.go:127 [pid 3455015] 2026-09-10 18:18:06.805850210 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 604881.2055699311 writes/sec
+
+=== RUN   Test_Replacement_After_Bulk_Load_YogaDB
+
+afterbulk_test.go:276 [pid 3453477] 2026-09-10 18:16:12.188771876 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 96030.38864593704 writes/sec
+afterbulk_test.go:276 [pid 3454160] 2026-09-10 18:17:23.527680992 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 95323.40862664096 writes/sec
+afterbulk_test.go:276 [pid 3455015] 2026-09-10 18:18:50.992023927 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 95488.230878552 writes/sec
+
+// earlier measurements when flush worker was sometimes on:
 // afterbulk_test.go tests:
 //
 // Linux:
