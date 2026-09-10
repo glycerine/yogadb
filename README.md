@@ -275,7 +275,7 @@ Every opened handle starts in a read-disabled load phase where only
 Batch.Set(), Batch.SetBytes(), Batch.Delete(), Batch.Commit(), and db.Sync()
 are supported. On an empty database these batches use the optimized initial
 bulk builder. On a database reopened with existing data, the same
-read-disabled load phase ist still enforced. Again the first batch of writes
+read-disabled load phase is still available and enforced. Again the first batch of writes
 is special and fast: it is kept aside and uses the fast-path-full-database merge to
 integrate keys into the existing database when db.AllowReads() or db.Sync() is called. Overlapping keys
 are resolved by HLC; the highest-HLC record wins. Tombstones are just
