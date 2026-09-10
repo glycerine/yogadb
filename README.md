@@ -316,7 +316,7 @@ The trade-off for using AutoVacuumPct and AutoVacuumDeletedAboveKB is that
 when a vacuum occurs becomes data dependent. It is not under your full 
 control. Almost all operations will be fast, but some few writes will
 get blocked on a longer vacuum. You should expect to see this in
-your P999 write latency percentages if you take advance of automatic vacuuming.
+your P999 write latency percentages if you take advantage of automatic vacuuming.
 
 # getting started
 
