@@ -896,12 +896,12 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 		var have [2]bool
 
 		candidates[0], have[0] = btreeSeekGE(db.mt.bt, target, strict)
-		var seekErr error
-		candidates[1], have[1], seekErr = db.flexSpaceSeekGE(target, strict)
-		if seekErr != nil {
-			return
-			//return nil, nil, 0, false, VPtr{}, 0, false
-		}
+			var seekErr error
+			candidates[1], have[1], seekErr = db.flexSpaceSeekGE(target, strict)
+			if seekErr != nil {
+				iterIOPanic(seekErr)
+				return
+			}
 
 		// Find minimum key
 		var minKey string
@@ -940,12 +940,11 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 		if bestKV.HasVPtr() {
 			return []byte(minKey), nil, bestKV.Hlc, true, bestKV.Vptr, bestKV.Vtyp(), true
 		}
-		val, vtype, _, err := db.resolveVPtr(bestKV)
-		if err != nil {
-			target = minKey
-			strict = true
-			continue
-		}
+			val, vtype, _, err := db.resolveVPtr(bestKV)
+			if err != nil {
+				iterIOPanic(err)
+				return
+			}
 		return []byte(minKey), dupBytes(val), bestKV.Hlc, false, bestKV.Vptr, vtype, true
 	}
 }
@@ -1136,12 +1135,11 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, v
 		if bestKV.HasVPtr() {
 			return &KV{Key: minKey, Hlc: bestKV.Hlc, Vptr: bestKV.Vptr, Value: dupBytes(bestKV.Value)}, bestKV.Vtyp(), true
 		}
-		val, vtype, _, err := db.resolveVPtr(bestKV)
-		if err != nil {
-			target = minKey
-			strict = true
-			continue
-		}
+			val, vtype, _, err := db.resolveVPtr(bestKV)
+			if err != nil {
+				iterIOPanic(err)
+				return
+			}
 		return &KV{Key: minKey, Value: dupBytes(val), Vptr: bestKV.Vptr, Hlc: bestKV.Hlc}, vtype, true
 	}
 }
@@ -1237,11 +1235,12 @@ func (db *FlexDB) mergedSeekLE(target string, strict bool) (kv *KV, found bool) 
 		var have [2]bool
 
 		candidates[0], have[0] = btreeSeekLE(db.mt.bt, target, strict)
-		var seekErr error
-		candidates[1], have[1], seekErr = db.flexSpaceSeekLE(target, strict)
-		if seekErr != nil {
-			return
-		}
+			var seekErr error
+			candidates[1], have[1], seekErr = db.flexSpaceSeekLE(target, strict)
+			if seekErr != nil {
+				iterIOPanic(seekErr)
+				return
+			}
 
 		// Find maximum key
 		var maxKey string
@@ -1795,7 +1794,9 @@ func (it *Iter) iterResolvedValue() []byte {
 		return it.Vin()
 	}
 	val, _, _, err := it.db.resolveVPtr(*it.pKV)
-	panicOn(err)
+	if err != nil {
+		iterIOPanic(err)
+	}
 	return val
 }
 

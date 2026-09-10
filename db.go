@@ -58,6 +58,9 @@ const (
 
 var sep = string(os.PathSeparator)
 
+var testHookVacuumVLOGAfterFlexSpaceSyncBeforeRename func(*FlexDB) error
+var testHookResolveVPtr func(KV) error
+
 // Batch submits a set of writes all together at once for load efficiency.
 // It writes standalone MEMWAL_KV records; use Update for BEGIN/COMMIT grouped
 // crash recovery of multiple key writes.
@@ -1465,6 +1468,14 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 		tag := flexdbTagGenerate(true, 0)
 		_ = ff.SetTag(0, tag) // best-effort on empty FlexSpace
 	}
+	if err := db.recoverVLOGVacuumTemp(); err != nil {
+		ff.Close()
+		walFD.Close()
+		if vl != nil {
+			vl.close()
+		}
+		return nil, err
+	}
 
 	// Reset WAL (always use 20-byte versioned header for consistent disk format)
 	ts := uint64(time.Now().UnixNano())
@@ -1889,6 +1900,11 @@ func (db *FlexDB) writeLockHeldAutoVacuumMetrics(m *Metrics) {
 // For small inline values where HasVPtr() is false, we return kv.Value.
 // Returns the resolved value bytes, or an error.
 func (db *FlexDB) resolveVPtr(kv KV) (val []byte, vtyp uint64, hlc HLC, err error) {
+	if testHookResolveVPtr != nil {
+		if err := testHookResolveVPtr(kv); err != nil {
+			return nil, 0, 0, err
+		}
+	}
 	if kv.Vptr.Length == rawVlenTombstone {
 		return nil, 0, 0, ErrTomb
 	}
@@ -1982,6 +1998,9 @@ func (db *FlexDB) vacuumVLOGLocked() (*VacuumVLOGStats, error) {
 
 	// Create new VLOG file.
 	newPath := filepath.Join(db.Path, "VLOG.new")
+	readyPath := filepath.Join(db.Path, "VLOG.new.ready")
+	_ = db.vfs.Remove(newPath)
+	_ = db.vfs.Remove(readyPath)
 	newVL, err := openValueLog(newPath, db.vfs)
 	if err != nil {
 		return stats, fmt.Errorf("vacuum: open new VLOG: %w", err)
@@ -2081,6 +2100,20 @@ func (db *FlexDB) vacuumVLOGLocked() (*VacuumVLOGStats, error) {
 		return stats, fmt.Errorf("vacuum: sync new VLOG: %w", err)
 	}
 	db.ff.Sync()
+	if err := truncateFileToZero(db.vfs, readyPath); err != nil {
+		newVL.close()
+		return stats, fmt.Errorf("vacuum: create VLOG.new ready marker: %w", err)
+	}
+	if err := syncDir(db.vfs, db.Path); err != nil {
+		newVL.close()
+		return stats, fmt.Errorf("vacuum: sync VLOG.new ready marker: %w", err)
+	}
+	if testHookVacuumVLOGAfterFlexSpaceSyncBeforeRename != nil {
+		if err := testHookVacuumVLOGAfterFlexSpaceSyncBeforeRename(db); err != nil {
+			newVL.close()
+			return stats, err
+		}
+	}
 
 	// Close old VLOG fd, rename new -> old, reopen.
 	oldPath := filepath.Join(db.Path, "LARGE.VLOG")
@@ -2088,6 +2121,7 @@ func (db *FlexDB) vacuumVLOGLocked() (*VacuumVLOGStats, error) {
 	if err := db.vfs.Rename(newPath, oldPath); err != nil {
 		return stats, fmt.Errorf("vacuum: rename: %w", err)
 	}
+	_ = db.vfs.Remove(readyPath)
 	db.dirSyncNeeded = true
 	if err := db.vlog.reopen(oldPath); err != nil {
 		return stats, fmt.Errorf("vacuum: reopen: %w", err)
@@ -2111,6 +2145,95 @@ func (db *FlexDB) vacuumVLOGLocked() (*VacuumVLOGStats, error) {
 	db.cache.destroyAll()
 
 	return stats, nil
+}
+
+func (db *FlexDB) recoverVLOGVacuumTemp() error {
+	if db.vlog == nil {
+		return nil
+	}
+	newPath := filepath.Join(db.Path, "VLOG.new")
+	readyPath := filepath.Join(db.Path, "VLOG.new.ready")
+	if !fileExists(db.vfs, newPath) {
+		_ = db.vfs.Remove(readyPath)
+		return nil
+	}
+	oldPath := filepath.Join(db.Path, "LARGE.VLOG")
+
+	currentErr := db.checkVLOGPointersNoLock()
+	ready := fileExists(db.vfs, readyPath)
+	if currentErr == nil && !ready {
+		_ = db.vfs.Remove(newPath)
+		return nil
+	}
+
+	currentVL := db.vlog
+	tempVL, err := openValueLog(newPath, db.vfs)
+	if err != nil {
+		return fmt.Errorf("flexdb: recover VLOG vacuum temp: current VLOG invalid (%v), open VLOG.new: %w", currentErr, err)
+	}
+	db.vlog = tempVL
+	tempErr := db.checkVLOGPointersNoLock()
+	_, closeErr := tempVL.close()
+	db.vlog = currentVL
+	if closeErr != nil {
+		return fmt.Errorf("flexdb: recover VLOG vacuum temp: close VLOG.new: %w", closeErr)
+	}
+	if tempErr != nil {
+		return fmt.Errorf("flexdb: recover VLOG vacuum temp: current VLOG invalid (%v), VLOG.new invalid too: %w", currentErr, tempErr)
+	}
+
+	_, _ = currentVL.close()
+	_ = db.vfs.Remove(oldPath)
+	if err := db.vfs.Rename(newPath, oldPath); err != nil {
+		return fmt.Errorf("flexdb: recover VLOG vacuum temp: promote VLOG.new: %w", err)
+	}
+	db.dirSyncNeeded = true
+	if err := syncDir(db.vfs, db.Path); err != nil {
+		return fmt.Errorf("flexdb: recover VLOG vacuum temp: sync dir: %w", err)
+	}
+	_ = db.vfs.Remove(readyPath)
+	if err := currentVL.reopen(oldPath); err != nil {
+		return fmt.Errorf("flexdb: recover VLOG vacuum temp: reopen promoted VLOG: %w", err)
+	}
+	db.vlog = currentVL
+	return nil
+}
+
+func (db *FlexDB) checkVLOGPointersNoLock() error {
+	if db.tree == nil {
+		return nil
+	}
+	for snode := db.tree.leafHead; snode != nil; snode = snode.next {
+		var nh memSparseIndexTreeHandler
+		nh.node = snode
+		memSparseIndexTreeHandlerInfoUpdate(&nh)
+		for ai := 0; ai < snode.count; ai++ {
+			anchor := snode.anchors[ai]
+			if anchor == nil || anchor.psize == 0 {
+				continue
+			}
+			anchorLoff := uint64(anchor.loff + nh.shift)
+			partition := db.cache.getPartition(anchor)
+			fce, err := partition.getEntry(anchor, anchorLoff, db)
+			if err != nil {
+				partition.releaseEntry(fce)
+				return fmt.Errorf("anchor key=%q loff=%d: %w", anchor.key, anchorLoff, err)
+			}
+			for i := 0; i < fce.count; i++ {
+				kv := &fce.kvs[i]
+				if !kv.HasVPtr() {
+					continue
+				}
+				if _, err := db.vlog.read(kv.Vptr); err != nil {
+					partition.releaseEntry(fce)
+					return fmt.Errorf("anchor key=%q kv=%q vptr={off:%d len:%d}: %w",
+						anchor.key, kv.Key, kv.Vptr.Offset, kv.Vptr.Length, err)
+				}
+			}
+			partition.releaseEntry(fce)
+		}
+	}
+	return nil
 }
 
 // VacuumKVStats reports the results of a VacuumKV operation.
@@ -2229,11 +2352,11 @@ func (db *FlexDB) vacuumKVLocked() (*VacuumKVStats, error) {
 			// manager has been flushed (blkoff=0), so all data is on disk.
 			// Read directly from the file to avoid any stale-buffer issues.
 			buf := make([]byte, oldLen)
-			n, readErr := ff.fdKV128blocks.ReadAt(buf, int64(poff))
-			if readErr != nil || uint64(n) != oldLen {
+			readErr := readAtFull(ff.fdKV128blocks, buf, int64(poff), "vacuumkv old extent")
+			if readErr != nil {
 				newFD.Close()
 				db.vfs.Remove(vacuumPath)
-				return stats, fmt.Errorf("vacuumkv: read poff=%d len=%d: %w", poff, oldLen, readErr)
+				return stats, readErr
 			}
 
 			// Compact slotted pages by removing tombstones and zero-padding.
@@ -2271,11 +2394,10 @@ func (db *FlexDB) vacuumKVLocked() (*VacuumKVStats, error) {
 			}
 
 			// Write sequentially to new file.
-			_, writeErr := newFD.WriteAt(writeBuf, int64(writeOffset))
-			if writeErr != nil {
+			if writeErr := writeAtFull(newFD, writeBuf, int64(writeOffset), "vacuumkv new extent"); writeErr != nil {
 				newFD.Close()
 				db.vfs.Remove(vacuumPath)
-				return stats, fmt.Errorf("vacuumkv: write offset=%d len=%d: %w", writeOffset, newLen, writeErr)
+				return stats, writeErr
 			}
 
 			extents = append(extents, compactedExtent{
@@ -2388,7 +2510,9 @@ func (db *FlexDB) vacuumKVLocked() (*VacuumKVStats, error) {
 			// Populate the write buffer with existing data from this block
 			// so that bm.read() can serve data from the unflushed portion.
 			blkStart := int64(lastDataBlk << FLEXSPACE_BLOCK_BITS)
-			ff.fdKV128blocks.ReadAt(ff.bm.buf[:blkOff], blkStart)
+			if err := readAtFull(ff.fdKV128blocks, ff.bm.buf[:blkOff], blkStart, "vacuumkv reload partial block"); err != nil {
+				return stats, err
+			}
 		}
 	}
 
@@ -4217,9 +4341,17 @@ func deleteRangeDedup(kvs []KV) []KV {
 //     value (though Get is simpler for that).
 //
 // .
-func (db *FlexDB) Merge(key string, fn func(oldVal []byte, exists bool, oldVtyp uint64) (newVal []byte, write bool, doDelete bool, newVtyp uint64)) error {
+func (db *FlexDB) Merge(key string, fn func(oldVal []byte, exists bool, oldVtyp uint64) (newVal []byte, write bool, doDelete bool, newVtyp uint64)) (err error) {
 	db.topMutRW.Lock()
-	defer db.topMutRW.Unlock()
+	autoVacuumHandoff := false
+	defer func() {
+		if err == nil {
+			autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+		}
+		if !autoVacuumHandoff {
+			db.topMutRW.Unlock()
+		}
+	}()
 	return db.writeLockHeldMerge(key, fn)
 }
 

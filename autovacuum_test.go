@@ -180,6 +180,49 @@ func TestAutoVacuumReclaimsDeletedLargeValuesAndTombstones(t *testing.T) {
 	}
 }
 
+func TestAutoVacuumRunsAfterMergeDeleteThreshold(t *testing.T) {
+	db, _ := openTestDB(t, &Config{
+		AutoVacuumPct:            0.05,
+		AutoVacuumDeletedAboveKB: 1,
+		DisableBackgroundFlush:   true,
+	})
+
+	const n = 400
+	for i := 0; i < n; i++ {
+		mustPut(t, db, fmt.Sprintf("auto-merge-vac-%04d", i), "small-inline-value")
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatalf("initial Sync: %v", err)
+	}
+	for i := 0; i < n; i++ {
+		key := fmt.Sprintf("auto-merge-vac-%04d", i)
+		err := db.Merge(key, func(old []byte, exists bool, oldVtyp uint64) (newValue []byte, doWrite bool, doDelete bool, newVtyp uint64) {
+			if !exists {
+				t.Fatalf("Merge(%q) saw exists=false", key)
+			}
+			return nil, false, true, 0
+		})
+		if err != nil {
+			t.Fatalf("Merge delete %q: %v", key, err)
+		}
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		m := db.SessionMetrics()
+		if m.AutoVacuumRuns > 0 {
+			if m.AutoVacuumLastErr != "" {
+				t.Fatalf("AutoVacuumLastErr = %q", m.AutoVacuumLastErr)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for AutoVacuum after Merge deletes; metrics=%v", m)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestAutoVacuumHandoffBeatsQueuedWriters(t *testing.T) {
 	db, _ := openTestDB(t, &Config{
 		AutoVacuumPct:            0.05,

@@ -153,9 +153,8 @@ func (vl *valueLog) appendLockedWithHash(value []byte, hlc HLC, b3 []byte) (VPtr
 	binary.LittleEndian.PutUint32(buf[0:4], hdrCRC)
 
 	offset := vl.tail
-	_, err := vl.fd.WriteAt(buf, offset)
-	if err != nil {
-		return VPtr{}, fmt.Errorf("vlog: write at %d: %w", offset, err)
+	if err := writeAtFull(vl.fd, buf, offset, "vlog"); err != nil {
+		return VPtr{}, err
 	}
 	atomic.AddInt64(&vl.VLOGBytesWritten, int64(entrySize))
 	vl.tail = offset + int64(entrySize)
@@ -329,9 +328,8 @@ func (vl *valueLog) read(vp VPtr) ([]byte, error) {
 	entrySize := vlogEntryHeaderSize + int(vp.Length)
 	buf := make([]byte, entrySize)
 
-	_, err := vl.fd.ReadAt(buf, int64(vp.Offset))
-	if err != nil {
-		return nil, fmt.Errorf("vlog: read at offset %d len %d: %w", vp.Offset, vp.Length, err)
+	if err := readAtFull(vl.fd, buf, int64(vp.Offset), "vlog"); err != nil {
+		return nil, err
 	}
 
 	// Verify length field.
@@ -371,9 +369,8 @@ func (vl *valueLog) readBlake3(vp VPtr) ([32]byte, error) {
 	var hdr [vlogEntryHeaderSize]byte
 	var b3 [32]byte
 
-	_, err := vl.fd.ReadAt(hdr[:], int64(vp.Offset))
-	if err != nil {
-		return b3, fmt.Errorf("vlog: readBlake3 at offset %d: %w", vp.Offset, err)
+	if err := readAtFull(vl.fd, hdr[:], int64(vp.Offset), "vlog readBlake3"); err != nil {
+		return b3, err
 	}
 
 	// Verify hdrCRC before trusting the blake3 bytes.

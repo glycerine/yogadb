@@ -370,8 +370,8 @@ func (t *FlexTree) SyncCoW() error {
 	if t.metaNextOff+cowMetaSize > t.metaFileCap {
 		t.metaNextOff = 0
 	}
-	if _, err := t.metaFD.WriteAt(metaBuf[:], t.metaNextOff); err != nil {
-		return fmt.Errorf("cow: write FLEXTREE.COMMIT at offset %d: %w", t.metaNextOff, err)
+	if err := writeAtFull(t.metaFD, metaBuf[:], t.metaNextOff, "cow FLEXTREE.COMMIT"); err != nil {
+		return err
 	}
 	atomic.AddInt64(&t.FlexTreePagesBytesWritten, cowMetaSize)
 	if err := t.metaFD.SyncData(); err != nil {
@@ -412,8 +412,8 @@ func (t *FlexTree) syncCowRec(nodeID NodeID, freedSlots *[]int64) error {
 		// Encode and write
 		encodeLeafPage(&pageBuf, le)
 		off := int64(newSlot) * cowPageSize
-		if _, err := t.nodeFD.WriteAt(pageBuf[:], off); err != nil {
-			return fmt.Errorf("cow: write leaf page at slot %d: %w", newSlot, err)
+		if err := writeAtFull(t.nodeFD, pageBuf[:], off, "cow leaf page"); err != nil {
+			return err
 		}
 		atomic.AddInt64(&t.FlexTreePagesBytesWritten, cowPageSize)
 		le.Dirty = false
@@ -451,8 +451,8 @@ func (t *FlexTree) syncCowRec(nodeID NodeID, freedSlots *[]int64) error {
 	// Encode and write
 	encodeInternalPage(&pageBuf, ie)
 	off := int64(newSlot) * cowPageSize
-	if _, err := t.nodeFD.WriteAt(pageBuf[:], off); err != nil {
-		return fmt.Errorf("cow: write internal page at slot %d: %w", newSlot, err)
+	if err := writeAtFull(t.nodeFD, pageBuf[:], off, "cow internal page"); err != nil {
+		return err
 	}
 	atomic.AddInt64(&t.FlexTreePagesBytesWritten, cowPageSize)
 	ie.Dirty = false
@@ -692,8 +692,8 @@ func (t *FlexTree) loadNodeRec(nodeFD vfs.File, slotID int64) (NodeID, error) {
 
 	var pageBuf [cowPageSize]byte
 	off := slotID * cowPageSize
-	if _, err := nodeFD.ReadAt(pageBuf[:], off); err != nil {
-		return IllegalID, fmt.Errorf("cow: read page at slot %d: %w", slotID, err)
+	if err := readAtFull(nodeFD, pageBuf[:], off, "cow page"); err != nil {
+		return IllegalID, err
 	}
 
 	switch pageBuf[0] {

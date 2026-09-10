@@ -777,6 +777,31 @@ func TestIntervalCache_NewCache(t *testing.T) {
 	}
 }
 
+func TestIntervalCache_DestroyAllResetsPartitionSizes(t *testing.T) {
+	c := newCache(nil, 1)
+	for i := 0; i < 3; i++ {
+		p := &c.partitions[i]
+		fce := makeCacheEntry([]KV{makeKV(fmt.Sprintf("destroy-%d", i), "value", int64(i+1))})
+		p.insertIntoClock(fce)
+		p.size += int64(32 + fce.size)
+		if p.size == 0 {
+			t.Fatalf("test setup: partition[%d].size is zero", i)
+		}
+	}
+
+	c.destroyAll()
+
+	for i := 0; i < 3; i++ {
+		p := &c.partitions[i]
+		if p.tick != nil {
+			t.Fatalf("partition[%d].tick = %p, want nil", i, p.tick)
+		}
+		if p.size != 0 {
+			t.Fatalf("partition[%d].size = %d, want 0 after destroyAll", i, p.size)
+		}
+	}
+}
+
 // ====================== Fuzz Tests ======================
 
 func FuzzIntervalCache_Dedup(f *testing.F) {

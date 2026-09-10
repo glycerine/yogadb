@@ -2,6 +2,7 @@ package yogadb
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"testing"
 )
@@ -71,6 +72,43 @@ func TestVacuumVLOG_ThenVacuumKV(t *testing.T) {
 
 	mustCheckIntegrity(t, db2)
 	db2.Close()
+}
+
+func TestVacuumVLOGCrashBeforeRenameKeepsOldVLOGReadable(t *testing.T) {
+	fs, dir := newTestFS(t)
+	cfg := &Config{
+		DisableBackgroundFlush: true,
+		OmitMemWalFsync:        true,
+	}
+	db := openTestDBAt(fs, t, dir, cfg)
+
+	deadVal := "dead-" + makeTestValue(256)
+	liveVal := "live-" + makeTestValue(256)
+	mustPut(t, db, "a-dead", deadVal)
+	mustPut(t, db, "b-live", liveVal)
+	if err := db.Sync(); err != nil {
+		t.Fatalf("initial Sync: %v", err)
+	}
+	mustDelete(t, db, "a-dead")
+	if err := db.Sync(); err != nil {
+		t.Fatalf("delete Sync: %v", err)
+	}
+
+	crashErr := errors.New("test crash after FlexSpace sync before VLOG rename")
+	testHookVacuumVLOGAfterFlexSpaceSyncBeforeRename = func(*FlexDB) error {
+		return crashErr
+	}
+	stats, err := db.VacuumVLOG()
+	testHookVacuumVLOGAfterFlexSpaceSyncBeforeRename = nil
+	if !errors.Is(err, crashErr) {
+		t.Fatalf("VacuumVLOG err=%v, want crash hook error; stats=%v", err, stats)
+	}
+
+	db2 := openTestDBAt(fs, t, dir, cfg)
+	defer db2.Close()
+	mustGet(t, db2, "b-live", liveVal)
+	mustMiss(t, db2, "a-dead")
+	mustCheckIntegrity(t, db2)
 }
 
 func TestVacuumPreservesVtypMetadata(t *testing.T) {

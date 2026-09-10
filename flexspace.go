@@ -213,8 +213,7 @@ func (bm *blockManager) nextBlock(isGC bool) {
 	// Write only the unflushed portion of the current block to disk
 	if bm.blkoff > bm.flushedOff {
 		off := int64(oldBlkid*FLEXSPACE_BLOCK_SIZE) + int64(bm.flushedOff)
-		_, err := bm.file.fdKV128blocks.WriteAt(bm.buf[bm.flushedOff:bm.blkoff], off)
-		panicOn(err)
+		panicOn(writeAtFull(bm.file.fdKV128blocks, bm.buf[bm.flushedOff:bm.blkoff], off, "flexspace block manager nextBlock"))
 		atomic.AddInt64(&bm.file.KV128BytesWritten, int64(bm.blkoff-bm.flushedOff))
 	}
 	bm.blkid = newBlkid
@@ -228,8 +227,7 @@ func (bm *blockManager) nextBlock(isGC bool) {
 func (bm *blockManager) flush(isGC bool) {
 	if bm.blkoff > bm.flushedOff {
 		off := int64(bm.blkid*FLEXSPACE_BLOCK_SIZE) + int64(bm.flushedOff)
-		_, err := bm.file.fdKV128blocks.WriteAt(bm.buf[bm.flushedOff:bm.blkoff], off)
-		panicOn(err)
+		panicOn(writeAtFull(bm.file.fdKV128blocks, bm.buf[bm.flushedOff:bm.blkoff], off, "flexspace block manager flush"))
 		atomic.AddInt64(&bm.file.KV128BytesWritten, int64(bm.blkoff-bm.flushedOff))
 		bm.flushedOff = bm.blkoff
 	}
@@ -333,12 +331,12 @@ func bmInit(bm *blockManager, tree *FlexTree, fd ...vfs.File) {
 		bm.blkid = bestBlk
 		bm.blkoff = blkHighWater[bestBlk]
 		bm.flushedOff = blkHighWater[bestBlk]
-		// Load existing data into the write buffer so that bm.read()
-		// and bm.flush() work correctly for the partial block.
-		if len(fd) > 0 && fd[0] != nil {
-			blkStart := int64(bestBlk << FLEXSPACE_BLOCK_BITS)
-			fd[0].ReadAt(bm.buf[:bm.blkoff], blkStart)
-		}
+			// Load existing data into the write buffer so that bm.read()
+			// and bm.flush() work correctly for the partial block.
+			if len(fd) > 0 && fd[0] != nil {
+				blkStart := int64(bestBlk << FLEXSPACE_BLOCK_BITS)
+				panicOn(readAtFull(fd[0], bm.buf[:bm.blkoff], blkStart, "flexspace block manager init"))
+			}
 	} else {
 		// isGC=true to avoid recursive GC call during initialization
 		bm.blkid = bm.findEmptyBlock(maxBlkid, true)
@@ -439,8 +437,7 @@ func (ff *FlexSpace) redoLogFlushAndSync() {
 	if ff.logBufSize == 0 {
 		return
 	}
-	_, err := ff.redoLogFD.WriteAt(ff.logBuf[:ff.logBufSize], int64(ff.logTotalSize))
-	panicOn(err)
+	panicOn(writeAtFull(ff.redoLogFD, ff.logBuf[:ff.logBufSize], int64(ff.logTotalSize), "flexspace redo log"))
 	atomic.AddInt64(&ff.REDOLogBytesWritten, int64(ff.logBufSize))
 	ff.logTotalSize += ff.logBufSize
 	ff.logBufSize = 0
@@ -458,8 +455,7 @@ func (ff *FlexSpace) writeLogVersion() {
 	var buf [12]byte
 	binary.LittleEndian.PutUint64(buf[:8], ff.tree.PersistentVersion)
 	binary.LittleEndian.PutUint32(buf[8:12], crc32.Checksum(buf[:8], crc32cTable))
-	_, err := ff.redoLogFD.WriteAt(buf[:], 0)
-	panicOn(err)
+	panicOn(writeAtFull(ff.redoLogFD, buf[:], 0, "flexspace redo log version"))
 	atomic.AddInt64(&ff.REDOLogBytesWritten, flexLogVersionSize)
 	ff.logTotalSize = flexLogVersionSize
 	ff.logBufSize = 0
@@ -480,10 +476,9 @@ func (ff *FlexSpace) logRedo() {
 
 	for {
 		off := int64(uint64(flexLogVersionSize) + i*uint64(flexLogEntrySize))
-		n, err := ff.redoLogFD.ReadAt(entryBuf, off)
-		if n != flexLogEntrySize || err != nil {
-			break
-		}
+			if err := readAtFull(ff.redoLogFD, entryBuf, off, "flexspace redo log"); err != nil {
+				break
+			}
 		op, p1, p2, p3, ok := decodeLogEntry(entryBuf)
 		if !ok {
 			break // CRC32C mismatch - stop replay
@@ -601,12 +596,12 @@ func OpenFlexSpaceCoW(path string, omitRedoLog bool, fs vfs.FS) (*FlexSpace, err
 			tree.CloseCoW()
 			return nil, fmt.Errorf("flexspace: stat FLEXSPACE.REDO.LOG: %w", err)
 		}
-		if logStat.Size() > flexLogVersionSize {
-			var versionBuf [12]byte
-			if _, err := redoLogFD.ReadAt(versionBuf[:], 0); err == nil {
-				logVersion := binary.LittleEndian.Uint64(versionBuf[:8])
-				logCRC := binary.LittleEndian.Uint32(versionBuf[8:12])
-				if logCRC == crc32.Checksum(versionBuf[:8], crc32cTable) && logVersion == tree.PersistentVersion {
+			if logStat.Size() > flexLogVersionSize {
+				var versionBuf [12]byte
+				if err := readAtFull(redoLogFD, versionBuf[:], 0, "flexspace redo log version"); err == nil {
+					logVersion := binary.LittleEndian.Uint64(versionBuf[:8])
+					logCRC := binary.LittleEndian.Uint32(versionBuf[8:12])
+					if logCRC == crc32.Checksum(versionBuf[:8], crc32cTable) && logVersion == tree.PersistentVersion {
 					ff.logRedo()
 				}
 			}
@@ -792,14 +787,13 @@ func (ff *FlexSpace) readR(buf []byte, loff, length uint64, frag *uint64) (int, 
 		poff := ext.Address() + uint64(fp.Diff)
 
 		// Try in-memory buffer first, then disk
-		r := ff.bm.read(b, poff, slen)
-		if r == 0 {
-			n, err := ff.fdKV128blocks.ReadAt(b[:slen], int64(poff))
-			if err != nil || uint64(n) != slen {
-				return -1, fmt.Errorf("flexspace: pread at poff=%d len=%d: %w", poff, slen, err)
+			r := ff.bm.read(b, poff, slen)
+			if r == 0 {
+				if err := readAtFull(ff.fdKV128blocks, b[:slen], int64(poff), "flexspace pread"); err != nil {
+					return -1, err
+				}
+				r = slen
 			}
-			r = slen
-		}
 		fp.Forward(slen)
 		b = b[slen:]
 		tlen -= slen
@@ -1055,20 +1049,18 @@ func (ff *FlexSpace) Overwrite(buf []byte, loff uint64, length uint64) error {
 			blkoff := poff & (FLEXSPACE_BLOCK_SIZE - 1)
 			copy(ff.bm.buf[blkoff:], b[:slen])
 			// If we're modifying the already-flushed region of the current
-			// block, we must also write to disk since flush() only writes
-			// buf[flushedOff:blkoff] (the new data appended after flushedOff).
-			if blkoff < ff.bm.flushedOff {
-				_, err := ff.fdKV128blocks.WriteAt(b[:slen], int64(poff))
-				if err != nil {
-					return fmt.Errorf("flexspace: overwrite pwrite at poff=%d len=%d: %w", poff, slen, err)
+				// block, we must also write to disk since flush() only writes
+				// buf[flushedOff:blkoff] (the new data appended after flushedOff).
+				if blkoff < ff.bm.flushedOff {
+					if err := writeAtFull(ff.fdKV128blocks, b[:slen], int64(poff), "flexspace overwrite"); err != nil {
+						return err
+					}
+				}
+			} else {
+				if err := writeAtFull(ff.fdKV128blocks, b[:slen], int64(poff), "flexspace overwrite"); err != nil {
+					return err
 				}
 			}
-		} else {
-			_, err := ff.fdKV128blocks.WriteAt(b[:slen], int64(poff))
-			if err != nil {
-				return fmt.Errorf("flexspace: overwrite pwrite at poff=%d len=%d: %w", poff, slen, err)
-			}
-		}
 		atomic.AddInt64(&ff.KV128BytesWritten, int64(slen))
 		fp.Forward(slen)
 		b = b[slen:]
@@ -1157,13 +1149,12 @@ func (fh *FlexSpaceHandler) Read(buf []byte, length uint64) (int, error) {
 		poff := ext.Address() + uint64(tfh.fp.Diff)
 		ff := tfh.file
 
-		r := ff.bm.read(b, poff, slen)
-		if r == 0 {
-			n, err := ff.fdKV128blocks.ReadAt(b[:slen], int64(poff))
-			if err != nil || uint64(n) != slen {
-				return -1, fmt.Errorf("flexspace: handler pread: %w", err)
+			r := ff.bm.read(b, poff, slen)
+			if r == 0 {
+				if err := readAtFull(ff.fdKV128blocks, b[:slen], int64(poff), "flexspace handler pread"); err != nil {
+					return -1, err
+				}
 			}
-		}
 		b = b[slen:]
 		tlen -= slen
 		tfh.fp.Forward(slen)
@@ -1330,12 +1321,10 @@ func (ff *FlexSpace) gcAsyncPrepare(bitmap []bool) {
 
 		// Read the data now (before we move it)
 		buf := make([]byte, length)
-		r := ff.bm.read(buf, poff, uint64(length))
-		if r == 0 {
-			n, err := ff.fdKV128blocks.ReadAt(buf, int64(poff))
-			panicOn(err)
-			_ = n
-		}
+			r := ff.bm.read(buf, poff, uint64(length))
+			if r == 0 {
+				panicOn(readAtFull(ff.fdKV128blocks, buf, int64(poff), "flexspace gc read"))
+			}
 		ff.gc.queue[idx].buf = buf
 
 		if ff.gc.count >= FLEXSPACE_GC_QUEUE_DEPTH {

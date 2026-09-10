@@ -2,6 +2,7 @@ package yogadb
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	//"os"
 	"path/filepath"
@@ -77,6 +78,42 @@ func TestFlexDB_IteratorSeek(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestMergedIteratorReturnsResolveError(t *testing.T) {
+	db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
+	mustPut(t, db, "bad-inline", "value")
+	mustPut(t, db, "zz-next", "next")
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	mustPut(t, db, "memtable-key", "pending")
+
+	resolveErr := errors.New("forced resolve error")
+	testHookResolveVPtr = func(kv KV) error {
+		if kv.Key == "bad-inline" {
+			return resolveErr
+		}
+		return nil
+	}
+	defer func() { testHookResolveVPtr = nil }()
+
+	var gotKey string
+	err := db.View(func(ro *ReadOnlyTx) error {
+		it := ro.NewIter()
+		defer it.Close()
+		it.Seek("bad-inline")
+		if it.Valid() {
+			gotKey = it.Key()
+		}
+		return nil
+	})
+	if err == nil {
+		t.Fatalf("View returned nil after forced resolve error; iterator landed on %q", gotKey)
+	}
+	if !errors.Is(err, resolveErr) {
+		t.Fatalf("View err=%v, want forced resolve error", err)
+	}
 }
 
 // TestFlexDB_IteratorAfterSync tests iteration after data is in FlexSpace.

@@ -1,12 +1,42 @@
 package yogadb
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 
 	"testing"
+
+	"github.com/glycerine/vfs"
 )
+
+type shortWriteAtFileForTest struct {
+	vfs.File
+}
+
+func (f shortWriteAtFileForTest) WriteAt(p []byte, off int64) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	return len(p) - 1, nil
+}
+
+type shortCountReadAtFileForTest struct {
+	vfs.File
+}
+
+func (f shortCountReadAtFileForTest) ReadAt(p []byte, off int64) (int, error) {
+	n, err := f.File.ReadAt(p, off)
+	if err != nil {
+		return n, err
+	}
+	if n == 0 {
+		return 0, nil
+	}
+	return n - 1, nil
+}
 
 // ====================== VLOG Value Separation Tests ======================
 
@@ -54,6 +84,47 @@ func TestValueLogReadRejectsInvalidVPtrsBeforeAllocation(t *testing.T) {
 				t.Fatalf("valueLog.read(%#v) error = %v, want substring %q", tc.vp, err, tc.wantErrSub)
 			}
 		})
+	}
+}
+
+func TestValueLogAppendRejectsShortWriteAt(t *testing.T) {
+	fs, dir := newTestFS(t)
+	vl, err := openValueLog(filepath.Join(dir, "LARGE.VLOG"), fs)
+	if err != nil {
+		t.Fatalf("openValueLog: %v", err)
+	}
+	defer vl.close()
+	vl.fd = shortWriteAtFileForTest{File: vl.fd}
+
+	_, err = vl.append([]byte(makeTestValue(128)), HLC(1))
+	if err == nil {
+		t.Fatal("valueLog.append accepted a short WriteAt with nil error")
+	}
+	if !strings.Contains(err.Error(), "short write") {
+		t.Fatalf("valueLog.append err=%v, want short write", err)
+	}
+}
+
+func TestValueLogReadRejectsShortReadAtCount(t *testing.T) {
+	fs, dir := newTestFS(t)
+	vl, err := openValueLog(filepath.Join(dir, "LARGE.VLOG"), fs)
+	if err != nil {
+		t.Fatalf("openValueLog: %v", err)
+	}
+	defer vl.close()
+
+	vp, err := vl.append([]byte(makeTestValue(128)), HLC(1))
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	vl.fd = shortCountReadAtFileForTest{File: vl.fd}
+
+	_, err = vl.read(vp)
+	if err == nil {
+		t.Fatal("valueLog.read accepted a short ReadAt count with nil error")
+	}
+	if !strings.Contains(err.Error(), "short read") && !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("valueLog.read err=%v, want short read", err)
 	}
 }
 
@@ -236,6 +307,62 @@ func TestFlexDB_VLOG_Ascend(t *testing.T) {
 	}
 }
 
+func TestViewAscendReturnsErrorForCorruptVLOGValue(t *testing.T) {
+	fs, dir := newTestFS(t)
+	db := openTestDBAt(fs, t, dir, &Config{DisableBackgroundFlush: true})
+	defer db.Close()
+
+	val := makeTestValue(256)
+	mustPut(t, db, "large-corrupt", val)
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	kvc, exact, err := db.Find(Exact|LAZY_LARGE, "large-corrupt")
+	if err != nil {
+		t.Fatalf("Find LAZY_LARGE: %v", err)
+	}
+	if !exact || kvc == nil || !kvc.HasVPtr() {
+		t.Fatalf("Find LAZY_LARGE exact=%v kvc=%#v, want VPtr-backed result", exact, kvc)
+	}
+	vp := kvc.Vptr
+	kvc.Close()
+
+	fd, err := fs.OpenReadWrite(filepath.Join(dir, "LARGE.VLOG"), vfs.WriteCategoryUnspecified)
+	if err != nil {
+		t.Fatalf("open LARGE.VLOG for corruption: %v", err)
+	}
+	n, err := fd.WriteAt([]byte{0xff}, int64(vp.Offset)+vlogEntryHeaderSize)
+	if err != nil || n != 1 {
+		t.Fatalf("corrupt LARGE.VLOG: n=%d err=%v", n, err)
+	}
+	if err := fd.Close(); err != nil {
+		t.Fatalf("close corrupted LARGE.VLOG: %v", err)
+	}
+
+	var viewErr error
+	didPanic := false
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				didPanic = true
+			}
+		}()
+		viewErr = db.View(func(ro *ReadOnlyTx) error {
+			ro.Ascend("", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
+				return true
+			})
+			return nil
+		})
+	}()
+	if didPanic {
+		t.Fatal("View/Ascend panicked for corrupt VLOG value; want returned error")
+	}
+	if viewErr == nil {
+		t.Fatal("View/Ascend returned nil error for corrupt VLOG value")
+	}
+}
+
 // TestFlexDB_VLOG_Merge tests Merge on a key with a large value.
 func TestFlexDB_VLOG_Merge(t *testing.T) {
 	db, _ := openTestDB(t, nil)
@@ -394,6 +521,54 @@ func TestFlexDB_VLOG_VacuumBasic(t *testing.T) {
 		key := fmt.Sprintf("vk%02d", i)
 		mustGet(t, db2, key, makeTestValue(200+i))
 	}
+}
+
+func TestVacuumVLOGTruncatesStaleTempFile(t *testing.T) {
+	fs, dir := newTestFS(t)
+	db := openTestDBAt(fs, t, dir, &Config{DisableBackgroundFlush: true})
+	defer db.Close()
+
+	mustPut(t, db, "dead", makeTestValue(256))
+	mustPut(t, db, "live", makeTestValue(300))
+	if err := db.Sync(); err != nil {
+		t.Fatalf("initial Sync: %v", err)
+	}
+	mustDelete(t, db, "dead")
+	if err := db.Sync(); err != nil {
+		t.Fatalf("delete Sync: %v", err)
+	}
+
+	const junkSize = 1 << 20
+	tempPath := filepath.Join(dir, "VLOG.new")
+	temp, err := fs.OpenReadWrite(tempPath, vfs.WriteCategoryUnspecified)
+	if err != nil {
+		t.Fatalf("open stale VLOG.new: %v", err)
+	}
+	junk := make([]byte, junkSize)
+	for i := range junk {
+		junk[i] = byte(i)
+	}
+	n, err := temp.WriteAt(junk, 0)
+	if err != nil || n != len(junk) {
+		t.Fatalf("write stale VLOG.new: n=%d err=%v", n, err)
+	}
+	if err := temp.Sync(); err != nil {
+		t.Fatalf("sync stale VLOG.new: %v", err)
+	}
+	if err := temp.Close(); err != nil {
+		t.Fatalf("close stale VLOG.new: %v", err)
+	}
+
+	stats, err := db.VacuumVLOG()
+	if err != nil {
+		t.Fatalf("VacuumVLOG: %v", err)
+	}
+	if stats.NewVLOGSize >= junkSize {
+		t.Fatalf("VacuumVLOG preserved stale VLOG.new prefix: NewVLOGSize=%d junkSize=%d stats=%v",
+			stats.NewVLOGSize, junkSize, stats)
+	}
+	mustGet(t, db, "live", makeTestValue(300))
+	mustMiss(t, db, "dead")
 }
 
 // TestFlexDB_VLOG_DedupSameValue verifies that overwriting keys with the

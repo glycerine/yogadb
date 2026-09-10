@@ -674,9 +674,10 @@ func (p *intervalCachePartition) cacheEntryDelete(fce *intervalCacheEntry, idx i
 
 func (c *intervalCache) destroyAll() {
 	for i := range c.partitions {
-		p := &c.partitions[i]
-		p.mu.Lock()
-		p.tick = nil // let GC clean up
-		p.mu.Unlock()
+			p := &c.partitions[i]
+			p.mu.Lock()
+			p.tick = nil // let GC clean up
+			p.size = 0
+			p.mu.Unlock()
+		}
 	}
-}
