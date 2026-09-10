@@ -275,17 +275,18 @@ Every opened handle starts in a read-disabled load phase where only
 Batch.Set(), Batch.SetBytes(), Batch.Delete(), Batch.Commit(), and db.Sync()
 are supported. On an empty database these batches use the optimized initial
 bulk builder. On a database reopened with existing data, the same
-pre-AllowReads batch API is kept as a sorted reload run and merged into the
-existing database when db.AllowReads() or db.Sync() is called. Overlapping keys
+read-disabled load phase ist still enforced. Again the first batch of writes
+is special and fast: it is kept aside and uses the fast-path-full-database merge to
+integrate keys into the existing database when db.AllowReads() or db.Sync() is called. Overlapping keys
 are resolved by HLC; the highest-HLC record wins. Tombstones are just
 timestamped records, so a tombstone deletes a value only when the tombstone has
-the winning HLC.
+the winning HLC timetamp.
 
 The user must call db.AllowReads() to end the load phase and enable reading
 Get/Find, singleton Put/Delete, transactions, range deletes, Clear, Merge,
 vacuum, and integrity checks. Violations of this contract will panic
 immediately to teach the expected use pattern.
-x
+
 ## ymerge_into
 
 Use `ymerge_into [-ties-to-dest] <destination-db> <source-db>` to merge the source
