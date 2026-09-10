@@ -16,7 +16,7 @@ const cmd = "yvac"
 func main() {
 
 	if len(os.Args) != 2 {
-		fmt.Fprintf(os.Stderr, "%v error: provide path to database to dump as only argument.\n", cmd)
+		fmt.Fprintf(os.Stderr, "%v error: provide path to database to vacuum as the only argument.\n", cmd)
 		os.Exit(1)
 	}
 	dbPath := os.Args[1]
