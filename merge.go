@@ -29,6 +29,14 @@ type MergeStats struct {
 	MaxMergedResultHLC  HLC
 }
 
+// MergeOptions controls conflict resolution for DB-into-DB merges.
+type MergeOptions struct {
+	// TiesToDestination keeps the destination record when source and destination
+	// contain the same key with exactly the same HLC. By default, equal-HLC ties
+	// go to the source.
+	TiesToDestination bool
+}
+
 type mergeCursor interface {
 	peek() (KV, bool, error)
 	next() (KV, bool, error)
@@ -482,7 +490,7 @@ func (db *FlexDB) installMergedTreeLocked(newTree *FlexTree, appendEnd uint64, s
 	return nil
 }
 
-func (db *FlexDB) mergeFromCursorLocked(src mergeCursor, sourceMaxHLC HLC, prepareSourceWinner func(KV) (KV, error)) (*MergeStats, error) {
+func (db *FlexDB) mergeFromCursorLocked(src mergeCursor, sourceMaxHLC HLC, opts MergeOptions, prepareSourceWinner func(KV) (KV, error)) (*MergeStats, error) {
 	stats := &MergeStats{MaxMergedSourceHLC: sourceMaxHLC}
 	if src == nil {
 		return stats, nil
@@ -578,7 +586,7 @@ func (db *FlexDB) mergeFromCursorLocked(src mergeCursor, sourceMaxHLC HLC, prepa
 				return stats, err
 			}
 		}
-		if err := db.mergeKVSlicesIntoOutput(oldKVs, newKVs, prepareSourceWinner, out, stats); err != nil {
+		if err := db.mergeKVSlicesIntoOutput(oldKVs, newKVs, opts, prepareSourceWinner, out, stats); err != nil {
 			return stats, err
 		}
 	}
@@ -611,7 +619,17 @@ func (db *FlexDB) mergeFromCursorLocked(src mergeCursor, sourceMaxHLC HLC, prepa
 	return stats, nil
 }
 
-func (db *FlexDB) mergeKVSlicesIntoOutput(oldKVs, newKVs []KV, prepareSourceWinner func(KV) (KV, error), out *mergeOutputBuilder, stats *MergeStats) error {
+func mergeSourceWinsConflict(oldKV, newKV KV, opts MergeOptions) bool {
+	if newKV.Hlc > oldKV.Hlc {
+		return true
+	}
+	if newKV.Hlc < oldKV.Hlc {
+		return false
+	}
+	return !opts.TiesToDestination
+}
+
+func (db *FlexDB) mergeKVSlicesIntoOutput(oldKVs, newKVs []KV, opts MergeOptions, prepareSourceWinner func(KV) (KV, error), out *mergeOutputBuilder, stats *MergeStats) error {
 	i, j := 0, 0
 	for i < len(oldKVs) || j < len(newKVs) {
 		if i >= len(oldKVs) {
@@ -654,7 +672,7 @@ func (db *FlexDB) mergeKVSlicesIntoOutput(oldKVs, newKVs []KV, prepareSourceWinn
 			}
 			j++
 		default:
-			if newKV.Hlc >= oldKV.Hlc {
+			if mergeSourceWinsConflict(oldKV, newKV, opts) {
 				prepared, err := prepareSourceWinner(newKV)
 				if err != nil {
 					return err
@@ -682,7 +700,7 @@ func (db *FlexDB) mergeReloadBulkLocked() error {
 	}
 	kvs := sortedBulkIngestKVs(&db.mt.bulk)
 	cursor := newSliceMergeCursor(kvs)
-	_, err := db.mergeFromCursorLocked(cursor, 0, func(kv KV) (KV, error) {
+	_, err := db.mergeFromCursorLocked(cursor, 0, MergeOptions{}, func(kv KV) (KV, error) {
 		return kv, nil
 	})
 	return err
@@ -690,8 +708,14 @@ func (db *FlexDB) mergeReloadBulkLocked() error {
 
 // MergeFrom merges every raw KV record from src into db. If both databases
 // contain the same key, the higher HLC wins; on equal HLC, src wins. Tombstones
-// in src are preserved and can delete destination keys.
+// are ordinary timestamped records: a tombstone deletes another record only
+// when the tombstone wins the HLC conflict.
 func (db *FlexDB) MergeFrom(src *FlexDB) (*MergeStats, error) {
+	return db.MergeFromWithOptions(src, MergeOptions{})
+}
+
+// MergeFromWithOptions is MergeFrom with explicit conflict-resolution options.
+func (db *FlexDB) MergeFromWithOptions(src *FlexDB, opts MergeOptions) (*MergeStats, error) {
 	db.requireReadsAllowed()
 	src.requireReadsAllowed()
 	if db == src {
@@ -715,7 +739,7 @@ func (db *FlexDB) MergeFrom(src *FlexDB) (*MergeStats, error) {
 	}
 
 	cursor := newDBRawMergeCursor(src)
-	stats, err := db.mergeFromCursorLocked(cursor, HLC(src.ff.tree.MaxHLC), func(kv KV) (KV, error) {
+	stats, err := db.mergeFromCursorLocked(cursor, HLC(src.ff.tree.MaxHLC), opts, func(kv KV) (KV, error) {
 		if !kv.HasVPtr() {
 			return kv, nil
 		}

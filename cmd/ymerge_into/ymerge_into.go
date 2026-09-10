@@ -1,7 +1,9 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -11,23 +13,49 @@ import (
 const cmd = "ymerge_into"
 
 func main() {
-	if len(os.Args) != 3 {
-		fmt.Fprintf(os.Stderr, "%s use: ymerge_into <destination-db> <source-db>\n", cmd)
-		os.Exit(1)
+	os.Exit(runYMergeInto(os.Args[1:], os.Stderr))
+}
+
+type ymergeArgs struct {
+	dstPath           string
+	srcPath           string
+	tiesToDestination bool
+}
+
+func parseYMergeArgs(args []string, stderr io.Writer) (ymergeArgs, int) {
+	var out ymergeArgs
+	flags := flag.NewFlagSet(cmd, flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	tiesToDest := flags.Bool("ties-to-dest", false, "resolve equal-HLC conflicts in favor of the destination database")
+	if err := flags.Parse(args); err != nil {
+		return out, 2
 	}
-	srcPath := os.Args[2]
-	dstPath := os.Args[1]
-	if !dirExists(srcPath) {
-		fmt.Fprintf(os.Stderr, "%s error: source database path does not exist: %q\n", cmd, srcPath)
-		os.Exit(1)
+	if flags.NArg() != 2 {
+		fmt.Fprintf(stderr, "%s use: ymerge_into [-ties-to-dest] <destination-db> <source-db>\n", cmd)
+		return out, 2
 	}
-	if !dirExists(dstPath) {
-		fmt.Fprintf(os.Stderr, "%s error: destination database path does not exist: %q\n", cmd, dstPath)
-		os.Exit(1)
+	out.dstPath = flags.Arg(0)
+	out.srcPath = flags.Arg(1)
+	out.tiesToDestination = *tiesToDest
+	if out.srcPath == out.dstPath {
+		fmt.Fprintf(stderr, "%s error: source and destination must be different databases\n", cmd)
+		return out, 2
 	}
-	if srcPath == dstPath {
-		fmt.Fprintf(os.Stderr, "%s error: source and destination must be different databases\n", cmd)
-		os.Exit(1)
+	return out, 0
+}
+
+func runYMergeInto(args []string, stderr io.Writer) int {
+	parsed, code := parseYMergeArgs(args, stderr)
+	if code != 0 {
+		return code
+	}
+	if !dirExists(parsed.dstPath) {
+		fmt.Fprintf(stderr, "%s error: destination database path does not exist: %q\n", cmd, parsed.dstPath)
+		return 1
+	}
+	if !dirExists(parsed.srcPath) {
+		fmt.Fprintf(stderr, "%s error: source database path does not exist: %q\n", cmd, parsed.srcPath)
+		return 1
 	}
 
 	cfg := &yogadb.Config{
@@ -35,31 +63,40 @@ func main() {
 		OmitMemWalFsync:         true,
 	}
 
-	src, err := yogadb.OpenFlexDB(srcPath, cfg)
-	panicOn(err)
-	defer src.Close()
-	src.AllowReads()
-
-	dst, err := yogadb.OpenFlexDB(dstPath, cfg)
-	panicOn(err)
+	dst, err := yogadb.OpenFlexDB(parsed.dstPath, cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s error: open destination: %v\n", cmd, err)
+		return 1
+	}
 	defer dst.Close()
 	dst.AllowReads()
 
+	src, err := yogadb.OpenFlexDB(parsed.srcPath, cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s error: open source: %v\n", cmd, err)
+		return 1
+	}
+	defer src.Close()
+	src.AllowReads()
+
 	t0 := time.Now()
-	stats, err := dst.MergeFrom(src)
-	panicOn(err)
-	panicOn(dst.Sync())
-	fmt.Fprintf(os.Stderr, "%s merged %q into %q in %v\n", cmd, srcPath, dstPath, time.Since(t0))
-	fmt.Fprintf(os.Stderr, "stats: %+v\n", *stats)
+	stats, err := dst.MergeFromWithOptions(src, yogadb.MergeOptions{
+		TiesToDestination: parsed.tiesToDestination,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "%s error: merge: %v\n", cmd, err)
+		return 1
+	}
+	if err := dst.Sync(); err != nil {
+		fmt.Fprintf(stderr, "%s error: sync destination: %v\n", cmd, err)
+		return 1
+	}
+	fmt.Fprintf(stderr, "%s merged %q into %q in %v\n", cmd, parsed.srcPath, parsed.dstPath, time.Since(t0))
+	fmt.Fprintf(stderr, "stats: %+v\n", *stats)
+	return 0
 }
 
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
-}
-
-func panicOn(err error) {
-	if err != nil {
-		panic(err)
-	}
 }

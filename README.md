@@ -277,16 +277,20 @@ are supported. On an empty database these batches use the optimized initial
 bulk builder. On a database reopened with existing data, the same
 pre-AllowReads batch API is kept as a sorted reload run and merged into the
 existing database when db.AllowReads() or db.Sync() is called. Overlapping keys
-are resolved by HLC; the newer batch wins, and tombstones delete keys.
+are resolved by HLC; the highest-HLC record wins. Tombstones are just
+timestamped records, so a tombstone deletes a value only when the tombstone has
+the winning HLC.
 
 The user must call db.AllowReads() to end the load phase and enable reading
 Get/Find, singleton Put/Delete, transactions, range deletes, Clear, Merge,
 vacuum, and integrity checks. Violations of this contract will panic
 immediately to teach the expected use pattern.
 
-Use `ymerge_into <destination-db> <source-db>` to merge one complete YogaDB
-database into another from the command line. The same HLC rule is used:
-higher-HLC records win, and source tombstones can delete destination keys.
+Use `ymerge_into [-ties-to-dest] <destination-db> <source-db>` to merge one
+complete YogaDB database into another from the command line. The destination is
+mutated. The highest-HLC record wins for overlapping keys; equal-HLC ties
+default to the source database, and `-ties-to-dest` keeps the destination record
+instead.
 
 # getting started
 
