@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"testing"
+	"unsafe"
 )
 
 func TestKeyStableAddFindAndSortedOrder(t *testing.T) {
@@ -126,6 +127,76 @@ func TestKeyStableTombKeysStaySorted(t *testing.T) {
 	}
 }
 
+func TestKeyStableSetGetAndReplaceKV(t *testing.T) {
+	s := newKeyStable(4)
+	for _, kv := range []KV{
+		{Key: "b", Value: []byte("vb"), Vptr: VPtr{Length: 2}, Hlc: 1},
+		{Key: "a", Value: []byte("va"), Vptr: VPtr{Length: 2}, Hlc: 2},
+	} {
+		if old, replaced := s.set(kv); replaced {
+			t.Fatalf("set(%q) replaced old KV %#v, want fresh insert", kv.Key, old)
+		}
+	}
+
+	old, replaced := s.set(KV{Key: "b", Value: []byte("vb2"), Vptr: VPtr{Length: 3, Offset: 99}, Hlc: 3})
+	if !replaced {
+		t.Fatal("set duplicate did not report replacement")
+	}
+	if old.Key != "b" || string(old.Value) != "vb" || old.Hlc != 1 {
+		t.Fatalf("old KV = %#v, want key b value vb hlc 1", old)
+	}
+	if s.Len() != 2 {
+		t.Fatalf("Len after replacement = %d, want 2", s.Len())
+	}
+
+	got, found := s.get("b")
+	if !found {
+		t.Fatal("get(b) was not found")
+	}
+	if got.Key != "b" || string(got.Value) != "vb2" || got.Vptr.Offset != 99 || got.Hlc != 3 {
+		t.Fatalf("get(b) = %#v, want replacement KV", got)
+	}
+	if got := keyStableSortedKVKeys(s); !slices.Equal(got, []string{"a", "b"}) {
+		t.Fatalf("sorted KV keys = %#v, want %#v", got, []string{"a", "b"})
+	}
+}
+
+func TestKeyStableSetCopiesKeyAndPreservesValueAlias(t *testing.T) {
+	s := newKeyStable(1)
+	key := []byte("alias-key")
+	keyString := unsafe.String(unsafe.SliceData(key), len(key))
+	kv := KV{
+		Key:   keyString,
+		Value: key,
+		Vptr:  VPtr{Length: uint64(len(key))},
+		Hlc:   7,
+	}
+	if !slottedInlineValueAliasesKey(kv) {
+		t.Fatal("test setup should have key/value aliasing")
+	}
+
+	if _, replaced := s.set(kv); replaced {
+		t.Fatal("first set replaced an existing key")
+	}
+	for i := range key {
+		key[i] = 'x'
+	}
+
+	got, found := s.get("alias-key")
+	if !found {
+		t.Fatal("get(alias-key) was not found")
+	}
+	if got.Key != "alias-key" || string(got.Value) != "alias-key" || got.Hlc != 7 {
+		t.Fatalf("arena-owned alias KV = %#v, want key/value alias-key hlc 7", got)
+	}
+	if !slottedInlineValueAliasesKey(got) {
+		t.Fatalf("returned KV should preserve key/value aliasing: %#v", got)
+	}
+	if _, found := s.get("xxxxxxxxx"); found {
+		t.Fatal("mutating caller buffer changed keyStable lookup key")
+	}
+}
+
 func TestKeyStableClearReusesTable(t *testing.T) {
 	s := newKeyStable(4)
 	s.addKey([]byte("b"))
@@ -200,6 +271,7 @@ func TestKeyStableRandomOperationsAgreeWithMap(t *testing.T) {
 
 func keyStableSortedKeys(s *keyStable) []string {
 	keys := make([]string, len(s.sorted))
+	s.ensureSorted()
 	for i, stableIdx := range s.sorted {
 		keys[i] = string(s.at(stableIdx))
 	}
@@ -211,6 +283,15 @@ func keyStableTombKeys(s *keyStable) []string {
 	for i, stableIdx := range s.tomb {
 		keys[i] = string(s.at(stableIdx))
 	}
+	return keys
+}
+
+func keyStableSortedKVKeys(s *keyStable) []string {
+	keys := make([]string, 0, len(s.sorted))
+	s.Scan(func(kv KV) bool {
+		keys = append(keys, kv.Key)
+		return true
+	})
 	return keys
 }
 

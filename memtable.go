@@ -8,18 +8,16 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/tidwall/btree"
-
 	"github.com/glycerine/vfs"
 )
 
 // ====================== memtable ======================
 
 type memtable struct {
-	// backing in memory B-tree (was skiplist in C).
-	bt *btree.BTreeG[KV]
+	// backing in-memory sorted key arena.
+	ks keyStable
 	// bulk is used only for pristine initial batch loads. It
-	// avoid per-key B-tree insertion until a read requires materialization or
+	// avoid per-key sorted-table insertion until a read requires materialization or
 	// Sync streams the sorted entries directly to FlexSpace.
 	bulk bulkIngestBuilder
 
@@ -40,8 +38,7 @@ type memtable struct {
 
 func newMemtable(memWalFD vfs.File) *memtable {
 	return &memtable{
-		// default degree is 32, to change it:
-		bt:                btree.NewBTreeGOptions[KV](kvLess, btree.Options{Degree: 32}),
+		ks:                makeKeyStable(0),
 		memWalFD:          memWalFD,
 		memWalBuf:         make([]byte, 0, memtableWalBufCap),
 		memWalWriteOffset: memWalHeaderSize,
@@ -50,7 +47,7 @@ func newMemtable(memWalFD vfs.File) *memtable {
 }
 
 func (m *memtable) reset() {
-	m.bt.Clear()
+	m.ks.clear()
 	m.vtypArena = nil
 	m.empty = true
 	m.size = 0
@@ -71,7 +68,7 @@ func (m *memtable) vtypBytes(vtyp uint64) []byte {
 // (e.g. db.go:165 in Batch.Commit)
 // Returns the previous KV for the same key and whether it was replaced.
 func (m *memtable) put(kv KV) (KV, bool) {
-	old, replaced := m.bt.Set(kv)
+	old, replaced := m.ks.set(kv)
 	if replaced {
 		m.size -= int64(kvSizeApprox(&old))
 	}
@@ -114,7 +111,7 @@ func (m *memtable) materializeBulk() {
 	for si := range m.bulk.segments {
 		seg := &m.bulk.segments[si]
 		for i, n := 0, seg.len(); i < n; i++ {
-			m.bt.Set(seg.kv(i))
+			m.ks.set(seg.kv(i))
 		}
 	}
 	m.bulk.reset()
@@ -124,7 +121,7 @@ func (m *memtable) get(key string) (KV, bool) {
 	if kv, ok := m.bulk.get(key); ok {
 		return kv, true
 	}
-	return m.bt.Get(KV{Key: key})
+	return m.ks.get(key)
 }
 
 func (m *memtable) logAppend(kv KV) error {

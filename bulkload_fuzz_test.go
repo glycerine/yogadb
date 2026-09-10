@@ -123,8 +123,8 @@ func FuzzBulkLoadBeforeAllowReads(f *testing.F) {
 			if db.allowReads.Load() {
 				t.Fatal("bulk-load fuzz allowed reads before final AllowReads")
 			}
-			if got := db.mt.bt.Len(); got != 0 {
-				t.Fatalf("pre-AllowReads fast batch used normal memtable: bt.Len()=%d", got)
+			if got := db.mt.ks.Len(); got != 0 {
+				t.Fatalf("pre-AllowReads fast batch used normal memtable: keyStable.Len()=%d", got)
 			}
 			if db.mt.bulk.count > maxBulkCount {
 				maxBulkCount = db.mt.bulk.count
@@ -198,8 +198,8 @@ func FuzzBulkLoadBeforeAllowReads(f *testing.F) {
 				if db.allowReads.Load() {
 					t.Fatal("db.Sync enabled reads before AllowReads")
 				}
-				if got := db.mt.bt.Len(); got != 0 {
-					t.Fatalf("pre-AllowReads Sync left normal memtable entries: bt.Len()=%d", got)
+				if got := db.mt.ks.Len(); got != 0 {
+					t.Fatalf("pre-AllowReads Sync left normal memtable entries: keyStable.Len()=%d", got)
 				}
 			}
 		}
@@ -339,8 +339,8 @@ func FuzzBulkLoadReloadBeforeAllowReads(f *testing.F) {
 			if db.allowReads.Load() {
 				t.Fatal("second handle allowed reads before final AllowReads")
 			}
-			if got := db.mt.bt.Len(); got != 0 {
-				t.Fatalf("second pre-AllowReads batch used normal memtable: bt.Len()=%d", got)
+			if got := db.mt.ks.Len(); got != 0 {
+				t.Fatalf("second pre-AllowReads batch used normal memtable: keyStable.Len()=%d", got)
 			}
 			if db.mt.bulk.count > maxBulkCount {
 				maxBulkCount = db.mt.bulk.count
@@ -408,8 +408,8 @@ func FuzzBulkLoadReloadBeforeAllowReads(f *testing.F) {
 				if db.allowReads.Load() {
 					t.Fatal("second db.Sync enabled reads before AllowReads")
 				}
-				if got := db.mt.bt.Len(); got != 0 {
-					t.Fatalf("second pre-AllowReads Sync left normal memtable entries: bt.Len()=%d", got)
+				if got := db.mt.ks.Len(); got != 0 {
+					t.Fatalf("second pre-AllowReads Sync left normal memtable entries: keyStable.Len()=%d", got)
 				}
 			}
 		}

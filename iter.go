@@ -4,8 +4,6 @@ import (
 	//"fmt"
 	"sort"
 	"sync/atomic"
-
-	"github.com/tidwall/btree"
 )
 
 // iterPreFetchKeyCount is the number of keys to prefetch into the iterator's
@@ -290,46 +288,18 @@ func (it *Iter) currentValueBytes(src []byte) []byte {
 	return it.valBuf
 }
 
-// ====================== btree one-shot seek helpers ======================
+// ====================== memtable one-shot seek helpers ======================
 
-// btreeSeekGE does a one-shot seek in a btree: finds the first item >= target.
+// keyStableSeekGE does a one-shot seek in a keyStable: finds the first item >= target.
 // If strict is true, skips exact matches (finds first item > target).
-func btreeSeekGE(bt *btree.BTreeG[KV], target string, strict bool) (KV, bool) {
-	var result KV
-	var found bool
-	bt.Ascend(KV{Key: target}, func(item KV) bool {
-		if strict && item.Key == target {
-			return true // skip exact match
-		}
-		result = item
-		found = true
-		return false
-	})
-	return result, found
+func keyStableSeekGE(ks *keyStable, target string, strict bool) (KV, bool) {
+	return ks.seekGE(target, strict)
 }
 
-// btreeSeekLE does a one-shot seek in a btree: finds the last item <= target.
+// keyStableSeekLE does a one-shot seek in a keyStable: finds the last item <= target.
 // If strict is true, skips exact matches (finds last item < target).
-func btreeSeekLE(bt *btree.BTreeG[KV], target string, strict bool) (KV, bool) {
-	var result KV
-	var found bool
-	if target == "" {
-		bt.Reverse(func(item KV) bool {
-			result = item
-			found = true
-			return false
-		})
-	} else {
-		bt.Descend(KV{Key: target}, func(item KV) bool {
-			if strict && item.Key == target {
-				return true // skip exact match
-			}
-			result = item
-			found = true
-			return false
-		})
-	}
-	return result, found
+func keyStableSeekLE(ks *keyStable, target string, strict bool) (KV, bool) {
+	return ks.seekLE(target, strict)
 }
 
 // ====================== FlexSpace one-shot seek helpers ======================
@@ -895,13 +865,13 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 		var candidates [2]KV
 		var have [2]bool
 
-		candidates[0], have[0] = btreeSeekGE(db.mt.bt, target, strict)
-			var seekErr error
-			candidates[1], have[1], seekErr = db.flexSpaceSeekGE(target, strict)
-			if seekErr != nil {
-				iterIOPanic(seekErr)
-				return
-			}
+		candidates[0], have[0] = keyStableSeekGE(&db.mt.ks, target, strict)
+		var seekErr error
+		candidates[1], have[1], seekErr = db.flexSpaceSeekGE(target, strict)
+		if seekErr != nil {
+			iterIOPanic(seekErr)
+			return
+		}
 
 		// Find minimum key
 		var minKey string
@@ -940,11 +910,11 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 		if bestKV.HasVPtr() {
 			return []byte(minKey), nil, bestKV.Hlc, true, bestKV.Vptr, bestKV.Vtyp(), true
 		}
-			val, vtype, _, err := db.resolveVPtr(bestKV)
-			if err != nil {
-				iterIOPanic(err)
-				return
-			}
+		val, vtype, _, err := db.resolveVPtr(bestKV)
+		if err != nil {
+			iterIOPanic(err)
+			return
+		}
 		return []byte(minKey), dupBytes(val), bestKV.Hlc, false, bestKV.Vptr, vtype, true
 	}
 }
@@ -1058,14 +1028,14 @@ func (it *Iter) servePrefetchReverse() bool {
 	return false
 }
 
-// mergedSeekGEFastFlexSpace performs a merged seek using one-shot btree seeks for
+// mergedSeekGEFastFlexSpace performs a merged seek using one-shot keyStable seeks for
 // memtable and the stateful FlexSpace cursor. The cursor should already be
 // positioned at or past the target. Caller must hold topMutRW.RLock().
 func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, vtyp uint64, found bool) {
 	db := it.db
 
 	// Fast path: memtable empty -> pure FlexSpace iteration.
-	// Skip btree seek and 2-way merging.
+	// Skip memtable seek and 2-way merging.
 	if db.mt.empty {
 		kv, found = it.flexSpaceOnlySeekGE(target, strict)
 		it.valueNeedsCopy = found
@@ -1081,7 +1051,7 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, v
 		var have [2]bool
 
 		// Memtable: one-shot seek
-		candidates[0], have[0] = btreeSeekGE(db.mt.bt, target, strict)
+		candidates[0], have[0] = keyStableSeekGE(&db.mt.ks, target, strict)
 
 		// FlexSpace: use stateful cursor
 		it.positionFlexCursorForSeek(target, strict)
@@ -1135,17 +1105,17 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, v
 		if bestKV.HasVPtr() {
 			return &KV{Key: minKey, Hlc: bestKV.Hlc, Vptr: bestKV.Vptr, Value: dupBytes(bestKV.Value)}, bestKV.Vtyp(), true
 		}
-			val, vtype, _, err := db.resolveVPtr(bestKV)
-			if err != nil {
-				iterIOPanic(err)
-				return
-			}
+		val, vtype, _, err := db.resolveVPtr(bestKV)
+		if err != nil {
+			iterIOPanic(err)
+			return
+		}
 		return &KV{Key: minKey, Value: dupBytes(val), Vptr: bestKV.Vptr, Hlc: bestKV.Hlc}, vtype, true
 	}
 }
 
 // flexSpaceOnlySeekGE is the ultra-fast path when the memtable is empty.
-// Steps through the FlexSpace cursor with zero btree overhead and returns a
+// Steps through the FlexSpace cursor with zero memtable overhead and returns a
 // pointer directly into the cache entry's KV slice (zero-copy). Skips tombstones.
 // Caller must hold topMutRW.RLock().
 func (it *Iter) flexSpaceOnlySeekGE(target string, strict bool) (kv *KV, found bool) {
@@ -1234,13 +1204,13 @@ func (db *FlexDB) mergedSeekLE(target string, strict bool) (kv *KV, found bool) 
 		var candidates [2]KV
 		var have [2]bool
 
-		candidates[0], have[0] = btreeSeekLE(db.mt.bt, target, strict)
-			var seekErr error
-			candidates[1], have[1], seekErr = db.flexSpaceSeekLE(target, strict)
-			if seekErr != nil {
-				iterIOPanic(seekErr)
-				return
-			}
+		candidates[0], have[0] = keyStableSeekLE(&db.mt.ks, target, strict)
+		var seekErr error
+		candidates[1], have[1], seekErr = db.flexSpaceSeekLE(target, strict)
+		if seekErr != nil {
+			iterIOPanic(seekErr)
+			return
+		}
 
 		// Find maximum key
 		var maxKey string

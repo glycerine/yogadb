@@ -3,6 +3,9 @@ package yogadb
 import (
 	"bytes"
 	"sort"
+	"unsafe"
+
+	"github.com/cespare/xxhash/v2"
 )
 
 // keyStable is a place to keep your keys
@@ -16,21 +19,45 @@ type keyStable struct {
 	stable []int  // stable store, this never changes, is only appended to. says where to find the string
 	sorted []int  // sorted indexes of stable in ascending key order.
 	tomb   []int  // index in stable of all deleted keys
+
+	kvs           []KV   // parallel to stable; Key is kept empty to avoid retaining caller key storage.
+	valueAliasKey []bool // true when kv.Value should alias the arena key bytes.
+	hashNext      []int  // collision chain for index; parallel to stable.
+	index         map[uint64]int
+	sortedDirty   bool
 }
 
-func newKeyStable(n int) *keyStable {
-	return &keyStable{
+func makeKeyStable(n int) keyStable {
+	if n <= 0 {
+		n = 256 << 10
+	}
+	return keyStable{
 		keys:   make([]byte, 0, 8<<20),
-		stable: make([]int, 0, 256<<10),
-		sorted: make([]int, 0, 256<<10),
+		stable: make([]int, 0, n),
+		sorted: make([]int, 0, n),
+		kvs:    make([]KV, 0, n),
+		index:  make(map[uint64]int, n),
 	}
 }
 
+func newKeyStable(n int) *keyStable {
+	s := makeKeyStable(n)
+	return &s
+}
+
 func (s *keyStable) clear() {
+	for i := range s.kvs {
+		s.kvs[i] = KV{}
+	}
 	s.keys = s.keys[:0]
 	s.stable = s.stable[:0]
 	s.sorted = s.sorted[:0]
 	s.tomb = s.tomb[:0]
+	s.kvs = s.kvs[:0]
+	s.valueAliasKey = s.valueAliasKey[:0]
+	s.hashNext = s.hashNext[:0]
+	clear(s.index)
+	s.sortedDirty = false
 }
 
 func (s *keyStable) addKey(key []byte) (whereInStable int) {
@@ -38,21 +65,38 @@ func (s *keyStable) addKey(key []byte) (whereInStable int) {
 	// INVAR: string i=0 is stored in s.keys[0:s.stable[i]]
 	//        string i>0 is stored in s.keys[s.stable[i-1], s.stable[i]]
 
-	// already present?
-	w, found := s.findKey(key)
+	whereInStable, found := s.findStableByBytes(key)
 	if found {
-		return s.sorted[w]
+		return whereInStable
 	}
-	// not present, add it at the binary-search insertion point.
-	whereInStable = len(s.stable)
-	s.stable = append(s.stable, len(s.keys)+len(key))
+	return s.appendKeyBytes(key, xxhash.Sum64(key))
+}
+
+func (s *keyStable) appendKeyBytes(key []byte, h uint64) (whereInStable int) {
+	whereInStable = s.appendKeyCommon(len(key), h)
 	s.keys = append(s.keys, key...)
-	s.sorted = append(s.sorted, 0)
-	if w < len(s.sorted)-1 {
-		copy(s.sorted[w+1:], s.sorted[w:])
+	return whereInStable
+}
+
+func (s *keyStable) appendKeyString(key string, h uint64) (whereInStable int) {
+	whereInStable = s.appendKeyCommon(len(key), h)
+	s.keys = append(s.keys, key...)
+	return whereInStable
+}
+
+func (s *keyStable) appendKeyCommon(n int, h uint64) (whereInStable int) {
+	if s.index == nil {
+		s.ensureIndex()
 	}
-	s.sorted[w] = whereInStable
-	return
+	whereInStable = len(s.stable)
+	s.stable = append(s.stable, len(s.keys)+n)
+	s.kvs = append(s.kvs, KV{})
+	s.valueAliasKey = append(s.valueAliasKey, false)
+	s.hashNext = append(s.hashNext, s.index[h]-1)
+	s.index[h] = whereInStable + 1
+	s.sorted = append(s.sorted, whereInStable)
+	s.sortedDirty = true
+	return whereInStable
 }
 
 func (s *keyStable) Less(i, j int) bool {
@@ -80,9 +124,242 @@ func (s *keyStable) Len() int {
 }
 
 func (s *keyStable) findKey(needle []byte) (where int, found bool) {
+	s.ensureSorted()
 	return sort.Find(len(s.sorted), func(i int) int {
 		return bytes.Compare(needle, s.at(s.sorted[i]))
 	})
+}
+
+func (s *keyStable) findKeyString(needle string) (where int, found bool) {
+	s.ensureSorted()
+	return sort.Find(len(s.sorted), func(i int) int {
+		return compareStringBytes(needle, s.at(s.sorted[i]))
+	})
+}
+
+func (s *keyStable) ensureSorted() {
+	if !s.sortedDirty {
+		return
+	}
+	sort.Sort(s)
+	s.sortedDirty = false
+}
+
+func (s *keyStable) ensureIndex() {
+	if s.index != nil {
+		return
+	}
+	s.index = make(map[uint64]int, len(s.stable))
+	s.hashNext = s.hashNext[:0]
+	for stableIdx := range s.stable {
+		h := xxhash.Sum64(s.at(stableIdx))
+		s.hashNext = append(s.hashNext, s.index[h]-1)
+		s.index[h] = stableIdx + 1
+	}
+}
+
+func (s *keyStable) findStableByBytes(key []byte) (stableIdx int, found bool) {
+	s.ensureIndex()
+	for stableIdx = s.index[xxhash.Sum64(key)] - 1; stableIdx >= 0; stableIdx = s.hashNext[stableIdx] {
+		if bytes.Equal(key, s.at(stableIdx)) {
+			return stableIdx, true
+		}
+	}
+	return 0, false
+}
+
+func (s *keyStable) findStableByString(key string) (stableIdx int, found bool) {
+	s.ensureIndex()
+	for stableIdx = s.index[xxhash.Sum64String(key)] - 1; stableIdx >= 0; stableIdx = s.hashNext[stableIdx] {
+		if compareStringBytes(key, s.at(stableIdx)) == 0 {
+			return stableIdx, true
+		}
+	}
+	return 0, false
+}
+
+func (s *keyStable) removeStableFromIndex(stableIdx int) {
+	h := xxhash.Sum64(s.at(stableIdx))
+	prev := -1
+	for cur := s.index[h] - 1; cur >= 0; cur = s.hashNext[cur] {
+		if cur == stableIdx {
+			if prev < 0 {
+				s.index[h] = s.hashNext[cur] + 1
+				if s.index[h] == 0 {
+					delete(s.index, h)
+				}
+			} else {
+				s.hashNext[prev] = s.hashNext[cur]
+			}
+			s.hashNext[cur] = -1
+			return
+		}
+		prev = cur
+	}
+}
+
+func compareStringBytes(a string, b []byte) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] < b[i] {
+			return -1
+		}
+		if a[i] > b[i] {
+			return 1
+		}
+	}
+	if len(a) < len(b) {
+		return -1
+	}
+	if len(a) > len(b) {
+		return 1
+	}
+	return 0
+}
+
+func bytesArenaString(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	return unsafe.String(unsafe.SliceData(b), len(b))
+}
+
+func (s *keyStable) kvAt(stableIdx int) KV {
+	kv := s.kvs[stableIdx]
+	key := s.at(stableIdx)
+	kv.Key = bytesArenaString(key)
+	if s.valueAliasKey[stableIdx] {
+		kv.Value = key
+	}
+	return kv
+}
+
+func (s *keyStable) kvAtOwnedKey(stableIdx int, keyArena *[]byte) KV {
+	kv := s.kvAt(stableIdx)
+	if len(kv.Key) == 0 {
+		return kv
+	}
+	start := len(*keyArena)
+	*keyArena = append(*keyArena, s.at(stableIdx)...)
+	key := (*keyArena)[start:]
+	kv.Key = bytesArenaString(key)
+	if s.valueAliasKey[stableIdx] {
+		kv.Value = key
+	}
+	return kv
+}
+
+func (s *keyStable) storeKVAt(stableIdx int, kv KV) {
+	valueAliasKey := slottedInlineValueAliasesKey(kv)
+	kv.Key = ""
+	if valueAliasKey {
+		kv.Value = nil
+	}
+	s.kvs[stableIdx] = kv
+	s.valueAliasKey[stableIdx] = valueAliasKey
+}
+
+func (s *keyStable) set(kv KV) (old KV, replaced bool) {
+	stableIdx, found := s.findStableByString(kv.Key)
+	if found {
+		old = s.kvAt(stableIdx)
+		s.storeKVAt(stableIdx, kv)
+		return old, true
+	}
+	stableIdx = s.appendKeyString(kv.Key, xxhash.Sum64String(kv.Key))
+	s.storeKVAt(stableIdx, kv)
+	return KV{}, false
+}
+
+func (s *keyStable) get(key string) (KV, bool) {
+	stableIdx, found := s.findStableByString(key)
+	if !found {
+		return KV{}, false
+	}
+	return s.kvAt(stableIdx), true
+}
+
+func (s *keyStable) seekGE(target string, strict bool) (KV, bool) {
+	w, found := s.findKeyString(target)
+	if strict && found {
+		w++
+	}
+	if w >= len(s.sorted) {
+		return KV{}, false
+	}
+	return s.kvAt(s.sorted[w]), true
+}
+
+func (s *keyStable) seekLE(target string, strict bool) (KV, bool) {
+	if len(s.sorted) == 0 {
+		return KV{}, false
+	}
+	if target == "" {
+		return s.kvAt(s.sorted[len(s.sorted)-1]), true
+	}
+	w, found := s.findKeyString(target)
+	if !found || strict {
+		w--
+	}
+	if w < 0 {
+		return KV{}, false
+	}
+	return s.kvAt(s.sorted[w]), true
+}
+
+func (s *keyStable) Ascend(pivot KV, iter func(KV) bool) {
+	w, _ := s.findKeyString(pivot.Key)
+	for ; w < len(s.sorted); w++ {
+		if !iter(s.kvAt(s.sorted[w])) {
+			return
+		}
+	}
+}
+
+func (s *keyStable) Descend(pivot KV, iter func(KV) bool) {
+	if pivot.Key == "" {
+		return
+	}
+	w, found := s.findKeyString(pivot.Key)
+	if !found {
+		w--
+	}
+	for ; w >= 0; w-- {
+		if !iter(s.kvAt(s.sorted[w])) {
+			return
+		}
+	}
+}
+
+func (s *keyStable) Scan(iter func(KV) bool) {
+	s.ensureSorted()
+	for _, stableIdx := range s.sorted {
+		if !iter(s.kvAt(stableIdx)) {
+			return
+		}
+	}
+}
+
+func (s *keyStable) Reverse(iter func(KV) bool) {
+	s.ensureSorted()
+	for i := len(s.sorted) - 1; i >= 0; i-- {
+		if !iter(s.kvAt(s.sorted[i])) {
+			return
+		}
+	}
+}
+
+func (s *keyStable) AscendOwnedKeys(pivot KV, iter func(KV) bool) {
+	w, _ := s.findKeyString(pivot.Key)
+	keyArena := make([]byte, 0, len(s.keys))
+	for ; w < len(s.sorted); w++ {
+		if !iter(s.kvAtOwnedKey(s.sorted[w], &keyArena)) {
+			return
+		}
+	}
 }
 
 func (s *keyStable) delKey(needle []byte) (found bool) {
@@ -92,6 +369,7 @@ func (s *keyStable) delKey(needle []byte) (found bool) {
 		return
 	}
 	deleted := s.sorted[w]
+	s.removeStableFromIndex(deleted)
 	tw, _ := sort.Find(len(s.tomb), func(i int) int {
 		return bytes.Compare(s.at(deleted), s.at(s.tomb[i]))
 	})

@@ -292,7 +292,7 @@ func (tx *WriteTx) Rollback() error {
 
 func (tx *WriteTx) rollbackOpen() error {
 	db := tx.db
-	db.mt.bt.Clear()
+	db.mt.ks.clear()
 	db.mt.empty = true
 	db.mt.size = 0
 	db.liveKeys = tx.beginLiveKeys

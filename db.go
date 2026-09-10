@@ -2,10 +2,10 @@ package yogadb
 
 // yogadb/db.go - Go port of flexspace/flexdb.c
 // FlexDB: a persistent ordered key-value store backed by FlexSpace.
-// Uses github.com/tidwall/btree for the in-memory write buffer (memtable).
+// Uses keyStable's sorted key arena for the in-memory write buffer (memtable).
 //
 // Architecture:
-//   Active Memtable (btree + WAL) -> (flush) -> FlexSpace
+//   Active Memtable (keyStable + WAL) -> (flush) -> FlexSpace
 //   Reads: check active memtable -> check inactive memtable -> check FlexSpace via sparse index
 //   Crash recovery: rebuild sparse index from FlexSpace tags, replay WAL logs.
 
@@ -475,7 +475,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	}
 
 	// Bypass the transaction system entirely - no COW snapshots, no ffMu.RLock,
-	// no write buffer btree. Instead, insert directly into the memtable and
+	// no write buffer tree. Instead, insert directly into the memtable and
 	// batch WAL writes under a single mt.memWalMut hold.
 	// This amortizes both mutex acquisitions across the entire batch.
 
@@ -595,7 +595,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 			db.persistCounters()
 			db.ff.Sync()
 
-			mt.bt.Clear()
+			mt.ks.clear()
 			mt.vtypArena = nil
 			mt.empty = true
 			mt.size = 0
@@ -1499,7 +1499,7 @@ func (db *FlexDB) materializeBulkInitialLocked() error {
 }
 
 func (db *FlexDB) bulkInitialFastPathEligibleLocked(m *memtable) bool {
-	return !db.allowReads.Load() && m.bt.Len() == 0
+	return !db.allowReads.Load() && m.ks.Len() == 0
 }
 
 func (db *FlexDB) requireReadsAllowed() {
@@ -3347,7 +3347,7 @@ func (db *FlexDB) writeLockHeldSyncR(forceTreeCheckpoint bool) error {
 		return fmt.Errorf("flexdb: Sync truncate memwal: %w", err)
 	}
 
-	db.mt.bt.Clear()
+	db.mt.ks.clear()
 	db.mt.vtypArena = nil
 	db.mt.empty = true
 	db.mt.size = 0
@@ -3517,7 +3517,7 @@ func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string,
 			db.persistCounters()
 			db.ff.Sync()
 
-			db.mt.bt.Clear()
+			db.mt.ks.clear()
 			db.mt.vtypArena = nil
 			db.mt.empty = true
 			db.mt.size = 0
@@ -4076,7 +4076,7 @@ func (db *FlexDB) writeLockHeldDeleteRangeWithHook(beforeWrite func() error, inc
 	if !db.mt.empty {
 		// Collect keys first since writeLockHeldPut mutates the memtable.
 		var keys []string
-		db.mt.bt.Ascend(KV{Key: begKey}, func(item KV) bool {
+		db.mt.ks.Ascend(KV{Key: begKey}, func(item KV) bool {
 			if !deleteRangeInBounds(item.Key, begKey, endKey, begInclusive, endInclusive) {
 				// Past endKey - stop iteration.
 				if deleteRangePastEnd(item.Key, endKey, endInclusive) {
@@ -4159,7 +4159,7 @@ func (db *FlexDB) writeLockHeldClearWithHook(beforeWrite func() error, includeLa
 	// Phase 1: Tombstone small-value keys in the memtable.
 	if !db.mt.empty {
 		var keys []string
-		db.mt.bt.Scan(func(item KV) bool {
+		db.mt.ks.Scan(func(item KV) bool {
 			if !item.isTombstone() && !item.HasVPtr() {
 				keys = append(keys, item.Key)
 			}
@@ -4196,7 +4196,7 @@ func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey string, begInclusive
 		// Min key (first in ascending order).
 		var minKV KV
 		var minFound bool
-		db.mt.bt.Scan(func(item KV) bool {
+		db.mt.ks.Scan(func(item KV) bool {
 			minKV = item
 			minFound = true
 			return false
@@ -4207,7 +4207,7 @@ func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey string, begInclusive
 		// Max key (first in descending order).
 		var maxKV KV
 		var maxFound bool
-		db.mt.bt.Reverse(func(item KV) bool {
+		db.mt.ks.Reverse(func(item KV) bool {
 			maxKV = item
 			maxFound = true
 			return false
@@ -5614,8 +5614,8 @@ func (db *FlexDB) doFlush() (err error) {
 		return fmt.Errorf("doFlush truncate memwal: %w", err)
 	}
 
-	// Clear the btree
-	db.mt.bt.Clear()
+	// Clear the memtable
+	db.mt.ks.clear()
 	db.mt.vtypArena = nil
 	db.mt.empty = true
 	db.mt.size = 0
@@ -5638,7 +5638,7 @@ func (db *FlexDB) flushMemtable() error {
 	batch := make([]KV, 0, memtableFlushBatch)
 	var err error
 
-	m.bt.Ascend(KV{}, func(item KV) bool {
+	m.ks.AscendOwnedKeys(KV{}, func(item KV) bool {
 		batch = append(batch, item)
 		if len(batch) >= memtableFlushBatch {
 			for _, kv := range batch {
@@ -6081,7 +6081,7 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 			}
 		}
 	} else {
-		m.bt.Ascend(KV{}, consumeItem)
+		m.ks.AscendOwnedKeys(KV{}, consumeItem)
 	}
 	if err != nil {
 		return true, err
