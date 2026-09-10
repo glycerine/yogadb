@@ -286,11 +286,11 @@ Get/Find, singleton Put/Delete, transactions, range deletes, Clear, Merge,
 vacuum, and integrity checks. Violations of this contract will panic
 immediately to teach the expected use pattern.
 
-Use `ymerge_into [-ties-to-dest] <destination-db> <source-db>` to merge one
-complete YogaDB database into another from the command line. The destination is
-mutated. The highest-HLC record wins for overlapping keys; equal-HLC ties
-default to the source database, and `-ties-to-dest` keeps the destination record
-instead.
+Use `ymerge_into [-ties-to-dest] <destination-db> <source-db>` to merge the source
+complete YogaDB database into the destination db from the command line. The destination is
+mutated. The highest HLC-timestamped record wins for overlapping keys. Keys with equal-HLC ties
+default to the source database, but the ymerge_into flag `-ties-to-dest` can reverse this default
+and keep the destination record instead when the identical key's HLC is also identical.
 
 # getting started
 

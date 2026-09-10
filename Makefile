@@ -30,5 +30,7 @@ rocks:
 	# note that the benchmem allocations will be off for rocksdb since most are in opqaque C/C++.
 	CGO_ENABLED=1 go test -tags rocksdb -run '^$$' \
 	-bench 'Benchmark_LoadOnly_RocksDB|Benchmark_Iter_RocksDB_Ascend' \
-	-benchtime=10x -count=3 -benchmem
+	-benchtime=10x -count=3
+	go test -v -run=xxx -bench=Iter
+
 
