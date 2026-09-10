@@ -7,6 +7,23 @@ import (
 	"time"
 )
 
+func generateBenchKeysNseed(n int, seed0 byte) [][]byte {
+	var seed [32]byte
+	seed[0] = seed0
+	prng := newPRNG(seed)
+	keys := make([][]byte, 0, n)
+	dup := make(map[string]bool, n)
+	for len(keys) < iterBenchKeyCount {
+		cid := prng.NewCallID()
+		if dup[cid] {
+			continue
+		}
+		dup[cid] = true
+		keys = append(keys, []byte(cid))
+	}
+	return keys
+}
+
 func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{}
@@ -14,7 +31,7 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	panicOn(err)
 	defer db.Close()
 
-	keys := generateBenchKeys()
+	keys := generateBenchKeysNseed(1_000_000, 0)
 	vals := make([][]byte, len(keys))
 	for i := range keys {
 		vals[i] = make([]byte, 100)
@@ -40,20 +57,21 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 
 	// what we care about is this second fresh batch.
 	// this is extremely unlikely to have any collisions with the first batch.
-	keys = generateBenchKeys()
-	vals = make([][]byte, len(keys))
-	for i := range keys {
-		vals[i] = make([]byte, 100)
+	keys2 := generateBenchKeysNseed(1_000_000, 1)
+
+	vals2 := make([][]byte, len(keys2))
+	for i := range keys2 {
+		vals2[i] = make([]byte, 100)
 		n := 0
 		for range 5 {
-			n += copy(vals[i][:n], keys[i])
+			n += copy(vals2[i][:n], keys2[i])
 		}
 	}
 
 	t0 := time.Now()
 	batch = db.NewBatch()
 	for i, k := range keys {
-		batch.SetBytes(k, vals[i], uint64(i))
+		batch.SetBytes(k, vals2[i], uint64(len(keys)+i+1))
 		if (i+1)%10000 == 0 {
 			batch.Commit(false)
 			batch = db.NewBatch()
@@ -66,7 +84,17 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 
 	vv("after bulkload terminated with AllowReads: yogadb insert %v writes/sec\n%s\n", rate, metrics)
 
-	slices.SortFunc(keys, bytes.Compare)
+	allkeys := append(keys, keys2...)
+	slices.SortFunc(allkeys, bytes.Compare)
+	for i := range allkeys {
+		if i == 0 {
+			continue
+		}
+		if 0 == bytes.Compare(allkeys[i], allkeys[i-1]) {
+			t.Fatalf("ugh. duplicated keys. we wanted batch 2 to be disjoint from batch 1.")
+		}
+	}
+	vv("good: all %v keys were distinct", len(allkeys))
 
 	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
@@ -74,22 +102,29 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 		j := 0
 		for it.Valid() {
 			got := it.Key()
-			if string(keys[j]) != got {
-				t.Fatalf("at j=%v, expected key '%v', got '%v'", j, keys[j], got)
-			}
 			gotv, vtyp, _, err := it.FetchV()
 			panicOn(err)
-			if 0 != bytes.Compare(gotv, vals[vtyp]) {
-				t.Fatalf("at j=%v, expected value '%v', got '%v'", j, string(vals[vtyp]), gotv)
+
+			if string(allkeys[j]) != string(got) {
+				t.Fatalf("at j=%v, expected key '%v', got '%v'", j, string(allkeys[j]), string(got))
+			}
+			if vtyp < 1_000_000 {
+				if 0 != bytes.Compare(gotv, vals[vtyp]) {
+					t.Fatalf("at j=%v, expected value '%v', got '%v'", j, string(vals[vtyp]), gotv)
+				}
+			} else {
+				if 0 != bytes.Compare(gotv, vals2[vtyp-1]) {
+					t.Fatalf("at j=%v, expected value '%v', got '%v'", j, string(vals2[vtyp-1]), gotv)
+				}
 			}
 			j++
 			it.Next()
 		}
 		it.Close()
-		if j == len(keys) {
+		if j == len(allkeys) {
 			vv("good: verified all %v keys", j)
 		} else {
-			vv("only verified %v out of %v", j, len(keys))
+			vv("only verified %v out of %v", j, len(allkeys))
 		}
 		return nil
 	})
