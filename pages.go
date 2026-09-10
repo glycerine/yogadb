@@ -311,6 +311,7 @@ func (t *FlexTree) growNodesFile() {
 	if err := t.nodeFD.Sync(); err != nil {
 		panicf("cow: growNodesFile fsync: %v", err)
 	}
+	atomic.AddInt64(&t.FlexTreePagesFsyncs, 1)
 	t.nodesFileCap = newCap
 }
 
@@ -339,6 +340,7 @@ func (t *FlexTree) SyncCoW() error {
 	if err := t.nodeFD.SyncData(); err != nil {
 		return fmt.Errorf("cow: fdatasync FLEXTREE.PAGES: %w", err)
 	}
+	atomic.AddInt64(&t.FlexTreePagesFsyncs, 1)
 
 	// Append FLEXTREE.COMMIT record. The FLEXTREE.COMMIT file is an append-only ring-
 	// buffer-in-a-file, so that a torn write never destroys a
@@ -377,6 +379,7 @@ func (t *FlexTree) SyncCoW() error {
 	if err := t.metaFD.SyncData(); err != nil {
 		return fmt.Errorf("cow: fdatasync FLEXTREE.COMMIT: %w", err)
 	}
+	atomic.AddInt64(&t.FlexTreeCommitFsyncs, 1)
 	t.metaNextOff += cowMetaSize
 
 	// Now safe to reclaim old slots
@@ -579,6 +582,7 @@ func OpenFlexTreeCoW(dirPath string, fs vfs.FS) (*FlexTree, error) {
 			nodeFD.Close()
 			return nil, fmt.Errorf("cow: fsync FLEXTREE.PAGES on upgrade: %w", err)
 		}
+		atomic.AddInt64(&t.FlexTreePagesFsyncs, 1)
 	}
 
 	// Recursive load from root

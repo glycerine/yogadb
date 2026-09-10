@@ -232,6 +232,7 @@ func (bm *blockManager) flush(isGC bool) {
 		bm.flushedOff = bm.blkoff
 	}
 	panicOn(bm.file.fdKV128blocks.Sync())
+	atomic.AddInt64(&bm.file.KV128Fsyncs, 1)
 }
 
 // read attempts to satisfy a read from the in-memory buffer.
@@ -408,6 +409,8 @@ type FlexSpace struct {
 	// Write-byte counters (accessed atomically)
 	KV128BytesWritten   int64 // FLEXSPACE.KV.SLOT_BLOCKS file bytes written
 	REDOLogBytesWritten int64 // redo LOG bytes written
+	KV128Fsyncs         int64 // FLEXSPACE.KV.SLOT_BLOCKS Sync calls
+	REDOLogFsyncs       int64 // FLEXSPACE.REDO.LOG Sync calls
 
 	// Debug counters for bloat investigation (accessed atomically)
 	updateCount        int64
@@ -444,7 +447,12 @@ func (ff *FlexSpace) redoLogFlushAndSync() {
 	atomic.AddInt64(&ff.REDOLogBytesWritten, int64(ff.logBufSize))
 	ff.logTotalSize += ff.logBufSize
 	ff.logBufSize = 0
+	ff.redoLogSync()
+}
+
+func (ff *FlexSpace) redoLogSync() {
 	panicOn(ff.redoLogFD.Sync())
+	atomic.AddInt64(&ff.REDOLogFsyncs, 1)
 }
 
 // logTruncate resets the log file to zero length.
@@ -563,7 +571,9 @@ func OpenFlexSpaceCoW(path string, omitRedoLog bool, fs vfs.FS) (*FlexSpace, err
 	if err != nil {
 		return nil, fmt.Errorf("flexspace: open FLEXSPACE.KV.SLOT_BLOCKS: %w", err)
 	}
-	fd.Sync()
+	if err := fd.Sync(); err == nil {
+		atomic.AddInt64(&ff.KV128Fsyncs, 1)
+	}
 	ff.fdKV128blocks = fd
 
 	// Open or create the FlexTree with CoW persistence
@@ -614,7 +624,7 @@ func OpenFlexSpaceCoW(path string, omitRedoLog bool, fs vfs.FS) (*FlexSpace, err
 	// Truncate log and write fresh version header
 	ff.logTruncate()
 	ff.writeLogVersion()
-	ff.redoLogFlushAndSync()
+	ff.redoLogSync()
 
 	// Allocate in-memory log buffer
 	ff.logBuf = make([]byte, FLEXSPACE_LOG_MEM_CAP*8)
@@ -710,6 +720,10 @@ var debugTruncate = false
 // it checkpoints the tree and resets the log.
 // isGC=true means we're called from within GC.
 func (ff *FlexSpace) syncR(isGC bool) {
+	ff.syncRWithCheckpoint(isGC, false)
+}
+
+func (ff *FlexSpace) syncRWithCheckpoint(isGC bool, forceCheckpoint bool) {
 	ff.bm.flush(isGC) // does fsync on FLEXSPACE.KV128.BLOCKS
 	// so this is redundant
 	//panicOn(ff.fdKV128blocks.Sync())
@@ -717,6 +731,14 @@ func (ff *FlexSpace) syncR(isGC bool) {
 	if ff.omitRedoLog {
 		// No redo log - always commit tree via CoW
 		panicOn(ff.tree.SyncCoW())
+	} else if forceCheckpoint {
+		// Force a durable FlexTree checkpoint. Once SyncCoW bumps the
+		// persistent tree version, reset the redo-log header to that version
+		// before allowing later writes to append new redo entries.
+		panicOn(ff.tree.SyncCoW())
+		ff.logTruncate()
+		ff.writeLogVersion()
+		ff.redoLogSync()
 	} else {
 		// Original path: sync redo log, checkpoint only when log is large
 		ff.redoLogFlushAndSync()
@@ -725,7 +747,7 @@ func (ff *FlexSpace) syncR(isGC bool) {
 
 			ff.logTruncate()
 			ff.writeLogVersion()
-			ff.redoLogFlushAndSync()
+			ff.redoLogSync()
 		}
 	}
 	ff.truncateTrailingBlocks()
@@ -734,6 +756,12 @@ func (ff *FlexSpace) syncR(isGC bool) {
 // Sync flushes all in-memory state to disk.
 func (ff *FlexSpace) Sync() {
 	ff.syncR(false)
+}
+
+// SyncCheckpoint flushes all in-memory state and forces a durable FlexTree
+// checkpoint even when redo logging is enabled.
+func (ff *FlexSpace) SyncCheckpoint() {
+	ff.syncRWithCheckpoint(false, true)
 }
 
 // Size returns the current logical size of the FlexSpace.

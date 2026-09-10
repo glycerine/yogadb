@@ -148,9 +148,9 @@ func openDB(dir string, cf *CommonFlags) (*yogadb.FlexDB, error) {
 func closeDB(db *yogadb.FlexDB) {
 	m := db.Close()
 	if m != nil {
-		fmt.Fprintf(os.Stderr, "metrics: logical_written=%d physical_written=%d live=%d free_in_blocks=%d blocks=%d write_amp=%.2f\n",
+		fmt.Fprintf(os.Stderr, "metrics: logical_written=%d physical_written=%d live=%d free_in_blocks=%d blocks=%d write_amp=%.2f fsyncs=%d\n",
 			m.LogicalBytesWritten, m.TotalBytesWritten,
-			m.KVBlocksTotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksInUse, m.WriteAmp)
+			m.KVBlocksTotalLiveBytes, m.TotalFreeBytesInBlocks, m.BlocksInUse, m.WriteAmp, m.TotalFsyncs)
 	}
 }
 

@@ -467,6 +467,7 @@ func (db *FlexDB) installMergedTreeLocked(newTree *FlexTree, appendEnd uint64, s
 	if err := db.ff.fdKV128blocks.Sync(); err != nil {
 		return fmt.Errorf("flexdb merge: sync data file: %w", err)
 	}
+	atomic.AddInt64(&db.ff.KV128Fsyncs, 1)
 
 	db.resetBlockManagerFromTreeLocked()
 	db.ff.globalEpoch++

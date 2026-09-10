@@ -213,6 +213,8 @@ type FlexTree struct {
 
 	// Write-byte counters (accessed atomically)
 	FlexTreePagesBytesWritten int64 // FLEXTREE.PAGES + FLEXTREE.COMMIT bytes written to disk
+	FlexTreePagesFsyncs       int64 // FLEXTREE.PAGES Sync/SyncData calls
+	FlexTreeCommitFsyncs      int64 // FLEXTREE.COMMIT Sync/SyncData calls
 
 	// Cumulative counters persisted in cowMeta (set by FlexDB before SyncCoW)
 	totalLogicalBytesWrit  int64 // cumulative user payload bytes (key+value)

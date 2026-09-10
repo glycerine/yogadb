@@ -1092,6 +1092,7 @@ type FlexDB struct {
 
 	// Write-byte counters (accessed atomically)
 	MemWALBytesWritten  int64 // WAL (FLEXDB.MEMWAL) bytes written
+	MemWALFsyncs        int64 // FLEXDB.MEMWAL SyncData calls
 	LogicalBytesWritten int64 // user payload bytes (key+value)
 
 	// Cumulative counters loaded from cowMeta on open.
@@ -1481,6 +1482,7 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	}
 	db.mt = *newMemtable(walFD)
 	db.mt.memWalBytesWritten = &db.MemWALBytesWritten
+	db.mt.memWalFsyncs = &db.MemWALFsyncs
 
 	// Load cumulative counters from the last cowMeta commit.
 	db.totalLogicalBase = ff.tree.totalLogicalBytesWrit
@@ -1545,7 +1547,24 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 		return nil, fmt.Errorf("flexdb: initialize memwal: %w", err)
 	}
 
+	db.resetFsyncMetricsAfterStartup()
+
 	return db, nil
+}
+
+func (db *FlexDB) resetFsyncMetricsAfterStartup() {
+	atomic.StoreInt64(&db.MemWALFsyncs, 0)
+	if db.ff != nil {
+		atomic.StoreInt64(&db.ff.KV128Fsyncs, 0)
+		atomic.StoreInt64(&db.ff.REDOLogFsyncs, 0)
+		if db.ff.tree != nil {
+			atomic.StoreInt64(&db.ff.tree.FlexTreePagesFsyncs, 0)
+			atomic.StoreInt64(&db.ff.tree.FlexTreeCommitFsyncs, 0)
+		}
+	}
+	if db.vlog != nil {
+		atomic.StoreInt64(&db.vlog.VLOGFsyncs, 0)
+	}
 }
 
 // Close syncs and shuts down the FlexDB.
@@ -1630,6 +1649,13 @@ type Metrics struct {
 	VLOGBytesWritten          int64 // VLOG value log
 	LogicalBytesWritten       int64 // user payload (key + value)
 	TotalBytesWritten         int64 // sum of all physical writes
+	KV128Fsyncs               int64 // FLEXSPACE.KV.SLOT_BLOCKS Sync calls after OpenFlexDB startup
+	MemWALFsyncs              int64 // FLEXDB.MEMWAL Sync/SyncData calls after OpenFlexDB startup
+	REDOLogFsyncs             int64 // FLEXSPACE.REDO.LOG Sync calls after OpenFlexDB startup
+	FlexTreePagesFsyncs       int64 // FLEXTREE.PAGES Sync/SyncData calls after OpenFlexDB startup
+	FlexTreeCommitFsyncs      int64 // FLEXTREE.COMMIT Sync/SyncData calls after OpenFlexDB startup
+	VLOGFsyncs                int64 // LARGE.VLOG Sync calls after OpenFlexDB startup
+	TotalFsyncs               int64 // sum of tracked core-file Sync/SyncData calls after startup
 
 	// WriteAmp returns the write amplification factor (total physical / logical).
 	// Returns 0 if no logical bytes have been written.
@@ -1705,6 +1731,13 @@ func (z *Metrics) String() (r string) {
 	r += fmt.Sprintf("      Logical BytesWritten: %v\n", formatInt64Under(z.LogicalBytesWritten))
 	r += fmt.Sprintf("        Total BytesWritten: %v\n", formatInt64Under(z.TotalBytesWritten))
 	r += fmt.Sprintf("                 WriteAmp: %0.3f\n", z.WriteAmp)
+	r += fmt.Sprintf("              TotalFsyncs: %v\n", formatInt64Under(z.TotalFsyncs))
+	r += fmt.Sprintf("                KV128Sync: %v\n", formatInt64Under(z.KV128Fsyncs))
+	r += fmt.Sprintf("               MemWALSync: %v\n", formatInt64Under(z.MemWALFsyncs))
+	r += fmt.Sprintf("              REDOLogSync: %v\n", formatInt64Under(z.REDOLogFsyncs))
+	r += fmt.Sprintf("        FlexTreePagesSync: %v\n", formatInt64Under(z.FlexTreePagesFsyncs))
+	r += fmt.Sprintf("       FlexTreeCommitSync: %v\n", formatInt64Under(z.FlexTreeCommitFsyncs))
+	r += fmt.Sprintf("                 VLOGSync: %v\n", formatInt64Under(z.VLOGFsyncs))
 	r += fmt.Sprintf("\n   -------- lifetime totals over all sessions  --------  \n")
 	r += fmt.Sprintf("    TotalLogical BytesWrit: %v\n", formatInt64Under(z.totalLogicalBytesWrit))
 	r += fmt.Sprintf("   TotalPhysical BytesWrit: %v\n", formatInt64Under(z.totalPhysicalBytesWrit))
@@ -1756,13 +1789,21 @@ func (db *FlexDB) writeLockHeldSessionMetrics() *Metrics {
 		REDOLogBytesWritten:       atomic.LoadInt64(&db.ff.REDOLogBytesWritten),
 		FlexTreePagesBytesWritten: atomic.LoadInt64(&db.ff.tree.FlexTreePagesBytesWritten),
 		LogicalBytesWritten:       atomic.LoadInt64(&db.LogicalBytesWritten),
+		KV128Fsyncs:               atomic.LoadInt64(&db.ff.KV128Fsyncs),
+		MemWALFsyncs:              atomic.LoadInt64(&db.MemWALFsyncs),
+		REDOLogFsyncs:             atomic.LoadInt64(&db.ff.REDOLogFsyncs),
+		FlexTreePagesFsyncs:       atomic.LoadInt64(&db.ff.tree.FlexTreePagesFsyncs),
+		FlexTreeCommitFsyncs:      atomic.LoadInt64(&db.ff.tree.FlexTreeCommitFsyncs),
 		LowBlockUtilizationPct:    db.cfg.LowBlockUtilizationPct,
 	}
 	if db.vlog != nil {
 		m.VLOGBytesWritten = atomic.LoadInt64(&db.vlog.VLOGBytesWritten)
+		m.VLOGFsyncs = atomic.LoadInt64(&db.vlog.VLOGFsyncs)
 	}
 	m.TotalBytesWritten = m.KV128BytesWritten + m.MemWALBytesWritten +
 		m.REDOLogBytesWritten + m.FlexTreePagesBytesWritten + m.VLOGBytesWritten
+	m.TotalFsyncs = m.KV128Fsyncs + m.MemWALFsyncs + m.REDOLogFsyncs +
+		m.FlexTreePagesFsyncs + m.FlexTreeCommitFsyncs + m.VLOGFsyncs
 
 	if m.LogicalBytesWritten > 0 {
 		m.WriteAmp = float64(m.TotalBytesWritten) / float64(m.LogicalBytesWritten)
@@ -1835,13 +1876,21 @@ func (db *FlexDB) writeLockHeldFinalMetrics(kvFoot, vlogFoot int64) *Metrics {
 		REDOLogBytesWritten:       atomic.LoadInt64(&db.ff.REDOLogBytesWritten),
 		FlexTreePagesBytesWritten: atomic.LoadInt64(&db.ff.tree.FlexTreePagesBytesWritten),
 		LogicalBytesWritten:       atomic.LoadInt64(&db.LogicalBytesWritten),
+		KV128Fsyncs:               atomic.LoadInt64(&db.ff.KV128Fsyncs),
+		MemWALFsyncs:              atomic.LoadInt64(&db.MemWALFsyncs),
+		REDOLogFsyncs:             atomic.LoadInt64(&db.ff.REDOLogFsyncs),
+		FlexTreePagesFsyncs:       atomic.LoadInt64(&db.ff.tree.FlexTreePagesFsyncs),
+		FlexTreeCommitFsyncs:      atomic.LoadInt64(&db.ff.tree.FlexTreeCommitFsyncs),
 		LowBlockUtilizationPct:    db.cfg.LowBlockUtilizationPct,
 	}
 	if db.vlog != nil {
 		m.VLOGBytesWritten = atomic.LoadInt64(&db.vlog.VLOGBytesWritten)
+		m.VLOGFsyncs = atomic.LoadInt64(&db.vlog.VLOGFsyncs)
 	}
 	m.TotalBytesWritten = m.KV128BytesWritten + m.MemWALBytesWritten +
 		m.REDOLogBytesWritten + m.FlexTreePagesBytesWritten + m.VLOGBytesWritten
+	m.TotalFsyncs = m.KV128Fsyncs + m.MemWALFsyncs + m.REDOLogFsyncs +
+		m.FlexTreePagesFsyncs + m.FlexTreeCommitFsyncs + m.VLOGFsyncs
 
 	if m.LogicalBytesWritten > 0 {
 		m.WriteAmp = float64(m.TotalBytesWritten) / float64(m.LogicalBytesWritten)
@@ -3034,8 +3083,16 @@ func (db *FlexDB) maybeStartAutoVacuumLocked() bool {
 }
 
 func (db *FlexDB) writeLockHeldSync() error {
+	return db.writeLockHeldSyncR(false)
+}
 
-	if db.mt.empty {
+func (db *FlexDB) writeLockHeldSyncCheckpoint() error {
+	return db.writeLockHeldSyncR(true)
+}
+
+func (db *FlexDB) writeLockHeldSyncR(forceTreeCheckpoint bool) error {
+	mtWasEmpty := db.mt.empty
+	if mtWasEmpty && !forceTreeCheckpoint {
 		return nil // nothing to flush
 	}
 
@@ -3043,19 +3100,17 @@ func (db *FlexDB) writeLockHeldSync() error {
 	// force the WAL here. Commit(doFsync=true) already provides per-commit WAL
 	// durability. Commit(false) is only promised durable after Sync returns, and
 	// by then these KVs have been written through the FlexSpace durable path.
-	if err := db.mt.logFlush(); err != nil {
-		return fmt.Errorf("flexdb: Sync flush memwal: %w", err)
-	}
-	if err := db.flushMemtable(); err != nil {
-		return fmt.Errorf("flexdb: Sync flush memtable: %w", err)
+	if !mtWasEmpty {
+		if err := db.mt.logFlush(); err != nil {
+			return fmt.Errorf("flexdb: Sync flush memwal: %w", err)
+		}
+		if err := db.flushMemtable(); err != nil {
+			return fmt.Errorf("flexdb: Sync flush memtable: %w", err)
+		}
 	}
 	if err := db.cache.flushDirtyPages(); err != nil {
 		return fmt.Errorf("flexdb: Sync flush dirty pages: %w", err)
 	}
-	db.persistCounters()
-	db.ff.Sync() // fsyncs FLEXSPACE.KV128.BLOCKS
-	db.maybePiggybackGC()
-	db.verifyAnchorTags()
 
 	// notice that typically we do not sync the db.vlog here;
 	// it has already been synced on each large value
@@ -3067,8 +3122,19 @@ func (db *FlexDB) writeLockHeldSync() error {
 	// the Put/Batch Put of vlog.appendAndSync, so we
 	// have to do it now.
 	if db.cfg.OmitMemWalFsync {
-		db.vlog.sync()
+		if err := db.vlog.sync(); err != nil {
+			return fmt.Errorf("flexdb: Sync VLOG: %w", err)
+		}
 	}
+
+	db.persistCounters()
+	if forceTreeCheckpoint {
+		db.ff.SyncCheckpoint()
+	} else {
+		db.ff.Sync() // fsyncs FLEXSPACE.KV128.BLOCKS
+	}
+	db.maybePiggybackGC()
+	db.verifyAnchorTags()
 
 	// Sync the parent directory so new/renamed files are durable.
 	if db.dirSyncNeeded {
@@ -5320,6 +5386,7 @@ func (db *FlexDB) doFlush() (err error) {
 	if err := db.mt.memWalFD.Sync(); err != nil {
 		return fmt.Errorf("doFlush sync memwal: %w", err)
 	}
+	atomic.AddInt64(&db.MemWALFsyncs, 1)
 
 	// Flush memtable to FlexSpace
 	if err := db.flushMemtable(); err != nil {
@@ -5889,7 +5956,7 @@ func (db *FlexDB) AllowReads() {
 	if db.allowReads.Load() {
 		return
 	}
-	if err := db.writeLockHeldSync(); err != nil {
+	if err := db.writeLockHeldSyncCheckpoint(); err != nil {
 		panicf("db.AllowReads(): %v", err)
 	}
 	db.allowReads.Store(true)

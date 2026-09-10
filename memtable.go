@@ -34,6 +34,7 @@ type memtable struct {
 
 	// metric to update for observability
 	memWalBytesWritten *int64 // points to FlexDB.WALBytesWritten (nil if standalone)
+	memWalFsyncs       *int64 // points to FlexDB.MemWALFsyncs (nil if standalone)
 }
 
 func newMemtable(memWalFD vfs.File) *memtable {
@@ -251,6 +252,9 @@ func (m *memtable) logSyncLocked() error {
 	}
 	if err := m.memWalFD.SyncData(); err != nil {
 		return fmt.Errorf("memtable WAL sync: %w", err)
+	}
+	if m.memWalFsyncs != nil {
+		atomic.AddInt64(m.memWalFsyncs, 1)
 	}
 	return nil
 }

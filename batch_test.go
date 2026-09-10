@@ -138,9 +138,9 @@ func Test640_FlexDB_Batch_NoDataLoss(t *testing.T) {
 
 	panicOn(batchLoadAndReadOut(fs, t, db, "assets/one.txt"))
 
-	// Note: In FlexSpace.syncR(), SyncCoW() is only called
-	// when the log exceeds FLEXFILE_LOG_MAX_SIZE (2GB). For small datasets,
-	// the FlexTree is never synced to disk until Close().
+	// Note: normal FlexSpace.Sync checkpoints the FlexTree only when the redo
+	// log exceeds FLEXFILE_LOG_MAX_SIZE, but AllowReads forces a durable
+	// FlexTree checkpoint at the end of the initial bulk-load phase.
 
 	//metrics := db.SessionMetrics()
 	//if metrics.TreeBytesWritten != 0 {

@@ -91,6 +91,7 @@ type valueLog struct {
 
 	// Write-byte counter (accessed atomically)
 	VLOGBytesWritten int64
+	VLOGFsyncs       int64
 }
 
 // openValueLog opens or creates the VLOG file.
@@ -175,7 +176,7 @@ func (vl *valueLog) appendAndSync(value []byte, hlc HLC, skipSync bool) (VPtr, e
 		return vp, err
 	}
 	if !skipSync {
-		if err := vl.fd.Sync(); err != nil {
+		if err := vl.syncFile(); err != nil {
 			return vp, fmt.Errorf("vlog: sync: %w", err)
 		}
 	}
@@ -215,7 +216,7 @@ func (vl *valueLog) appendDedupAndSync(value []byte, hlc HLC, oldVP VPtr, skipSy
 		return vp, false, err
 	}
 	if !skipSync {
-		if err := vl.fd.Sync(); err != nil {
+		if err := vl.syncFile(); err != nil {
 			return vp, false, fmt.Errorf("vlog: sync: %w", err)
 		}
 	}
@@ -259,7 +260,7 @@ func (vl *valueLog) appendBatchDedupAndSync(values [][]byte, hlcs []HLC, oldVPs 
 		wrote = true
 	}
 	if wrote && !skipSync {
-		if err := vl.fd.Sync(); err != nil {
+		if err := vl.syncFile(); err != nil {
 			return nil, dedupHits, fmt.Errorf("vlog: batch sync: %w", err)
 		}
 	}
@@ -281,7 +282,7 @@ func (vl *valueLog) appendBatchAndSync(values [][]byte, hlcs []HLC, skipSync boo
 		ptrs[i] = vp
 	}
 	if !skipSync {
-		if err := vl.fd.Sync(); err != nil {
+		if err := vl.syncFile(); err != nil {
 			return nil, fmt.Errorf("vlog: batch sync: %w", err)
 		}
 	}
@@ -386,7 +387,15 @@ func (vl *valueLog) readBlake3(vp VPtr) ([32]byte, error) {
 
 // sync fsyncs the VLOG file.
 func (vl *valueLog) sync() error {
-	return vl.fd.Sync()
+	return vl.syncFile()
+}
+
+func (vl *valueLog) syncFile() error {
+	if err := vl.fd.Sync(); err != nil {
+		return err
+	}
+	atomic.AddInt64(&vl.VLOGFsyncs, 1)
+	return nil
 }
 
 // close closes the VLOG file.
