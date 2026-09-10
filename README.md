@@ -285,12 +285,38 @@ The user must call db.AllowReads() to end the load phase and enable reading
 Get/Find, singleton Put/Delete, transactions, range deletes, Clear, Merge,
 vacuum, and integrity checks. Violations of this contract will panic
 immediately to teach the expected use pattern.
+x
+## ymerge_into
 
 Use `ymerge_into [-ties-to-dest] <destination-db> <source-db>` to merge the source
 complete YogaDB database into the destination db from the command line. The destination is
 mutated. The highest HLC-timestamped record wins for overlapping keys. Keys with equal-HLC ties
 default to the source database, but the ymerge_into flag `-ties-to-dest` can reverse this default
 and keep the destination record instead when the identical key's HLC is also identical.
+
+## automatic vacuuming
+
+For simple use cases that don't want to worry about vacuuming manually, 
+there are two Config flags. See db.go:
+
+~~~
+	// AutoVacuumPct enables background vacuum when > 0. The value is the
+	// fraction of deleted logical bytes over resident+deleted bytes that
+	// should trigger automatic VacuumVLOG and VacuumKV. Values above 1 are
+	// clamped to 1. The default of 0 means off (no auto-vacuuming).
+	AutoVacuumPct float64
+
+	// AutoVacuumDeletedAboveKB is the minimum deleted logical data threshold
+	// before AutoVacuumPct can trigger. If AutoVacuumPct > 0 and this is zero
+	// or negative, the default is 100 MB.
+	AutoVacuumDeletedAboveKB int64
+~~~
+
+The trade-off for using AutoVacuumPct and AutoVacuumDeletedAboveKB is that
+when a vacuum occurs becomes data dependent. It is not under your full 
+control. Almost all operations will be fast, but some few writes will
+get blocked on a longer vacuum. You should expect to see this in
+your P999 write latency percentages if you take advance of automatic vacuuming.
 
 # getting started
 
