@@ -3,6 +3,7 @@
 
 all: 
 	go install
+	cd cmd/ymerge_into && go install
 	cd cmd/yload && go install
 	cd cmd/yview && go install
 	cd cmd/yvac && go install

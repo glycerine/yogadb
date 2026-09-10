@@ -284,7 +284,7 @@ Get/Find, singleton Put/Delete, transactions, range deletes, Clear, Merge,
 vacuum, and integrity checks. Violations of this contract will panic
 immediately to teach the expected use pattern.
 
-Use `ymerge_into <source-db> <destination-db>` to merge one complete YogaDB
+Use `ymerge_into <destination-db> <source-db>` to merge one complete YogaDB
 database into another from the command line. The same HLC rule is used:
 higher-HLC records win, and source tombstones can delete destination keys.
 

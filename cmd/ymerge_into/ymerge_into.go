@@ -12,11 +12,11 @@ const cmd = "ymerge_into"
 
 func main() {
 	if len(os.Args) != 3 {
-		fmt.Fprintf(os.Stderr, "%s use: ymerge_into <source-db> <destination-db>\n", cmd)
+		fmt.Fprintf(os.Stderr, "%s use: ymerge_into <destination-db> <source-db>\n", cmd)
 		os.Exit(1)
 	}
-	srcPath := os.Args[1]
-	dstPath := os.Args[2]
+	srcPath := os.Args[2]
+	dstPath := os.Args[1]
 	if !dirExists(srcPath) {
 		fmt.Fprintf(os.Stderr, "%s error: source database path does not exist: %q\n", cmd, srcPath)
 		os.Exit(1)
