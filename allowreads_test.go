@@ -258,6 +258,89 @@ func TestBatchSetBytesAliasThenTypedAliasBeforeAllowReads(t *testing.T) {
 	}
 }
 
+func TestBackgroundFlushSkipsPreAllowReadsBulkLoad(t *testing.T) {
+	dir := t.TempDir()
+	db, err := OpenFlexDB(dir, &Config{
+		OmitMemWalFsync:        true,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	b := db.NewBatch()
+	for i := 0; i < 10; i++ {
+		if err := b.Set(fmt.Sprintf("k%03d", i), []byte("value"), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := b.Commit(false); err != nil {
+		t.Fatal(err)
+	}
+	b.Close()
+
+	if db.allowReads.Load() {
+		t.Fatal("reads unexpectedly allowed")
+	}
+	if db.mt.bulk.count != 10 {
+		t.Fatalf("bulk count before doFlush = %d, want 10", db.mt.bulk.count)
+	}
+	if got := db.ff.Size(); got != 0 {
+		t.Fatalf("FlexSpace size before doFlush = %d, want 0", got)
+	}
+
+	if err := db.doFlush(); err != nil {
+		t.Fatalf("doFlush: %v", err)
+	}
+	if got := db.ff.Size(); got != 0 {
+		t.Fatalf("background doFlush wrote read-disabled bulk data to FlexSpace: size=%d", got)
+	}
+	if db.mt.bulk.count != 10 {
+		t.Fatalf("bulk count after background doFlush = %d, want staged data preserved", db.mt.bulk.count)
+	}
+
+	if err := db.Sync(); err != nil {
+		t.Fatalf("explicit Sync: %v", err)
+	}
+	if got := db.ff.Size(); got == 0 {
+		t.Fatal("explicit Sync did not flush bulk data to FlexSpace")
+	}
+	db.AllowReads()
+	for i := 0; i < 10; i++ {
+		key := fmt.Sprintf("k%03d", i)
+		got, found, _, _, err := db.Get(key)
+		if err != nil {
+			t.Fatalf("Get(%q): %v", key, err)
+		}
+		if !found || string(got) != "value" {
+			t.Fatalf("Get(%q) = %q, %v; want value, true", key, got, found)
+		}
+	}
+}
+
+func TestFlushWorkerStartsOnlyAfterAllowReads(t *testing.T) {
+	dir := t.TempDir()
+	db, err := OpenFlexDB(dir, &Config{OmitMemWalFsync: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if db.flushWorkerStarted.Load() {
+		t.Fatal("flush worker started before AllowReads")
+	}
+	loadOneBulkKeyBeforeAllowReads(t, db)
+	if db.flushWorkerStarted.Load() {
+		t.Fatal("flush worker started during read-disabled bulk load")
+	}
+
+	db.AllowReads()
+	if !db.flushWorkerStarted.Load() {
+		t.Fatal("flush worker did not start after AllowReads")
+	}
+}
+
 func TestReopenedExistingDBBatchSetDeleteBeforeAllowReadsMergesAtAllowReads(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{

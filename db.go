@@ -1082,8 +1082,9 @@ type FlexDB struct {
 	dirSyncNeeded bool
 
 	// flush worker
-	flushTrigger chan struct{}
-	flushHalt    *idem.Halter
+	flushTrigger       chan struct{}
+	flushHalt          *idem.Halter
+	flushWorkerStarted atomic.Bool
 
 	// scratch buffers (reused; protected by ffMu write lock)
 	kvbuf1 []byte
@@ -1544,18 +1545,13 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 		return nil, fmt.Errorf("flexdb: initialize memwal: %w", err)
 	}
 
-	// Start flush worker goroutine (unless disabled for fuzz testing).
-	if !db.cfg.DisableBackgroundFlush {
-		go db.flushWorker()
-	}
-
 	return db, nil
 }
 
 // Close syncs and shuts down the FlexDB.
 func (db *FlexDB) Close() *Metrics {
 
-	if !db.cfg.DisableBackgroundFlush {
+	if !db.cfg.DisableBackgroundFlush && db.flushWorkerStarted.CompareAndSwap(true, false) {
 		// Signal flush worker to stop, then wait for it to finish.
 		// We do this first to avoid deadlock: if
 		// we grab the topMutRW and then flush worker waits
@@ -5245,6 +5241,15 @@ func (db *FlexDB) safeDoFlush() {
 	}
 }
 
+func (db *FlexDB) startFlushWorkerLocked() {
+	if db.cfg.DisableBackgroundFlush || db.closed {
+		return
+	}
+	if db.flushWorkerStarted.CompareAndSwap(false, true) {
+		go db.flushWorker()
+	}
+}
+
 func (db *FlexDB) autoVacuumWorkerLocked() {
 	defer db.topMutRW.Unlock()
 	if err := db.doAutoVacuumLocked(); err != nil {
@@ -5298,6 +5303,13 @@ func (db *FlexDB) doFlush() (err error) {
 	}()
 
 	if db.mt.empty {
+		return nil
+	}
+	if !db.allowReads.Load() && db.mt.bulk.count > 0 {
+		// During the read-disabled bulk-load phase, background flushes can turn
+		// a pristine initial load into repeated reload merges. Keep this phase
+		// under explicit user control: Sync flushes it, and AllowReads performs
+		// the required transition.
 		return nil
 	}
 
@@ -5879,4 +5891,5 @@ func (db *FlexDB) AllowReads() {
 		panicf("db.AllowReads(): %v", err)
 	}
 	db.allowReads.Store(true)
+	db.startFlushWorkerLocked()
 }
