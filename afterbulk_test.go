@@ -25,13 +25,16 @@ func generateBenchKeysNseed(n int, seed0 byte) [][]byte {
 }
 
 func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
+	if !testing.Short() {
+		t.Skip("long test; only run for -short because it is opposites day!")
+	}
 	dir := t.TempDir()
 	cfg := &Config{}
 	db, err := OpenFlexDB(dir, cfg)
 	panicOn(err)
 	defer db.Close()
 
-	N := 1_000_000
+	N := 2_000_000
 	keys := generateBenchKeysNseed(N, 0)
 	vals := make([][]byte, len(keys))
 	for i := range keys {
