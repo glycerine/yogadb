@@ -314,6 +314,7 @@ func openFuzzDB(fs vfs.FS, dir string) *FlexDB {
 	if err != nil {
 		return nil
 	}
+	db.AllowReads()
 	return db
 }
 
