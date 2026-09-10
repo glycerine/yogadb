@@ -329,8 +329,8 @@ that last write, start the vacuuming in the background, and then
 return to the writer (or deleter). So the write that we are piggy-backing
 on is not itself slow to return, but the next read or write will block until
 the vacuum finishes and releases the RWMutex. We auto-vacuum both key space and VLOG space. 
-Notice this means that if you never write during a period, you will never auto-vacuum
-in that same period.
+Notice this means that if you never write during a period after the last vacuum finishes, 
+you will never auto-vacuum in that same period.
 
 To take finer grain conrol (maybe you only want to vacuum the VLOG, or only the inline key-value space),
 use the manual vacuuming API calls instead. Call db.VacuumVLOG() and/or db.VacuumKV()
