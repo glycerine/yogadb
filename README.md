@@ -334,7 +334,7 @@ you will never auto-vacuum in that same period.
 
 To take finer grain conrol (maybe you only want to vacuum the VLOG, or only the inline key-value space),
 use the manual vacuuming API calls instead. Call db.VacuumVLOG() and/or db.VacuumKV()
-when you wish. db.CommitGetMetrics() returns alot of metrics regarding
+when you wish. Batch.CommitGetMetrics() returns alot of metrics regarding
 the status of the database. The command line yvac can be used to vacuum
 a database that is offline.
 
