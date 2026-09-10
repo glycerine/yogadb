@@ -225,6 +225,39 @@ func TestBatchSetBytesAllowedBeforeAllowReads(t *testing.T) {
 	}
 }
 
+func TestBatchSetBytesAliasThenTypedAliasBeforeAllowReads(t *testing.T) {
+	dir := t.TempDir()
+	db, err := OpenFlexDB(dir, &Config{OmitMemWalFsync: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	b := db.NewBatch()
+	k1 := []byte("k048")
+	if err := b.SetBytes(k1, k1, 0); err != nil {
+		t.Fatal(err)
+	}
+	k2 := []byte("k049")
+	if err := b.SetBytes(k2, k2, 49); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Commit(false); err != nil {
+		t.Fatal(err)
+	}
+	b.Close()
+
+	db.AllowReads()
+	mustGet(t, db, "k048", "k048")
+	got, found, gotVtyp, _, err := db.Get("k049")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || string(got) != "k049" || gotVtyp != 49 {
+		t.Fatalf("Get(k049) = value=%q found=%v vtyp=%d; want k049 true 49", got, found, gotVtyp)
+	}
+}
+
 func TestReopenedExistingDBBatchSetDeleteBeforeAllowReadsMergesAtAllowReads(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{

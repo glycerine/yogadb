@@ -15,6 +15,9 @@ fuzz:
 	#rm -rf ~/anchorfuzz/
 	#go test -c -fuzz=FuzzAnchorTreeDrift -tags memfs # for gdb.
 	#go test -tags memfs -fuzz FuzzAnchorTreeDrift -fuzztime 30m -run=xxx -timeout 35m
+	go test -fuzz FuzzBulkLoadBeforeAllowReads -fuzztime 5m -run=xxx -tags memfs || true
+	go test -fuzz FuzzBulkLoadReloadBeforeAllowReads -fuzztime 5m -run=xxx -tags memfs || true
+	go test -fuzz FuzzAnchorTreeDrift -fuzztime 5m -run=xxx -tags memfs || true
 	go test -fuzz FuzzFlexTree -fuzztime 5m -run=xxx -tags memfs || true
 	go test -fuzz FuzzBruteForce -fuzztime 5m -run=xxx -tags memfs || true
 	go test -fuzz FuzzIntervalCache_Dedup -fuzztime 5m -run=xxx -tags memfs || true
@@ -32,5 +35,4 @@ rocks:
 	-bench 'Benchmark_LoadOnly_RocksDB|Benchmark_Iter_RocksDB_Ascend' \
 	-benchtime=10x -count=3
 	go test -v -run=xxx -bench=Iter
-
 

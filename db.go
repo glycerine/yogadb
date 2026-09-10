@@ -223,6 +223,8 @@ func (s *Batch) SetBytes(key []byte, value []byte, vtyp uint64) (err error) {
 				s.logicalBytes += int64(len(key) + len(value))
 				return nil
 			}
+			s.materializeAliasKeys()
+			s.allValuesAliasKeys = false
 			valueCopy = keyCopy
 		} else {
 			s.materializeAliasKeys()
