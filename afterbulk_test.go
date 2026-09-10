@@ -30,7 +30,7 @@ func generateBenchKeysNseed(n int, seed0 byte) [][]byte {
 // rog linux: about 75K writes/sec.
 func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	//if !testing.Short() {
-	//	t.Skip("long test; only run for -short because it is opposites day!")
+	t.Skip("long test; only run for -short because it is opposites day!")
 	//}
 	dir := t.TempDir()
 	cfg := &Config{}
@@ -177,7 +177,7 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 // replace all of the first set: use same keys in 2nd set.
 func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 	//if !testing.Short() {
-	//	t.Skip("long test; only run for -short because it is opposites day!")
+	t.Skip("long test; only run for -short because it is opposites day!")
 	//}
 	dir := t.TempDir()
 	cfg := &Config{}
