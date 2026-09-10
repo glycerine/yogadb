@@ -33,7 +33,13 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	//t.Skip("long test; only run for -short because it is opposites day!")
 	//}
 	dir := t.TempDir()
-	cfg := &Config{}
+	// if we are right on the border of 5 seconds, sometimes the
+	// flush worker sneeks in and destroys our perf with a ton of flush work, and we
+	// go from 600K writes/sec -> 220K writes/sec. Turn off the background
+	// flushes while trying to measure performance.
+	cfg := &Config{
+		DisableBackgroundFlush: true,
+	}
 	db, err := OpenFlexDB(dir, cfg)
 	panicOn(err)
 	defer db.Close()
@@ -180,7 +186,9 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 	//t.Skip("long test; only run for -short because it is opposites day!")
 	//}
 	dir := t.TempDir()
-	cfg := &Config{}
+	cfg := &Config{
+		DisableBackgroundFlush: true,
+	}
 	db, err := OpenFlexDB(dir, cfg)
 	panicOn(err)
 	defer db.Close()

@@ -22,8 +22,8 @@ type keyStable struct {
 
 	kvs           []KV   // parallel to stable; Key is kept empty to avoid retaining caller key storage.
 	valueAliasKey []bool // true when kv.Value should alias the arena key bytes.
-	hashNext      []int  // collision chain for index; parallel to stable.
-	index         map[uint64]int
+	hashNext      []int  // collision chain for imap; parallel to stable.
+	imap          map[uint64]int
 	sortedDirty   bool
 }
 
@@ -36,7 +36,7 @@ func makeKeyStable(n int) keyStable {
 		stable: make([]int, 0, n),
 		sorted: make([]int, 0, n),
 		kvs:    make([]KV, 0, n),
-		index:  make(map[uint64]int, n),
+		imap:   make(map[uint64]int, n),
 	}
 }
 
@@ -56,7 +56,7 @@ func (s *keyStable) clear() {
 	s.kvs = s.kvs[:0]
 	s.valueAliasKey = s.valueAliasKey[:0]
 	s.hashNext = s.hashNext[:0]
-	clear(s.index)
+	clear(s.imap)
 	s.sortedDirty = false
 }
 
@@ -85,15 +85,15 @@ func (s *keyStable) appendKeyString(key string, h uint64) (whereInStable int) {
 }
 
 func (s *keyStable) appendKeyCommon(n int, h uint64) (whereInStable int) {
-	if s.index == nil {
-		s.ensureIndex()
+	if s.imap == nil {
+		s.ensureImap()
 	}
 	whereInStable = len(s.stable)
 	s.stable = append(s.stable, len(s.keys)+n)
 	s.kvs = append(s.kvs, KV{})
 	s.valueAliasKey = append(s.valueAliasKey, false)
-	s.hashNext = append(s.hashNext, s.index[h]-1)
-	s.index[h] = whereInStable + 1
+	s.hashNext = append(s.hashNext, s.imap[h]-1)
+	s.imap[h] = whereInStable + 1
 	s.sorted = append(s.sorted, whereInStable)
 	s.sortedDirty = true
 	return whereInStable
@@ -145,22 +145,22 @@ func (s *keyStable) ensureSorted() {
 	s.sortedDirty = false
 }
 
-func (s *keyStable) ensureIndex() {
-	if s.index != nil {
+func (s *keyStable) ensureImap() {
+	if s.imap != nil {
 		return
 	}
-	s.index = make(map[uint64]int, len(s.stable))
+	s.imap = make(map[uint64]int, len(s.stable))
 	s.hashNext = s.hashNext[:0]
 	for stableIdx := range s.stable {
 		h := xxhash.Sum64(s.at(stableIdx))
-		s.hashNext = append(s.hashNext, s.index[h]-1)
-		s.index[h] = stableIdx + 1
+		s.hashNext = append(s.hashNext, s.imap[h]-1)
+		s.imap[h] = stableIdx + 1
 	}
 }
 
 func (s *keyStable) findStableByBytes(key []byte) (stableIdx int, found bool) {
-	s.ensureIndex()
-	for stableIdx = s.index[xxhash.Sum64(key)] - 1; stableIdx >= 0; stableIdx = s.hashNext[stableIdx] {
+	s.ensureImap()
+	for stableIdx = s.imap[xxhash.Sum64(key)] - 1; stableIdx >= 0; stableIdx = s.hashNext[stableIdx] {
 		if bytes.Equal(key, s.at(stableIdx)) {
 			return stableIdx, true
 		}
@@ -169,8 +169,8 @@ func (s *keyStable) findStableByBytes(key []byte) (stableIdx int, found bool) {
 }
 
 func (s *keyStable) findStableByString(key string) (stableIdx int, found bool) {
-	s.ensureIndex()
-	for stableIdx = s.index[xxhash.Sum64String(key)] - 1; stableIdx >= 0; stableIdx = s.hashNext[stableIdx] {
+	s.ensureImap()
+	for stableIdx = s.imap[xxhash.Sum64String(key)] - 1; stableIdx >= 0; stableIdx = s.hashNext[stableIdx] {
 		if compareStringBytes(key, s.at(stableIdx)) == 0 {
 			return stableIdx, true
 		}
@@ -178,15 +178,15 @@ func (s *keyStable) findStableByString(key string) (stableIdx int, found bool) {
 	return 0, false
 }
 
-func (s *keyStable) removeStableFromIndex(stableIdx int) {
+func (s *keyStable) removeStableFromImap(stableIdx int) {
 	h := xxhash.Sum64(s.at(stableIdx))
 	prev := -1
-	for cur := s.index[h] - 1; cur >= 0; cur = s.hashNext[cur] {
+	for cur := s.imap[h] - 1; cur >= 0; cur = s.hashNext[cur] {
 		if cur == stableIdx {
 			if prev < 0 {
-				s.index[h] = s.hashNext[cur] + 1
-				if s.index[h] == 0 {
-					delete(s.index, h)
+				s.imap[h] = s.hashNext[cur] + 1
+				if s.imap[h] == 0 {
+					delete(s.imap, h)
 				}
 			} else {
 				s.hashNext[prev] = s.hashNext[cur]
@@ -369,7 +369,7 @@ func (s *keyStable) delKey(needle []byte) (found bool) {
 		return
 	}
 	deleted := s.sorted[w]
-	s.removeStableFromIndex(deleted)
+	s.removeStableFromImap(deleted)
 	tw, _ := sort.Find(len(s.tomb), func(i int) int {
 		return bytes.Compare(s.at(deleted), s.at(s.tomb[i]))
 	})
@@ -388,6 +388,7 @@ func (s *keyStable) delKey(needle []byte) (found bool) {
 }
 
 /*
+
 linux with keyStable:
 
 === RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB
@@ -409,5 +410,22 @@ afterbulk_test.go:121 [pid 3408587] 2026-09-10 16:54:51.361718215 +0000 UTC afte
 === RUN   Test_Replacement_After_Bulk_Load_YogaDB
 afterbulk_test.go:268 [pid 3408587] 2026-09-10 16:55:22.887938873 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 125743.61291149577 writes/sec
 
+
+---------
+
+// Performance improvements of keyStable versus tidwall.Btree:
+//
+// afterbulk_test.go tests:
+//
+// Linux:
+// Test_Writes_Occuring_After_Bulk_Load_YogaDB 614_872 writes/sec  vs btree: 244_696 (keyStable is 2.5x faster)
+// and... next runs were: 620K, 614K, 601K.
+//
+// Test_Replacement_After_Bulk_Load_YogaDB     156_169 writes/sec  vs btree: 125_744 (keyStable is 1.24x faster)
+// and... next runs were: 155K, 153K, 155K writes/sec
+//
+// Darwin:
+// Test_Writes_Occuring_After_Bulk_Load_YogaDB 154_688 writes/sec  vs btree: 113K writes/sec (keyStable is 1.36x faster)
+// Test_Replacement_After_Bulk_Load_YogaDB     108_258 writes/sec  vs btree:  89K writes/sec (keyStable is 1.21x faster)
 
 */
