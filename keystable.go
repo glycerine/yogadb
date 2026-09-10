@@ -386,3 +386,20 @@ func (s *keyStable) delKey(needle []byte) (found bool) {
 	s.sorted = s.sorted[:last]
 	return
 }
+
+/*
+linux with keyStable:
+
+=== RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB
+
+afterbulk_test.go:121 [pid 3422026] 2026-09-10 17:20:31.795255672 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 620_198.5509284749 writes/sec
+afterbulk_test.go:121 [pid 3420968] 2026-09-10 17:18:35.710861022 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 614_811.3140495906 writes/sec
+afterbulk_test.go:121 [pid 3409600] 2026-09-10 16:56:18.524389771 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 614_871.7071904588 writes/sec
+
+=== RUN   Test_Replacement_After_Bulk_Load_YogaDB
+
+afterbulk_test.go:268 [pid 3409600] 2026-09-10 16:56:50.500138943 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 156168.7063311166 writes/sec
+afterbulk_test.go:268 [pid 3420968] 2026-09-10 17:19:07.808563604 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 154378.33792037226 writes/sec
+afterbulk_test.go:268 [pid 3422026] 2026-09-10 17:21:03.585589518 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 155652.17542936638 writes/sec
+
+*/
