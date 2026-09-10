@@ -5266,7 +5266,7 @@ func (db *FlexDB) doFlush() (err error) {
 	db.topMutRW.Lock()
 	autoVacuumHandoff := false
 	defer func() {
-		if true {
+		if false {
 			vv("end of doFlush: sessionMetrics() = '%v'", db.writeLockHeldSessionMetrics())
 		}
 		if err == nil {
