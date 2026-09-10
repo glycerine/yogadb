@@ -438,7 +438,7 @@ versus
 
 branch: keystable, on linux, NO flush worker.
 
-=== RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB
+=== RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB  (keyStable is 1.67x faster than tidwall.Btree)
 
 afterbulk_test.go:127 [pid 3451407] 2026-09-10 18:12:31.846136821 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 579224.8673116597 writes/sec
 afterbulk_test.go:127 [pid 3451921] 2026-09-10 18:13:18.923597476 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 611722.5271822995 writes/sec
@@ -448,7 +448,7 @@ afterbulk_test.go:127 [pid 3453477] 2026-09-10 18:15:28.420317783 +0000 UTC afte
 afterbulk_test.go:127 [pid 3454160] 2026-09-10 18:16:39.211856161 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 607372.3811374991 writes/sec
 afterbulk_test.go:127 [pid 3455015] 2026-09-10 18:18:06.805850210 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 604881.2055699311 writes/sec
 
-=== RUN   Test_Replacement_After_Bulk_Load_YogaDB
+=== RUN   Test_Replacement_After_Bulk_Load_YogaDB  (keyStable is 1.21x faster than tidwall.Btree)
 
 afterbulk_test.go:276 [pid 3453477] 2026-09-10 18:16:12.188771876 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 96030.38864593704 writes/sec
 afterbulk_test.go:276 [pid 3454160] 2026-09-10 18:17:23.527680992 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 95323.40862664096 writes/sec
