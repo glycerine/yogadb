@@ -27,6 +27,7 @@ type memtable struct {
 	memWalBuf         []byte
 	memWalEncodeBuf   []byte
 	memWalWriteOffset int64
+	vtypArena         []byte
 
 	memWalMut sync.Mutex
 	size      int64 // approximate bytes in this memtable
@@ -50,9 +51,20 @@ func newMemtable(memWalFD vfs.File) *memtable {
 
 func (m *memtable) reset() {
 	m.bt.Clear()
+	m.vtypArena = nil
 	m.empty = true
 	m.size = 0
 	m.bulk.reset()
+}
+
+func (m *memtable) vtypBytes(vtyp uint64) []byte {
+	if vtyp == 0 {
+		return nil
+	}
+	start := len(m.vtypArena)
+	m.vtypArena = append(m.vtypArena, 0, 0, 0, 0, 0, 0, 0, 0)
+	putUint64(m.vtypArena[start:start+8], vtyp)
+	return m.vtypArena[start : start+8]
 }
 
 // caller should set m.empty to false after calling put()

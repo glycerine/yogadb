@@ -232,6 +232,7 @@ func (w *mergeOutputBuilder) emitKV(kv KV) error {
 	}
 
 	w.page = append(w.page, kv)
+	w.db.rememberKeyBloomLocked(kv.Key)
 	w.pageSize += itemSize
 	w.stats.ResultRecords++
 	if kv.Hlc > w.stats.MaxMergedResultHLC {

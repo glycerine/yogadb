@@ -97,7 +97,7 @@ var zetalist = [17]float64{
 	math.Float64frombits(0x40421e53630da013),
 }
 
-const zetalistStep = uint64(0x10000000000)  // 1<<40
+const zetalistStep = uint64(0x10000000000) // 1<<40
 const zetalistCount = uint64(16)
 
 // zetaFull uses the pre-computed table for large n, matching C's zeta().

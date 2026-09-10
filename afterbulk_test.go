@@ -52,14 +52,15 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 
 	expectedVals := make(map[string][]byte, N*2)
 	expectedVtyps := make(map[string]uint64, N*2)
+	for i, k := range keys {
+		expectedVals[string(k)] = vals[i]
+		expectedVtyps[string(k)] = uint64(i)
+	}
 
 	// Insert first batch of keys, ignoring insert time.
 	batch := db.NewBatch()
 	for i, k := range keys {
 		vtyp := uint64(i)
-
-		expectedVals[string(k)] = vals[i]
-		expectedVtyps[string(k)] = vtyp
 
 		batch.SetBytes(k, vals[i], vtyp)
 		if (i+1)%10000 == 0 {
@@ -83,6 +84,9 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 		for range 5 {
 			n += copy(vals2[i][n:], keys2[i])
 		}
+		vtyp := uint64(N + i + 1)
+		expectedVals[string(keys2[i])] = vals2[i]
+		expectedVtyps[string(keys2[i])] = vtyp
 	}
 
 	// --- START PROFILING ---
@@ -101,8 +105,6 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	for i, k := range keys2 {
 		vtyp := uint64(N + i + 1)
 		batch.SetBytes(k, vals2[i], vtyp)
-		expectedVals[string(k)] = vals2[i]
-		expectedVtyps[string(k)] = vtyp
 		if (i+1)%10000 == 0 {
 			batch.Commit(false)
 			batch = db.NewBatch()
@@ -226,6 +228,9 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 		for range 5 {
 			n += copy(vals2[i][n:], keys2[i])
 		}
+		vtyp := uint64(N + i + 1)
+		expectedVals[string(keys[i])] = vals2[i]
+		expectedVtyps[string(keys[i])] = vtyp
 	}
 
 	// --- START PROFILING ---
@@ -246,9 +251,6 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 	for i, k := range keys {
 		vtyp := uint64(N + i + 1)
 		batch.SetBytes(k, vals2[i], vtyp)
-
-		expectedVals[string(k)] = vals2[i]
-		expectedVtyps[string(k)] = vtyp
 		if (i+1)%10000 == 0 {
 			batch.Commit(false)
 			batch = db.NewBatch()

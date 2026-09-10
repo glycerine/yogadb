@@ -89,6 +89,11 @@ type valueLog struct {
 	mu   sync.Mutex // protects writes (appends are serialized)
 	tail int64      // next write offset (also = file size)
 
+	batchBuf       []byte
+	batchB3s       [][32]byte
+	batchDedup     []bool
+	headerBatchBuf []byte
+
 	// Write-byte counter (accessed atomically)
 	VLOGBytesWritten int64
 	VLOGFsyncs       int64
@@ -127,12 +132,12 @@ func (vl *valueLog) append(value []byte, hlc HLC) (VPtr, error) {
 // On-disk format: [4B hdrCRC][8B HLC][8B length][4B valCRC][32B blake3][NB value]
 // hdrCRC covers bytes 4..56 (HLC + length + valCRC + blake3).
 func (vl *valueLog) appendLocked(value []byte, hlc HLC) (VPtr, error) {
-	return vl.appendLockedWithHash(value, hlc, nil)
+	return vl.appendLockedWithHash(value, hlc, blake3checksum32(value))
 }
 
 // appendLockedWithHash is like appendLocked but accepts a pre-computed blake3
 // hash to avoid recomputing it when the caller already has it (e.g., dedup path).
-func (vl *valueLog) appendLockedWithHash(value []byte, hlc HLC, b3 []byte) (VPtr, error) {
+func (vl *valueLog) appendLockedWithHash(value []byte, hlc HLC, b3 [32]byte) (VPtr, error) {
 	vlen := uint64(len(value))
 	entrySize := vlogEntryHeaderSize + int(vlen)
 
@@ -145,10 +150,7 @@ func (vl *valueLog) appendLockedWithHash(value []byte, hlc HLC, b3 []byte) (VPtr
 	valCRC := crc32.Checksum(buf[vlogEntryHeaderSize:], crc32cTable)
 	binary.LittleEndian.PutUint32(buf[20:24], valCRC)
 	// blake3 checksum of value bytes.
-	if b3 == nil {
-		b3 = blake3checksum32(value)
-	}
-	copy(buf[24:56], b3)
+	copy(buf[24:56], b3[:])
 	// hdrCRC covers bytes 4..56 (HLC + length + valCRC + blake3).
 	hdrCRC := crc32.Checksum(buf[4:56], crc32cTable)
 	binary.LittleEndian.PutUint32(buf[0:4], hdrCRC)
@@ -164,6 +166,23 @@ func (vl *valueLog) appendLockedWithHash(value []byte, hlc HLC, b3 []byte) (VPtr
 		Offset: uint64(offset),
 		Length: vlen,
 	}, nil
+}
+
+func appendVLOGEntryToBuffer(buf []byte, value []byte, hlc HLC, b3 [32]byte) []byte {
+	start := len(buf)
+	entrySize := vlogEntryHeaderSize + len(value)
+	buf = buf[:start+entrySize]
+	entry := buf[start : start+entrySize]
+
+	binary.BigEndian.PutUint64(entry[4:12], uint64(hlc))
+	binary.LittleEndian.PutUint64(entry[12:20], uint64(len(value)))
+	valCRC := crc32.Checksum(value, crc32cTable)
+	binary.LittleEndian.PutUint32(entry[20:24], valCRC)
+	copy(entry[24:56], b3[:])
+	copy(entry[vlogEntryHeaderSize:], value)
+	hdrCRC := crc32.Checksum(entry[4:56], crc32cTable)
+	binary.LittleEndian.PutUint32(entry[0:4], hdrCRC)
+	return buf
 }
 
 // appendAndSync writes a value to the VLOG, fsyncs, and returns a VPtr.
@@ -204,7 +223,7 @@ func (vl *valueLog) appendDedupAndSync(value []byte, hlc HLC, oldVP VPtr, skipSy
 	// the caller only calling us when oldVP.Length == len(value).
 	if oldVP.Length > 0 {
 		oldB3, err := vl.readBlake3(oldVP)
-		if err == nil && equal32(newB3, oldB3[:]) {
+		if err == nil && newB3 == oldB3 {
 			// Value unchanged - reuse old VPtr, skip VLOG write.
 			return oldVP, true, nil
 		}
@@ -227,44 +246,148 @@ func (vl *valueLog) appendDedupAndSync(value []byte, hlc HLC, oldVP VPtr, skipSy
 // for values whose blake3 matches the existing entry at oldVPs[i].
 // An oldVP with Length==0 means "no previous entry" (always append).
 // Returns one VPtr per value and the count of dedup hits.
-func (vl *valueLog) appendBatchDedupAndSync(values [][]byte, hlcs []HLC, oldVPs []VPtr, skipSync bool) ([]VPtr, int, error) {
-	// Pre-compute blake3 checksums for all new values (outside the lock).
-	b3s := make([][]byte, len(values))
+func (vl *valueLog) appendBatchDedupAndSync(values [][]byte, hlc HLC, oldVPs []VPtr, skipSync bool) ([]VPtr, int, error) {
+	vl.mu.Lock()
+	defer vl.mu.Unlock()
+
+	if cap(vl.batchB3s) < len(values) {
+		vl.batchB3s = make([][32]byte, len(values))
+	} else {
+		vl.batchB3s = vl.batchB3s[:len(values)]
+	}
+	b3s := vl.batchB3s
 	for i, v := range values {
 		b3s[i] = blake3checksum32(v)
 	}
 
-	vl.mu.Lock()
-	defer vl.mu.Unlock()
-
 	ptrs := make([]VPtr, len(values))
 	dedupHits := 0
-	wrote := false
+	startOffset := vl.tail
+	writeBufLen := 0
+	hasDedupCandidates := false
+	for i, v := range values {
+		writeBufLen += vlogEntryHeaderSize + len(v)
+		if oldVPs[i].Length == uint64(len(v)) && oldVPs[i].Length > 0 {
+			hasDedupCandidates = true
+		}
+	}
+	if cap(vl.batchBuf) < writeBufLen {
+		vl.batchBuf = make([]byte, 0, writeBufLen)
+	} else {
+		vl.batchBuf = vl.batchBuf[:0]
+	}
+	writeBuf := vl.batchBuf
+	var dedup []bool
+	if hasDedupCandidates {
+		if cap(vl.batchDedup) < len(values) {
+			vl.batchDedup = make([]bool, len(values))
+		} else {
+			vl.batchDedup = vl.batchDedup[:len(values)]
+			clear(vl.batchDedup)
+		}
+		dedup = vl.batchDedup
+		vl.markBatchDedupHits(values, b3s, oldVPs, dedup)
+	}
 
 	for i, v := range values {
-		// Try dedup if we have an old VPtr with matching length.
-		if oldVPs[i].Length == uint64(len(v)) && oldVPs[i].Length > 0 {
-			oldB3, err := vl.readBlake3(oldVPs[i])
-			if err == nil && equal32(b3s[i], oldB3[:]) {
-				ptrs[i] = oldVPs[i]
-				dedupHits++
-				continue
-			}
+		if hasDedupCandidates && dedup[i] {
+			ptrs[i] = oldVPs[i]
+			dedupHits++
+			continue
 		}
 		// Append new entry.
-		vp, err := vl.appendLockedWithHash(v, hlcs[i], b3s[i])
-		if err != nil {
+		ptrs[i] = VPtr{
+			Offset: uint64(startOffset) + uint64(len(writeBuf)),
+			Length: uint64(len(v)),
+		}
+		writeBuf = appendVLOGEntryToBuffer(writeBuf, v, hlc, b3s[i])
+	}
+	vl.batchBuf = writeBuf[:0]
+	if len(writeBuf) > 0 {
+		if err := writeAtFull(vl.fd, writeBuf, startOffset, "vlog batch"); err != nil {
 			return nil, dedupHits, err
 		}
-		ptrs[i] = vp
-		wrote = true
+		atomic.AddInt64(&vl.VLOGBytesWritten, int64(len(writeBuf)))
+		vl.tail = startOffset + int64(len(writeBuf))
 	}
-	if wrote && !skipSync {
+	if len(writeBuf) > 0 && !skipSync {
 		if err := vl.syncFile(); err != nil {
 			return nil, dedupHits, fmt.Errorf("vlog: batch sync: %w", err)
 		}
 	}
 	return ptrs, dedupHits, nil
+}
+
+func (vl *valueLog) markBatchDedupHits(values [][]byte, b3s [][32]byte, oldVPs []VPtr, dedup []bool) {
+	const minCoalesceHeaders = 8
+	const maxCoalescedOverread = 4
+
+	for i := 0; i < len(values); {
+		if oldVPs[i].Length != uint64(len(values[i])) || oldVPs[i].Length == 0 {
+			i++
+			continue
+		}
+
+		start := i
+		spanStart := oldVPs[i].Offset
+		spanEnd := oldVPs[i].Offset + vlogEntryHeaderSize
+		prev := oldVPs[i]
+		i++
+		for i < len(values) &&
+			oldVPs[i].Length == uint64(len(values[i])) &&
+			oldVPs[i].Length > 0 &&
+			oldVPs[i].Offset == prev.Offset+uint64(vlogEntryHeaderSize)+prev.Length {
+			spanEnd = oldVPs[i].Offset + vlogEntryHeaderSize
+			prev = oldVPs[i]
+			i++
+		}
+
+		count := i - start
+		headerBytes := count * vlogEntryHeaderSize
+		spanLen64 := spanEnd - spanStart
+		maxInt := int(^uint(0) >> 1)
+		if count >= minCoalesceHeaders &&
+			spanLen64 <= uint64(maxInt) &&
+			int(spanLen64) <= headerBytes*maxCoalescedOverread {
+			spanLen := int(spanLen64)
+			if cap(vl.headerBatchBuf) < spanLen {
+				vl.headerBatchBuf = make([]byte, spanLen)
+			} else {
+				vl.headerBatchBuf = vl.headerBatchBuf[:spanLen]
+			}
+			if err := readAtFull(vl.fd, vl.headerBatchBuf, int64(spanStart), "vlog batch readBlake3"); err == nil {
+				for j := start; j < i; j++ {
+					off := int(oldVPs[j].Offset - spanStart)
+					if vlogHeaderMatchesB3(vl.headerBatchBuf[off:off+vlogEntryHeaderSize], oldVPs[j], b3s[j]) {
+						dedup[j] = true
+					}
+				}
+				continue
+			}
+		}
+
+		for j := start; j < i; j++ {
+			oldB3, err := vl.readBlake3(oldVPs[j])
+			if err == nil && b3s[j] == oldB3 {
+				dedup[j] = true
+			}
+		}
+	}
+}
+
+func vlogHeaderMatchesB3(hdr []byte, vp VPtr, b3 [32]byte) bool {
+	_ = hdr[vlogEntryHeaderSize-1]
+	storedHdrCRC := binary.LittleEndian.Uint32(hdr[0:4])
+	computedHdrCRC := crc32.Checksum(hdr[4:56], crc32cTable)
+	if computedHdrCRC != storedHdrCRC {
+		return false
+	}
+	if binary.LittleEndian.Uint64(hdr[12:20]) != vp.Length {
+		return false
+	}
+	var oldB3 [32]byte
+	copy(oldB3[:], hdr[24:56])
+	return oldB3 == b3
 }
 
 // appendBatchAndSync writes multiple values to the VLOG with a single fsync.
@@ -356,7 +479,7 @@ func (vl *valueLog) read(vp VPtr) ([]byte, error) {
 	// Verify blake3 checksum of value bytes matches stored blake3.
 	storedB3 := buf[24:56]
 	computedB3 := blake3checksum32(value)
-	if !equal32(storedB3, computedB3) {
+	if !equal32(storedB3, computedB3[:]) {
 		return nil, fmt.Errorf("vlog: blake3 mismatch at offset %d", vp.Offset)
 	}
 

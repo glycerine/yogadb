@@ -3,6 +3,7 @@ package yogadb
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"math/rand"
 	randv2 "math/rand/v2"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/glycerine/greenpack/msgp"
 	porc "github.com/glycerine/porcupine"
 	"github.com/glycerine/vfs"
 )
@@ -677,6 +679,72 @@ func TestRecovery_WriteTxUpdateUsesGreenMEMWALCommitMarkers(t *testing.T) {
 		if !found || string(got) != tc.want {
 			t.Fatalf("%s after WriteTx WAL recovery: found=%v got=%q want=%q", tc.key, found, got, tc.want)
 		}
+	}
+}
+
+func TestRecovery_PostAllowReadsBatchCommitUsesRecoverableCompactMEMWAL(t *testing.T) {
+	dir := "test_recovery_post_allow_batch_compact_memwal"
+	fs := vfs.NewCrashableMem()
+	panicOn(fs.MkdirAll(dir, 0755))
+
+	db, err := OpenFlexDB(dir, &Config{
+		FS:                     fs,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB: %v", err)
+	}
+	defer db.Close()
+	db.AllowReads()
+
+	large := []byte(makeTestValue(vlogInlineThreshold + 80))
+	b := db.NewBatch()
+	if err := b.Set("small-a", []byte("A"), 11); err != nil {
+		t.Fatalf("Set small-a: %v", err)
+	}
+	if err := b.Set("large-b", large, 22); err != nil {
+		t.Fatalf("Set large-b: %v", err)
+	}
+	if _, err := b.Commit(false); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := db.mt.logSync(); err != nil {
+		t.Fatalf("sync compact batch memwal: %v", err)
+	}
+
+	reader := msgp.NewReader(io.NewSectionReader(db.mt.memWalFD, memWalHeaderSize, 1<<20))
+	g, _, err := LoadMEMWAL(reader)
+	if err != nil {
+		t.Fatalf("LoadMEMWAL compact batch: %v", err)
+	}
+	if g.WalRecordType != MEMWAL_BATCH_KV_HLC {
+		t.Fatalf("WAL record type = %d, want MEMWAL_BATCH_KV_HLC", g.WalRecordType)
+	}
+
+	crashedFS := fs.CrashClone(vfs.CrashCloneCfg{UnsyncedDataPercent: 0})
+	db2, err := OpenFlexDB(dir, &Config{
+		FS:                     crashedFS,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB after compact batch WAL-only crash clone: %v", err)
+	}
+	defer db2.Close()
+	db2.AllowReads()
+
+	got, found, vtyp, _, err := db2.Get("small-a")
+	if err != nil {
+		t.Fatalf("Get small-a: %v", err)
+	}
+	if !found || string(got) != "A" || vtyp != 11 {
+		t.Fatalf("small-a after compact batch WAL recovery: found=%v got=%q vtyp=%d", found, got, vtyp)
+	}
+	got, found, vtyp, _, err = db2.Get("large-b")
+	if err != nil {
+		t.Fatalf("Get large-b: %v", err)
+	}
+	if !found || !bytes.Equal(got, large) || vtyp != 22 {
+		t.Fatalf("large-b after compact batch WAL recovery: found=%v len(got)=%d vtyp=%d", found, len(got), vtyp)
 	}
 }
 

@@ -3311,3 +3311,86 @@ random NewCallID writes; the retained path is about 3.8-3.9x faster than Pebble
 on the paired Linux benchmark. The remaining gap is likely structural: sorting,
 page encoding/installation, key copying, and final data-file sync dominate.
 ```
+
+### 2026-09-10: Release Cleanup, Post-AllowReads Write Path
+
+After the bulk-load work, profiling moved to writes that happen after
+`AllowReads()`: new disjoint large-value writes, and replacement large-value
+writes. These paths are important because they no longer use the pristine
+initial-load fast path and must preserve normal read correctness.
+
+Retained changes:
+
+```text
+1. Dynamic key Bloom filter:
+   Rebuilt from FlexSpace when key counts are recomputed and maintained while
+   writing. It lets post-AllowReads writes skip exact old-key FlexSpace probes
+   when a key is definitely absent. This helps disjoint new writes without
+   requiring a full key hash map in RAM.
+
+2. Bloom miss pre-add for large values:
+   The large-value old-state prepass hashes each large key once. If the Bloom
+   filter says the key is absent, it records that old state immediately and
+   inserts the key into the filter, avoiding a second hash/add in the later
+   memtable insertion loop.
+
+3. Batched VLOG appends:
+   Large values in one batch are encoded into a reusable contiguous buffer and
+   written with one write-at call. Per-entry VLOG headers and BLAKE3 sums are
+   still preserved.
+
+4. Batched/coalesced old VLOG header reads:
+   Replacement writes still need same-value dedup checks. When old VPtrs are
+   contiguous, the VLOG reader now reads multiple headers with one pread and
+   checks them in memory. This removed most of the replacement-path syscall
+   cost visible in the profile.
+
+5. Compact post-AllowReads batch MEMWAL records:
+   Whole batches that fit below the memtable flush boundary use compact
+   `MEMWAL_BATCH_KV_HLC` records instead of per-KV MEMWAL records. Recovery
+   has a regression test that verifies mixed small/large values survive a
+   WAL-only crash clone.
+
+6. Memtable-owned vtyp arena:
+   Large VLOG-backed values with nonzero vtyp need eight bytes in `KV.Value`
+   to store the vtyp. Those bytes are now allocated from a memtable-owned byte
+   arena instead of one tiny heap allocation per KV. The arena is dropped when
+   the memtable is flushed or reset.
+```
+
+Representative after-bulk results from the retained shape:
+
+```text
+New disjoint large-value writes after AllowReads:
+  about 386k writes/sec after batched VLOG header work
+  about 395k writes/sec after the vtyp arena
+
+Replacement large-value writes after AllowReads:
+  about 297k writes/sec after batched VLOG header work
+  about 315k writes/sec after the vtyp arena
+
+The old VLOG header-read syscall cost is largely gone. The remaining hot path
+is mostly tidwall B-tree insertion/lookup, key comparison, exact old-key lookup
+for true replacements, interval-cache decode/update work, and benchmark-harness
+GC noise from large generated key/value/expected-result sets.
+```
+
+Rejected and reverted during this pass:
+
+```text
+Preallocating large-value staging slices:
+  Correct, but no reliable timing improvement.
+
+B-tree degree 64:
+  Correct, but slower or noisier than degree 32. Kept degree 32.
+
+Blocked Bloom layout and two-probe Bloom:
+  Correct, but worse than the simple dynamic Bloom at 10 bits/key and 3 probes.
+
+Exact vtyp-arena reservation:
+  Correct, but copying the growing arena on repeated commits made the new-write
+  case slower. Kept normal append/geometric growth.
+
+VLOG checksum replacement:
+  Not applied. The release shape still stores BLAKE3 in VLOG headers.
+```
