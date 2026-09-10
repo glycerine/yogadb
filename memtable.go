@@ -48,6 +48,7 @@ func newMemtable(memWalFD vfs.File) *memtable {
 }
 
 func (m *memtable) reset() {
+	m.bt.Clear()
 	m.empty = true
 	m.size = 0
 	m.bulk.reset()

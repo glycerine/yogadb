@@ -1594,6 +1594,7 @@ func TestFlexDB_HLC_UpdatedOnReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db1.AllowReads()
 	for _, k := range keys {
 		if _, err := db1.Put(k, []byte("val-"+k), 0); err != nil {
 			t.Fatal(err)
@@ -1609,6 +1610,7 @@ func TestFlexDB_HLC_UpdatedOnReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db2.AllowReads()
 	hlcs1 := make(map[string]HLC)
 	for _, k := range keys {
 		kv, ok, err := db2.getPassthroughKV(k)
@@ -1638,6 +1640,7 @@ func TestFlexDB_HLC_UpdatedOnReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db3.AllowReads()
 	for _, k := range keys {
 		kv, ok, err := db3.getPassthroughKV(k)
 		panicOn(err)
@@ -1787,6 +1790,7 @@ func TestDeleteRange_Persistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db.AllowReads()
 
 	for c := byte('a'); c <= 'j'; c++ {
 		if _, err := db.Put(string([]byte{c}), []byte{c}, 0); err != nil {
@@ -2179,6 +2183,7 @@ func TestDeleteRange_AllGone(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		db.AllowReads()
 		for c := byte('a'); c <= 'e'; c++ {
 			if _, err := db.Put(string([]byte{c}), []byte{c}, 0); err != nil {
 				t.Fatal(err)
@@ -2366,11 +2371,10 @@ func TestFlexDB_SyncReturnsErrorWhenInitialFlexSpaceInsertFails(t *testing.T) {
 		anchor.psize = origPSize
 		anchor.unsorted = 0
 		discardAllIntervalCacheForTest(db)
-		db.mt.bt.Clear()
-		db.mt.empty = true
-		db.mt.size = 0
+		db.mt.reset()
 	}()
 
+	db.AllowReads()
 	if _, err := db.Put("a", []byte("value"), 0); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -2416,6 +2420,7 @@ func TestFlexDB_VacuumVLOGReturnsFlexSpaceUpdateError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
+	db.AllowReads()
 
 	largeVal := bytes.Repeat([]byte("x"), int(vlogInlineThreshold)+1)
 	if _, err := db.Put("big", largeVal, 0); err != nil {
@@ -2721,6 +2726,7 @@ func TestClear(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		db.AllowReads()
 		for i := 0; i < 20; i++ {
 			if _, err := db.Put(fmt.Sprintf("k%02d", i), []byte(fmt.Sprintf("v%02d", i)), 0); err != nil {
 				t.Fatal(err)
@@ -2913,6 +2919,7 @@ func TestLen(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		db.AllowReads()
 		N := 30
 		largeVal := make([]byte, 128)
 		for i := 0; i < N; i++ {
@@ -2926,7 +2933,6 @@ func TestLen(t *testing.T) {
 		db.Delete("key0003")
 		db.Delete("key0006")
 
-		db.AllowReads()
 		wantLen := db.Len()
 		wantBig, wantSmall := db.LenBigSmall()
 		db.Close()

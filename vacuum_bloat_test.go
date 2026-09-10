@@ -89,6 +89,7 @@ func TestVacuumKVOverwriteTinyCachePreservesAnchorTags(t *testing.T) {
 		t.Fatal(err)
 	}
 	forceTinyIntervalCache(db)
+	db.AllowReads()
 	if _, err := db.VacuumVLOG(); err != nil {
 		t.Fatalf("VacuumVLOG: %v", err)
 	}

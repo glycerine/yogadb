@@ -63,6 +63,7 @@ func TestTxPutReturnsMemWALBeginErrorBeforeApplyingWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
+	db.AllowReads()
 
 	failFD := &failWriteAtFileForTest{File: db.mt.memWalFD, failWriteAt: true}
 	db.mt.memWalFD = failFD

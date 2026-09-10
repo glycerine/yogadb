@@ -17,6 +17,7 @@ func TestGC_DebugDiskGrowth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db.AllowReads()
 	defer db.Close()
 
 	const nKeys = 500

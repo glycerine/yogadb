@@ -541,6 +541,7 @@ func TestGC_OverwriteSameKeys_DiskSizeBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db.AllowReads()
 	defer db.Close()
 
 	const nKeys = 500
@@ -626,6 +627,7 @@ func TestGC_PartialOverwrite_NoBlockGrowth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db.AllowReads()
 	defer db.Close()
 
 	const nKeys = 500
@@ -714,6 +716,7 @@ func TestGC_ReplaceWithLargerValue_Splits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db.AllowReads()
 	defer db.Close()
 
 	// Write enough keys to fill a page (~200 keys in 10KB).
@@ -787,6 +790,7 @@ func TestGC_OverwriteSameKeys_RedoLogGrows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db.AllowReads()
 	defer db.Close()
 
 	const nKeys = 200
@@ -966,6 +970,7 @@ func TestGC_CrossSession_DiskGrowth(t *testing.T) {
 		if err != nil {
 			t.Fatalf("session %d: OpenFlexDB: %v", s, err)
 		}
+		db.AllowReads()
 
 		// Write the same keys with session-specific values.
 		for i, k := range keys {
@@ -1060,6 +1065,7 @@ func TestGC_CrossSession_BlockReuse(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		db.AllowReads()
 		for i := 0; i < nKeys; i++ {
 			k := fmt.Sprintf("key%06d", i)
 			v := fmt.Sprintf("val-session0-%06d-data-padding", i)
@@ -1085,6 +1091,7 @@ func TestGC_CrossSession_BlockReuse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("session %d: %v", s, err)
 		}
+		db.AllowReads()
 
 		// Check block manager state on open - are old blocks seen as used?
 		usageOnOpen := totalBlockUsage(db.ff)
@@ -1163,6 +1170,7 @@ func TestGC_CrossSession_ManyReopens_SameDataset(t *testing.T) {
 		if err != nil {
 			t.Fatalf("session %d: %v", s, err)
 		}
+		db.AllowReads()
 
 		for i := 0; i < nKeys; i++ {
 			if _, err := db.Put(string(keys[i]), vals[i], 0); err != nil {

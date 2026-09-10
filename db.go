@@ -85,6 +85,10 @@ const (
 )
 
 // NewBatch returns an empty new Batch.
+//
+// Before AllowReads is called, the only supported data-loading operations are:
+// create a Batch, call Batch.Set (or SetBytes), and Commit it. Batch.Delete and
+// the general-purpose DB/transaction write APIs require AllowReads first.
 func (db *FlexDB) NewBatch() (b *Batch) {
 	b = &Batch{
 		db:                 db,
@@ -124,6 +128,9 @@ func (s *Batch) materializeAliasKeys() {
 // Set copies key and value internally, so the
 // original memory is safe to be re-used by the
 // caller immediately after Set returns.
+//
+// During the initial write-only load phase before AllowReads, Batch.Set is the
+// only supported data mutation, along with its byte-slice form SetBytes.
 func (s *Batch) Set(key string, value []byte, vtyp uint64) (err error) {
 	if err := validateUserKey(key); err != nil {
 		if s.err == nil {
@@ -167,6 +174,8 @@ func (s *Batch) Set(key string, value []byte, vtyp uint64) (err error) {
 	return nil
 }
 
+// SetBytes is the byte-slice form of Set. It is also allowed during the
+// initial write-only load phase before AllowReads.
 func (s *Batch) SetBytes(key []byte, value []byte, vtyp uint64) (err error) {
 	if len(key) == 0 {
 		err = ErrKeyEmpty
@@ -241,8 +250,10 @@ func (s *Batch) SetBytes(key []byte, value []byte, vtyp uint64) (err error) {
 	return nil
 }
 
-// Delete marks key for deletion in this batch.
+// Delete marks key for deletion in this batch. Batch deletes require
+// AllowReads; before AllowReads, only Batch.Set/SetBytes loading is supported.
 func (s *Batch) Delete(key string) {
+	s.db.requireReadsAllowed()
 	if err := validateUserKey(key); err != nil {
 		if s.err == nil {
 			s.err = err
@@ -1326,6 +1337,15 @@ func (db *FlexDB) recomputeKeyCountsLocked() {
 
 // OpenFlexDB opens or creates a FlexDB at the given directory path.
 // cacheMB is the cache capacity in megabytes.
+//
+// A newly opened database starts in bulk-insert mode where only
+// Batch.Set() and Batch.SetBytes(), Batch.Commit() and db.Sync() calls
+// are allowed so that these writes can be fast.
+//
+// The user must call AllowReads() to terminate this initial bulk
+// loading phase and enable reading Get/Find and singleton Put()s on the database.
+// Violations of this contract will panic immediately to teach the expected
+// use pattern.
 func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 
 	//fmt.Printf("rnd0 = '%v'\n rnd1 = '%v'\n", cryRand33B(), cryRand33B())
@@ -1979,7 +1999,10 @@ func (z *VacuumVLOGStats) String() (r string) {
 // Crash safety: if the process crashes before the rename completes, the old
 // VLOG and old intervals remain intact. The stale VLOG.new file (if present)
 // is harmless and will be overwritten on the next vacuum.
+//
+// VacuumVLOG requires AllowReads.
 func (db *FlexDB) VacuumVLOG() (*VacuumVLOGStats, error) {
+	db.requireReadsAllowed()
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 	return db.vacuumVLOGLocked()
@@ -2285,6 +2308,7 @@ func (z *VacuumKVStats) String() (r string) {
 // TestFlexDB_VacuumKV_WithDeletes - deletes half of 100 keys, vacuums, verifies correct keys survive
 // .
 func (db *FlexDB) VacuumKV() (*VacuumKVStats, error) {
+	db.requireReadsAllowed()
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 	return db.vacuumKVLocked()
@@ -3105,7 +3129,11 @@ func recoverIterIOErr(errp *error) {
 // completed a db.Sync() call. This allows the user to control
 // the rate of fsyncs and trade that against their durability
 // requirements.
+//
+// Put requires AllowReads. Before AllowReads, load initial data through
+// Batch.Set/SetBytes only.
 func (db *FlexDB) Put(key string, value []byte, vtyp uint64) (hlc HLC, err error) {
+	db.requireReadsAllowed()
 	db.topMutRW.Lock()
 	autoVacuumHandoff := false
 	defer func() {
@@ -3120,7 +3148,6 @@ func (db *FlexDB) Put(key string, value []byte, vtyp uint64) (hlc HLC, err error
 }
 
 func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string, value []byte, vtyp uint64, doDelete bool) (HLC, error) {
-	db.materializeBulkInitialLocked()
 	if doDelete && len(value) > 0 {
 		return 0, fmt.Errorf("flexdb API use error: cannot supply a value and also delete it's key, this is a contradiction. Do not set a value on delete of a key: '%v'.", key)
 	}
@@ -3666,8 +3693,9 @@ func (db *FlexDB) someLockHeldGet(key string) (val []byte, found bool, vtyp uint
 	return db.getPassthrough(key)
 }
 
-// Delete removes key from the store.
+// Delete removes key from the store. Delete requires AllowReads.
 func (db *FlexDB) Delete(key string) error {
+	db.requireReadsAllowed()
 	db.topMutRW.Lock()
 	_, err := db.writeLockHeldPutWithHook(nil, key, nil, 0, true)
 	autoVacuumHandoff := false
@@ -3703,7 +3731,10 @@ func (db *FlexDB) Delete(key string) error {
 // Goroutine safe. Concurrent reads and writes are serialized via the
 // database write lock. However, when allGone is returned true, all
 // previously held iterators, cursors, and references are invalidated.
+//
+// DeleteRange requires AllowReads.
 func (db *FlexDB) DeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
+	db.requireReadsAllowed()
 	db.topMutRW.Lock()
 	autoVacuumHandoff := false
 	defer func() {
@@ -3793,7 +3824,10 @@ func (db *FlexDB) writeLockHeldDeleteRangeWithHook(beforeWrite func() error, inc
 //
 // Goroutine safe. Acquires the database write lock for the
 // duration of the call, serializing against all other operations.
+//
+// Clear requires AllowReads.
 func (db *FlexDB) Clear(includeLarge bool) (allGone bool, err error) {
+	db.requireReadsAllowed()
 	db.topMutRW.Lock()
 	autoVacuumHandoff := false
 	defer func() {
@@ -3940,9 +3974,7 @@ func (db *FlexDB) writeLockHeldDeleteAll() error {
 	// will be just fine.
 
 	// 2. Clear memtable.
-	db.mt.bt.Clear()
-	db.mt.empty = true
-	db.mt.size = 0
+	db.mt.reset()
 
 	// 3. Destroy interval cache.
 	db.cache.destroyAll()
@@ -4344,8 +4376,9 @@ func deleteRangeDedup(kvs []KV) []KV {
 //  3. Read-only peek: The callback just wants to see the current
 //     value (though Get is simpler for that).
 //
-// .
+// Merge requires AllowReads.
 func (db *FlexDB) Merge(key string, fn func(oldVal []byte, exists bool, oldVtyp uint64) (newVal []byte, write bool, doDelete bool, newVtyp uint64)) (err error) {
+	db.requireReadsAllowed()
 	db.topMutRW.Lock()
 	autoVacuumHandoff := false
 	defer func() {
@@ -5273,7 +5306,9 @@ func (db *FlexDB) flushMemtable() error {
 	if ok, err := db.flushMemtableBulkInitial(m); ok || err != nil {
 		return err
 	}
-	db.materializeBulkInitialLocked()
+	if m.bulk.count > 0 {
+		return fmt.Errorf("flexdb: unmaterialized initial bulk data reached normal memtable flush; call AllowReads before general writes")
+	}
 	var nh memSparseIndexTreeHandler
 	batch := make([]KV, 0, memtableFlushBatch)
 	var err error
@@ -5785,14 +5820,20 @@ func syncDir(fs vfs.FS, path string) error {
 	return nil
 }
 
-// AllowReads transitions the database from its "first load write-only mode" to
-// general purpose reads and writes allowed. This way we can optimize the
-// initial bulk/batch load of the database that is all writes and need not
-// serve reads and thus can exploit fast path write optimizations.
+// AllowReads transitions the database from its initial write-only load phase to
+// general-purpose reads and writes. This keeps the initial batch load fast by
+// allowing the database to defer materializing its bulk ingest representation.
 //
-// Users must call db.AllowReads() at least once before doing any Get
-// or other read operation on the db.
-// Otherwise reads will panic to remind the user of the required use pattern.
+// Before AllowReads, the only supported data-loading sequence is:
+//
+//	b := db.NewBatch()
+//	b.Set(key, value, vtyp) // or b.SetBytes(...)
+//	b.Commit(false)
+//
+// Additional batches and db.Sync are also allowed before AllowReads. All reads,
+// transactions, single-key Put/Delete, DeleteRange, Clear, Merge, Batch.Delete,
+// vacuum, and integrity operations require AllowReads first and will panic if
+// used during the initial load phase.
 //
 // Idempotent. The second call is ignored.
 func (db *FlexDB) AllowReads() {

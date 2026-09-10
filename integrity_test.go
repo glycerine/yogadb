@@ -15,6 +15,7 @@ func TestCheckIntegrityReportsMissingAnchorTag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db.AllowReads()
 
 	mustPut(t, db, "anchor-tag-key", "anchor-tag-value")
 	if err := db.Sync(); err != nil {
@@ -52,6 +53,7 @@ func TestAnchorPageResizeRestampsMissingAnchorTag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db.AllowReads()
 
 	mustPut(t, db, "anchor-tag-key", "small")
 	if err := db.Sync(); err != nil {

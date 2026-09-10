@@ -324,6 +324,7 @@ func (tx *WriteTx) Get(key string) (value []byte, found bool, vtyp uint64, hlc H
 	if err := tx.checkOpen(); err != nil {
 		return nil, false, 0, 0, err
 	}
+	tx.db.requireReadsAllowed()
 	return tx.db.someLockHeldGet(key)
 }
 
@@ -332,6 +333,7 @@ func (tx *WriteTx) GetKV(key string) (kv *KVcloser, err error) {
 	if err := tx.checkOpen(); err != nil {
 		return nil, err
 	}
+	tx.db.requireReadsAllowed()
 	kv, _, err = tx.Find(Exact, key)
 	return
 }
@@ -405,6 +407,7 @@ func (tx *WriteTx) Find(smod SearchModifier, key string) (kvc *KVcloser, exact b
 	if err := tx.checkOpen(); err != nil {
 		return nil, false, err
 	}
+	tx.db.requireReadsAllowed()
 	kvc, exact, err = txFind(&tx.txBase, smod, key)
 	return
 }
@@ -417,6 +420,7 @@ func (tx *WriteTx) FindIt(smod SearchModifier, key string) (kvc *KVcloser, exact
 	if err := tx.checkOpen(); err != nil {
 		return nil, false, err, nil
 	}
+	tx.db.requireReadsAllowed()
 	kvc, exact, err, it = txFindIt(&tx.txBase, smod, key)
 	return
 }
@@ -427,6 +431,7 @@ func (tx *WriteTx) FetchLarge(kv *KV) (val []byte, vtyp uint64, hlc HLC, err err
 	if err := tx.checkOpen(); err != nil {
 		return nil, 0, 0, err
 	}
+	tx.db.requireReadsAllowed()
 	return tx.db.lockHeldFetchLarge(kv)
 }
 
@@ -438,6 +443,7 @@ func (tx *WriteTx) NewIter() *Iter {
 	if err := tx.checkOpen(); err != nil {
 		panic(err)
 	}
+	tx.db.requireReadsAllowed()
 	return tx.newIter()
 }
 
@@ -446,6 +452,7 @@ func (tx *WriteTx) Len() int64 {
 	if err := tx.checkOpen(); err != nil {
 		panic(err)
 	}
+	tx.db.requireReadsAllowed()
 	return tx.db.liveKeys
 }
 
@@ -454,6 +461,7 @@ func (tx *WriteTx) LenBigSmall() (big, small int64) {
 	if err := tx.checkOpen(); err != nil {
 		panic(err)
 	}
+	tx.db.requireReadsAllowed()
 	return tx.db.liveBigKeys, tx.db.liveSmallKeys
 }
 
@@ -531,6 +539,7 @@ func (tx *WriteTx) Ascend(pivot string, callback func(key string, value []byte, 
 	if err := tx.checkOpen(); err != nil {
 		panic(err)
 	}
+	tx.db.requireReadsAllowed()
 	it := tx.newIter()
 	defer it.Close()
 	it.Seek(pivot)
@@ -548,6 +557,7 @@ func (tx *WriteTx) Descend(pivot string, callback func(key string, value []byte,
 	if err := tx.checkOpen(); err != nil {
 		panic(err)
 	}
+	tx.db.requireReadsAllowed()
 	it := tx.newIter()
 	defer it.Close()
 	if pivot == "" {
@@ -569,6 +579,7 @@ func (tx *WriteTx) AscendRange(greaterOrEqual, lessThan string, callback func(ke
 	if err := tx.checkOpen(); err != nil {
 		panic(err)
 	}
+	tx.db.requireReadsAllowed()
 	it := tx.newIter()
 	defer it.Close()
 	it.Seek(greaterOrEqual)
@@ -589,6 +600,7 @@ func (tx *WriteTx) DescendRange(lessOrEqual, greaterThan string, callback func(k
 	if err := tx.checkOpen(); err != nil {
 		panic(err)
 	}
+	tx.db.requireReadsAllowed()
 	it := tx.newIter()
 	defer it.Close()
 	if lessOrEqual == "" {
@@ -749,6 +761,9 @@ func (roTx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, callback f
 // (topMutRW.Lock()) is held for the duration of fn, blocking all other
 // readers and writers including the flush worker.
 //
+// Update requires AllowReads. Before AllowReads, initial data must be loaded
+// with Batch.Set/SetBytes only.
+//
 // All iterators created within fn via rwDB.NewIter() or rwDB.FindIt()
 // are automatically closed when fn returns.
 //
@@ -759,6 +774,7 @@ func (roTx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, callback f
 // Do NOT call db.Put/db.Get/db.Delete/db.Sync inside fn - use rw
 // methods on the WriteTx instead (to avoid deadlock).
 func (db *FlexDB) Update(fn func(rw *WriteTx) error) (err error) {
+	db.requireReadsAllowed()
 	db.topMutRW.Lock()
 	tx, err := db.beginWriteTxLocked(true)
 	if err != nil {
@@ -837,6 +853,7 @@ func (db *FlexDB) View(fn func(ro *ReadOnlyTx) error) (err error) {
 }
 
 func (db *FlexDB) BeginUpdate() (*WriteTx, error) {
+	db.requireReadsAllowed()
 	db.topMutRW.Lock()
 	tx, err := db.beginWriteTxLocked(false)
 	if err != nil {

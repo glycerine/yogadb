@@ -25,6 +25,7 @@ func TestReloadSameDataWriteAmplificationBounded(t *testing.T) {
 	if err := db.Sync(); err != nil {
 		t.Fatalf("first load Sync: %v", err)
 	}
+	db.AllowReads()
 	firstLoad := db.SessionMetrics()
 	t.Logf("first load metrics: writeAmp=%.3f kv128=%d memwal=%d redo=%d logical=%d total=%d",
 		firstLoad.WriteAmp, firstLoad.KV128BytesWritten, firstLoad.MemWALBytesWritten,
@@ -46,6 +47,7 @@ func TestReloadSameDataWriteAmplificationBounded(t *testing.T) {
 	if err := db.Sync(); err != nil {
 		t.Fatalf("duplicate reload Sync: %v", err)
 	}
+	db.AllowReads()
 	duplicateLoad := db.SessionMetrics()
 	t.Logf("duplicate reload metrics: writeAmp=%.3f kv128=%d memwal=%d redo=%d logical=%d total=%d",
 		duplicateLoad.WriteAmp, duplicateLoad.KV128BytesWritten, duplicateLoad.MemWALBytesWritten,

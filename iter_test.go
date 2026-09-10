@@ -627,6 +627,7 @@ func TestFlexDB_HLC_Persistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db.AllowReads()
 
 	// Put a few keys; they'll get HLCs.
 	_, err = db.Put("pk1", []byte("pv1"), 0)
@@ -683,6 +684,7 @@ func TestFlexDB_HLC_VLOGRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db.AllowReads()
 
 	bigVal := makeTestValue(500) // 500 bytes, well above vlogInlineThreshold
 	_, err = db.Put("bigkey", []byte(bigVal), 0)
@@ -871,6 +873,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		db.AllowReads()
 		for i := 0; i < nKeys; i++ {
 			key := fmt.Sprintf("k%06d", i)
 			val := []byte(fmt.Sprintf("v%06d", i))
@@ -888,6 +891,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		db.AllowReads()
 		stats, err := db.VacuumKV()
 		if err != nil {
 			t.Fatalf("session 2 vacuum: %v", err)
@@ -896,7 +900,6 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 			stats.OldFileSize, stats.NewFileSize, stats.BytesReclaimed, stats.ExtentsRewritten)
 
 		// Verify data after vacuum.
-		db.AllowReads()
 		for i := 0; i < nKeys; i++ {
 			key := fmt.Sprintf("k%06d", i)
 			expected := fmt.Sprintf("v%06d", i)
@@ -920,6 +923,7 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		db.AllowReads()
 		stats, err := db.VacuumKV()
 		if err != nil {
 			t.Fatalf("session 3 vacuum: %v", err)
@@ -928,7 +932,6 @@ func TestFlexDB_VacuumKV_TwiceCrossSession(t *testing.T) {
 			stats.OldFileSize, stats.NewFileSize, stats.BytesReclaimed, stats.ExtentsRewritten)
 
 		// Verify data after second vacuum.
-		db.AllowReads()
 		for i := 0; i < nKeys; i++ {
 			key := fmt.Sprintf("k%06d", i)
 			expected := fmt.Sprintf("v%06d", i)

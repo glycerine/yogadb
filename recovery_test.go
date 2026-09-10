@@ -633,6 +633,7 @@ func TestRecovery_WriteTxUpdateUsesGreenMEMWALCommitMarkers(t *testing.T) {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
 	defer db.Close()
+	db.AllowReads()
 
 	err = db.Update(func(rwDB *WriteTx) error {
 		if _, err := rwDB.Put("tx-a", []byte("A"), 0); err != nil {
@@ -692,6 +693,7 @@ func TestRecovery_BackgroundFlushPersistsDirtyCacheBeforeWALReset(t *testing.T) 
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
 	defer db.Close()
+	db.AllowReads()
 
 	if _, err := db.Put("k", []byte("old"), 0); err != nil {
 		t.Fatalf("Put old: %v", err)
@@ -739,6 +741,7 @@ func TestRecovery_DurabilityAfterSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
+	db.AllowReads()
 
 	// Write and sync several key-value pairs.
 	synced := map[string]string{}
@@ -771,6 +774,7 @@ func TestRecovery_NoPhantomData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
+	db.AllowReads()
 
 	synced := map[string]string{}
 	for i := 0; i < 50; i++ {
@@ -801,6 +805,7 @@ func TestRecovery_DeleteDurability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
+	db.AllowReads()
 
 	// Put, sync, then delete, sync.
 	_, err = db.Put("delme", []byte("hello"), 0)
@@ -845,6 +850,7 @@ func TestRecovery_ProgressAfterRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
+	db.AllowReads()
 
 	_, err = db.Put("before", []byte("crash"), 0)
 	panicOn(err)
@@ -853,11 +859,11 @@ func TestRecovery_ProgressAfterRecovery(t *testing.T) {
 
 	db2, _ := crashAndRecover(t, fs, dir, nil)
 	defer db2.Close()
+	db2.AllowReads()
 
 	// New operations after recovery should work.
 	_, err = db2.Put("after", []byte("recovery"), 0)
 	panicOn(err)
-	db2.AllowReads()
 	v, found, _, _, gerr := db2.Get("after")
 	panicOn(gerr)
 	if !found || string(v) != "recovery" {
@@ -890,6 +896,7 @@ func TestRecovery_RecoveryTerminates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
+	db.AllowReads()
 
 	// Write a moderate amount of data.
 	for i := 0; i < 500; i++ {
@@ -936,6 +943,7 @@ func TestRecovery_KeyCountConsistency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
+	db.AllowReads()
 
 	nKeys := 200
 	for i := 0; i < nKeys; i++ {
@@ -990,6 +998,7 @@ func TestRecovery_UnsyncedDataLoss(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
+	db.AllowReads()
 
 	// Synced data.
 	_, err = db.Put("synced_key", []byte("synced_val"), 0)
@@ -1360,6 +1369,7 @@ func TestRecovery_CrashDuringRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
+	db.AllowReads()
 
 	// Write data and sync.
 	synced := map[string]string{}
@@ -1516,6 +1526,7 @@ func TestRecovery_ConcurrentWritersCrash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
+	db.AllowReads()
 
 	const (
 		numWriters = 4
@@ -1849,6 +1860,7 @@ func TestRecoveryStress_RandomCrashTiming(t *testing.T) {
 			if err != nil {
 				t.Fatalf("OpenFlexDB: %v", err)
 			}
+			db.AllowReads()
 
 			tracker := newKeyTracker()
 			rng := rand.New(rand.NewSource(seed))
@@ -1915,6 +1927,7 @@ func TestRecoveryStress_RepeatedRandomCrashes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("cycle %d: OpenFlexDB failed: %v", cycle, err)
 		}
+		db.AllowReads()
 
 		// Validate accumulated state from prior cycles.
 		if cycle > 0 {
@@ -1973,6 +1986,7 @@ func TestRecoveryStress_LargeDataset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
+	db.AllowReads()
 
 	const (
 		numKeys   = 1_000 // 10_000 takes tooooo long.
@@ -2024,6 +2038,7 @@ func TestRecoveryStress_HighConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
+	db.AllowReads()
 
 	tracker := newKeyTracker()
 
@@ -2075,6 +2090,7 @@ func TestRecoveryStress_UnsyncedDataPartial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}
+	db.AllowReads()
 
 	tracker := newKeyTracker()
 
@@ -2146,6 +2162,7 @@ func TestRecoveryStress_CrashNearSync(t *testing.T) {
 			if err != nil {
 				t.Fatalf("OpenFlexDB: %v", err)
 			}
+			db.AllowReads()
 
 			tracker := newKeyTracker()
 
