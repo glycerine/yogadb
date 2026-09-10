@@ -13,7 +13,7 @@ func generateBenchKeysNseed(n int, seed0 byte) [][]byte {
 	prng := newPRNG(seed)
 	keys := make([][]byte, 0, n)
 	dup := make(map[string]bool, n)
-	for len(keys) < iterBenchKeyCount {
+	for len(keys) < n {
 		cid := prng.NewCallID()
 		if dup[cid] {
 			continue
@@ -70,7 +70,7 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 
 	t0 := time.Now()
 	batch = db.NewBatch()
-	for i, k := range keys {
+	for i, k := range keys2 {
 		batch.SetBytes(k, vals2[i], uint64(len(keys)+i+1))
 		if (i+1)%10000 == 0 {
 			batch.Commit(false)
@@ -94,7 +94,7 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 			t.Fatalf("ugh. duplicated keys. we wanted batch 2 to be disjoint from batch 1.")
 		}
 	}
-	vv("good: all %v keys were distinct", len(allkeys))
+	vv("good: all %v keys were distinct. len(vals) = %v; len(vals2) = %v", len(allkeys), len(vals), len(vals2))
 
 	db.View(func(roDB *ReadOnlyTx) error {
 		it := roDB.NewIter()
