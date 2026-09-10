@@ -438,12 +438,12 @@ versus
 
 branch: keystable, on darwin, NO flush worker.
 
-=== RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB
+=== RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB (keystable is 1.27x faster than Btree on darwin)
 
 afterbulk_test.go:127 [pid 94944] 2026-09-10 18:30:12.328605000 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 199659.24547906208 writes/sec
 afterbulk_test.go:127 [pid 95065] 2026-09-10 18:32:25.581476000 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 195350.39843514893 writes/sec
 
-=== RUN   Test_Replacement_After_Bulk_Load_YogaDB
+=== RUN   Test_Replacement_After_Bulk_Load_YogaDB (keystable is 1.10x faster than Btree on darwin)
 
 afterbulk_test.go:276 [pid 94944] 2026-09-10 18:31:12.601705000 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 68180.53187860642 writes/sec
 afterbulk_test.go:276 [pid 95065] 2026-09-10 18:33:28.042795000 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 65842.10609431572 writes/sec
