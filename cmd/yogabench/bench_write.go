@@ -35,6 +35,7 @@ func runWriteBench(args []string) {
 		parallelFill(db, cf.Count, cf.Threads, p.KeyLen, p.ValLen)
 
 	case "zipf":
+		db.AllowReads()
 		// Zipfian writes — each goroutine gets its own Zipfian generator.
 		RunParallel("write-zipf", cf.Threads, cf.Count, func(workerID int, rng *rand.Rand, db *yogadb.FlexDB, ops int64) int64 {
 			zipf := NewZipfian(rng, 0, maxKey)
@@ -50,6 +51,7 @@ func runWriteBench(args []string) {
 		}, db)
 
 	case "czipf":
+		db.AllowReads()
 		// Clustered Zipfian writes — aggregated hot spots.
 		RunParallel("write-czipf", cf.Threads, cf.Count, func(workerID int, rng *rand.Rand, db *yogadb.FlexDB, ops int64) int64 {
 			czipf := NewClusteredZipfian(rng, 0, maxKey, 1000)

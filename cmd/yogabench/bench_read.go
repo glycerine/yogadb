@@ -35,6 +35,7 @@ func runReadBench(args []string) {
 	// Phase 1: Fill
 	fmt.Println("--- Phase 1: Sequential Fill ---")
 	parallelFill(db, cf.Count, fillThreads, p.KeyLen, p.ValLen)
+	db.AllowReads()
 
 	// Phase 2: Warmup — single-threaded Zipfian writes to warm caches
 	fmt.Println("--- Phase 2: Warmup ---")
@@ -55,7 +56,6 @@ func runReadBench(args []string) {
 		}
 		return success
 	}, db)
-	db.AllowReads()
 
 	// Phase 3: Zipfian point reads (timed, 60s)
 	fmt.Println("--- Phase 3: Zipfian Point Read ---")

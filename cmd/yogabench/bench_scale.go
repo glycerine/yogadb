@@ -35,6 +35,7 @@ func runScaleWriteBench(args []string) {
 			fmt.Fprintf(os.Stderr, "open db: %v\n", err)
 			os.Exit(1)
 		}
+		db.AllowReads()
 
 		opsPerThread := cf.Count / int64(nt)
 
@@ -80,6 +81,7 @@ func runScaleReadBench(args []string) {
 	fmt.Println("--- Fill ---")
 	fillThreads := 4
 	parallelFill(db, cf.Count, fillThreads, p.KeyLen, p.ValLen)
+	db.AllowReads()
 
 	// Warmup
 	fmt.Println("--- Warmup ---")
@@ -96,7 +98,6 @@ func runScaleReadBench(args []string) {
 		}
 		return success
 	}, db)
-	db.AllowReads()
 
 	// Point read scalability
 	for _, nt := range threads {

@@ -197,6 +197,52 @@ func TestAllowReadsMaterializesBulkInitialData(t *testing.T) {
 	}
 }
 
+func TestAllowReadsSyncsPreReadBulkLoad(t *testing.T) {
+	dir := t.TempDir()
+	db, err := OpenFlexDB(dir, &Config{
+		OmitMemWalFsync:        true,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	b := db.NewBatch()
+	for i := 0; i < 100; i++ {
+		k := fmt.Sprintf("key%03d", i)
+		if err := b.Set(k, []byte(k), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := b.Commit(false); err != nil {
+		t.Fatal(err)
+	}
+	b.Close()
+
+	if db.ff.Size() != 0 {
+		t.Fatalf("FlexSpace size before AllowReads = %d, want 0", db.ff.Size())
+	}
+	if db.mt.bulk.count == 0 {
+		t.Fatal("test setup did not leave data in the bulk ingest builder")
+	}
+
+	db.AllowReads()
+
+	if db.ff.Size() == 0 {
+		t.Fatal("AllowReads() did not sync the bulk load into FlexSpace")
+	}
+	if db.mt.bulk.count != 0 {
+		t.Fatalf("bulk count after AllowReads = %d, want 0", db.mt.bulk.count)
+	}
+	if db.mt.bt.Len() != 0 {
+		t.Fatalf("memtable B-tree length after AllowReads = %d, want 0", db.mt.bt.Len())
+	}
+	if !db.mt.empty {
+		t.Fatal("memtable is not empty after AllowReads sync")
+	}
+}
+
 func TestBatchSetBytesAllowedBeforeAllowReads(t *testing.T) {
 	dir := t.TempDir()
 	db, err := OpenFlexDB(dir, &Config{OmitMemWalFsync: true})

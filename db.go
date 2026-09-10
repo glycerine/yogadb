@@ -5855,11 +5855,11 @@ func syncDir(fs vfs.FS, path string) error {
 }
 
 // AllowReads transitions the database from its read-disabled load phase to
-// general-purpose reads and writes. For an empty database, this keeps the
-// initial batch load fast by allowing the database to defer materializing its
-// bulk ingest representation. For a reopened non-empty database, pre-AllowReads
-// batches are kept as a sorted reload run and merged into the existing
-// FlexSpace at this transition.
+// general-purpose reads and writes. The first effective call flushes and syncs
+// any pending batch load while reads are still disabled, which lets empty
+// databases use the optimized direct bulk-to-FlexSpace path. For a reopened
+// non-empty database, pre-AllowReads batches are kept as a sorted reload run
+// and merged into the existing FlexSpace at this transition.
 //
 // Before AllowReads, the only supported data-loading sequence is:
 //
@@ -5868,10 +5868,11 @@ func syncDir(fs vfs.FS, path string) error {
 //	b.Delete(key)
 //	b.Commit(doFsync)
 //
-// Additional batches and db.Sync are also allowed before AllowReads. All reads,
-// transactions, single-key Put/Delete, DeleteRange, Clear, Merge, vacuum, and
-// integrity operations require AllowReads first and will panic if used during
-// the initial load phase.
+// Additional batches and explicit db.Sync calls are also allowed before
+// AllowReads, but callers do not need to call Sync before AllowReads. All
+// reads, transactions, single-key Put/Delete, DeleteRange, Clear, Merge,
+// vacuum, and integrity operations require AllowReads first and will panic if
+// used during the initial load phase.
 //
 // Idempotent. The second call is ignored.
 func (db *FlexDB) AllowReads() {
@@ -5880,14 +5881,15 @@ func (db *FlexDB) AllowReads() {
 		return
 	}
 
-	// must grab write lock because materializeBulkInitialLocked() needs it.
+	// Must grab the write lock because the first AllowReads call is the
+	// transition from read-disabled bulk loading into normal readable mode.
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
 
 	if db.allowReads.Load() {
 		return
 	}
-	if err := db.materializeBulkInitialLocked(); err != nil {
+	if err := db.writeLockHeldSync(); err != nil {
 		panicf("db.AllowReads(): %v", err)
 	}
 	db.allowReads.Store(true)

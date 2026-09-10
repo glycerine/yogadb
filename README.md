@@ -285,7 +285,8 @@ the winning HLC timetamp.
 The user must call db.AllowReads() to end the load phase and enable reading
 Get/Find, singleton Put/Delete, transactions, range deletes, Clear, Merge,
 vacuum, and integrity checks. Violations of this contract will panic
-immediately to teach the expected use pattern.
+immediately to teach the expected use pattern. db.AllowReads() a full fsync
+of all data to disk (the equivalent of db.Sync()) so all data is durable afterwards.
 
 ## ymerge_into
 

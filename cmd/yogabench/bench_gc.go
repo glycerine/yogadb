@@ -32,6 +32,7 @@ func runGCBench(args []string) {
 	// Phase 1: Fill
 	fmt.Println("--- Phase 1: Sequential Fill ---")
 	parallelFill(db, cf.Count, 4, p.KeyLen, p.ValLen)
+	db.AllowReads()
 
 	// Phase 2: Overwrites to create garbage.
 	// Default 100M, but can be reduced via -count for quick testing.

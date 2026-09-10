@@ -36,6 +36,7 @@ func runLatencyBench(args []string) {
 
 	switch op {
 	case "set":
+		db.AllowReads()
 		runLatencySet(db, cf, p, maxKey)
 	case "get":
 		// Fill first, then measure get latency

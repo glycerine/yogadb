@@ -18,9 +18,6 @@ func BenchmarkYCSBFillOnlyUDRGB1(b *testing.B) {
 			b.Fatal(err)
 		}
 		parallelFill(db, cf.Count, cf.Threads, p.KeyLen, p.ValLen)
-		if err := db.Sync(); err != nil {
-			b.Fatal(err)
-		}
 		db.AllowReads()
 		db.Close()
 	}
