@@ -32,7 +32,7 @@ func runWriteBench(args []string) {
 	switch cf.Dist {
 	case "seq":
 		// Sequential parallel fill — each goroutine fills a contiguous range.
-		parallelFill(db, cf.Count, cf.Threads, p.KeyLen, p.ValLen)
+		mustFillAndAllowReads(db, cf, cf.Threads, p)
 
 	case "zipf":
 		db.AllowReads()

@@ -45,7 +45,6 @@ func runYCSBBench(args []string) {
 	workloadName := stringFlagFromArgs(args, "-workload", "ALL")
 
 	p := cf.Profile
-	maxKey := uint64(cf.Count - 1)
 
 	// Determine which workloads to run
 	var workloads []YCSBWorkload
@@ -72,8 +71,8 @@ func runYCSBBench(args []string) {
 
 	// Fill
 	fmt.Println("--- Fill ---")
-	parallelFill(db, cf.Count, cf.Threads, p.KeyLen, p.ValLen)
-	db.AllowReads()
+	mustFillAndAllowReads(db, cf, cf.Threads, p)
+	maxKey := uint64(cf.Count - 1)
 
 	// Run each workload
 	for _, w := range workloads {

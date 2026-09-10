@@ -28,7 +28,6 @@ func runScanBench(args []string) {
 	}
 
 	p := cf.Profile
-	maxKey := uint64(cf.Count - 1)
 	fillThreads := cf.Threads
 	if fillThreads < 4 {
 		fillThreads = 4
@@ -36,8 +35,8 @@ func runScanBench(args []string) {
 
 	// Fill
 	fmt.Println("--- Fill ---")
-	parallelFill(db, cf.Count, fillThreads, p.KeyLen, p.ValLen)
-	db.AllowReads()
+	mustFillAndAllowReads(db, cf, fillThreads, p)
+	maxKey := uint64(cf.Count - 1)
 
 	// Scan with varying lengths
 	scanLens := []int{10, 20, 50, 100}

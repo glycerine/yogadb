@@ -67,7 +67,6 @@ func runScaleReadBench(args []string) {
 	}
 
 	p := cf.Profile
-	maxKey := uint64(cf.Count - 1)
 
 	fmt.Printf("=== SCALE-READ === dataset=%s\n", p.Name)
 
@@ -80,8 +79,8 @@ func runScaleReadBench(args []string) {
 	// Fill once
 	fmt.Println("--- Fill ---")
 	fillThreads := 4
-	parallelFill(db, cf.Count, fillThreads, p.KeyLen, p.ValLen)
-	db.AllowReads()
+	mustFillAndAllowReads(db, cf, fillThreads, p)
+	maxKey := uint64(cf.Count - 1)
 
 	// Warmup
 	fmt.Println("--- Warmup ---")

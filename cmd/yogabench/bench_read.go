@@ -26,7 +26,6 @@ func runReadBench(args []string) {
 	}
 
 	p := cf.Profile
-	maxKey := uint64(cf.Count - 1)
 	fillThreads := cf.Threads
 	if fillThreads < 4 {
 		fillThreads = 4
@@ -34,8 +33,8 @@ func runReadBench(args []string) {
 
 	// Phase 1: Fill
 	fmt.Println("--- Phase 1: Sequential Fill ---")
-	parallelFill(db, cf.Count, fillThreads, p.KeyLen, p.ValLen)
-	db.AllowReads()
+	mustFillAndAllowReads(db, cf, fillThreads, p)
+	maxKey := uint64(cf.Count - 1)
 
 	// Phase 2: Warmup — single-threaded Zipfian writes to warm caches
 	fmt.Println("--- Phase 2: Warmup ---")

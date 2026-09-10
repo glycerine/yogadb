@@ -5,8 +5,10 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -152,6 +154,26 @@ func closeDB(db *yogadb.FlexDB) {
 	}
 }
 
+func mustFillAndAllowReads(db *yogadb.FlexDB, cf *CommonFlags, nThreads int, p DatasetProfile) BenchResult {
+	result, err := fillAndAllowReads(db, cf, nThreads, p)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fill: %v\n", err)
+		os.Exit(1)
+	}
+	return result
+}
+
+func fillAndAllowReads(db *yogadb.FlexDB, cf *CommonFlags, nThreads int, p DatasetProfile) (BenchResult, error) {
+	if !cf.CountExplicit && !cf.NoDisk && cf.FillTargetBytes > 0 {
+		return parallelFillUntilDirSizeAndAllowReads(db, cf, nThreads, p)
+	}
+
+	result := parallelFill(db, cf.Count, nThreads, p.KeyLen, p.ValLen)
+	db.AllowReads()
+	cf.Count = result.TotalOps
+	return result, nil
+}
+
 // parallelFill does a sequential parallel fill of nKeys keys.
 // Each goroutine fills its contiguous range [id*chunk, (id+1)*chunk).
 // Uses Batch API for efficiency — each batch commits 1024 keys.
@@ -181,6 +203,210 @@ func parallelFill(db *yogadb.FlexDB, nKeys int64, nThreads int, klen, vlen int) 
 		}
 		return success
 	}, db)
+}
+
+const (
+	fillBatchCommitSize       = 1024
+	fillTargetSlottedPageSize = 4 << 10
+	fillTargetPageOverhead    = 27 + 4
+	fillTargetInlineThreshold = 64
+	fillTargetVPtrSize        = 16
+)
+
+func parallelFillUntilDirSizeAndAllowReads(db *yogadb.FlexDB, cf *CommonFlags, nThreads int, p DatasetProfile) (BenchResult, error) {
+	if nThreads < 1 {
+		nThreads = 1
+	}
+	runtime.GC()
+	startTime := time.Now()
+
+	ops, err := parallelFillUntilProjectedDirSize(db, cf.Dir, cf.FillTargetBytes, nThreads, p.KeyLen, p.ValLen)
+	if err != nil {
+		return BenchResult{}, err
+	}
+
+	db.AllowReads()
+
+	finalBytes, err := dirSizeBytes(cf.Dir)
+	if err != nil {
+		return BenchResult{}, err
+	}
+	for finalBytes < cf.FillTargetBytes {
+		remaining := cf.FillTargetBytes - finalBytes
+		perKey := estimatedFillKVBytes(1, p.KeyLen, p.ValLen)
+		n := int64(fillBatchCommitSize)
+		if perKey > 0 {
+			needed := remaining/perKey + 1
+			if needed < n {
+				n = needed
+			}
+		}
+		if n < 1 {
+			n = 1
+		}
+		if err := fillKeyRange(db, ops, n, p.KeyLen, p.ValLen); err != nil {
+			return BenchResult{}, err
+		}
+		ops += n
+		if err := db.Sync(); err != nil {
+			return BenchResult{}, err
+		}
+		finalBytes, err = dirSizeBytes(cf.Dir)
+		if err != nil {
+			return BenchResult{}, err
+		}
+	}
+
+	elapsed := time.Since(startTime)
+	result := BenchResult{
+		Label:    "fill",
+		TotalOps: ops,
+		Duration: elapsed,
+		Mops:     float64(ops) / elapsed.Seconds() / 1e6,
+		Success:  ops,
+	}
+	fmt.Println(result)
+	fmt.Printf("fill-target: requested_gb=%g target_bytes=%d final_bytes=%d objects_created=%d repeat_with=\"-count %d\"\n",
+		cf.GB, cf.FillTargetBytes, finalBytes, ops, ops)
+	cf.Count = ops
+	return result, nil
+}
+
+func parallelFillUntilProjectedDirSize(db *yogadb.FlexDB, dir string, targetBytes int64, nThreads int, klen, vlen int) (int64, error) {
+	initialBytes, err := dirSizeBytes(dir)
+	if err != nil {
+		return 0, err
+	}
+	if initialBytes >= targetBytes {
+		targetBytes = initialBytes + 1
+	}
+
+	val := makeValue(vlen)
+	var nextKey atomic.Int64
+	var committed atomic.Int64
+	var pendingKVBytes atomic.Int64
+	var stop atomic.Bool
+	var checkMu sync.Mutex
+	var errMu sync.Mutex
+	var firstErr error
+
+	recordErr := func(err error) {
+		if err == nil {
+			return
+		}
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		errMu.Unlock()
+		stop.Store(true)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < nThreads; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			keyBuf := make([]byte, klen)
+			batch := db.NewBatch()
+			defer batch.Close()
+
+			for !stop.Load() {
+				startKey := nextKey.Add(fillBatchCommitSize) - fillBatchCommitSize
+				for j := int64(0); j < fillBatchCommitSize; j++ {
+					k := string(hexKeyBuf(keyBuf, uint64(startKey+j), klen))
+					if err := batch.Set(k, val, 0); err != nil {
+						recordErr(err)
+						return
+					}
+				}
+				if _, err := batch.Commit(false); err != nil {
+					recordErr(err)
+					return
+				}
+				batch.Reset()
+				committed.Add(fillBatchCommitSize)
+				pendingKVBytes.Add(estimatedFillKVBytes(fillBatchCommitSize, klen, vlen))
+
+				checkMu.Lock()
+				if !stop.Load() {
+					diskBytes, err := dirSizeBytes(dir)
+					if err != nil {
+						recordErr(err)
+					} else if diskBytes+pendingKVBytes.Load() >= targetBytes {
+						stop.Store(true)
+					}
+				}
+				checkMu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	errMu.Lock()
+	defer errMu.Unlock()
+	return committed.Load(), firstErr
+}
+
+func fillKeyRange(db *yogadb.FlexDB, startKey, nKeys int64, klen, vlen int) error {
+	val := makeValue(vlen)
+	keyBuf := make([]byte, klen)
+	batch := db.NewBatch()
+	defer batch.Close()
+
+	for i := int64(0); i < nKeys; i++ {
+		k := string(hexKeyBuf(keyBuf, uint64(startKey+i), klen))
+		if err := batch.Set(k, val, 0); err != nil {
+			return err
+		}
+		if (i+1)%fillBatchCommitSize == 0 || i == nKeys-1 {
+			if _, err := batch.Commit(false); err != nil {
+				return err
+			}
+			batch.Reset()
+		}
+	}
+	return nil
+}
+
+func estimatedFillKVBytes(nKeys int64, klen, vlen int) int64 {
+	if nKeys <= 0 {
+		return 0
+	}
+	valueBytes := vlen
+	if vlen > fillTargetInlineThreshold {
+		valueBytes = fillTargetVPtrSize
+	}
+	entryBytes := int64(4 + 1 + klen + valueBytes)
+	if entryBytes < 1 {
+		entryBytes = 1
+	}
+	pagePayload := int64(fillTargetSlottedPageSize - fillTargetPageOverhead)
+	keysPerPage := pagePayload / entryBytes
+	if keysPerPage < 1 {
+		keysPerPage = 1
+	}
+	pages := (nKeys + keysPerPage - 1) / keysPerPage
+	return nKeys*entryBytes + pages*fillTargetPageOverhead
+}
+
+func dirSizeBytes(dir string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
 }
 
 // parallelFillBatch does a sequential parallel fill using the Batch API.
@@ -215,7 +441,11 @@ func parallelFillBatch(db *yogadb.FlexDB, nKeys int64, nThreads int, klen, vlen 
 
 // printHeader prints a header for benchmark output.
 func printHeader(benchName string, cf *CommonFlags) {
-	fmt.Printf("=== %s === dataset=%s klen=%d vlen=%d threads=%d count=%d gb=%g dist=%s\n",
+	countLabel := "count_estimate"
+	if cf.CountExplicit {
+		countLabel = "count"
+	}
+	fmt.Printf("=== %s === dataset=%s klen=%d vlen=%d threads=%d %s=%d gb=%g target_bytes=%d dist=%s\n",
 		benchName, cf.Profile.Name, cf.Profile.KeyLen, cf.Profile.ValLen,
-		cf.Threads, cf.Count, cf.GB, cf.Dist)
+		cf.Threads, countLabel, cf.Count, cf.GB, cf.FillTargetBytes, cf.Dist)
 }

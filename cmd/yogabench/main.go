@@ -79,8 +79,8 @@ Common flags:
   -dataset     Dataset profile: udb, zippydb, sys (default: udb)
   -dir         Database directory (default: /tmp/yogabench)
   -threads     Number of goroutines (default: %d)
-  -count       Override operation count (default: from dataset)
-  -gb          Nominal dataset size in GB (default: 500; ignored when -count is set)
+  -count       Exact operation/fill count; disables fill-to-size preload behavior
+  -gb          Fill-size target in GiB (default: 500; fill phases keep writing until exceeded unless -count is set)
   -nodisk      Run in-memory only (no disk I/O)
 `, runtime.NumCPU())
 }
@@ -103,18 +103,22 @@ var datasets = map[string]DatasetProfile{
 
 // CommonFlags parsed from command line.
 type CommonFlags struct {
-	Dataset     string
-	Dir         string
-	Threads     int
-	Count       int64
-	GB          float64
-	NoDisk      bool
-	Dist        string
-	Profile     DatasetProfile
-	CacheMB     uint64
-	OmitWALSync bool
-	Duration    time.Duration // for timed benchmarks (default 60s)
+	Dataset         string
+	Dir             string
+	Threads         int
+	Count           int64
+	CountExplicit   bool
+	GB              float64
+	FillTargetBytes int64
+	NoDisk          bool
+	Dist            string
+	Profile         DatasetProfile
+	CacheMB         uint64
+	OmitWALSync     bool
+	Duration        time.Duration // for timed benchmarks (default 60s)
 }
+
+const bytesPerGiB = int64(1 << 30)
 
 func parseCommonFlags(args []string) (*CommonFlags, *flag.FlagSet) {
 	fs := flag.NewFlagSet("bench", flag.ContinueOnError)
@@ -122,8 +126,8 @@ func parseCommonFlags(args []string) (*CommonFlags, *flag.FlagSet) {
 	fs.StringVar(&cf.Dataset, "dataset", "udb", "Dataset: udb, zippydb, sys")
 	fs.StringVar(&cf.Dir, "dir", filepath.Join(os.TempDir(), "yogabench"), "Database directory")
 	fs.IntVar(&cf.Threads, "threads", runtime.NumCPU(), "Goroutine count")
-	fs.Int64Var(&cf.Count, "count", 0, "Override operation count (0 = use dataset default)")
-	fs.Float64Var(&cf.GB, "gb", defaultDatasetGB, "Nominal dataset size in GB (ignored when -count is set)")
+	fs.Int64Var(&cf.Count, "count", 0, "Exact operation/fill count (0 = use -gb fill-size target)")
+	fs.Float64Var(&cf.GB, "gb", defaultDatasetGB, "Fill-size target in GiB (fill phases keep writing until exceeded unless -count is set)")
 	fs.BoolVar(&cf.NoDisk, "nodisk", false, "Run in-memory (no disk)")
 	fs.StringVar(&cf.Dist, "dist", "zipf", "Distribution: seq, zipf, czipf")
 	fs.Uint64Var(&cf.CacheMB, "cache", 32, "Cache size in MB")
@@ -139,6 +143,11 @@ func parseCommonFlags(args []string) (*CommonFlags, *flag.FlagSet) {
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "count" && cf.Count > 0 {
+			cf.CountExplicit = true
+		}
+	})
 
 	p, ok := datasets[cf.Dataset]
 	if !ok {
@@ -149,14 +158,34 @@ func parseCommonFlags(args []string) (*CommonFlags, *flag.FlagSet) {
 		fmt.Fprintf(os.Stderr, "-gb must be > 0, got %g\n", cf.GB)
 		os.Exit(1)
 	}
+	if cf.Count < 0 {
+		fmt.Fprintf(os.Stderr, "-count must be >= 0, got %d\n", cf.Count)
+		os.Exit(1)
+	}
 	cf.Profile = p
-	if cf.Count == 0 {
+	cf.FillTargetBytes = gbToBytes(cf.GB)
+	if !cf.CountExplicit {
 		cf.Count = int64(math.Ceil(float64(p.FillOps) * cf.GB / defaultDatasetGB))
 		if cf.Count < 1 {
 			cf.Count = 1
 		}
 	}
 	return cf, fs
+}
+
+func gbToBytes(gb float64) int64 {
+	const maxInt64 = int64(1<<63 - 1)
+	if gb <= 0 {
+		return 0
+	}
+	if gb > float64(maxInt64)/float64(bytesPerGiB) {
+		return maxInt64
+	}
+	n := int64(math.Ceil(gb * float64(bytesPerGiB)))
+	if n < 1 {
+		return 1
+	}
+	return n
 }
 
 func parseThreadList(s string) []int {

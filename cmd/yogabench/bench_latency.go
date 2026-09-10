@@ -24,7 +24,6 @@ func runLatencyBench(args []string) {
 	op := stringFlagFromArgs(args, "-op", "set")
 
 	p := cf.Profile
-	maxKey := uint64(cf.Count - 1)
 
 	printHeader(fmt.Sprintf("LATENCY-%s", op), cf)
 
@@ -37,12 +36,13 @@ func runLatencyBench(args []string) {
 	switch op {
 	case "set":
 		db.AllowReads()
+		maxKey := uint64(cf.Count - 1)
 		runLatencySet(db, cf, p, maxKey)
 	case "get":
 		// Fill first, then measure get latency
 		fmt.Println("--- Fill ---")
-		parallelFill(db, cf.Count, cf.Threads, p.KeyLen, p.ValLen)
-		db.AllowReads()
+		mustFillAndAllowReads(db, cf, cf.Threads, p)
+		maxKey := uint64(cf.Count - 1)
 		fmt.Println("--- Get Latency ---")
 		runLatencyGet(db, cf, p, maxKey)
 	default:

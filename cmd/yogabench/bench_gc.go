@@ -26,13 +26,12 @@ func runGCBench(args []string) {
 	}
 
 	p := cf.Profile
-	maxKey := uint64(cf.Count - 1)
 	val := makeValue(p.ValLen)
 
 	// Phase 1: Fill
 	fmt.Println("--- Phase 1: Sequential Fill ---")
-	parallelFill(db, cf.Count, 4, p.KeyLen, p.ValLen)
-	db.AllowReads()
+	mustFillAndAllowReads(db, cf, 4, p)
+	maxKey := uint64(cf.Count - 1)
 
 	// Phase 2: Overwrites to create garbage.
 	// Default 100M, but can be reduced via -count for quick testing.

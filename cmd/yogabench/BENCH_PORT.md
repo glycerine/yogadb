@@ -240,8 +240,8 @@ new: cd cmd/yogabench; go install; go build
 | `-dataset` | `udb` | Dataset profile: `udb`, `zippydb`, `sys` |
 | `-dir` | `/tmp/yogabench` | Database directory (on disk) |
 | `-threads` | `NumCPU` | Goroutine count |
-| `-count` | from dataset | Override operation/fill count |
-| `-gb` | `500` | Scale the dataset's default count to a nominal size in GB; ignored when `-count` is set |
+| `-count` | `0` | Exact operation/fill count; disables fill-to-size preload behavior |
+| `-gb` | `500` | Fill-size target in GiB; fill phases keep writing until the database directory exceeds this size unless `-count` is set. Size-target fills report `objects_created` and `repeat_with="-count N"` for reproducible follow-up runs. |
 | `-nodisk` | false | Run in-memory (no disk I/O) |
 | `-dist` | `zipf` | Distribution: `seq`, `zipf`, `czipf` |
 | `-duration` | `60s` | Duration for timed benchmark phases |
