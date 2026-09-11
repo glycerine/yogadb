@@ -4068,7 +4068,10 @@ func (db *FlexDB) Delete(key string) error {
 }
 
 // DeleteRange deletes all keys in the range [begKey, endKey] with
-// configurable inclusivity on each bound.
+// configurable inclusivity on each bound. An empty begKey means the lower
+// bound is open (start at the first key), and an empty endKey means the upper
+// bound is open (continue through the last key). Inclusivity is ignored for an
+// open bound.
 //
 // Returns:
 //   - n: number of tombstones written (0 when allGone is true)
@@ -4083,9 +4086,10 @@ func (db *FlexDB) Delete(key string) error {
 // The begInclusive and endInclusive parameters control whether the
 // bounds are inclusive or exclusive:
 //
-//	DeleteRange(true,  a, z, true,  true)   // [a, z]  - both inclusive, include large values
-//	DeleteRange(true,  a, z, true,  false)  // [a, z)  - half-open, include large values
-//	DeleteRange(false, a, z, true,  true)   // [a, z]  - both inclusive, skip large values
+//	DeleteRange(true,  a, z, true,  true)   // [a, z] - both inclusive, include large values
+//	DeleteRange(true,  a, z, true,  false)  // [a, z) - half-open, include large values
+//	DeleteRange(false, a, z, true,  true)   // [a, z] - both inclusive, skip large values
+//	DeleteRange(true, "", "", false, false) // all keys, include large values
 //
 // Goroutine safe. Concurrent reads and writes are serialized via the
 // database write lock. However, when allGone is returned true, all
@@ -4115,11 +4119,11 @@ func (db *FlexDB) writeLockHeldDeleteRange(includeLarge bool, begKey, endKey str
 }
 
 func (db *FlexDB) writeLockHeldDeleteRangeWithHook(beforeWrite func() error, includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
-	if begKey > endKey {
+	if begKey != "" && endKey != "" && begKey > endKey {
 		return 0, false, fmt.Errorf("yogadb: DeleteRange: begKey > endKey")
 	}
-	// Equal keys with both exclusive means empty range.
-	if begKey == endKey && (!begInclusive || !endInclusive) {
+	// Equal concrete keys with either side exclusive means empty range.
+	if begKey != "" && begKey == endKey && (!begInclusive || !endInclusive) {
 		return 0, false, nil
 	}
 
@@ -4414,23 +4418,23 @@ func (db *FlexDB) writeLockHeldDeleteAll() error {
 }
 
 // deleteRangeInBounds returns true if key is within the range defined by
-// [begKey, endKey] with the given inclusivity flags.
+// [begKey, endKey] with the given inclusivity flags. Empty bounds are open.
 func deleteRangeInBounds(key, begKey, endKey string, begInclusive, endInclusive bool) bool {
-	if begInclusive {
-		if key < begKey {
-			return false
-		}
-	} else {
-		if key <= begKey {
+	if begKey != "" {
+		if begInclusive {
+			if key < begKey {
+				return false
+			}
+		} else if key <= begKey {
 			return false
 		}
 	}
-	if endInclusive {
-		if key > endKey {
-			return false
-		}
-	} else {
-		if key >= endKey {
+	if endKey != "" {
+		if endInclusive {
+			if key > endKey {
+				return false
+			}
+		} else if key >= endKey {
 			return false
 		}
 	}
@@ -4439,6 +4443,9 @@ func deleteRangeInBounds(key, begKey, endKey string, begInclusive, endInclusive 
 
 // deleteRangePastEnd returns true if key is beyond the end bound.
 func deleteRangePastEnd(key, endKey string, endInclusive bool) bool {
+	if endKey == "" {
+		return false
+	}
 	if endInclusive {
 		return key > endKey
 	}
@@ -4459,7 +4466,7 @@ func (db *FlexDB) deleteRangeFlexSpace(beforeWrite func() error, begKey, endKey 
 	target := begKey
 	// On first seek, whether we include target depends on begInclusive.
 	// After a flush re-seek, we always use strict=true (skip the last processed key).
-	seekStrict := !begInclusive
+	seekStrict := begKey != "" && !begInclusive
 
 	for {
 		t := db.tree

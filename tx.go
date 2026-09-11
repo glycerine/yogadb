@@ -473,7 +473,9 @@ func (tx *WriteTx) LenBigSmall() (big, small int64) {
 }
 
 // DeleteRange deletes keys in the range [begKey, endKey] with configurable
-// inclusivity. When includeLarge is false, VLOG-stored keys are skipped.
+// inclusivity. Empty bounds are open: empty begKey starts at the first key,
+// and empty endKey continues through the last key. When includeLarge is false,
+// VLOG-stored keys are skipped.
 // If allGone is true, the fast delete-all path reinitialized the database
 // immediately and cannot be rolled back; previously obtained iterators and KV
 // references are invalidated.

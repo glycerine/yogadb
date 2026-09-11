@@ -1717,6 +1717,60 @@ func TestDeleteRange_EmptyRange(t *testing.T) {
 	mustGet(t, db, "z", "2")
 }
 
+func TestDeleteRange_EmptyStringBoundsAreOpen(t *testing.T) {
+	t.Run("both_empty_deletes_all", func(t *testing.T) {
+		db, _ := openTestDB(t, nil)
+		mustPut(t, db, "a", "1")
+		mustPut(t, db, "z", "2")
+
+		n, allGone, err := db.DeleteRange(true, "", "", false, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 || !allGone {
+			t.Fatalf("DeleteRange(\"\", \"\", false, true) = n=%d allGone=%v, want 0 true", n, allGone)
+		}
+		mustMiss(t, db, "a")
+		mustMiss(t, db, "z")
+	})
+
+	t.Run("open_lower", func(t *testing.T) {
+		db, _ := openTestDB(t, nil)
+		mustPut(t, db, "a", "1")
+		mustPut(t, db, "b", "2")
+		mustPut(t, db, "z", "3")
+
+		n, allGone, err := db.DeleteRange(true, "", "b", false, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 || allGone {
+			t.Fatalf("DeleteRange(\"\", \"b\", false, false) = n=%d allGone=%v, want 1 false", n, allGone)
+		}
+		mustMiss(t, db, "a")
+		mustGet(t, db, "b", "2")
+		mustGet(t, db, "z", "3")
+	})
+
+	t.Run("open_upper", func(t *testing.T) {
+		db, _ := openTestDB(t, nil)
+		mustPut(t, db, "a", "1")
+		mustPut(t, db, "b", "2")
+		mustPut(t, db, "z", "3")
+
+		n, allGone, err := db.DeleteRange(true, "b", "", false, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 || allGone {
+			t.Fatalf("DeleteRange(\"b\", \"\", false, false) = n=%d allGone=%v, want 1 false", n, allGone)
+		}
+		mustGet(t, db, "a", "1")
+		mustGet(t, db, "b", "2")
+		mustMiss(t, db, "z")
+	})
+}
+
 func TestDeleteRange_SingleKey(t *testing.T) {
 	db, _ := openTestDB(t, nil)
 

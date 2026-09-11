@@ -596,7 +596,7 @@ func (h *apiFuzzHarness) mergeOne() {
 func (h *apiFuzzHarness) deleteRange() {
 	beg := apiFuzzRangeKey(h.rng.Intn(apiFuzzKeyCount + 2))
 	end := apiFuzzRangeKey(h.rng.Intn(apiFuzzKeyCount + 2))
-	if beg > end && h.rng.Intn(4) != 0 {
+	if beg != "" && end != "" && beg > end && h.rng.Intn(4) != 0 {
 		beg, end = end, beg
 	}
 	begInclusive := h.rng.Intn(2) == 0
@@ -604,7 +604,7 @@ func (h *apiFuzzHarness) deleteRange() {
 	includeLarge := h.rng.Intn(3) != 0
 	before := apiFuzzCloneModel(h.model)
 	_, _, err := h.db.DeleteRange(includeLarge, beg, end, begInclusive, endInclusive)
-	if beg > end {
+	if beg != "" && end != "" && beg > end {
 		if err == nil {
 			h.t.Fatalf("DeleteRange(%q,%q) succeeded with beg > end", beg, end)
 		}
@@ -868,7 +868,7 @@ func (h *apiFuzzHarness) applyPostAllGoneTxOps(tx *WriteTx, model, baseline *api
 		case 3:
 			beg := apiFuzzRangeKey(h.rng.Intn(apiFuzzKeyCount + 2))
 			end := apiFuzzRangeKey(h.rng.Intn(apiFuzzKeyCount + 2))
-			if beg > end {
+			if beg != "" && end != "" && beg > end {
 				beg, end = end, beg
 			}
 			begInclusive := h.rng.Intn(2) == 0
@@ -1481,7 +1481,8 @@ func (h *apiFuzzHarness) checkFindResult(context string, smod SearchModifier, qu
 	wantKey, ok := apiFuzzExpectedFindKey(h.model, smod, query)
 	if !ok {
 		if kvc != nil {
-			h.t.Fatalf("%s(%v,%q) found %q, want nil", context, smod, query, kvc.Key)
+			h.t.Fatalf("%s(%v,%q) found %q, want nil; model keys=%v",
+				context, smod, query, kvc.Key, h.model.Keys())
 		}
 		if exact {
 			h.t.Fatalf("%s(%v,%q) exact=true on miss", context, smod, query)

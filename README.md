@@ -291,6 +291,8 @@ Get/Find, singleton Put/Delete, transactions, range deletes, Clear, Merge,
 vacuum, and integrity checks. Violations of this contract will panic
 immediately to teach the expected use pattern. db.AllowReads() does a full fsync
 of all data to disk (the equivalent of db.Sync()) so all data is durable afterwards.
+Range APIs use an empty string bound as open-ended: for example
+DeleteRange(true, "", "", false, false) covers the full keyspace.
 
 ## ymerge_into
 
