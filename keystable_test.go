@@ -249,7 +249,7 @@ func TestKeyStableCompareStringBytes(t *testing.T) {
 	}
 }
 
-func TestBytesArenaString(t *testing.T) {
+func TestKeyStableBytesArenaString(t *testing.T) {
 	if got := bytesArenaString(nil); got != "" {
 		t.Fatalf("bytesArenaString(nil) = %q, want empty string", got)
 	}
