@@ -2,6 +2,7 @@ package yogadb
 
 import (
 	"bytes"
+	"fmt"
 	"sort"
 
 	"github.com/cespare/xxhash/v2"
@@ -18,31 +19,39 @@ import (
 // integer reference to the key string (stable for the lifetime
 // of this memtable generation, before it is cleared).
 //
-// We avoid copying string pointers, and we avoid making
+// We do a single key copy, and we avoid making
 // more work for the garbage collector.
 //
 // The benefit: we improved write throughput significantly in the
 // afterbulk_test.go benchmarks of newly written key-value pairs;
 // up to 2x fold for some cases.
 //
+// We use keyStable for our memtable.
+//
 // INVAR: if i is the index into stable for a given key (the i-th key we added):
 // key i=0 is stored in s.keys[0             :s.stable[i]]
 // key i>0 is stored in s.keys[s.stable[i-1] :s.stable[i]]
 //
-// On returning KV.Key strings. KV.Key string returned by
-// any keystable method must be safe for clients to retain
-// as long as they wish.
+// We no longer inspect or analyze or change the KV that we store.
+// We are not responsible for the lifetime of the KV.Key or KV.Value
+// on the KV that we index.
 //
-// INVAR: returned string memory can never be tied to the memtable
-// lifetime or generation. The memtable can be flushed in the middle
-// of a users iteration and their keys must and will remain valid.
+// We do not support storing the empty string as a key.
+// Keys must have at least one byte of content. The
+// db.go returns ErrKeyEmpty from validateUserKey on empty keys;
+// so we should never see them.
+// An empty string back from a query means the key was not present.
+//
+// Since deletes are just set with KV.Vptr.Length = rawVlenTombstone,
+// and set can replace an old KV, we do not need special handling
+// for deletes or tombstones here. memtable.go only does
+// set(), get(), and clear().
 type keyStable struct {
 	keys   []byte // arena with a copy of all keys, stacked end to end.
 	stable []int  // stable store, this never changes, is only appended to. says where to find the string in keys[[]
 	sorted []int  // sorted indexes of stable in ascending key order.
-	tomb   []int  // index in stable of all deleted keys
 
-	kvs      []KV  // parallel to stable; Key is kept empty to avoid retaining caller key storage.
+	kvs      []KV  // parallel to stable
 	hashNext []int // collision chain for imap; parallel to stable.
 
 	// xxhash.Sum64(key) -> index in stable.
@@ -55,11 +64,12 @@ func makeKeyStable(n int) keyStable {
 		n = 256 << 10
 	}
 	return keyStable{
-		keys:   make([]byte, 0, 8<<20),
-		stable: make([]int, 0, n),
-		sorted: make([]int, 0, n),
-		kvs:    make([]KV, 0, n),
-		imap:   make(map[uint64]int, n),
+		keys:     make([]byte, 0, 8<<20),
+		stable:   make([]int, 0, n),
+		hashNext: make([]int, 0, n),
+		sorted:   make([]int, 0, n),
+		kvs:      make([]KV, 0, n),
+		imap:     make(map[uint64]int, n),
 	}
 }
 
@@ -75,7 +85,6 @@ func (s *keyStable) clear() {
 	s.keys = s.keys[:0]
 	s.stable = s.stable[:0]
 	s.sorted = s.sorted[:0]
-	s.tomb = s.tomb[:0]
 	s.kvs = s.kvs[:0]
 	s.hashNext = s.hashNext[:0]
 	clear(s.imap)
@@ -87,11 +96,12 @@ func (s *keyStable) addKey(key []byte) (whereInStable int) {
 	// INVAR: string i=0 is stored in s.keys[0             :s.stable[i]]
 	//        string i>0 is stored in s.keys[s.stable[i-1] :s.stable[i]]
 
-	whereInStable, found := s.findStableByBytes(key)
+	h := xxhash.Sum64(key)
+	whereInStable, found := s.findStableByBytes(key, h)
 	if found {
 		return whereInStable
 	}
-	return s.appendKeyBytes(key, xxhash.Sum64(key))
+	return s.appendKeyBytes(key, h)
 }
 
 func (s *keyStable) appendKeyBytes(key []byte, h uint64) (whereInStable int) {
@@ -114,7 +124,12 @@ func (s *keyStable) appendKeyCommon(keylen int, h uint64) (whereInStable int) {
 	s.stable = append(s.stable, len(s.keys)+keylen)
 	s.kvs = append(s.kvs, KV{})
 	s.hashNext = append(s.hashNext, s.imap[h]-1)
+	// so hashNext of -1 means: end of chain; no earlier value,
+	// since imap[h] gives 0 for no h present.
+	//
+	// but if there was an earlier imap[h], we overwrite it now in imap:
 	s.imap[h] = whereInStable + 1
+
 	s.sorted = append(s.sorted, whereInStable)
 	s.sortedDirty = true
 	return whereInStable
@@ -177,17 +192,16 @@ func (s *keyStable) ensureImap() {
 	}
 	for _, stableIdx := range s.sorted {
 		h := xxhash.Sum64(s.at(stableIdx))
-		// becaue the value 0 back from imap means tombstone(deleted), we undo the +1 bump
+		// becaue the value 0 back from imap means not present, we undo the +1 bump
 		// (below) by subtracting 1 after pulling from imap
 		s.hashNext[stableIdx] = s.imap[h] - 1
-		// because 0 means tombstoned, we bump everything up by one when storing it, so the 0 index in s.stable is ok.
 		s.imap[h] = stableIdx + 1
 	}
 }
 
-func (s *keyStable) findStableByBytes(key []byte) (stableIdx int, found bool) {
+func (s *keyStable) findStableByBytes(key []byte, h uint64) (stableIdx int, found bool) {
 	s.ensureImap()
-	for stableIdx = s.imap[xxhash.Sum64(key)] - 1; stableIdx >= 0; stableIdx = s.hashNext[stableIdx] {
+	for stableIdx = s.imap[h] - 1; stableIdx >= 0; stableIdx = s.hashNext[stableIdx] {
 		if bytes.Equal(key, s.at(stableIdx)) {
 			return stableIdx, true
 		}
@@ -195,9 +209,9 @@ func (s *keyStable) findStableByBytes(key []byte) (stableIdx int, found bool) {
 	return 0, false
 }
 
-func (s *keyStable) findStableByString(key string) (stableIdx int, found bool) {
+func (s *keyStable) findStableByString(key string, h uint64) (stableIdx int, found bool) {
 	s.ensureImap()
-	for stableIdx = s.imap[xxhash.Sum64String(key)] - 1; stableIdx >= 0; stableIdx = s.hashNext[stableIdx] {
+	for stableIdx = s.imap[h] - 1; stableIdx >= 0; stableIdx = s.hashNext[stableIdx] {
 		if compareStringBytes(key, s.at(stableIdx)) == 0 {
 			return stableIdx, true
 		}
@@ -257,21 +271,25 @@ func (s *keyStable) storeKVAt(stableIdx int, kv KV) {
 }
 
 func (s *keyStable) set(kv KV) (old KV, replaced bool) {
-	stableIdx, found := s.findStableByString(kv.Key)
+	h := xxhash.Sum64String(kv.Key)
+	stableIdx, found := s.findStableByString(kv.Key, h)
+	//vv("set(): kv.Key='%v' was found='%v'; stableIdx=%v", kv.Key, found, stableIdx)
 	if found {
 		old = s.kvAt(stableIdx)
 		s.storeKVAt(stableIdx, kv)
 		return old, true
 	}
-	stableIdx = s.appendKeyString(kv.Key, xxhash.Sum64String(kv.Key))
+	stableIdx = s.appendKeyString(kv.Key, h)
 	s.storeKVAt(stableIdx, kv)
 	return KV{}, false
 }
 
-func (s *keyStable) get(key string) (KV, bool) {
-	stableIdx, found := s.findStableByString(key)
+func (s *keyStable) get(key string) (kv KV, found bool) {
+	var stableIdx int
+	h := xxhash.Sum64String(key)
+	stableIdx, found = s.findStableByString(key, h)
 	if !found {
-		return KV{}, false
+		return
 	}
 	return s.kvAt(stableIdx), true
 }
@@ -359,14 +377,6 @@ func (s *keyStable) delKey(needle []byte) (found bool) {
 	}
 	deleted := s.sorted[w]
 	s.removeStableFromImap(deleted)
-	tw, _ := sort.Find(len(s.tomb), func(i int) int {
-		return bytes.Compare(s.at(deleted), s.at(s.tomb[i]))
-	})
-	s.tomb = append(s.tomb, 0)
-	if tw < len(s.tomb)-1 {
-		copy(s.tomb[tw+1:], s.tomb[tw:])
-	}
-	s.tomb[tw] = deleted
 	s.kvs[deleted] = KV{}
 
 	last := len(s.sorted) - 1
@@ -375,6 +385,30 @@ func (s *keyStable) delKey(needle []byte) (found bool) {
 	}
 	s.sorted = s.sorted[:last]
 	return
+}
+
+func (s *keyStable) String() string {
+	keys := "["
+	for i := range s.stable {
+		keys += fmt.Sprintf("'%v', ", string(s.at(i)))
+	}
+	keys += "]"
+	return fmt.Sprintf(`keyStable{
+	keys: %v
+	stable: %#v
+	sorted: %#v
+	kvs: %#v
+	hashNext: %#v
+	imap: %#v
+	sortedDirty: %v
+}
+`, keys,
+		s.stable,
+		s.sorted,
+		s.kvs,
+		s.hashNext,
+		s.imap,
+		s.sortedDirty)
 }
 
 /*

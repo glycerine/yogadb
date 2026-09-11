@@ -109,8 +109,9 @@ func TestKeyStableAppendHelpersAndHashChains(t *testing.T) {
 	s := newKeyStable(8)
 
 	s.imap = nil
-	nilMapIdx := s.appendKeyString("nil-map", xxhash.Sum64String("nil-map"))
-	if got, found := s.findStableByString("nil-map"); !found || got != nilMapIdx {
+	h := xxhash.Sum64String("nil-map")
+	nilMapIdx := s.appendKeyString("nil-map", h)
+	if got, found := s.findStableByString("nil-map", h); !found || got != nilMapIdx {
 		t.Fatalf("appendKeyString with nil imap find = (%d, %v), want (%d, true)", got, found, nilMapIdx)
 	}
 
@@ -125,27 +126,29 @@ func TestKeyStableAppendHelpersAndHashChains(t *testing.T) {
 	if !s.sortedDirty {
 		t.Fatal("append helpers should mark sortedDirty")
 	}
-	if got, found := s.findStableByBytes([]byte("bytes")); !found || got != bytesIdx {
+	h = xxhash.Sum64String("bytes")
+	if got, found := s.findStableByBytes([]byte("bytes"), h); !found || got != bytesIdx {
 		t.Fatalf("findStableByBytes(bytes) = (%d, %v), want (%d, true)", got, found, bytesIdx)
 	}
-	if got, found := s.findStableByString("string"); !found || got != stringIdx {
+	h = xxhash.Sum64String("string")
+	if got, found := s.findStableByString("string", h); !found || got != stringIdx {
 		t.Fatalf("findStableByString(string) = (%d, %v), want (%d, true)", got, found, stringIdx)
 	}
 
-	h := xxhash.Sum64String("dup")
+	h = xxhash.Sum64String("dup")
 	tail := s.appendKeyString("dup", h)
 	head := s.appendKeyString("dup", h)
-	if got, found := s.findStableByString("dup"); !found || got != head {
+	if got, found := s.findStableByString("dup", h); !found || got != head {
 		t.Fatalf("findStableByString(dup) = (%d, %v), want newest head %d", got, found, head)
 	}
 
 	s.removeStableFromImap(tail)
-	if got, found := s.findStableByString("dup"); !found || got != head {
+	if got, found := s.findStableByString("dup", h); !found || got != head {
 		t.Fatalf("after tail removal findStableByString(dup) = (%d, %v), want head %d", got, found, head)
 	}
 
 	s.removeStableFromImap(head)
-	if _, found := s.findStableByString("dup"); found {
+	if _, found := s.findStableByString("dup", h); found {
 		t.Fatal("after removing both duplicate chain entries, dup should not be found")
 	}
 }
@@ -160,67 +163,18 @@ func TestKeyStableEnsureImapRebuildSkipsDeletedKeys(t *testing.T) {
 
 	s.imap = nil
 	s.hashNext = s.hashNext[:0]
-	if got, found := s.findStableByBytes([]byte("a")); found {
+	ha := xxhash.Sum64String("a")
+	hb := xxhash.Sum64String("b")
+	if got, found := s.findStableByBytes([]byte("a"), ha); found {
 		t.Fatalf("rebuilt imap found deleted key a at stable index %d", got)
 	}
-	if got, found := s.findStableByString("b"); !found || got != bIdx {
+	if got, found := s.findStableByString("b", hb); !found || got != bIdx {
 		t.Fatalf("rebuilt imap findStableByString(b) = (%d, %v), want (%d, true)", got, found, bIdx)
 	}
 
 	newA := s.addKey([]byte("a"))
 	if newA == oldA {
 		t.Fatalf("re-added key reused deleted stable index %d after imap rebuild", oldA)
-	}
-}
-
-func TestKeyStableDeleteAndReAdd(t *testing.T) {
-	s := newKeyStable(8)
-	model := make(map[string]int)
-	for _, key := range []string{"c", "a", "b", "aa"} {
-		model[key] = s.addKey([]byte(key))
-	}
-	assertKeyStableMatchesModel(t, s, model)
-
-	oldA := model["a"]
-	if !s.delKey([]byte("a")) {
-		t.Fatal("delKey(a) = false, want true")
-	}
-	delete(model, "a")
-	assertKeyStableMatchesModel(t, s, model)
-	if s.delKey([]byte("a")) {
-		t.Fatal("second delKey(a) = true, want false")
-	}
-	if got, want := keyStableTombKeys(s), []string{"a"}; !slices.Equal(got, want) {
-		t.Fatalf("tomb keys = %#v, want %#v", got, want)
-	}
-
-	newA := s.addKey([]byte("a"))
-	if newA == oldA {
-		t.Fatalf("re-added key reused tombstoned stable index %d", oldA)
-	}
-	model["a"] = newA
-	assertKeyStableMatchesModel(t, s, model)
-	if got, want := keyStableSortedKeys(s), []string{"a", "aa", "b", "c"}; !slices.Equal(got, want) {
-		t.Fatalf("sorted keys after re-add = %#v, want %#v", got, want)
-	}
-}
-
-func TestKeyStableTombKeysStaySorted(t *testing.T) {
-	s := newKeyStable(8)
-	for _, key := range []string{"c", "a", "b", "aa"} {
-		s.addKey([]byte(key))
-	}
-	for _, key := range []string{"c", "a", "b"} {
-		if !s.delKey([]byte(key)) {
-			t.Fatalf("delKey(%q) = false, want true", key)
-		}
-	}
-
-	if got, want := keyStableTombKeys(s), []string{"a", "b", "c"}; !slices.Equal(got, want) {
-		t.Fatalf("tomb keys = %#v, want %#v", got, want)
-	}
-	if got, want := keyStableSortedKeys(s), []string{"aa"}; !slices.Equal(got, want) {
-		t.Fatalf("active keys = %#v, want %#v", got, want)
 	}
 }
 
@@ -432,9 +386,9 @@ func TestKeyStableClearReusesTable(t *testing.T) {
 	s.delKey([]byte("a"))
 
 	s.clear()
-	if len(s.keys) != 0 || len(s.stable) != 0 || len(s.sorted) != 0 || len(s.tomb) != 0 {
-		t.Fatalf("clear left lengths keys=%d stable=%d sorted=%d tomb=%d",
-			len(s.keys), len(s.stable), len(s.sorted), len(s.tomb))
+	if len(s.keys) != 0 || len(s.stable) != 0 || len(s.sorted) != 0 {
+		t.Fatalf("clear left lengths keys=%d stable=%d sorted=%v",
+			len(s.keys), len(s.stable), len(s.sorted))
 	}
 
 	idx := s.addKey([]byte("fresh"))
@@ -460,25 +414,6 @@ func TestKeyStableClearZerosRetainedKVSlots(t *testing.T) {
 	}
 	if s.sortedDirty {
 		t.Fatal("clear left sortedDirty=true")
-	}
-}
-
-func TestKeyStableDelKeyReleasesKVStorage(t *testing.T) {
-	s := newKeyStable(2)
-	s.set(KV{Key: "a", Value: []byte("value"), Vptr: VPtr{Length: 5, Offset: 9}, Hlc: 11})
-	stableIdx, found := s.findStableByString("a")
-	if !found {
-		t.Fatal("test setup could not find key a")
-	}
-	if !s.delKey([]byte("a")) {
-		t.Fatal("delKey(a) = false, want true")
-	}
-	if s.kvs[stableIdx].Key != "" || s.kvs[stableIdx].Value != nil ||
-		s.kvs[stableIdx].Vptr != (VPtr{}) || s.kvs[stableIdx].Hlc != 0 {
-		t.Fatalf("delKey retained stale KV slot: %#v", s.kvs[stableIdx])
-	}
-	if _, found := s.get("a"); found {
-		t.Fatal("get(a) found deleted key")
 	}
 }
 
@@ -713,14 +648,6 @@ func keyStableSortedKeys(s *keyStable) []string {
 	return keys
 }
 
-func keyStableTombKeys(s *keyStable) []string {
-	keys := make([]string, len(s.tomb))
-	for i, stableIdx := range s.tomb {
-		keys[i] = string(s.at(stableIdx))
-	}
-	return keys
-}
-
 func keyStableSortedKVKeys(s *keyStable) []string {
 	keys := make([]string, 0, len(s.sorted))
 	s.Scan(func(kv KV) bool {
@@ -865,4 +792,58 @@ func randomKeyStableKey(rng *rand.Rand) []byte {
 		key[i] = alphabet[rng.Intn(len(alphabet))]
 	}
 	return key
+}
+
+func TestKeyStable_set_then_set(t *testing.T) {
+	s := newKeyStable(0)
+	s.set(KV{Key: "a", Value: []byte{1}})
+	kv, found0 := s.get("a")
+	if !found0 {
+		t.Fatalf("expected to find key 'a'")
+	}
+	if kv.Key != "a" {
+		t.Fatalf("expected kv to have Key 'a' but has '%v'", kv.Key)
+	}
+	if 0 != bytes.Compare(kv.Value, []byte{1}) {
+		t.Fatalf("expected kv to have Value 1, but got: '%v'", string(kv.Value))
+	}
+	n := s.Len()
+	if n != 1 {
+		t.Fatalf("expected len of 1, got %v", n)
+	}
+
+	//vv("s = '%s'", s)
+
+	oldKV, replaced := s.set(KV{Key: "a", Value: []byte{2}})
+
+	//vv("after set of key 'a' value:2, we have: s = '%s'", s)
+
+	if !replaced {
+		t.Fatalf("expected to replace previous key")
+	}
+	if oldKV.Key != "a" {
+		t.Fatalf("expected oldKV.Key to be 'a', was %v", oldKV.Key)
+	}
+	if 0 != bytes.Compare(oldKV.Value, []byte{1}) {
+		t.Fatalf("expected oldKV to have Value 1, but got: '%v'", string(oldKV.Value))
+	}
+	kv, found3 := s.get("a")
+
+	if !found3 {
+		t.Fatalf("expected to find key 'a'")
+	}
+	if kv.Key != "a" {
+		t.Fatalf("expected kv to have Key 'a' but has '%v'", kv.Key)
+	}
+	if 0 != bytes.Compare(kv.Value, []byte{2}) {
+		t.Fatalf("expected kv to have Value 2, but got: '%v'", string(kv.Value))
+	}
+	n3 := s.Len()
+	if n3 != 1 {
+		t.Fatalf("expected len of 1, got %v", n3)
+	}
+	nstable := len(s.stable)
+	if nstable != 1 {
+		t.Fatalf("expected nstable = 1; got %v", nstable)
+	}
 }

@@ -38,7 +38,7 @@ type memtable struct {
 
 func newMemtable(memWalFD vfs.File) *memtable {
 	return &memtable{
-		ks:                makeKeyStable(0),
+		ks:                makeKeyStable(1024),
 		memWalFD:          memWalFD,
 		memWalBuf:         make([]byte, 0, memtableWalBufCap),
 		memWalWriteOffset: memWalHeaderSize,
