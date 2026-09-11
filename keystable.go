@@ -417,9 +417,7 @@ afterbulk_test.go:268 [pid 3408587] 2026-09-10 16:55:22.887938873 +0000 UTC afte
 
 // Performance improvements of keyStable versus tidwall.Btree, with background flush worker OFF!
 
-linux, master so tidwall Btree
-
-no background flush!
+linux, master so tidwall.Btree, no background flush!
 
 === RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB
 

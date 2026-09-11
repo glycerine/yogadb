@@ -117,6 +117,7 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	}
 	batch.Commit(true)
 	pprof.StopCPUProfile()
+	WriteMemProfiles("profile.memory.afterbulk_new_writes.out")
 
 	//_, metrics, err := batch.CommitGetMetrics(true)
 	insertElapsed := time.Since(t0)
@@ -266,6 +267,7 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 	}
 	batch.Commit(true)
 	pprof.StopCPUProfile()
+	WriteMemProfiles("profile.memory.afterbulk_replacement.out")
 
 	//_, metrics, err := batch.CommitGetMetrics(true)
 	insertElapsed := time.Since(t0)
