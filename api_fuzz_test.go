@@ -442,7 +442,9 @@ func (h *apiFuzzHarness) updateCommit() {
 	ops := h.randomOps(1+h.rng.Intn(8), false)
 	pending := apiFuzzCloneModel(h.model)
 	err := h.db.Update(func(tx *WriteTx) error {
-		h.applyTxOps(tx, pending, ops, false)
+		if h.applyTxOps(tx, pending, ops, false) {
+			return nil
+		}
 		h.exerciseWriteTxReaders(tx, pending)
 		return nil
 	})
@@ -457,10 +459,16 @@ func (h *apiFuzzHarness) updateCommit() {
 func (h *apiFuzzHarness) updateRollback() {
 	ops := h.randomOps(1+h.rng.Intn(8), false)
 	before := apiFuzzCloneModel(h.model)
+	terminal := false
+	terminalModel := before
 	sentinel := errors.New("api fuzz rollback")
 	err := h.db.Update(func(tx *WriteTx) error {
 		pending := apiFuzzCloneModel(h.model)
-		h.applyTxOps(tx, pending, ops, false)
+		if h.applyTxOps(tx, pending, ops, false) {
+			terminal = true
+			terminalModel = apiFuzzCloneModel(pending)
+			return sentinel
+		}
 		h.exerciseWriteTxReaders(tx, pending)
 		return sentinel
 	})
@@ -468,7 +476,11 @@ func (h *apiFuzzHarness) updateRollback() {
 		apiFuzzFatalIfNotQuota(h.t, err, "Update rollback")
 		return
 	}
-	h.model = before
+	if terminal {
+		h.model = terminalModel
+	} else {
+		h.model = before
+	}
 	h.verifyModel("after Update rollback")
 }
 
@@ -480,7 +492,11 @@ func (h *apiFuzzHarness) beginUpdateManual() {
 	}
 	ops := h.randomOps(1+h.rng.Intn(8), false)
 	pending := apiFuzzCloneModel(h.model)
-	h.applyTxOps(tx, pending, ops, false)
+	if h.applyTxOps(tx, pending, ops, false) {
+		h.model = pending
+		h.verifyModel("after terminal BeginUpdate")
+		return
+	}
 	h.exerciseWriteTxReaders(tx, pending)
 	if h.rng.Intn(2) == 0 {
 		if err := tx.Commit(); err != nil {
@@ -553,18 +569,18 @@ func (h *apiFuzzHarness) crashTransactionAtomicity() {
 	h.verifyModel("after committed transaction crash probe")
 }
 
-func (h *apiFuzzHarness) applyTxOps(tx *WriteTx, model map[string]apiFuzzValue, ops []apiFuzzOp, noRangeOrClear bool) {
+func (h *apiFuzzHarness) applyTxOps(tx *WriteTx, model map[string]apiFuzzValue, ops []apiFuzzOp, noRangeOrClear bool) (terminal bool) {
 	for i, op := range ops {
 		if op.delete {
 			if err := tx.Delete(op.key); err != nil {
 				apiFuzzFatalIfNotQuota(h.t, err, "tx.Delete")
-				return
+				return false
 			}
 			delete(model, op.key)
 		} else {
 			if _, err := tx.Put(op.key, op.value, op.vtyp); err != nil {
 				apiFuzzFatalIfNotQuota(h.t, err, "tx.Put")
-				return
+				return false
 			}
 			model[op.key] = apiFuzzValue{value: apiFuzzCopy(op.value), vtyp: op.vtyp}
 		}
@@ -573,7 +589,7 @@ func (h *apiFuzzHarness) applyTxOps(tx *WriteTx, model map[string]apiFuzzValue, 
 		}
 	}
 	if noRangeOrClear {
-		return
+		return false
 	}
 	switch h.rng.Intn(6) {
 	case 0:
@@ -584,7 +600,7 @@ func (h *apiFuzzHarness) applyTxOps(tx *WriteTx, model map[string]apiFuzzValue, 
 			return value, true, false, vtyp
 		}); err != nil {
 			apiFuzzFatalIfNotQuota(h.t, err, "tx.Merge")
-			return
+			return false
 		}
 		model[key] = apiFuzzValue{value: apiFuzzCopy(value), vtyp: vtyp}
 	case 1:
@@ -594,19 +610,23 @@ func (h *apiFuzzHarness) applyTxOps(tx *WriteTx, model map[string]apiFuzzValue, 
 		if beg > end {
 			beg, end = end, beg
 		}
-		if _, _, err := tx.DeleteRange(includeLarge, beg, end, true, true); err != nil {
+		_, allGone, err := tx.DeleteRange(includeLarge, beg, end, true, true)
+		if err != nil {
 			apiFuzzFatalIfNotQuota(h.t, err, "tx.DeleteRange")
-			return
+			return false
 		}
 		for key, rec := range model {
 			if key >= beg && key <= end && (includeLarge || len(rec.value) <= vlogInlineThreshold) {
 				delete(model, key)
 			}
 		}
+		if allGone {
+			return true
+		}
 	case 2:
 		if _, err := tx.Clear(false); err != nil {
 			apiFuzzFatalIfNotQuota(h.t, err, "tx.Clear(false)")
-			return
+			return false
 		}
 		for key, rec := range model {
 			if len(rec.value) <= vlogInlineThreshold {
@@ -614,6 +634,7 @@ func (h *apiFuzzHarness) applyTxOps(tx *WriteTx, model map[string]apiFuzzValue, 
 			}
 		}
 	}
+	return false
 }
 
 func (h *apiFuzzHarness) exerciseWriteTxReaders(tx *WriteTx, model map[string]apiFuzzValue) {

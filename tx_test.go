@@ -3,6 +3,7 @@ package yogadb
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -30,6 +31,21 @@ func mustTxMiss(t *testing.T, tx *WriteTx, key string) {
 	if ok {
 		t.Fatalf("tx.Get(%q) = %q, want miss", key, val)
 	}
+}
+
+func expectWriteTxTerminalPanic(t *testing.T, op string, fn func()) {
+	t.Helper()
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("operation after terminal %s did not panic", op)
+		}
+		msg := fmt.Sprint(r)
+		if !strings.Contains(msg, op) || !strings.Contains(msg, "no further operations") {
+			t.Fatalf("panic after terminal %s = %q", op, msg)
+		}
+	}()
+	fn()
 }
 
 func TestTx_UpdateBasic(t *testing.T) {
@@ -203,7 +219,7 @@ func TestBeginUpdateRollbackCommitFirstWins(t *testing.T) {
 	mustMiss(t, db, "rolled-back")
 }
 
-func TestWriteTxClearTrueCannotRollback(t *testing.T) {
+func TestWriteTxClearTrueCommitsAndTerminatesTransaction(t *testing.T) {
 	db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
 	mustPut(t, db, "a", "1")
 	mustPut(t, db, "b", "2")
@@ -211,7 +227,6 @@ func TestWriteTxClearTrueCannotRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sentinel := errors.New("rollback after clear")
 	err := db.Update(func(rwDB *WriteTx) error {
 		allGone, err := rwDB.Clear(true)
 		if err != nil {
@@ -220,20 +235,64 @@ func TestWriteTxClearTrueCannotRollback(t *testing.T) {
 		if !allGone {
 			t.Fatal("Clear(true) allGone = false, want true")
 		}
-		if _, err := rwDB.Put("after-clear", []byte("x"), 0); err != nil {
-			return err
-		}
-		return sentinel
+		expectWriteTxTerminalPanic(t, "Clear", func() {
+			_, _ = rwDB.Put("after-clear", []byte("x"), 0)
+		})
+		expectWriteTxTerminalPanic(t, "Clear", func() {
+			_, _, _, _, _ = rwDB.Get("a")
+		})
+		return nil
 	})
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("Update error = %v, want sentinel", err)
+	if err != nil {
+		t.Fatalf("Update: %v", err)
 	}
 
 	mustMiss(t, db, "a")
 	mustMiss(t, db, "b")
 	mustMiss(t, db, "after-clear")
 	if got := db.Len(); got != 0 {
-		t.Fatalf("Len after rollback from Clear(true) tx = %d, want 0", got)
+		t.Fatalf("Len after terminal Clear(true) tx = %d, want 0", got)
+	}
+}
+
+func TestWriteTxDeleteRangeAllGoneCommitsAndTerminatesTransaction(t *testing.T) {
+	db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
+	mustPut(t, db, "a", "1")
+	mustPut(t, db, "b", "2")
+	mustPut(t, db, "c", "3")
+	if err := db.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	err := db.Update(func(rwDB *WriteTx) error {
+		n, allGone, err := rwDB.DeleteRange(true, "a", "z", true, true)
+		if err != nil {
+			return err
+		}
+		if !allGone {
+			t.Fatal("DeleteRange(all keys) allGone = false, want true")
+		}
+		if n != 0 {
+			t.Fatalf("DeleteRange allGone n=%d, want 0", n)
+		}
+		expectWriteTxTerminalPanic(t, "DeleteRange", func() {
+			_ = rwDB.Delete("a")
+		})
+		expectWriteTxTerminalPanic(t, "DeleteRange", func() {
+			_, _ = rwDB.Put("after-delete-range", []byte("x"), 0)
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	mustMiss(t, db, "a")
+	mustMiss(t, db, "b")
+	mustMiss(t, db, "c")
+	mustMiss(t, db, "after-delete-range")
+	if got := db.Len(); got != 0 {
+		t.Fatalf("Len after terminal DeleteRange tx = %d, want 0", got)
 	}
 }
 
