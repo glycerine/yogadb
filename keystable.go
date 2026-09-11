@@ -153,11 +153,14 @@ func (s *keyStable) ensureImap() {
 	}
 	s.imap = make(map[uint64]int, len(s.stable))
 	s.hashNext = s.hashNext[:0]
-	for stableIdx := range s.stable {
+	for range s.stable {
+		s.hashNext = append(s.hashNext, -1)
+	}
+	for _, stableIdx := range s.sorted {
 		h := xxhash.Sum64(s.at(stableIdx))
 		// becaue the value 0 back from imap means tombstone(deleted), we undo the +1 bump
 		// (below) by subtracting 1 after pulling from imap
-		s.hashNext = append(s.hashNext, s.imap[h]-1)
+		s.hashNext[stableIdx] = s.imap[h] - 1
 		// because 0 means tombstoned, we bump everything up by one when storing it, so the 0 index in s.stable is ok.
 		s.imap[h] = stableIdx + 1
 	}
@@ -383,6 +386,8 @@ func (s *keyStable) delKey(needle []byte) (found bool) {
 		copy(s.tomb[tw+1:], s.tomb[tw:])
 	}
 	s.tomb[tw] = deleted
+	s.kvs[deleted] = KV{}
+	s.valueAliasKey[deleted] = false
 
 	last := len(s.sorted) - 1
 	if w < last {
