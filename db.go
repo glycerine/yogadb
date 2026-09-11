@@ -5640,7 +5640,7 @@ func (db *FlexDB) flushMemtable() error {
 	batch := make([]KV, 0, memtableFlushBatch)
 	var err error
 
-	m.ks.AscendOwnedKeys(KV{}, func(item KV) bool {
+	m.ks.Ascend(KV{}, func(item KV) bool {
 		batch = append(batch, item)
 		if len(batch) >= memtableFlushBatch {
 			for _, kv := range batch {
@@ -6083,7 +6083,7 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 			}
 		}
 	} else {
-		m.ks.AscendOwnedKeys(KV{}, consumeItem)
+		m.ks.Ascend(KV{}, consumeItem)
 	}
 	if err != nil {
 		return true, err

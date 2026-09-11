@@ -249,24 +249,6 @@ func TestKeyStableCompareStringBytes(t *testing.T) {
 	}
 }
 
-func TestKeyStableBytesArenaString(t *testing.T) {
-	if got := bytesArenaString(nil); got != "" {
-		t.Fatalf("bytesArenaString(nil) = %q, want empty string", got)
-	}
-	if got := bytesArenaString([]byte{}); got != "" {
-		t.Fatalf("bytesArenaString(empty) = %q, want empty string", got)
-	}
-
-	b := []byte("arena")
-	got := bytesArenaString(b)
-	if got != "arena" {
-		t.Fatalf("bytesArenaString = %q, want arena", got)
-	}
-	if unsafe.StringData(got) != unsafe.SliceData(b) {
-		t.Fatal("bytesArenaString should return a string aliasing the byte arena")
-	}
-}
-
 func TestKeyStableSetGetAndReplaceKV(t *testing.T) {
 	s := newKeyStable(4)
 	for _, kv := range []KV{
@@ -489,7 +471,7 @@ func TestKeyStableOwnedKeysSurviveClearAndReuse(t *testing.T) {
 	s.set(KV{Key: "plain", Value: []byte("plain-value"), Vptr: VPtr{Length: 11, Offset: 5}, Hlc: 8})
 
 	var got []KV
-	s.AscendOwnedKeys(KV{}, func(kv KV) bool {
+	s.Ascend(KV{}, func(kv KV) bool {
 		got = append(got, kv)
 		return true
 	})
@@ -507,7 +489,7 @@ func TestKeyStableOwnedKeysSurviveClearAndReuse(t *testing.T) {
 	}
 
 	var stopped []string
-	s.AscendOwnedKeys(KV{Key: "alias-key"}, func(kv KV) bool {
+	s.Ascend(KV{Key: "alias-key"}, func(kv KV) bool {
 		stopped = append(stopped, kv.Key)
 		return false
 	})
@@ -822,7 +804,7 @@ func BenchmarkKeyStableAscendOwnedKeys(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		s.AscendOwnedKeys(KV{}, func(kv KV) bool {
+		s.Ascend(KV{}, func(kv KV) bool {
 			total += len(kv.Key) + len(kv.Value)
 			return true
 		})
