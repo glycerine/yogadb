@@ -2364,7 +2364,7 @@ func TestFlexDB_IteratorReportsCachedLoadErrorOnForwardAdvance(t *testing.T) {
 	}
 }
 
-func TestFlexDB_SyncReturnsErrorWhenInitialFlexSpaceInsertFails(t *testing.T) {
+func TestFlexDB_SyncReturnsErrorWhenInitialFlexSpaceInsertBorks(t *testing.T) {
 	fs, dir := newTestFS(t)
 	db, err := OpenFlexDB(dir, &Config{
 		FS:                     fs,

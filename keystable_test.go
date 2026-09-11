@@ -68,8 +68,8 @@ func TestKeyStableConstructorsAndCapHints(t *testing.T) {
 		t.Fatalf("makeKeyStable(3) capacities stable=%d sorted=%d kvs=%d, want at least 3",
 			cap(s.stable), cap(s.sorted), cap(s.kvs))
 	}
-	if s.imap == nil {
-		t.Fatal("makeKeyStable should initialize imap")
+	if s.headmap == nil {
+		t.Fatal("makeKeyStable should initialize headmap")
 	}
 
 	defaultSized := makeKeyStable(0)
@@ -108,11 +108,11 @@ func TestKeyStableCopiesInputBytes(t *testing.T) {
 func TestKeyStableAppendHelpersAndHashChains(t *testing.T) {
 	s := newKeyStable(8)
 
-	s.imap = nil
+	s.headmap = nil
 	h := xxhash.Sum64String("nil-map")
 	nilMapIdx := s.appendKeyString("nil-map", h)
 	if got, found := s.findStableByString("nil-map", h); !found || got != nilMapIdx {
-		t.Fatalf("appendKeyString with nil imap find = (%d, %v), want (%d, true)", got, found, nilMapIdx)
+		t.Fatalf("appendKeyString with nil headmap find = (%d, %v), want (%d, true)", got, found, nilMapIdx)
 	}
 
 	bytesIdx := s.appendKeyBytes([]byte("bytes"), xxhash.Sum64([]byte("bytes")))
@@ -142,18 +142,18 @@ func TestKeyStableAppendHelpersAndHashChains(t *testing.T) {
 		t.Fatalf("findStableByString(dup) = (%d, %v), want newest head %d", got, found, head)
 	}
 
-	s.removeStableFromImap(tail)
+	s.removeStableFromHeadmap(tail)
 	if got, found := s.findStableByString("dup", h); !found || got != head {
 		t.Fatalf("after tail removal findStableByString(dup) = (%d, %v), want head %d", got, found, head)
 	}
 
-	s.removeStableFromImap(head)
+	s.removeStableFromHeadmap(head)
 	if _, found := s.findStableByString("dup", h); found {
 		t.Fatal("after removing both duplicate chain entries, dup should not be found")
 	}
 }
 
-func TestKeyStableEnsureImapRebuildSkipsDeletedKeys(t *testing.T) {
+func TestKeyStableEnsureHeadmapRebuildSkipsDeletedKeys(t *testing.T) {
 	s := newKeyStable(4)
 	oldA := s.addKey([]byte("a"))
 	bIdx := s.addKey([]byte("b"))
@@ -161,20 +161,20 @@ func TestKeyStableEnsureImapRebuildSkipsDeletedKeys(t *testing.T) {
 		t.Fatal("delKey(a) = false, want true")
 	}
 
-	s.imap = nil
-	s.hashNext = s.hashNext[:0]
+	s.headmap = nil
+	s.nextSameHash = s.nextSameHash[:0]
 	ha := xxhash.Sum64String("a")
 	hb := xxhash.Sum64String("b")
 	if got, found := s.findStableByBytes([]byte("a"), ha); found {
-		t.Fatalf("rebuilt imap found deleted key a at stable index %d", got)
+		t.Fatalf("rebuilt headmap found deleted key a at stable index %d", got)
 	}
 	if got, found := s.findStableByString("b", hb); !found || got != bIdx {
-		t.Fatalf("rebuilt imap findStableByString(b) = (%d, %v), want (%d, true)", got, found, bIdx)
+		t.Fatalf("rebuilt headmap findStableByString(b) = (%d, %v), want (%d, true)", got, found, bIdx)
 	}
 
 	newA := s.addKey([]byte("a"))
 	if newA == oldA {
-		t.Fatalf("re-added key reused deleted stable index %d after imap rebuild", oldA)
+		t.Fatalf("re-added key reused deleted stable index %d after headmap rebuild", oldA)
 	}
 }
 
@@ -360,13 +360,16 @@ func TestKeyStableIterationMethodsAndEarlyStop(t *testing.T) {
 		t.Fatalf("Descend between keys = %#v, want %#v", descendBetween, want)
 	}
 
-	var descendEmpty []string
+	var descendAll []string
 	s.Descend(KV{}, func(kv KV) bool {
-		descendEmpty = append(descendEmpty, kv.Key)
+		descendAll = append(descendAll, kv.Key)
 		return true
 	})
-	if len(descendEmpty) != 0 {
-		t.Fatalf("Descend with empty pivot visited %#v, want none", descendEmpty)
+	if want := []string{"d", "c", "b", "a"}; !slices.Equal(descendAll, want) {
+		t.Fatalf("Descend all keys = %#v, want %#v", descendAll, want)
+	}
+	if len(descendAll) != 4 {
+		t.Fatalf("Descend with empty pivot visited %#v, want all 4", descendAll)
 	}
 
 	var reverse []string
@@ -409,8 +412,8 @@ func TestKeyStableClearZerosRetainedKVSlots(t *testing.T) {
 	if retained[0].Key != "" || retained[0].Value != nil || retained[0].Vptr != (VPtr{}) || retained[0].Hlc != 0 {
 		t.Fatalf("clear retained stale KV slot: %#v", retained[0])
 	}
-	if len(s.imap) != 0 {
-		t.Fatalf("clear left imap length %d, want 0", len(s.imap))
+	if len(s.headmap) != 0 {
+		t.Fatalf("clear left headmap length %d, want 0", len(s.headmap))
 	}
 	if s.sortedDirty {
 		t.Fatal("clear left sortedDirty=true")
