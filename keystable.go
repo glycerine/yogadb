@@ -12,11 +12,11 @@ import (
 // when you think of them like horses.
 //
 // INVAR: if i is the index into stable for a given key (the i-th key we added):
-// key i=0 is stored in s.keys[0:s.stable[i]]
-// key i>0 is stored in s.keys[s.stable[i-1], s.stable[i]]
+// key i=0 is stored in s.keys[0             :s.stable[i]]
+// key i>0 is stored in s.keys[s.stable[i-1] :s.stable[i]]
 type keyStable struct {
 	keys   []byte // arena with a copy of all keys, stacked end to end.
-	stable []int  // stable store, this never changes, is only appended to. says where to find the string
+	stable []int  // stable store, this never changes, is only appended to. says where to find the string in keys[[]
 	sorted []int  // sorted indexes of stable in ascending key order.
 	tomb   []int  // index in stable of all deleted keys
 
@@ -64,8 +64,8 @@ func (s *keyStable) clear() {
 
 func (s *keyStable) addKey(key []byte) (whereInStable int) {
 
-	// INVAR: string i=0 is stored in s.keys[0:s.stable[i]]
-	//        string i>0 is stored in s.keys[s.stable[i-1], s.stable[i]]
+	// INVAR: string i=0 is stored in s.keys[0             :s.stable[i]]
+	//        string i>0 is stored in s.keys[s.stable[i-1] :s.stable[i]]
 
 	whereInStable, found := s.findStableByBytes(key)
 	if found {
@@ -86,12 +86,12 @@ func (s *keyStable) appendKeyString(key string, h uint64) (whereInStable int) {
 	return whereInStable
 }
 
-func (s *keyStable) appendKeyCommon(n int, h uint64) (whereInStable int) {
+func (s *keyStable) appendKeyCommon(keylen int, h uint64) (whereInStable int) {
 	if s.imap == nil {
 		s.ensureImap()
 	}
 	whereInStable = len(s.stable)
-	s.stable = append(s.stable, len(s.keys)+n)
+	s.stable = append(s.stable, len(s.keys)+keylen)
 	s.kvs = append(s.kvs, KV{})
 	s.valueAliasKey = append(s.valueAliasKey, false)
 	s.hashNext = append(s.hashNext, s.imap[h]-1)
@@ -155,7 +155,10 @@ func (s *keyStable) ensureImap() {
 	s.hashNext = s.hashNext[:0]
 	for stableIdx := range s.stable {
 		h := xxhash.Sum64(s.at(stableIdx))
+		// becaue the value 0 back from imap means tombstone(deleted), we undo the +1 bump
+		// (below) by subtracting 1 after pulling from imap
 		s.hashNext = append(s.hashNext, s.imap[h]-1)
+		// because 0 means tombstoned, we bump everything up by one when storing it, so the 0 index in s.stable is ok.
 		s.imap[h] = stableIdx + 1
 	}
 }
