@@ -3674,7 +3674,7 @@ const (
 // findSeekIter positions it according to smod and key.
 // Returns (found, exact). On return, it is either Valid
 // (found=true) or invalid (found=false).
-func findSeekIter(it *Iter, smod SearchModifier, key string) (found, exact bool) {
+func findSeekIter(it *Iter, smod SearchModifier, key string, x bool) (found, exact bool) {
 	switch smod {
 	case GTE:
 		it.Seek(key)
@@ -3684,9 +3684,9 @@ func findSeekIter(it *Iter, smod SearchModifier, key string) (found, exact bool)
 			it.Next()
 		}
 	case LTE:
-		it.seekLE(key, false)
+		it.seekLE(key, false, x)
 	case LT:
-		it.seekLE(key, true)
+		it.seekLE(key, true, x)
 	case Exact:
 		it.Seek(key)
 		if it.Valid() && it.Key() != key {
@@ -3805,7 +3805,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 	smod &^= LAZY_SMALL // strip LAZY_SMALL before passing to findSeekIter
 
 	var found bool
-	found, exact = findSeekIter(it, smod, key)
+	found, exact = findSeekIter(it, smod, key, x)
 	if found {
 		zc := findBuildKV(it)
 		resultKey := strings.Clone(zc.Key)
@@ -4141,6 +4141,7 @@ func (db *FlexDB) writeLockHeldDeleteRangeWithHook(beforeWrite func() error, inc
 	if begKey != "" && begKey == endKey && (!begInclusive || !endInclusive) {
 		return 0, false, nil
 	}
+	const x = true
 
 	// Fast path: if the range covers every key in the DB and we're
 	// including large values, reinitialize instead of iterating.
@@ -4157,7 +4158,7 @@ func (db *FlexDB) writeLockHeldDeleteRangeWithHook(beforeWrite func() error, inc
 	if !db.mt.empty.Load() {
 		// Collect keys first since writeLockHeldPut mutates the memtable.
 		var keys []string
-		db.mt.ks.Ascend(KV{Key: begKey}, func(item KV) bool {
+		db.mt.ks.Ascend(x, KV{Key: begKey}, func(item KV) bool {
 			if !deleteRangeInBounds(item.Key, begKey, endKey, begInclusive, endInclusive) {
 				// Past endKey - stop iteration.
 				if deleteRangePastEnd(item.Key, endKey, endInclusive) {
@@ -4234,13 +4235,14 @@ func (db *FlexDB) writeLockHeldClearWithHook(beforeWrite func() error, includeLa
 		err := db.writeLockHeldDeleteAll()
 		return true, err
 	}
+	const x = true
 
 	// !includeLarge: must iterate and tombstone only small-value keys.
 
 	// Phase 1: Tombstone small-value keys in the memtable.
 	if !db.mt.empty.Load() {
 		var keys []string
-		db.mt.ks.Scan(func(item KV) bool {
+		db.mt.ks.Scan(x, func(item KV) bool {
 			if !item.isTombstone() && !item.HasVPtr() {
 				keys = append(keys, strings.Clone(item.Key))
 			}
@@ -4271,13 +4273,14 @@ func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey string, begInclusive
 	inBounds := func(key string) bool {
 		return deleteRangeInBounds(key, begKey, endKey, begInclusive, endInclusive)
 	}
+	const x = true
 
 	// Check memtable min/max keys.
 	if !db.mt.empty.Load() {
 		// Min key (first in ascending order).
 		var minKV KV
 		var minFound bool
-		db.mt.ks.Scan(func(item KV) bool {
+		db.mt.ks.Scan(x, func(item KV) bool {
 			minKV = item
 			minFound = true
 			return false
@@ -4288,7 +4291,7 @@ func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey string, begInclusive
 		// Max key (first in descending order).
 		var maxKV KV
 		var maxFound bool
-		db.mt.ks.Reverse(func(item KV) bool {
+		db.mt.ks.Reverse(x, func(item KV) bool {
 			maxKV = item
 			maxFound = true
 			return false
@@ -5750,7 +5753,7 @@ func (db *FlexDB) flushMemtable(x bool) error {
 	if !db.allowReads.Load() && m.bulk.count > 0 && db.ff.Size() > 0 {
 		return db.mergeReloadBulkXLocked()
 	}
-	if ok, err := db.flushMemtableBulkInitial(m); ok || err != nil {
+	if ok, err := db.flushMemtableBulkInitial(m, x); ok || err != nil {
 		return err
 	}
 	if m.bulk.count > 0 {
@@ -5760,7 +5763,7 @@ func (db *FlexDB) flushMemtable(x bool) error {
 	batch := make([]KV, 0, memtableFlushBatch)
 	var err error
 
-	m.ks.Ascend(KV{}, func(item KV) bool {
+	m.ks.Ascend(x, KV{}, func(item KV) bool {
 		batch = append(batch, item)
 		if len(batch) >= memtableFlushBatch {
 			for _, kv := range batch {
@@ -5784,7 +5787,7 @@ func (db *FlexDB) flushMemtable(x bool) error {
 	return nil
 }
 
-func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
+func (db *FlexDB) flushMemtableBulkInitial(m *memtable, x bool) (bool, error) {
 	if !db.bulkInitialFastPathEligibleLocked(m) || db.tree == nil || db.tree.root != db.tree.leafHead ||
 		!db.tree.root.isLeaf || db.tree.root.count != 1 ||
 		db.tree.root.anchors[0] == nil || db.tree.root.anchors[0].key != "" ||
@@ -6193,7 +6196,7 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 			}
 		}
 	} else {
-		m.ks.Ascend(KV{}, consumeItem)
+		m.ks.Ascend(x, KV{}, consumeItem)
 	}
 	if err != nil {
 		return true, err

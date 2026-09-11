@@ -241,10 +241,10 @@ func TestKeyStableSeekEdges(t *testing.T) {
 	s := newKeyStable(4)
 	const x = true
 
-	if _, found := s.seekGE("anything", false); found {
+	if _, found := s.seekGE("anything", false, x); found {
 		t.Fatal("seekGE on empty keyStable found a key")
 	}
-	if _, found := s.seekLE("anything", false); found {
+	if _, found := s.seekLE("anything", false, x); found {
 		t.Fatal("seekLE on empty keyStable found a key")
 	}
 
@@ -263,7 +263,7 @@ func TestKeyStableSeekEdges(t *testing.T) {
 		{target: "c", want: "d", found: true},
 		{target: "z"},
 	} {
-		got, found := s.seekGE(tc.target, tc.strict)
+		got, found := s.seekGE(tc.target, tc.strict, x)
 		if found != tc.found || (found && got.Key != tc.want) {
 			t.Fatalf("seekGE(%q, strict=%v) = (%q, %v), want (%q, %v)",
 				tc.target, tc.strict, got.Key, found, tc.want, tc.found)
@@ -283,7 +283,7 @@ func TestKeyStableSeekEdges(t *testing.T) {
 		{target: "a"},
 		{target: "b", strict: true},
 	} {
-		got, found := s.seekLE(tc.target, tc.strict)
+		got, found := s.seekLE(tc.target, tc.strict, x)
 		if found != tc.found || (found && got.Key != tc.want) {
 			t.Fatalf("seekLE(%q, strict=%v) = (%q, %v), want (%q, %v)",
 				tc.target, tc.strict, got.Key, found, tc.want, tc.found)
@@ -297,7 +297,7 @@ func TestKeyStableSeekLEEmptySortsDirtyTable(t *testing.T) {
 	for _, key := range []string{"m", "z", "a"} {
 		s.set(KV{Key: key, Value: []byte("v-" + key), Vptr: VPtr{Length: 3}, Hlc: 1}, x)
 	}
-	got, found := s.seekLE("", false)
+	got, found := s.seekLE("", false, x)
 	if !found {
 		t.Fatal("seekLE empty on dirty populated table did not find a key")
 	}
@@ -314,7 +314,7 @@ func TestKeyStableIterationMethodsAndEarlyStop(t *testing.T) {
 	}
 
 	var scan []string
-	s.Scan(func(kv KV) bool {
+	s.Scan(x, func(kv KV) bool {
 		scan = append(scan, kv.Key)
 		return true
 	})
@@ -322,7 +322,7 @@ func TestKeyStableIterationMethodsAndEarlyStop(t *testing.T) {
 		t.Fatalf("Scan keys = %#v, want %#v", scan, want)
 	}
 	var scanStopped []string
-	s.Scan(func(kv KV) bool {
+	s.Scan(x, func(kv KV) bool {
 		scanStopped = append(scanStopped, kv.Key)
 		return len(scanStopped) < 2
 	})
@@ -331,7 +331,7 @@ func TestKeyStableIterationMethodsAndEarlyStop(t *testing.T) {
 	}
 
 	var ascend []string
-	s.Ascend(KV{Key: "b"}, func(kv KV) bool {
+	s.Ascend(x, KV{Key: "b"}, func(kv KV) bool {
 		ascend = append(ascend, kv.Key)
 		return len(ascend) < 2
 	})
@@ -340,7 +340,7 @@ func TestKeyStableIterationMethodsAndEarlyStop(t *testing.T) {
 	}
 
 	var descendExact []string
-	s.Descend(KV{Key: "c"}, func(kv KV) bool {
+	s.Descend(x, KV{Key: "c"}, func(kv KV) bool {
 		descendExact = append(descendExact, kv.Key)
 		return true
 	})
@@ -348,7 +348,7 @@ func TestKeyStableIterationMethodsAndEarlyStop(t *testing.T) {
 		t.Fatalf("Descend exact keys = %#v, want %#v", descendExact, want)
 	}
 	var descendStopped []string
-	s.Descend(KV{Key: "d"}, func(kv KV) bool {
+	s.Descend(x, KV{Key: "d"}, func(kv KV) bool {
 		descendStopped = append(descendStopped, kv.Key)
 		return len(descendStopped) < 2
 	})
@@ -357,7 +357,7 @@ func TestKeyStableIterationMethodsAndEarlyStop(t *testing.T) {
 	}
 
 	var descendBetween []string
-	s.Descend(KV{Key: "bb"}, func(kv KV) bool {
+	s.Descend(x, KV{Key: "bb"}, func(kv KV) bool {
 		descendBetween = append(descendBetween, kv.Key)
 		return true
 	})
@@ -366,7 +366,7 @@ func TestKeyStableIterationMethodsAndEarlyStop(t *testing.T) {
 	}
 
 	var descendAll []string
-	s.Descend(KV{}, func(kv KV) bool {
+	s.Descend(x, KV{}, func(kv KV) bool {
 		descendAll = append(descendAll, kv.Key)
 		return true
 	})
@@ -378,7 +378,7 @@ func TestKeyStableIterationMethodsAndEarlyStop(t *testing.T) {
 	}
 
 	var reverse []string
-	s.Reverse(func(kv KV) bool {
+	s.Reverse(x, func(kv KV) bool {
 		reverse = append(reverse, kv.Key)
 		return len(reverse) < 3
 	})
@@ -626,7 +626,7 @@ func BenchmarkKeyStableScan(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		s.Scan(func(kv KV) bool {
+		s.Scan(x, func(kv KV) bool {
 			total += len(kv.Key) + len(kv.Value)
 			return true
 		})
@@ -648,7 +648,7 @@ func BenchmarkKeyStableAscendOwnedKeys(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		s.Ascend(KV{}, func(kv KV) bool {
+		s.Ascend(x, KV{}, func(kv KV) bool {
 			total += len(kv.Key) + len(kv.Value)
 			return true
 		})
@@ -667,7 +667,8 @@ func keyStableSortedKeys(s *keyStable) []string {
 
 func keyStableSortedKVKeys(s *keyStable) []string {
 	keys := make([]string, 0, len(s.sorted))
-	s.Scan(func(kv KV) bool {
+	const x = true
+	s.Scan(x, func(kv KV) bool {
 		keys = append(keys, kv.Key)
 		return true
 	})
@@ -715,6 +716,7 @@ func assertKeyStableMatchesModel(t *testing.T, s *keyStable, model map[string]in
 
 func assertKeyStableKVModel(t *testing.T, s *keyStable, model map[string]KV) {
 	t.Helper()
+	const x = false
 
 	wantKeys := make([]string, 0, len(model))
 	for key := range model {
@@ -726,7 +728,7 @@ func assertKeyStableKVModel(t *testing.T, s *keyStable, model map[string]KV) {
 	}
 
 	gotKeys := make([]string, 0, len(model))
-	s.Scan(func(kv KV) bool {
+	s.Scan(x, func(kv KV) bool {
 		gotKeys = append(gotKeys, kv.Key)
 		want, found := model[kv.Key]
 		if !found {
@@ -739,7 +741,6 @@ func assertKeyStableKVModel(t *testing.T, s *keyStable, model map[string]KV) {
 		t.Fatalf("Scan keys = %#v, want %#v", gotKeys, wantKeys)
 	}
 
-	const x = false
 	for where, key := range wantKeys {
 		got, found := s.get(key, x)
 		if !found {

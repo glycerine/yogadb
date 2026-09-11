@@ -102,7 +102,7 @@ func txFind(tx *txBase, smod SearchModifier, key string, x bool) (kvc *KVcloser,
 	smod &^= LAZY_SMALL
 
 	var found bool
-	found, exact = findSeekIter(it, smod, key)
+	found, exact = findSeekIter(it, smod, key, x)
 	if found {
 		zc := findBuildKV(it)
 		resultKey := strings.Clone(zc.Key)
@@ -174,7 +174,7 @@ func txFindIt(tx *txBase, smod SearchModifier, key string, x bool) (kvc *KVclose
 	smod &^= LAZY_SMALL
 
 	var found bool
-	found, exact = findSeekIter(it, smod, key)
+	found, exact = findSeekIter(it, smod, key, x)
 	if !found {
 		return
 	}
@@ -588,10 +588,12 @@ func (tx *WriteTx) Descend(pivot string, callback func(key string, value []byte,
 	tx.db.requireReadsAllowed()
 	it := tx.newIter()
 	defer it.Close()
+	const x = true
+
 	if pivot == "" {
 		it.SeekLast()
 	} else {
-		it.seekLE(pivot, false)
+		it.seekLE(pivot, false, x)
 	}
 	for it.Valid() {
 		if !callback(it.Key(), it.iterResolvedValue(), it.Vtyp(), it.Hlc()) {
@@ -631,10 +633,12 @@ func (tx *WriteTx) DescendRange(lessOrEqual, greaterThan string, callback func(k
 	tx.db.requireReadsAllowed()
 	it := tx.newIter()
 	defer it.Close()
+	const x = true
+
 	if lessOrEqual == "" {
 		it.SeekLast()
 	} else {
-		it.seekLE(lessOrEqual, false)
+		it.seekLE(lessOrEqual, false, x)
 	}
 	for it.Valid() {
 		if greaterThan != "" && it.Key() <= greaterThan {
@@ -736,10 +740,11 @@ func (roTx *ReadOnlyTx) Ascend(pivot string, callback func(key string, value []b
 func (roTx *ReadOnlyTx) Descend(pivot string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
 	it := roTx.newIter()
 	defer it.Close()
+	const x = false
 	if pivot == "" {
 		it.SeekLast()
 	} else {
-		it.seekLE(pivot, false)
+		it.seekLE(pivot, false, x)
 	}
 	for it.Valid() {
 		if !callback(it.Key(), it.iterResolvedValue(), it.Vtyp(), it.Hlc()) {
@@ -771,10 +776,12 @@ func (roTx *ReadOnlyTx) AscendRange(greaterOrEqual, lessThan string, callback fu
 func (roTx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
 	it := roTx.newIter()
 	defer it.Close()
+	const x = false
+
 	if lessOrEqual == "" {
 		it.SeekLast()
 	} else {
-		it.seekLE(lessOrEqual, false)
+		it.seekLE(lessOrEqual, false, x)
 	}
 	for it.Valid() {
 		if greaterThan != "" && it.Key() <= greaterThan {

@@ -329,11 +329,12 @@ func (s *keyStable) get(key string, x bool) (kv KV, found bool) {
 	return s.kvAt(stableIdx), true
 }
 
-func (s *keyStable) seekGE(target string, strict bool) (KV, bool) {
+func (s *keyStable) seekGE(target string, strict bool, x bool) (KV, bool) {
 	// called by iter.go Iter.Seek etc.
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	if !x {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
 	if len(s.sorted) == 0 {
 		return KV{}, false
 	}
@@ -348,9 +349,11 @@ func (s *keyStable) seekGE(target string, strict bool) (KV, bool) {
 	return s.kvAt(s.sorted[w]), true
 }
 
-func (s *keyStable) seekLE(target string, strict bool) (KV, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *keyStable) seekLE(target string, strict bool, x bool) (KV, bool) {
+	if !x {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
 
 	if len(s.sorted) == 0 {
 		return KV{}, false
@@ -369,9 +372,11 @@ func (s *keyStable) seekLE(target string, strict bool) (KV, bool) {
 	return s.kvAt(s.sorted[w]), true
 }
 
-func (s *keyStable) Ascend(pivot KV, iter func(KV) bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *keyStable) Ascend(x bool, pivot KV, iter func(KV) bool) {
+	if !x {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
 
 	w, _ := s.findKeyString(pivot.Key)
 	for ; w < len(s.sorted); w++ {
@@ -381,10 +386,11 @@ func (s *keyStable) Ascend(pivot KV, iter func(KV) bool) {
 	}
 }
 
-func (s *keyStable) Descend(pivot KV, iter func(KV) bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+func (s *keyStable) Descend(x bool, pivot KV, iter func(KV) bool) {
+	if !x {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
 	w := len(s.sorted)
 	if w == 0 {
 		return
@@ -407,10 +413,11 @@ func (s *keyStable) Descend(pivot KV, iter func(KV) bool) {
 	}
 }
 
-func (s *keyStable) Scan(iter func(KV) bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+func (s *keyStable) Scan(x bool, iter func(KV) bool) {
+	if !x {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
 	s.ensureSorted()
 	for _, stableIdx := range s.sorted {
 		if !iter(s.kvAt(stableIdx)) {
@@ -419,10 +426,11 @@ func (s *keyStable) Scan(iter func(KV) bool) {
 	}
 }
 
-func (s *keyStable) Reverse(iter func(KV) bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+func (s *keyStable) Reverse(x bool, iter func(KV) bool) {
+	if !x {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
 	s.ensureSorted()
 	for i := len(s.sorted) - 1; i >= 0; i-- {
 		if !iter(s.kvAt(s.sorted[i])) {
@@ -433,9 +441,11 @@ func (s *keyStable) Reverse(iter func(KV) bool) {
 
 // might be able to get rid of, but keystable_test.go uses it a bit.
 func (s *keyStable) delKey(needle []byte) (found bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	const x = true
+	if !x {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
 	var w int // where the needle lives in s.sorted
 	w, found = s.findKey(needle)
 	if !found {

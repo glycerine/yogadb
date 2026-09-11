@@ -293,21 +293,21 @@ func (it *Iter) currentValueBytes(src []byte) []byte {
 
 // keyStableSeekGE does a one-shot seek in a keyStable: finds the first item >= target.
 // If strict is true, skips exact matches (finds first item > target).
-func keyStableSeekGE(ks *keyStable, target string, strict bool) (KV, bool) {
-	return ks.seekGE(target, strict)
+func keyStableSeekGE(ks *keyStable, target string, strict bool, x bool) (KV, bool) {
+	return ks.seekGE(target, strict, x)
 }
 
 // keyStableSeekLE does a one-shot seek in a keyStable: finds the last item <= target.
 // If strict is true, skips exact matches (finds last item < target).
-func keyStableSeekLE(ks *keyStable, target string, strict bool) (KV, bool) {
-	return ks.seekLE(target, strict)
+func keyStableSeekLE(ks *keyStable, target string, strict bool, x bool) (KV, bool) {
+	return ks.seekLE(target, strict, x)
 }
 
 // ====================== FlexSpace one-shot seek helpers ======================
 
 // flexSpaceSeekGE finds the first KV >= target in FlexSpace via sparse index + cache.
 // If strict is true, skips exact matches. Caller must hold topMutRW.RLock().
-func (db *FlexDB) flexSpaceSeekGE(target string, strict bool) (KV, bool, error) {
+func (db *FlexDB) flexSpaceSeekGE(target string, strict bool, x bool) (KV, bool, error) {
 	t := db.tree
 	if t == nil || t.root == nil {
 		return KV{}, false, nil
@@ -376,7 +376,7 @@ func (db *FlexDB) flexSpaceSeekGE(target string, strict bool) (KV, bool, error) 
 
 // flexSpaceSeekLE finds the last KV <= target in FlexSpace via sparse index + cache.
 // If strict is true, skips exact matches. Caller must hold topMutRW.RLock().
-func (db *FlexDB) flexSpaceSeekLE(target string, strict bool) (KV, bool, error) {
+func (db *FlexDB) flexSpaceSeekLE(target string, strict bool, x bool) (KV, bool, error) {
 	t := db.tree
 	if t == nil || t.root == nil {
 		return KV{}, false, nil
@@ -867,9 +867,9 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 		var candidates [2]KV
 		var have [2]bool
 
-		candidates[0], have[0] = keyStableSeekGE(&db.mt.ks, target, strict)
+		candidates[0], have[0] = keyStableSeekGE(&db.mt.ks, target, strict, x)
 		var seekErr error
-		candidates[1], have[1], seekErr = db.flexSpaceSeekGE(target, strict)
+		candidates[1], have[1], seekErr = db.flexSpaceSeekGE(target, strict, x)
 		if seekErr != nil {
 			iterIOPanic(seekErr)
 			return
@@ -1054,7 +1054,7 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, v
 		var have [2]bool
 
 		// Memtable: one-shot seek
-		candidates[0], have[0] = keyStableSeekGE(&db.mt.ks, target, strict)
+		candidates[0], have[0] = keyStableSeekGE(&db.mt.ks, target, strict, x)
 
 		// FlexSpace: use stateful cursor
 		it.positionFlexCursorForSeek(target, strict)
@@ -1202,14 +1202,14 @@ func (it *Iter) retreatFlexCursorBefore(target string, strict bool) {
 // mergedSeekLE finds the largest key <= target across memtable + FlexSpace,
 // resolving duplicates by priority and skipping tombstones.
 // If strict is true, finds largest key < target. Caller must hold topMutRW.RLock().
-func (db *FlexDB) mergedSeekLE(target string, strict bool) (kv *KV, found bool) {
+func (db *FlexDB) mergedSeekLE(target string, strict bool, x bool) (kv *KV, found bool) {
 	for {
 		var candidates [2]KV
 		var have [2]bool
 
-		candidates[0], have[0] = keyStableSeekLE(&db.mt.ks, target, strict)
+		candidates[0], have[0] = keyStableSeekLE(&db.mt.ks, target, strict, x)
 		var seekErr error
-		candidates[1], have[1], seekErr = db.flexSpaceSeekLE(target, strict)
+		candidates[1], have[1], seekErr = db.flexSpaceSeekLE(target, strict, x)
 		if seekErr != nil {
 			iterIOPanic(seekErr)
 			return
@@ -1293,7 +1293,7 @@ func (it *Iter) Seek(target string) {
 }
 
 // seekLE positions the iterator at the last key <= target, with backward prefetch.
-func (it *Iter) seekLE(target string, strict bool) {
+func (it *Iter) seekLE(target string, strict bool, x bool) {
 	if it.closed {
 		return
 	}
@@ -1313,7 +1313,7 @@ func (it *Iter) seekLE(target string, strict bool) {
 		return
 	}
 
-	it.pKV, it.valid = db.mergedSeekLE(target, strict)
+	it.pKV, it.valid = db.mergedSeekLE(target, strict, x)
 	it.dir = -1
 	it.valueNeedsCopy = false
 	it.valueResolved = true
@@ -1342,7 +1342,8 @@ func (it *Iter) SeekLast() {
 		return
 	}
 
-	it.pKV, it.valid = db.mergedSeekLE("", false)
+	const x = false // not sure, we might be able to do better.
+	it.pKV, it.valid = db.mergedSeekLE("", false, x)
 	it.dir = -1
 	it.valueNeedsCopy = false
 	it.valueResolved = true
@@ -1566,7 +1567,9 @@ func (it *Iter) Prev() {
 		}
 
 		// Non-empty memtable: single merged seek.
-		it.pKV, it.valid = db.mergedSeekLE(curKey, true)
+		const x = false // not sure, we might be able to do better.
+
+		it.pKV, it.valid = db.mergedSeekLE(curKey, true, x)
 		it.valueNeedsCopy = false
 		it.valueResolved = true
 		return
@@ -1596,7 +1599,9 @@ func (it *Iter) Prev() {
 		return
 	}
 
-	it.pKV, it.valid = db.mergedSeekLE(curKey, true)
+	const x = false // not sure, we might be able to do better.
+
+	it.pKV, it.valid = db.mergedSeekLE(curKey, true, x)
 	it.dir = -1
 	it.valueNeedsCopy = false
 	it.valueResolved = true
