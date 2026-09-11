@@ -485,7 +485,7 @@ func (db *FlexDB) installMergedTreeLocked(newTree *FlexTree, appendEnd uint64, s
 	db.ff.writeLogVersion()
 	db.ff.redoLogFlushAndSync()
 	ts := uint64(time.Now().UnixNano())
-	if err := db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
+	if err := db.mt.logTruncateSyncWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
 		return fmt.Errorf("flexdb merge: truncate memwal: %w", err)
 	}
 	db.mt.reset()

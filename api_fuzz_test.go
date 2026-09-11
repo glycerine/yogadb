@@ -2,6 +2,7 @@ package yogadb
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -12,12 +13,14 @@ import (
 	"path"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/glycerine/uart"
 	"github.com/glycerine/vfs"
 )
 
@@ -26,11 +29,181 @@ const (
 	apiFuzzMaxValueSize = 1 << 20
 	apiFuzzMaxInput     = 4096
 	apiFuzzMaxOps       = 180
+	apiFuzzDefaultRuns  = 20
+	apiFuzzDefaultSeed  = 0x9e3779b97f4a7c15
 )
 
 type apiFuzzValue struct {
 	value []byte
 	vtyp  uint64
+}
+
+type apiFuzzModel struct {
+	tree *uart.Tree
+}
+
+func newAPIFuzzModel() *apiFuzzModel {
+	tree := uart.NewArtTree()
+	tree.SkipLocking = true
+	return &apiFuzzModel{tree: tree}
+}
+
+func (m *apiFuzzModel) Len() int {
+	if m == nil || m.tree == nil {
+		return 0
+	}
+	return m.tree.Size()
+}
+
+func (m *apiFuzzModel) Get(key string) (apiFuzzValue, bool) {
+	if m == nil || m.tree == nil {
+		return apiFuzzValue{}, false
+	}
+	val, _, found := m.tree.FindExact(uart.Key(key))
+	if !found {
+		return apiFuzzValue{}, false
+	}
+	rec, ok := val.(apiFuzzValue)
+	if !ok {
+		panic(fmt.Sprintf("api fuzz model: key %q has unexpected value type %T", key, val))
+	}
+	return rec, true
+}
+
+func (m *apiFuzzModel) Set(key string, rec apiFuzzValue) {
+	if m.tree == nil {
+		m.tree = uart.NewArtTree()
+		m.tree.SkipLocking = true
+	}
+	m.tree.Insert(uart.Key(key), apiFuzzValue{value: apiFuzzCopy(rec.value), vtyp: rec.vtyp})
+}
+
+func (m *apiFuzzModel) Delete(key string) {
+	if m == nil || m.tree == nil {
+		return
+	}
+	m.tree.Remove(uart.Key(key))
+}
+
+func (m *apiFuzzModel) Clear() {
+	m.tree = uart.NewArtTree()
+	m.tree.SkipLocking = true
+}
+
+func (m *apiFuzzModel) Clone() *apiFuzzModel {
+	dst := newAPIFuzzModel()
+	m.Each(func(key string, rec apiFuzzValue) bool {
+		dst.Set(key, rec)
+		return true
+	})
+	return dst
+}
+
+func (m *apiFuzzModel) Each(fn func(key string, rec apiFuzzValue) bool) {
+	if m == nil || m.tree == nil {
+		return
+	}
+	it := m.tree.Iter(nil, nil)
+	for it.Next() {
+		rec, ok := it.Value().(apiFuzzValue)
+		if !ok {
+			panic(fmt.Sprintf("api fuzz model: key %q has unexpected value type %T", string(it.Key()), it.Value()))
+		}
+		if !fn(string(it.Key()), rec) {
+			return
+		}
+	}
+}
+
+func (m *apiFuzzModel) DeleteIf(fn func(key string, rec apiFuzzValue) bool) {
+	var keys []string
+	m.Each(func(key string, rec apiFuzzValue) bool {
+		if fn(key, rec) {
+			keys = append(keys, key)
+		}
+		return true
+	})
+	for _, key := range keys {
+		m.Delete(key)
+	}
+}
+
+func (m *apiFuzzModel) Keys() []string {
+	keys := make([]string, 0, m.Len())
+	m.Each(func(key string, rec apiFuzzValue) bool {
+		keys = append(keys, key)
+		return true
+	})
+	return keys
+}
+
+func (m *apiFuzzModel) AscendRange(greaterOrEqual, lessThan string) []string {
+	var keys []string
+	m.Each(func(key string, rec apiFuzzValue) bool {
+		if greaterOrEqual != "" && key < greaterOrEqual {
+			return true
+		}
+		if lessThan != "" && key >= lessThan {
+			return true
+		}
+		keys = append(keys, key)
+		return true
+	})
+	return keys
+}
+
+func (m *apiFuzzModel) DescendRange(lessOrEqual, greaterThan string) []string {
+	var keys []string
+	all := m.Keys()
+	for i := len(all) - 1; i >= 0; i-- {
+		key := all[i]
+		if lessOrEqual != "" && key > lessOrEqual {
+			continue
+		}
+		if greaterThan != "" && key <= greaterThan {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func (m *apiFuzzModel) ExpectedFindKey(smod SearchModifier, query string) (string, bool) {
+	switch smod {
+	case Exact:
+		if _, ok := m.Get(query); ok {
+			return query, true
+		}
+	case GTE:
+		for _, key := range m.Keys() {
+			if key >= query {
+				return key, true
+			}
+		}
+	case GT:
+		for _, key := range m.Keys() {
+			if key > query {
+				return key, true
+			}
+		}
+	case LTE:
+		keys := m.Keys()
+		for i := len(keys) - 1; i >= 0; i-- {
+			if query == "" || keys[i] <= query {
+				return keys[i], true
+			}
+		}
+	case LT:
+		keys := m.Keys()
+		for i := len(keys) - 1; i >= 0; i-- {
+			if query == "" || keys[i] < query {
+				return keys[i], true
+			}
+		}
+	default:
+		panic(fmt.Sprintf("api fuzz model: unsupported SearchModifier %v", smod))
+	}
+	return "", false
 }
 
 type apiFuzzOp struct {
@@ -50,105 +223,135 @@ type apiFuzzHarness struct {
 	dir    string
 	cfg    Config
 	db     *FlexDB
-	model  map[string]apiFuzzValue
+	model  *apiFuzzModel
 }
 
-func FuzzYogaDBAPI(f *testing.F) {
-	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8})
-	f.Add([]byte{0x42, 0x11, 0x99, 0x05, 0x31, 0x7f, 0x80, 0xff, 1, 1, 1, 2, 3, 5, 8, 13})
-	f.Add([]byte{0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88, 64, 65, 0, 255, 17, 29, 47, 91})
-	f.Add([]byte{0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 18, 17, 16, 15, 14, 13, 12, 11})
+func TestYogaDBAPI(t *testing.T) {
+	startSeed, seedFromEnv := apiFuzzStartSeed(t)
+	runs := apiFuzzRunCount(t, seedFromEnv)
+	t.Logf("YogaDB API randomized test: start_seed=0x%016x runs=%d", startSeed, runs)
 
-	f.Fuzz(func(t *testing.T, data []byte) {
-		if len(data) == 0 || len(data) > apiFuzzMaxInput {
-			return
+	runTimes := make([]time.Duration, 0, runs)
+	for i := 0; i < runs; i++ {
+		runSeed := apiFuzzRunSeed(startSeed, i)
+		started := time.Now()
+		ok := t.Run(fmt.Sprintf("run_%04d_seed_%016x", i, runSeed), func(t *testing.T) {
+			t.Logf("api randomized run: start_seed=0x%016x run=%d seed=0x%016x", startSeed, i, runSeed)
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("api randomized panic: start_seed=0x%016x run=%d seed=0x%016x panic=%v", startSeed, i, runSeed, r)
+				}
+			}()
+			apiFuzzRun(t, runSeed)
+		})
+		elapsed := time.Since(started)
+		runTimes = append(runTimes, elapsed)
+		if !ok {
+			t.Fatalf("api randomized failure: start_seed=0x%016x run=%d seed=0x%016x elapsed=%s; replay with YOGADB_API_FUZZ_SEED=0x%016x YOGADB_API_FUZZ_RUNS=1 go test -run '^TestYogaDBAPI$' -count=1 -v .",
+				startSeed, i, runSeed, elapsed, runSeed)
 		}
-		seed := apiFuzzSeed(data)
-		memBudget := apiFuzzMemBudget()
-		if memBudget > 0 {
-			old := debug.SetMemoryLimit(memBudget)
-			t.Cleanup(func() { debug.SetMemoryLimit(old) })
+		if (i+1)%10 == 0 {
+			last10 := runTimes[len(runTimes)-10:]
+			t.Logf("api randomized progress: completed=%d/%d last10_median=%s overall_median=%s start_seed=0x%016x last_seed=0x%016x",
+				i+1, runs, apiFuzzMedianDuration(last10), apiFuzzMedianDuration(runTimes), startSeed, runSeed)
 		}
+	}
+	if runs%10 != 0 {
+		t.Logf("api randomized complete: completed=%d/%d overall_median=%s start_seed=0x%016x",
+			runs, runs, apiFuzzMedianDuration(runTimes), startSeed)
+	}
+}
 
-		rng := rand.New(rand.NewSource(int64(seed)))
-		zipf := rand.NewZipf(rng, 1.18, 1, apiFuzzMaxValueSize)
-		baseFS := vfs.NewCrashableMem()
-		fs := newAPIFuzzQuotaFS(baseFS, memBudget)
-		dir := fmt.Sprintf("api_fuzz_%016x", seed)
-		if err := fs.MkdirAll(dir, 0755); err != nil {
-			t.Fatalf("MkdirAll: %v", err)
-		}
+func apiFuzzRun(t *testing.T, seed uint64) {
+	t.Helper()
+	data := apiFuzzDataForSeed(seed)
+	memBudget := apiFuzzMemBudget()
+	if memBudget > 0 {
+		old := debug.SetMemoryLimit(memBudget)
+		t.Cleanup(func() { debug.SetMemoryLimit(old) })
+	}
 
-		flushEnabled := data[0]&1 == 0
-		flushInterval := time.Duration(1+int((seed>>8)%7)) * time.Millisecond
-		cfg := Config{
-			FS:                         fs,
-			CacheMB:                    4,
-			DisableBackgroundFlush:     !flushEnabled,
-			BackgroundFlushInterval:    flushInterval,
-			OmitFlexSpaceOpsRedoLog:    seed&0x20 != 0,
-			PiggybackGC_on_SyncOrFlush: seed&0x40 != 0,
-			GCGarbagePct:               0.20,
-		}
+	rng := rand.New(rand.NewSource(int64(seed)))
+	zipf := rand.NewZipf(rng, 1.18, 1, apiFuzzMaxValueSize)
+	baseFS := vfs.NewCrashableMem()
+	fs := newAPIFuzzQuotaFS(baseFS, memBudget)
+	dir := fmt.Sprintf("api_fuzz_%016x", seed)
+	if err := fs.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
 
-		db, err := OpenFlexDB(dir, &cfg)
-		if err != nil {
-			apiFuzzFatalIfNotQuota(t, err, "OpenFlexDB")
-			return
-		}
-		h := &apiFuzzHarness{
-			t:      t,
-			seed:   seed,
-			rng:    rng,
-			zipf:   zipf,
-			baseFS: baseFS,
-			fs:     fs,
-			dir:    dir,
-			cfg:    cfg,
-			db:     db,
-			model:  make(map[string]apiFuzzValue),
-		}
-		defer func() {
-			if h.db != nil {
-				h.db.Close()
+	flushEnabled := data[0]&1 == 0
+	flushInterval := time.Duration(1+int((seed>>8)%7)) * time.Millisecond
+	cfg := Config{
+		FS:                         fs,
+		CacheMB:                    4,
+		DisableBackgroundFlush:     !flushEnabled,
+		BackgroundFlushInterval:    flushInterval,
+		OmitFlexSpaceOpsRedoLog:    seed&0x20 != 0,
+		PiggybackGC_on_SyncOrFlush: seed&0x40 != 0,
+		GCGarbagePct:               0.20,
+	}
+
+	db, err := OpenFlexDB(dir, &cfg)
+	if err != nil {
+		apiFuzzFatalIfNotQuota(t, err, "OpenFlexDB")
+		return
+	}
+	h := &apiFuzzHarness{
+		t:      t,
+		seed:   seed,
+		rng:    rng,
+		zipf:   zipf,
+		baseFS: baseFS,
+		fs:     fs,
+		dir:    dir,
+		cfg:    cfg,
+		db:     db,
+		model:  newAPIFuzzModel(),
+	}
+	defer func() {
+		if h.db != nil {
+			if t.Failed() {
+				return
 			}
-		}()
+			h.db.Close()
+		}
+	}()
 
-		h.preAllowReads(data)
-		h.db.AllowReads()
-		h.verifyModel("after AllowReads")
+	h.preAllowReads(data)
+	h.db.AllowReads()
+	h.verifyModel("after AllowReads")
 
-		opBytes := data
-		if len(opBytes) > 8 {
-			opBytes = opBytes[8:]
-		}
-		maxOps := len(opBytes) * 2
-		if maxOps < 48 {
-			maxOps = 48 + int(seed%32)
-		}
-		if maxOps > apiFuzzMaxOps {
-			maxOps = apiFuzzMaxOps
-		}
+	opBytes := data
+	if len(opBytes) > 8 {
+		opBytes = opBytes[8:]
+	}
+	maxOps := len(opBytes) * 2
+	if maxOps < 48 {
+		maxOps = 48 + int(seed%32)
+	}
+	if maxOps > apiFuzzMaxOps {
+		maxOps = apiFuzzMaxOps
+	}
 
-		for i := 0; i < maxOps; i++ {
-			var b byte
-			if len(opBytes) > 0 {
-				b = opBytes[i%len(opBytes)]
-			} else {
-				b = byte(h.rng.Intn(256))
-			}
-			h.step(i, b)
+	for i := 0; i < maxOps; i++ {
+		var b byte
+		if len(opBytes) > 0 {
+			b = opBytes[i%len(opBytes)]
+		} else {
+			b = byte(h.rng.Intn(256))
 		}
+		h.step(i, b)
+	}
 
-		if err := h.db.Sync(); err != nil {
-			apiFuzzFatalIfNotQuota(t, err, "final Sync")
-			return
-		}
-		h.verifyModel("final")
-		if errs := h.db.CheckIntegrity(); len(errs) != 0 {
-			t.Fatalf("final CheckIntegrity found %d errors: %v", len(errs), errs)
-		}
-	})
+	if err := h.db.Sync(); err != nil {
+		apiFuzzFatalIfNotQuota(t, err, "final Sync")
+		return
+	}
+	h.verifyModel("final")
+	if errs := h.db.CheckIntegrity(); len(errs) != 0 {
+		t.Fatalf("final CheckIntegrity found %d errors: %v", len(errs), errs)
+	}
 }
 
 func (h *apiFuzzHarness) preAllowReads(data []byte) {
@@ -225,7 +428,7 @@ func (h *apiFuzzHarness) step(i int, b byte) {
 			apiFuzzFatalIfNotQuota(h.t, err, "Put")
 			return
 		}
-		h.model[key] = apiFuzzValue{value: apiFuzzCopy(value), vtyp: vtyp}
+		h.model.Set(key, apiFuzzValue{value: value, vtyp: vtyp})
 		h.maybeVerify("after Put")
 	case 1:
 		key := apiFuzzKey(h.rng.Intn(apiFuzzKeyCount))
@@ -237,7 +440,7 @@ func (h *apiFuzzHarness) step(i int, b byte) {
 			apiFuzzFatalIfNotQuota(h.t, err, "Delete")
 			return
 		}
-		delete(h.model, key)
+		h.model.Delete(key)
 		h.maybeVerify("after Delete")
 	case 3:
 		ops := h.randomOps(1+h.rng.Intn(12), false)
@@ -294,7 +497,7 @@ func (h *apiFuzzHarness) commitBatch(phase string, ops []apiFuzzOp, doFsync bool
 	for i, op := range ops {
 		if op.delete {
 			b.Delete(op.key)
-			delete(pending, op.key)
+			pending.Delete(op.key)
 			continue
 		}
 		var err error
@@ -321,7 +524,7 @@ func (h *apiFuzzHarness) commitBatch(phase string, ops []apiFuzzOp, doFsync bool
 			continue
 		}
 		if !op.delete {
-			pending[op.key] = apiFuzzValue{value: apiFuzzCopy(modelValue), vtyp: op.vtyp}
+			pending.Set(op.key, apiFuzzValue{value: modelValue, vtyp: op.vtyp})
 		}
 	}
 
@@ -344,7 +547,7 @@ func (h *apiFuzzHarness) commitBatch(phase string, ops []apiFuzzOp, doFsync bool
 
 func (h *apiFuzzHarness) mergeOne() {
 	key := apiFuzzKey(h.rng.Intn(apiFuzzKeyCount))
-	wantOld, wantExists := h.model[key]
+	wantOld, wantExists := h.model.Get(key)
 	mode := h.rng.Intn(4)
 	newValue := h.randomValue()
 	newVtyp := h.randomVtyp()
@@ -379,13 +582,13 @@ func (h *apiFuzzHarness) mergeOne() {
 	}
 	switch mode {
 	case 1:
-		h.model[key] = apiFuzzValue{value: apiFuzzCopy(newValue), vtyp: newVtyp}
+		h.model.Set(key, apiFuzzValue{value: newValue, vtyp: newVtyp})
 	case 2:
-		delete(h.model, key)
+		h.model.Delete(key)
 	case 3:
 		old := wantOld.value
 		oldVtyp := wantOld.vtyp
-		h.model[key] = apiFuzzValue{value: append(apiFuzzCopy(old), byte(len(old))), vtyp: oldVtyp ^ uint64(len(old)+1)}
+		h.model.Set(key, apiFuzzValue{value: append(apiFuzzCopy(old), byte(len(old))), vtyp: oldVtyp ^ uint64(len(old)+1)})
 	}
 	h.maybeVerify("after Merge")
 }
@@ -412,11 +615,12 @@ func (h *apiFuzzHarness) deleteRange() {
 		apiFuzzFatalIfNotQuota(h.t, err, "DeleteRange")
 		return
 	}
-	for key, rec := range h.model {
+	h.model.DeleteIf(func(key string, rec apiFuzzValue) bool {
 		if apiFuzzInDeleteRange(key, beg, end, begInclusive, endInclusive) && (includeLarge || len(rec.value) <= vlogInlineThreshold) {
-			delete(h.model, key)
+			return true
 		}
-	}
+		return false
+	})
 	h.maybeVerify("after DeleteRange")
 }
 
@@ -427,13 +631,11 @@ func (h *apiFuzzHarness) clear() {
 		return
 	}
 	if includeLarge {
-		h.model = make(map[string]apiFuzzValue)
+		h.model.Clear()
 	} else {
-		for key, rec := range h.model {
-			if len(rec.value) <= vlogInlineThreshold {
-				delete(h.model, key)
-			}
-		}
+		h.model.DeleteIf(func(key string, rec apiFuzzValue) bool {
+			return len(rec.value) <= vlogInlineThreshold
+		})
 	}
 	h.maybeVerify("after Clear")
 }
@@ -514,12 +716,14 @@ func (h *apiFuzzHarness) beginUpdateManual() {
 }
 
 func (h *apiFuzzHarness) crashTransactionAtomicity() {
-	if h.rng.Intn(2) == 0 {
-		if err := h.db.Sync(); err != nil {
-			apiFuzzFatalIfNotQuota(h.t, err, "pre-crash Sync")
-			return
-		}
+	// Establish a durable baseline before simulating power loss. Without this,
+	// crash recovery may legitimately expose an older durable state that differs
+	// from the live model because unrelated earlier operations were unsynced.
+	if err := h.db.Sync(); err != nil {
+		apiFuzzFatalIfNotQuota(h.t, err, "pre-crash Sync")
+		return
 	}
+	h.verifyModel("before transaction crash probe")
 
 	ops := h.randomOps(2+h.rng.Intn(5), false)
 	before := apiFuzzCloneModel(h.model)
@@ -560,20 +764,20 @@ func (h *apiFuzzHarness) crashTransactionAtomicity() {
 	h.verifyModel("after committed transaction crash probe")
 }
 
-func (h *apiFuzzHarness) applyTxOps(tx *WriteTx, model map[string]apiFuzzValue, ops []apiFuzzOp, noRangeOrClear bool) map[string]apiFuzzValue {
+func (h *apiFuzzHarness) applyTxOps(tx *WriteTx, model *apiFuzzModel, ops []apiFuzzOp, noRangeOrClear bool) *apiFuzzModel {
 	for i, op := range ops {
 		if op.delete {
 			if err := tx.Delete(op.key); err != nil {
 				apiFuzzFatalIfNotQuota(h.t, err, "tx.Delete")
 				return nil
 			}
-			delete(model, op.key)
+			model.Delete(op.key)
 		} else {
 			if _, err := tx.Put(op.key, op.value, op.vtyp); err != nil {
 				apiFuzzFatalIfNotQuota(h.t, err, "tx.Put")
 				return nil
 			}
-			model[op.key] = apiFuzzValue{value: apiFuzzCopy(op.value), vtyp: op.vtyp}
+			model.Set(op.key, apiFuzzValue{value: op.value, vtyp: op.vtyp})
 		}
 		if i == 0 {
 			h.expectTxGet(tx, model, op.key)
@@ -593,7 +797,7 @@ func (h *apiFuzzHarness) applyTxOps(tx *WriteTx, model map[string]apiFuzzValue, 
 			apiFuzzFatalIfNotQuota(h.t, err, "tx.Merge")
 			return nil
 		}
-		model[key] = apiFuzzValue{value: apiFuzzCopy(value), vtyp: vtyp}
+		model.Set(key, apiFuzzValue{value: value, vtyp: vtyp})
 	case 1:
 		includeLarge := h.rng.Intn(2) == 0
 		beg := apiFuzzKey(h.rng.Intn(apiFuzzKeyCount))
@@ -607,17 +811,16 @@ func (h *apiFuzzHarness) applyTxOps(tx *WriteTx, model map[string]apiFuzzValue, 
 			return nil
 		}
 		if allGone {
-			for key := range model {
-				delete(model, key)
-			}
+			model.Clear()
 			baseline := apiFuzzCloneModel(model)
 			return h.applyPostAllGoneTxOps(tx, model, baseline)
 		}
-		for key, rec := range model {
+		model.DeleteIf(func(key string, rec apiFuzzValue) bool {
 			if key >= beg && key <= end && (includeLarge || len(rec.value) <= vlogInlineThreshold) {
-				delete(model, key)
+				return true
 			}
-		}
+			return false
+		})
 	case 2:
 		includeLarge := h.rng.Intn(4) == 0
 		allGone, err := tx.Clear(includeLarge)
@@ -626,22 +829,18 @@ func (h *apiFuzzHarness) applyTxOps(tx *WriteTx, model map[string]apiFuzzValue, 
 			return nil
 		}
 		if allGone {
-			for key := range model {
-				delete(model, key)
-			}
+			model.Clear()
 			baseline := apiFuzzCloneModel(model)
 			return h.applyPostAllGoneTxOps(tx, model, baseline)
 		}
-		for key, rec := range model {
-			if len(rec.value) <= vlogInlineThreshold {
-				delete(model, key)
-			}
-		}
+		model.DeleteIf(func(key string, rec apiFuzzValue) bool {
+			return len(rec.value) <= vlogInlineThreshold
+		})
 	}
 	return nil
 }
 
-func (h *apiFuzzHarness) applyPostAllGoneTxOps(tx *WriteTx, model, baseline map[string]apiFuzzValue) map[string]apiFuzzValue {
+func (h *apiFuzzHarness) applyPostAllGoneTxOps(tx *WriteTx, model, baseline *apiFuzzModel) *apiFuzzModel {
 	for i := 0; i < 1+h.rng.Intn(4); i++ {
 		key := apiFuzzKey(h.rng.Intn(apiFuzzKeyCount))
 		switch h.rng.Intn(5) {
@@ -652,14 +851,14 @@ func (h *apiFuzzHarness) applyPostAllGoneTxOps(tx *WriteTx, model, baseline map[
 				apiFuzzFatalIfNotQuota(h.t, err, "tx.Put after allGone")
 				return baseline
 			}
-			model[key] = apiFuzzValue{value: apiFuzzCopy(value), vtyp: vtyp}
+			model.Set(key, apiFuzzValue{value: value, vtyp: vtyp})
 			h.expectTxGet(tx, model, key)
 		case 1:
 			if err := tx.Delete(key); err != nil {
 				apiFuzzFatalIfNotQuota(h.t, err, "tx.Delete after allGone")
 				return baseline
 			}
-			delete(model, key)
+			model.Delete(key)
 			h.expectTxGet(tx, model, key)
 		case 2:
 			if !h.txMergeOne(tx, model, key, "after allGone") {
@@ -681,17 +880,16 @@ func (h *apiFuzzHarness) applyPostAllGoneTxOps(tx *WriteTx, model, baseline map[
 				return baseline
 			}
 			if allGone {
-				for key := range model {
-					delete(model, key)
-				}
+				model.Clear()
 				baseline = apiFuzzCloneModel(model)
 				continue
 			}
-			for key, rec := range model {
+			model.DeleteIf(func(key string, rec apiFuzzValue) bool {
 				if apiFuzzInDeleteRange(key, beg, end, begInclusive, endInclusive) && (includeLarge || len(rec.value) <= vlogInlineThreshold) {
-					delete(model, key)
+					return true
 				}
-			}
+				return false
+			})
 		case 4:
 			includeLarge := h.rng.Intn(2) == 0
 			allGone, err := tx.Clear(includeLarge)
@@ -700,24 +898,20 @@ func (h *apiFuzzHarness) applyPostAllGoneTxOps(tx *WriteTx, model, baseline map[
 				return baseline
 			}
 			if allGone {
-				for key := range model {
-					delete(model, key)
-				}
+				model.Clear()
 				baseline = apiFuzzCloneModel(model)
 				continue
 			}
-			for key, rec := range model {
-				if len(rec.value) <= vlogInlineThreshold {
-					delete(model, key)
-				}
-			}
+			model.DeleteIf(func(key string, rec apiFuzzValue) bool {
+				return len(rec.value) <= vlogInlineThreshold
+			})
 		}
 	}
 	return baseline
 }
 
-func (h *apiFuzzHarness) txMergeOne(tx *WriteTx, model map[string]apiFuzzValue, key, phase string) bool {
-	wantOld, wantExists := model[key]
+func (h *apiFuzzHarness) txMergeOne(tx *WriteTx, model *apiFuzzModel, key, phase string) bool {
+	wantOld, wantExists := model.Get(key)
 	mode := h.rng.Intn(4)
 	newValue := h.randomValue()
 	newVtyp := h.randomVtyp()
@@ -752,18 +946,18 @@ func (h *apiFuzzHarness) txMergeOne(tx *WriteTx, model map[string]apiFuzzValue, 
 	}
 	switch mode {
 	case 1:
-		model[key] = apiFuzzValue{value: apiFuzzCopy(newValue), vtyp: newVtyp}
+		model.Set(key, apiFuzzValue{value: newValue, vtyp: newVtyp})
 	case 2:
-		delete(model, key)
+		model.Delete(key)
 	case 3:
 		old := wantOld.value
 		oldVtyp := wantOld.vtyp
-		model[key] = apiFuzzValue{value: append(apiFuzzCopy(old), byte(len(old))), vtyp: oldVtyp ^ uint64(len(old)+1)}
+		model.Set(key, apiFuzzValue{value: append(apiFuzzCopy(old), byte(len(old))), vtyp: oldVtyp ^ uint64(len(old)+1)})
 	}
 	return true
 }
 
-func (h *apiFuzzHarness) exerciseWriteTxReaders(tx *WriteTx, model map[string]apiFuzzValue) {
+func (h *apiFuzzHarness) exerciseWriteTxReaders(tx *WriteTx, model *apiFuzzModel) {
 	wantKeys := apiFuzzSortedKeys(model)
 	var gotKeys []string
 	scan := tx.NewIter()
@@ -776,7 +970,7 @@ func (h *apiFuzzHarness) exerciseWriteTxReaders(tx *WriteTx, model map[string]ap
 		if !found {
 			h.t.Fatal("tx iterator returned found=false at valid position")
 		}
-		want, ok := model[key]
+		want, ok := model.Get(key)
 		if !ok {
 			h.t.Fatalf("tx iterator visited unknown key %q", key)
 		}
@@ -789,11 +983,11 @@ func (h *apiFuzzHarness) exerciseWriteTxReaders(tx *WriteTx, model map[string]ap
 	if !slicesEqualString(gotKeys, wantKeys) {
 		h.t.Fatalf("tx iterator keys=%v want %v", gotKeys, wantKeys)
 	}
-	if tx.Len() != int64(len(model)) {
+	if tx.Len() != int64(model.Len()) {
 		gotBig, gotSmall := tx.LenBigSmall()
 		wantBig, wantSmall := apiFuzzBigSmall(model)
 		h.t.Fatalf("tx.Len=%d want %d; LenBigSmall=(%d,%d) want (%d,%d); iterator keys=%v model keys=%v",
-			tx.Len(), len(model), gotBig, gotSmall, wantBig, wantSmall, gotKeys, wantKeys)
+			tx.Len(), model.Len(), gotBig, gotSmall, wantBig, wantSmall, gotKeys, wantKeys)
 	}
 	big, small := apiFuzzBigSmall(model)
 	gotBig, gotSmall := tx.LenBigSmall()
@@ -806,10 +1000,14 @@ func (h *apiFuzzHarness) exerciseWriteTxReaders(tx *WriteTx, model map[string]ap
 	if err != nil {
 		h.t.Fatalf("tx.Find(%q): %v", key, err)
 	}
-	h.checkKVC("tx.Find", kvc, model[key], modelHas(model, key), false)
+	want, wantFound := model.Get(key)
+	h.checkKVC("tx.Find", kvc, want, wantFound, false)
 	if kvc != nil {
 		kvc.Close()
 	}
+	beg, end := h.randomAscendBounds()
+	h.expectTxAscendRange(tx, model, beg, end)
+	h.expectTxDescendRange(tx, model, end, beg)
 	it := tx.NewIter()
 	defer it.Close()
 	it.Seek(key)
@@ -821,10 +1019,62 @@ func (h *apiFuzzHarness) exerciseWriteTxReaders(tx *WriteTx, model map[string]ap
 	}
 }
 
+func (h *apiFuzzHarness) expectTxAscendRange(tx *WriteTx, model *apiFuzzModel, beg, end string) {
+	want := model.AscendRange(beg, end)
+	var got []string
+	tx.AscendRange(beg, end, func(key string, value []byte, vtyp uint64, hlc HLC) bool {
+		h.checkModelKV("tx.AscendRange", model, key, value, vtyp)
+		got = append(got, strings.Clone(key))
+		return true
+	})
+	if !slicesEqualString(got, want) {
+		h.t.Fatalf("tx.AscendRange(%q,%q) keys=%v want %v", beg, end, got, want)
+	}
+}
+
+func (h *apiFuzzHarness) expectTxDescendRange(tx *WriteTx, model *apiFuzzModel, lessOrEqual, greaterThan string) {
+	want := model.DescendRange(lessOrEqual, greaterThan)
+	var got []string
+	tx.DescendRange(lessOrEqual, greaterThan, func(key string, value []byte, vtyp uint64, hlc HLC) bool {
+		h.checkModelKV("tx.DescendRange", model, key, value, vtyp)
+		got = append(got, strings.Clone(key))
+		return true
+	})
+	if !slicesEqualString(got, want) {
+		h.t.Fatalf("tx.DescendRange(%q,%q) keys=%v want %v", lessOrEqual, greaterThan, got, want)
+	}
+}
+
+func (h *apiFuzzHarness) expectROAscendRange(ro *ReadOnlyTx, model *apiFuzzModel, beg, end string) {
+	want := model.AscendRange(beg, end)
+	var got []string
+	ro.AscendRange(beg, end, func(key string, value []byte, vtyp uint64, hlc HLC) bool {
+		h.checkModelKV("ro.AscendRange", model, key, value, vtyp)
+		got = append(got, strings.Clone(key))
+		return true
+	})
+	if !slicesEqualString(got, want) {
+		h.t.Fatalf("ro.AscendRange(%q,%q) keys=%v want %v", beg, end, got, want)
+	}
+}
+
+func (h *apiFuzzHarness) expectRODescendRange(ro *ReadOnlyTx, model *apiFuzzModel, lessOrEqual, greaterThan string) {
+	want := model.DescendRange(lessOrEqual, greaterThan)
+	var got []string
+	ro.DescendRange(lessOrEqual, greaterThan, func(key string, value []byte, vtyp uint64, hlc HLC) bool {
+		h.checkModelKV("ro.DescendRange", model, key, value, vtyp)
+		got = append(got, strings.Clone(key))
+		return true
+	})
+	if !slicesEqualString(got, want) {
+		h.t.Fatalf("ro.DescendRange(%q,%q) keys=%v want %v", lessOrEqual, greaterThan, got, want)
+	}
+}
+
 func (h *apiFuzzHarness) exerciseView() {
 	err := h.db.View(func(ro *ReadOnlyTx) error {
-		if ro.Len() != int64(len(h.model)) {
-			h.t.Fatalf("ro.Len=%d want %d", ro.Len(), len(h.model))
+		if ro.Len() != int64(h.model.Len()) {
+			h.t.Fatalf("ro.Len=%d want %d", ro.Len(), h.model.Len())
 		}
 		big, small := apiFuzzBigSmall(h.model)
 		gotBig, gotSmall := ro.LenBigSmall()
@@ -839,9 +1089,12 @@ func (h *apiFuzzHarness) exerciseView() {
 			return len(asc) < 17 || h.rng.Intn(2) == 0
 		})
 		for _, key := range asc {
-			if _, ok := h.model[key]; !ok {
+			if _, ok := h.model.Get(key); !ok {
 				h.t.Fatalf("ro.Ascend returned unknown key %q", key)
 			}
+		}
+		if !apiFuzzIsPrefix(asc, keys) {
+			h.t.Fatalf("ro.Ascend keys=%v not prefix of %v", asc, keys)
 		}
 		var desc []string
 		ro.Descend("", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
@@ -849,6 +1102,10 @@ func (h *apiFuzzHarness) exerciseView() {
 			desc = append(desc, strings.Clone(key))
 			return len(desc) < 17 || h.rng.Intn(2) == 0
 		})
+		wantDesc := apiFuzzReverseKeys(keys)
+		if !apiFuzzIsPrefix(desc, wantDesc) {
+			h.t.Fatalf("ro.Descend keys=%v not prefix of %v", desc, wantDesc)
+		}
 		if len(keys) > 0 {
 			pivot := keys[h.rng.Intn(len(keys))]
 			ro.AscendRange(pivot, "", func(key string, value []byte, vtyp uint64, hlc HLC) bool {
@@ -860,6 +1117,9 @@ func (h *apiFuzzHarness) exerciseView() {
 				return h.rng.Intn(5) != 0
 			})
 		}
+		beg, end := h.randomAscendBounds()
+		h.expectROAscendRange(ro, h.model, beg, end)
+		h.expectRODescendRange(ro, h.model, end, beg)
 		key := apiFuzzKey(h.rng.Intn(apiFuzzKeyCount))
 		h.expectROGet(ro, key)
 		kvc, exact, err := ro.Find(GTE|LAZY, key)
@@ -950,14 +1210,14 @@ func (h *apiFuzzHarness) exerciseFind() {
 		apiFuzzFatalIfNotQuota(h.t, err, "GetKV")
 		return
 	}
-	h.checkKVC("GetKV", kvc, h.model[key], modelHas(h.model, key), false)
+	want, wantFound := h.model.Get(key)
+	h.checkKVC("GetKV", kvc, want, wantFound, false)
 	if kvc != nil {
 		if kvc.Large() {
 			val, vtyp, _, err := h.db.FetchLarge(&kvc.KV)
 			if err != nil {
 				h.t.Fatalf("FetchLarge: %v", err)
 			}
-			want := h.model[key]
 			if !bytes.Equal(val, want.value) || vtyp != want.vtyp {
 				h.t.Fatalf("FetchLarge(%q) len=%d vtyp=%#x want len=%d vtyp=%#x",
 					key, len(val), vtyp, len(want.value), want.vtyp)
@@ -999,31 +1259,34 @@ func (h *apiFuzzHarness) exerciseIter() {
 			}
 			inline := it.Vin()
 			vel, empty, large := it.Vel()
-			if it.Large() != (len(h.model[key].value) > vlogInlineThreshold) || large != it.Large() {
+			want, ok := h.model.Get(key)
+			if !ok {
+				h.t.Fatalf("iterator key %q missing from model", key)
+			}
+			if it.Large() != (len(want.value) > vlogInlineThreshold) || large != it.Large() {
 				h.t.Fatalf("iterator Large mismatch for %q", key)
 			}
-			if !large && !bytes.Equal(inline, h.model[key].value) {
-				h.t.Fatalf("iterator Vin(%q) len=%d want %d", key, len(inline), len(h.model[key].value))
+			if !large && !bytes.Equal(inline, want.value) {
+				h.t.Fatalf("iterator Vin(%q) len=%d want %d", key, len(inline), len(want.value))
 			}
-			if empty != (!large && len(h.model[key].value) == 0) {
+			if empty != (!large && len(want.value) == 0) {
 				h.t.Fatalf("iterator Vel empty=%v key=%q", empty, key)
 			}
-			if !large && !bytes.Equal(vel, h.model[key].value) {
-				h.t.Fatalf("iterator Vel(%q) len=%d want %d", key, len(vel), len(h.model[key].value))
+			if !large && !bytes.Equal(vel, want.value) {
+				h.t.Fatalf("iterator Vel(%q) len=%d want %d", key, len(vel), len(want.value))
 			}
 			if large {
 				got, gotVtyp, _, err := it.FetchV()
 				if err != nil {
 					h.t.Fatalf("iterator FetchV: %v", err)
 				}
-				want := h.model[key]
 				if !bytes.Equal(got, want.value) || gotVtyp != want.vtyp {
 					h.t.Fatalf("iterator FetchV(%q) len=%d vtyp=%#x want len=%d vtyp=%#x",
 						key, len(got), gotVtyp, len(want.value), want.vtyp)
 				}
 			}
-			if it.Vtyp() != h.model[key].vtyp {
-				h.t.Fatalf("iterator Vtyp(%q)=%#x want %#x", key, it.Vtyp(), h.model[key].vtyp)
+			if it.Vtyp() != want.vtyp {
+				h.t.Fatalf("iterator Vtyp(%q)=%#x want %#x", key, it.Vtyp(), want.vtyp)
 			}
 			_ = it.Hlc()
 			steps++
@@ -1077,7 +1340,7 @@ func (h *apiFuzzHarness) reopen() {
 	h.verifyModel("after reopen")
 }
 
-func (h *apiFuzzHarness) verifyCrashClone(want map[string]apiFuzzValue, phase string) {
+func (h *apiFuzzHarness) verifyCrashClone(want *apiFuzzModel, phase string) {
 	crashedMem := h.baseFS.CrashClone(vfs.CrashCloneCfg{UnsyncedDataPercent: 0})
 	crashedFS := newAPIFuzzQuotaFS(crashedMem, h.fs.maxBytes)
 	cfg := h.cfg
@@ -1101,7 +1364,7 @@ func (h *apiFuzzHarness) verifyModel(phase string) {
 	apiFuzzVerifyModel(h.t, h.db, h.model, phase)
 }
 
-func apiFuzzVerifyModel(t *testing.T, db *FlexDB, model map[string]apiFuzzValue, phase string) {
+func apiFuzzVerifyModel(t *testing.T, db *FlexDB, model *apiFuzzModel, phase string) {
 	t.Helper()
 	wantKeys := apiFuzzSortedKeys(model)
 	var gotKeys []string
@@ -1116,7 +1379,7 @@ func apiFuzzVerifyModel(t *testing.T, db *FlexDB, model map[string]apiFuzzValue,
 			if !found {
 				t.Fatalf("%s iterator returned found=false at valid position", phase)
 			}
-			want, ok := model[key]
+			want, ok := model.Get(key)
 			if !ok {
 				t.Fatalf("%s iterator visited unknown key %q", phase, key)
 			}
@@ -1139,7 +1402,7 @@ func apiFuzzVerifyModel(t *testing.T, db *FlexDB, model map[string]apiFuzzValue,
 		if err != nil {
 			t.Fatalf("%s Get(%q): %v", phase, key, err)
 		}
-		want, ok := model[key]
+		want, ok := model.Get(key)
 		if found != ok {
 			t.Fatalf("%s Get(%q) found=%v want %v; iterator keys=%v model keys=%v", phase, key, found, ok, gotKeys, wantKeys)
 		}
@@ -1148,8 +1411,8 @@ func apiFuzzVerifyModel(t *testing.T, db *FlexDB, model map[string]apiFuzzValue,
 				phase, key, len(got), gotVtyp, len(want.value), want.vtyp)
 		}
 	}
-	if got := db.Len(); got != int64(len(model)) {
-		t.Fatalf("%s Len=%d want %d; iterator keys=%v model keys=%v", phase, got, len(model), gotKeys, wantKeys)
+	if got := db.Len(); got != int64(model.Len()) {
+		t.Fatalf("%s Len=%d want %d; iterator keys=%v model keys=%v", phase, got, model.Len(), gotKeys, wantKeys)
 	}
 	wantBig, wantSmall := apiFuzzBigSmall(model)
 	gotBig, gotSmall := db.LenBigSmall()
@@ -1165,7 +1428,7 @@ func (h *apiFuzzHarness) expectGet(context, key string) {
 		apiFuzzFatalIfNotQuota(h.t, err, context)
 		return
 	}
-	want, ok := h.model[key]
+	want, ok := h.model.Get(key)
 	if found != ok {
 		h.t.Fatalf("%s Get(%q) found=%v want %v", context, key, found, ok)
 	}
@@ -1180,19 +1443,19 @@ func (h *apiFuzzHarness) expectROGet(ro *ReadOnlyTx, key string) {
 	if err != nil {
 		h.t.Fatalf("ro.Get(%q): %v", key, err)
 	}
-	want, ok := h.model[key]
+	want, ok := h.model.Get(key)
 	if found != ok || (ok && (!bytes.Equal(got, want.value) || gotVtyp != want.vtyp)) {
 		h.t.Fatalf("ro.Get(%q) found=%v len=%d vtyp=%#x want found=%v len=%d vtyp=%#x",
 			key, found, len(got), gotVtyp, ok, len(want.value), want.vtyp)
 	}
 }
 
-func (h *apiFuzzHarness) expectTxGet(tx *WriteTx, model map[string]apiFuzzValue, key string) {
+func (h *apiFuzzHarness) expectTxGet(tx *WriteTx, model *apiFuzzModel, key string) {
 	got, found, gotVtyp, _, err := tx.Get(key)
 	if err != nil {
 		h.t.Fatalf("tx.Get(%q): %v", key, err)
 	}
-	want, ok := model[key]
+	want, ok := model.Get(key)
 	if found != ok || (ok && (!bytes.Equal(got, want.value) || gotVtyp != want.vtyp)) {
 		h.t.Fatalf("tx.Get(%q) found=%v len=%d vtyp=%#x want found=%v len=%d vtyp=%#x",
 			key, found, len(got), gotVtyp, ok, len(want.value), want.vtyp)
@@ -1200,7 +1463,11 @@ func (h *apiFuzzHarness) expectTxGet(tx *WriteTx, model map[string]apiFuzzValue,
 }
 
 func (h *apiFuzzHarness) checkCallbackKV(context, key string, value []byte, vtyp uint64) {
-	want, ok := h.model[key]
+	h.checkModelKV(context, h.model, key, value, vtyp)
+}
+
+func (h *apiFuzzHarness) checkModelKV(context string, model *apiFuzzModel, key string, value []byte, vtyp uint64) {
+	want, ok := model.Get(key)
 	if !ok {
 		h.t.Fatalf("%s returned unknown key %q", context, key)
 	}
@@ -1224,7 +1491,7 @@ func (h *apiFuzzHarness) checkFindResult(context string, smod SearchModifier, qu
 	if kvc == nil {
 		h.t.Fatalf("%s(%v,%q) nil, want %q", context, smod, query, wantKey)
 	}
-	want := h.model[wantKey]
+	want, _ := h.model.Get(wantKey)
 	if kvc.Key != wantKey || exact != (wantKey == query) {
 		h.t.Fatalf("%s(%v,%q) key=%q exact=%v want key=%q exact=%v",
 			context, smod, query, kvc.Key, exact, wantKey, wantKey == query)
@@ -1361,67 +1628,43 @@ func apiFuzzInDeleteRange(key, beg, end string, begInclusive, endInclusive bool)
 	return true
 }
 
-func apiFuzzExpectedFindKey(model map[string]apiFuzzValue, smod SearchModifier, query string) (string, bool) {
-	keys := apiFuzzSortedKeys(model)
-	switch smod {
-	case Exact:
-		if _, ok := model[query]; ok {
-			return query, true
-		}
-	case GTE:
-		for _, key := range keys {
-			if key >= query {
-				return key, true
-			}
-		}
-	case GT:
-		for _, key := range keys {
-			if key > query {
-				return key, true
-			}
-		}
-	case LTE:
-		for i := len(keys) - 1; i >= 0; i-- {
-			if keys[i] <= query || query == "" {
-				return keys[i], true
-			}
-		}
-	case LT:
-		for i := len(keys) - 1; i >= 0; i-- {
-			if query == "" || keys[i] < query {
-				return keys[i], true
-			}
-		}
+func (h *apiFuzzHarness) randomAscendBounds() (beg, end string) {
+	beg = apiFuzzKey(h.rng.Intn(apiFuzzKeyCount))
+	end = apiFuzzKey(h.rng.Intn(apiFuzzKeyCount))
+	if beg > end {
+		beg, end = end, beg
 	}
-	return "", false
+	if h.rng.Intn(5) == 0 {
+		beg = ""
+	}
+	if h.rng.Intn(5) == 0 {
+		end = ""
+	}
+	return beg, end
 }
 
-func apiFuzzSortedKeys(model map[string]apiFuzzValue) []string {
-	keys := make([]string, 0, len(model))
-	for key := range model {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
+func apiFuzzExpectedFindKey(model *apiFuzzModel, smod SearchModifier, query string) (string, bool) {
+	return model.ExpectedFindKey(smod, query)
 }
 
-func apiFuzzBigSmall(model map[string]apiFuzzValue) (big, small int64) {
-	for _, rec := range model {
+func apiFuzzSortedKeys(model *apiFuzzModel) []string {
+	return model.Keys()
+}
+
+func apiFuzzBigSmall(model *apiFuzzModel) (big, small int64) {
+	model.Each(func(key string, rec apiFuzzValue) bool {
 		if len(rec.value) > vlogInlineThreshold {
 			big++
 		} else {
 			small++
 		}
-	}
+		return true
+	})
 	return
 }
 
-func apiFuzzCloneModel(src map[string]apiFuzzValue) map[string]apiFuzzValue {
-	dst := make(map[string]apiFuzzValue, len(src))
-	for key, rec := range src {
-		dst[key] = apiFuzzValue{value: apiFuzzCopy(rec.value), vtyp: rec.vtyp}
-	}
-	return dst
+func apiFuzzCloneModel(src *apiFuzzModel) *apiFuzzModel {
+	return src.Clone()
 }
 
 func apiFuzzCopy(src []byte) []byte {
@@ -1433,22 +1676,119 @@ func apiFuzzCopy(src []byte) []byte {
 	return dst
 }
 
-func modelHas(model map[string]apiFuzzValue, key string) bool {
-	_, ok := model[key]
-	return ok
+func apiFuzzReverseKeys(keys []string) []string {
+	out := make([]string, len(keys))
+	for i := range keys {
+		out[i] = keys[len(keys)-1-i]
+	}
+	return out
 }
 
-func apiFuzzSeed(data []byte) uint64 {
-	var h uint64 = 1469598103934665603
-	for _, b := range data {
-		h ^= uint64(b)
-		h *= 1099511628211
+func apiFuzzIsPrefix(got, want []string) bool {
+	if len(got) > len(want) {
+		return false
 	}
-	h ^= uint64(len(data)) << 32
-	if h == 0 {
-		h = 1
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
 	}
-	return h
+	return true
+}
+
+func apiFuzzStartSeed(t *testing.T) (uint64, bool) {
+	t.Helper()
+	raw := os.Getenv("YOGADB_API_FUZZ_SEED")
+	if raw == "" {
+		return apiFuzzDefaultSeed, false
+	}
+	seed, err := apiFuzzParseSeed(raw)
+	if err != nil {
+		t.Fatalf("YOGADB_API_FUZZ_SEED=%q: %v", raw, err)
+	}
+	if seed == 0 {
+		seed = 1
+	}
+	return seed, true
+}
+
+func apiFuzzRunCount(t *testing.T, seedFromEnv bool) int {
+	t.Helper()
+	raw := os.Getenv("YOGADB_API_FUZZ_RUNS")
+	if raw == "" {
+		if seedFromEnv {
+			return 1
+		}
+		return apiFuzzDefaultRuns
+	}
+	runs, err := strconv.Atoi(raw)
+	if err != nil || runs <= 0 {
+		t.Fatalf("YOGADB_API_FUZZ_RUNS=%q: want positive integer", raw)
+	}
+	return runs
+}
+
+func apiFuzzParseSeed(raw string) (uint64, error) {
+	seed, err := strconv.ParseUint(raw, 0, 64)
+	if err == nil {
+		return seed, nil
+	}
+	if strings.HasPrefix(raw, "0x") || strings.HasPrefix(raw, "0X") {
+		return 0, err
+	}
+	seed, hexErr := strconv.ParseUint(raw, 16, 64)
+	if hexErr == nil {
+		return seed, nil
+	}
+	return 0, err
+}
+
+func apiFuzzRunSeed(startSeed uint64, run int) uint64 {
+	if run == 0 {
+		if startSeed == 0 {
+			return 1
+		}
+		return startSeed
+	}
+	seed := apiFuzzMix64(startSeed + uint64(run)*0x9e3779b97f4a7c15)
+	if seed == 0 {
+		return uint64(run) + 1
+	}
+	return seed
+}
+
+func apiFuzzDataForSeed(seed uint64) []byte {
+	state := seed ^ 0xd1b54a32d192ed03
+	n := 16 + int(apiFuzzMix64(state)%uint64(apiFuzzMaxInput-15))
+	data := make([]byte, n)
+	binary.LittleEndian.PutUint64(data[:8], seed)
+	for i := 8; i < len(data); i++ {
+		state += 0x9e3779b97f4a7c15
+		data[i] = byte(apiFuzzMix64(state) >> 56)
+	}
+	return data
+}
+
+func apiFuzzMix64(x uint64) uint64 {
+	x ^= x >> 30
+	x *= 0xbf58476d1ce4e5b9
+	x ^= x >> 27
+	x *= 0x94d049bb133111eb
+	x ^= x >> 31
+	return x
+}
+
+func apiFuzzMedianDuration(xs []time.Duration) time.Duration {
+	if len(xs) == 0 {
+		return 0
+	}
+	ys := append([]time.Duration(nil), xs...)
+	sort.Slice(ys, func(i, j int) bool { return ys[i] < ys[j] })
+	mid := len(ys) / 2
+	if len(ys)%2 == 1 {
+		return ys[mid]
+	}
+	return (ys[mid-1] + ys[mid]) / 2
 }
 
 func apiFuzzMemBudget() int64 {

@@ -318,6 +318,19 @@ func (m *memtable) logTruncateWithVersion(timestamp, treeVersion uint64) error {
 	return nil
 }
 
+func (m *memtable) logTruncateSyncWithVersion(timestamp, treeVersion uint64) error {
+	if err := m.logTruncateWithVersion(timestamp, treeVersion); err != nil {
+		return err
+	}
+	if err := m.memWalFD.SyncData(); err != nil {
+		return fmt.Errorf("memtable WAL sync truncated header: %w", err)
+	}
+	if m.memWalFsyncs != nil {
+		atomic.AddInt64(m.memWalFsyncs, 1)
+	}
+	return nil
+}
+
 // logTreeVersion returns the tree PersistentVersion from a 20-byte WAL header.
 // Returns 0 for a missing or corrupt 20-byte header.
 func (m *memtable) logTreeVersion() (uint64, error) {

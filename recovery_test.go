@@ -682,6 +682,60 @@ func TestRecovery_WriteTxUpdateUsesGreenMEMWALCommitMarkers(t *testing.T) {
 	}
 }
 
+func TestRecovery_IncompleteRealWriteTxIsDiscarded(t *testing.T) {
+	dir := "test_recovery_incomplete_real_writetx_discarded"
+	fs := vfs.NewCrashableMem()
+	panicOn(fs.MkdirAll(dir, 0755))
+
+	db, err := OpenFlexDB(dir, &Config{
+		FS:                     fs,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB: %v", err)
+	}
+	defer db.Close()
+	db.AllowReads()
+
+	if _, err := db.Put("base", []byte("ok"), 0); err != nil {
+		t.Fatalf("Put base: %v", err)
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync base: %v", err)
+	}
+
+	tx, err := db.BeginUpdate()
+	if err != nil {
+		t.Fatalf("BeginUpdate: %v", err)
+	}
+	if _, err := tx.Put("tx-a", []byte("A"), 0); err != nil {
+		t.Fatalf("tx.Put tx-a: %v", err)
+	}
+	if _, err := tx.Put("tx-b", []byte("B"), 0); err != nil {
+		t.Fatalf("tx.Put tx-b: %v", err)
+	}
+	if err := db.mt.logSync(); err != nil {
+		t.Fatalf("sync incomplete tx WAL: %v", err)
+	}
+
+	crashedFS := fs.CrashClone(vfs.CrashCloneCfg{UnsyncedDataPercent: 0})
+	_ = tx.Rollback()
+
+	db2, err := OpenFlexDB(dir, &Config{
+		FS:                     crashedFS,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB after incomplete WriteTx crash clone: %v", err)
+	}
+	defer db2.Close()
+	db2.AllowReads()
+
+	mustGet(t, db2, "base", "ok")
+	mustMiss(t, db2, "tx-a")
+	mustMiss(t, db2, "tx-b")
+}
+
 func TestRecovery_PostAllowReadsBatchCommitUsesRecoverableCompactMEMWAL(t *testing.T) {
 	dir := "test_recovery_post_allow_batch_compact_memwal"
 	fs := vfs.NewCrashableMem()
@@ -904,6 +958,198 @@ func TestRecovery_DeleteDurability(t *testing.T) {
 	if !found || string(v) != "world" {
 		t.Fatalf("key 'keeper': expected 'world', got %q found=%v", string(v), found)
 	}
+}
+
+func TestRecovery_SyncedDeleteDoesNotReplayStaleCommittedWAL(t *testing.T) {
+	dir := "test_recovery_delete_no_stale_wal_replay"
+	fs := vfs.NewCrashableMem()
+	panicOn(fs.MkdirAll(dir, 0755))
+
+	db, err := OpenFlexDB(dir, &Config{
+		FS:                     fs,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB: %v", err)
+	}
+	defer db.Close()
+	db.AllowReads()
+
+	if _, err := db.Put("k", []byte("old"), 0); err != nil {
+		t.Fatalf("Put old: %v", err)
+	}
+	if err := db.mt.logSync(); err != nil {
+		t.Fatalf("sync WAL containing old put: %v", err)
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync old put: %v", err)
+	}
+
+	if err := db.Delete("k"); err != nil {
+		t.Fatalf("Delete k: %v", err)
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync delete: %v", err)
+	}
+
+	crashedFS := fs.CrashClone(vfs.CrashCloneCfg{UnsyncedDataPercent: 0})
+	db2, err := OpenFlexDB(dir, &Config{
+		FS:                     crashedFS,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB after crash clone: %v", err)
+	}
+	defer db2.Close()
+	db2.AllowReads()
+	mustMiss(t, db2, "k")
+}
+
+func TestRecovery_ClearAllDurablyRemovesOldFiles(t *testing.T) {
+	dir := "test_recovery_clear_all_removes_old_files"
+	fs := vfs.NewCrashableMem()
+	panicOn(fs.MkdirAll(dir, 0755))
+
+	db, err := OpenFlexDB(dir, &Config{
+		FS:                     fs,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB: %v", err)
+	}
+	defer db.Close()
+	db.AllowReads()
+
+	if _, err := db.Put("old", []byte("value"), 0); err != nil {
+		t.Fatalf("Put old: %v", err)
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync old: %v", err)
+	}
+	allGone, err := db.Clear(true)
+	if err != nil {
+		t.Fatalf("Clear(true): %v", err)
+	}
+	if !allGone {
+		t.Fatal("Clear(true) allGone=false, want true")
+	}
+
+	crashedFS := fs.CrashClone(vfs.CrashCloneCfg{UnsyncedDataPercent: 0})
+	db2, err := OpenFlexDB(dir, &Config{
+		FS:                     crashedFS,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB after crash clone: %v", err)
+	}
+	defer db2.Close()
+	db2.AllowReads()
+	mustMiss(t, db2, "old")
+}
+
+func TestRecovery_RedoRecoveredCommittedWriteTxRecomputesCounts(t *testing.T) {
+	dir := "test_recovery_redo_committed_writetx_counts"
+	fs := vfs.NewCrashableMem()
+	panicOn(fs.MkdirAll(dir, 0755))
+
+	db, err := OpenFlexDB(dir, &Config{
+		FS:                         fs,
+		DisableBackgroundFlush:     true,
+		OmitFlexSpaceOpsRedoLog:    false,
+		PiggybackGC_on_SyncOrFlush: false,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB: %v", err)
+	}
+	defer db.Close()
+	db.AllowReads()
+
+	tx, err := db.BeginUpdate()
+	if err != nil {
+		t.Fatalf("BeginUpdate: %v", err)
+	}
+	if _, err := tx.Put("a", []byte("small"), 0); err != nil {
+		t.Fatalf("tx.Put a: %v", err)
+	}
+	if _, err := tx.Put("b", bytes.Repeat([]byte("x"), vlogInlineThreshold+1), 0); err != nil {
+		t.Fatalf("tx.Put b: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("tx.Commit: %v", err)
+	}
+
+	crashedFS := fs.CrashClone(vfs.CrashCloneCfg{UnsyncedDataPercent: 0})
+	db2, err := OpenFlexDB(dir, &Config{
+		FS:                         crashedFS,
+		DisableBackgroundFlush:     true,
+		OmitFlexSpaceOpsRedoLog:    false,
+		PiggybackGC_on_SyncOrFlush: false,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB after crash clone: %v", err)
+	}
+	defer db2.Close()
+	db2.AllowReads()
+
+	mustGet(t, db2, "a", "small")
+	if got := db2.Len(); got != 2 {
+		t.Fatalf("Len after redo recovery = %d, want 2", got)
+	}
+	big, small := db2.LenBigSmall()
+	if big != 1 || small != 1 {
+		t.Fatalf("LenBigSmall after redo recovery = (%d,%d), want (1,1)", big, small)
+	}
+}
+
+func TestRecovery_SyncAfterVacuumKVDurablyPublishesRename(t *testing.T) {
+	dir := "test_recovery_sync_after_vacuumkv_publishes_rename"
+	fs := vfs.NewCrashableMem()
+	panicOn(fs.MkdirAll(dir, 0755))
+
+	db, err := OpenFlexDB(dir, &Config{
+		FS:                     fs,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB: %v", err)
+	}
+	defer db.Close()
+	db.AllowReads()
+
+	if _, err := db.Put("keep", []byte("value"), 0); err != nil {
+		t.Fatalf("Put keep: %v", err)
+	}
+	if _, err := db.Put("drop", []byte("old"), 0); err != nil {
+		t.Fatalf("Put drop: %v", err)
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync puts: %v", err)
+	}
+	if err := db.Delete("drop"); err != nil {
+		t.Fatalf("Delete drop: %v", err)
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync delete: %v", err)
+	}
+	if _, err := db.VacuumKV(); err != nil {
+		t.Fatalf("VacuumKV: %v", err)
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync after VacuumKV: %v", err)
+	}
+
+	crashedFS := fs.CrashClone(vfs.CrashCloneCfg{UnsyncedDataPercent: 0})
+	db2, err := OpenFlexDB(dir, &Config{
+		FS:                     crashedFS,
+		DisableBackgroundFlush: true,
+	})
+	if err != nil {
+		t.Fatalf("OpenFlexDB after crash clone: %v", err)
+	}
+	defer db2.Close()
+	db2.AllowReads()
+	mustGet(t, db2, "keep", "value")
+	mustMiss(t, db2, "drop")
 }
 
 // TestRecovery_ProgressAfterRecovery verifies invariant L2:

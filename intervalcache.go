@@ -95,6 +95,25 @@ func (c *intervalCache) getPartition(anchor *dbAnchor) *intervalCachePartition {
 	return &c.partitions[anchor.partitionID]
 }
 
+func (c *intervalCache) hasDirtyPages() bool {
+	if c == nil || c.db == nil || c.db.tree == nil {
+		return false
+	}
+	for leaf := c.db.tree.leafHead; leaf != nil; leaf = leaf.next {
+		for i := 0; i < leaf.count; i++ {
+			anchor := leaf.anchors[i]
+			if anchor == nil {
+				continue
+			}
+			fce := anchor.loadFce()
+			if fce != nil && fce.dirty {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // flushDirtyPages writes all dirty cache entries to FlexSpace via Overwrite.
 // It walks the sparse index tree leaf-by-leaf to compute correct absolute loffs,
 // avoiding stale dirtyLoff values that can occur after splits shift offsets.

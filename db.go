@@ -1745,7 +1745,7 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 
 	// Reset WAL (always use 20-byte versioned header for consistent disk format)
 	ts := uint64(time.Now().UnixNano())
-	if err := db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
+	if err := db.mt.logTruncateSyncWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
 		ff.Close()
 		walFD.Close()
 		if vl != nil {
@@ -1821,7 +1821,7 @@ func (db *FlexDB) Close() *Metrics {
 
 	// Truncate WAL (always use 20-byte versioned header for consistent disk format)
 	ts := uint64(time.Now().UnixNano())
-	if err := db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
+	if err := db.mt.logTruncateSyncWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
 		panicf("Close truncate memwal: %v", err)
 	}
 
@@ -3336,7 +3336,8 @@ func (db *FlexDB) writeLockHeldSyncCheckpoint() error {
 
 func (db *FlexDB) writeLockHeldSyncR(forceTreeCheckpoint bool) error {
 	mtWasEmpty := db.mt.empty
-	if mtWasEmpty && !forceTreeCheckpoint {
+	cacheDirty := db.cache != nil && db.cache.hasDirtyPages()
+	if mtWasEmpty && !forceTreeCheckpoint && !cacheDirty && !db.dirSyncNeeded {
 		return nil // nothing to flush
 	}
 
@@ -3389,7 +3390,7 @@ func (db *FlexDB) writeLockHeldSyncR(forceTreeCheckpoint bool) error {
 	}
 
 	ts := uint64(time.Now().UnixNano())
-	if err := db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
+	if err := db.writeLockHeldTruncateMemWALAfterSync(ts, db.ff.tree.PersistentVersion); err != nil {
 		return fmt.Errorf("flexdb: Sync truncate memwal: %w", err)
 	}
 
@@ -3399,6 +3400,13 @@ func (db *FlexDB) writeLockHeldSyncR(forceTreeCheckpoint bool) error {
 	db.mt.size = 0
 
 	return nil
+}
+
+func (db *FlexDB) writeLockHeldTruncateMemWALAfterSync(timestamp, treeVersion uint64) error {
+	if db.cfg.OmitMemWalFsync {
+		return db.mt.logTruncateWithVersion(timestamp, treeVersion)
+	}
+	return db.mt.logTruncateSyncWithVersion(timestamp, treeVersion)
 }
 
 var ErrKeyEmpty = fmt.Errorf("key cannot be the empty string")
@@ -3847,6 +3855,7 @@ type KVcloser struct {
 	partition *intervalCachePartition // nil when no pin needed
 	entry     *intervalCacheEntry     // nil when no pin needed
 	db        *FlexDB
+	lockHeld  bool
 }
 
 // Close must be called when done with the non-nil *KVcloser
@@ -3907,8 +3916,14 @@ func (s *KVcloser) Fetch() error {
 	if !s.HasVPtr() {
 		return nil // inline value already present
 	}
-	val, vtyp, hlc, err := s.db.FetchLarge(&s.KV)
-	_ = hlc
+	var val []byte
+	var vtyp uint64
+	var err error
+	if s.lockHeld {
+		val, vtyp, _, err = s.db.lockHeldFetchLarge(&s.KV)
+	} else {
+		val, vtyp, _, err = s.db.FetchLarge(&s.KV)
+	}
 	if err != nil {
 		return err
 	}
@@ -4337,14 +4352,18 @@ func (db *FlexDB) writeLockHeldDeleteAll() error {
 		"FLEXTREE.COMMIT",
 	}
 	for _, name := range filesToRemove {
-		fs.Remove(filepath.Join(path, name))
+		if err := fs.Remove(filepath.Join(path, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("yogadb: DeleteAll: remove %s: %w", name, err)
+		}
 	}
 
 	// Truncate VLOG if present.
 	if db.vlog != nil {
 		db.vlog.sync()
 		db.vlog.close()
-		fs.Remove(filepath.Join(path, "LARGE.VLOG"))
+		if err := fs.Remove(filepath.Join(path, "LARGE.VLOG")); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("yogadb: DeleteAll: remove LARGE.VLOG: %w", err)
+		}
 		vl, err := openValueLog(filepath.Join(path, "LARGE.VLOG"), fs)
 		if err != nil {
 			return fmt.Errorf("yogadb: DeleteAll: reopen VLOG: %w", err)
@@ -4376,12 +4395,18 @@ func (db *FlexDB) writeLockHeldDeleteAll() error {
 	db.liveKeys = 0
 	db.liveBigKeys = 0
 	db.liveSmallKeys = 0
+	db.persistCounters()
+	db.ff.SyncCheckpoint()
 
 	// 8. Truncate WAL file.
 	ts := uint64(time.Now().UnixNano())
-	if err := db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
+	if err := db.mt.logTruncateSyncWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
 		return fmt.Errorf("yogadb: DeleteAll: truncate memwal: %w", err)
 	}
+	if err := syncDir(fs, path); err != nil {
+		return fmt.Errorf("yogadb: DeleteAll: sync dir: %w", err)
+	}
+	db.dirSyncNeeded = false
 
 	// 9. (no longer need to: Restart flush worker; we never killed it).
 
@@ -5321,6 +5346,7 @@ func (db *FlexDB) recovery() error {
 	defer db.topMutRW.Unlock()
 
 	ffSize := db.ff.Size()
+	needRecount := ffSize > 0
 	if ffSize > 0 {
 		db.rebuildAnchorsFromTags(false)
 	}
@@ -5348,6 +5374,12 @@ func (db *FlexDB) recovery() error {
 		if err := db.logRedo(db.mt.memWalFD, walSize); err != nil {
 			return fmt.Errorf("flexdb: recovery: %w", err)
 		}
+		if err := db.cache.flushDirtyPages(); err != nil {
+			return fmt.Errorf("flexdb: recovery flush dirty pages: %w", err)
+		}
+		needRecount = true
+	}
+	if needRecount {
 		db.recomputeKeyCountsLocked()
 		db.persistCounters()
 	}
@@ -5673,7 +5705,7 @@ func (db *FlexDB) doFlush() (err error) {
 
 	// Truncate WAL (always use 20-byte versioned header for consistent disk format)
 	ts := uint64(time.Now().UnixNano())
-	if err := db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
+	if err := db.mt.logTruncateSyncWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
 		return fmt.Errorf("doFlush truncate memwal: %w", err)
 	}
 

@@ -112,7 +112,7 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 		it.Close()
 
 		if skipValues {
-			kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: tx.db, Vtyp: vtyp}
+			kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: tx.db, Vtyp: vtyp, lockHeld: true}
 			return
 		}
 
@@ -125,6 +125,7 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 			if kvc != nil {
 				kvc.Key = resultKey
 				kvc.Vtyp = vtyp
+				kvc.lockHeld = true
 				return
 			}
 		}
@@ -135,7 +136,7 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 		if !zc.HasVPtr() && len(zc.Value) > 0 {
 			owned.Value = append([]byte{}, zc.Value...)
 		}
-		kvc = &KVcloser{KV: owned, db: tx.db, Vtyp: vtyp}
+		kvc = &KVcloser{KV: owned, db: tx.db, Vtyp: vtyp, lockHeld: true}
 
 		// Auto-fetch large value unless LAZY_LARGE was requested.
 		if !lazyLarge && kvc.HasVPtr() {
@@ -183,7 +184,7 @@ func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact
 	valueFromCache := it.valueNeedsCopy
 
 	if skipValues {
-		kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: tx.db, Vtyp: vtyp}
+		kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: tx.db, Vtyp: vtyp, lockHeld: true}
 		return
 	}
 
@@ -196,6 +197,7 @@ func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact
 		if kvc != nil {
 			kvc.Key = resultKey
 			kvc.Vtyp = vtyp
+			kvc.lockHeld = true
 			return
 		}
 	}
@@ -206,7 +208,7 @@ func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact
 	if !zc.HasVPtr() && len(zc.Value) > 0 {
 		owned.Value = append([]byte{}, zc.Value...)
 	}
-	kvc = &KVcloser{KV: owned, db: tx.db, Vtyp: vtyp}
+	kvc = &KVcloser{KV: owned, db: tx.db, Vtyp: vtyp, lockHeld: true}
 
 	// Auto-fetch large value unless LAZY_LARGE was requested.
 	if !lazyLarge && kvc.HasVPtr() {
@@ -309,7 +311,7 @@ func (tx *WriteTx) rollbackOpen() error {
 	db.flushSeq++
 
 	ts := uint64(time.Now().UnixNano())
-	if err := db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
+	if err := db.mt.logTruncateSyncWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
 		return fmt.Errorf("flexdb: rollback truncate memwal: %w", err)
 	}
 	return nil
