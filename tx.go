@@ -86,7 +86,7 @@ func (tx *txBase) closeAll() {
 
 // txFind implements Find for both WriteTx and ReadOnlyTx.
 // Caller must hold topMutRW (read or write lock).
-func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error) {
+func txFind(tx *txBase, smod SearchModifier, key string, x bool) (kvc *KVcloser, exact bool, err error) {
 	it := tx.newIter()
 	lazyLarge := (smod&LAZY_LARGE != 0)
 	lazySmall := (smod&LAZY_SMALL != 0)
@@ -140,7 +140,7 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 
 		// Auto-fetch large value unless LAZY_LARGE was requested.
 		if !lazyLarge && kvc.HasVPtr() {
-			val, _, _, fetchErr := tx.db.resolveVPtr(kvc.KV)
+			val, _, _, fetchErr := tx.db.resolveVPtr(kvc.KV, x)
 			if fetchErr != nil {
 				kvc = nil
 				err = fetchErr
@@ -158,7 +158,7 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 // Returns a *KVcloser for the initial result (independent of the iterator)
 // and an iterator positioned at the result for continued scanning.
 // Caller must hold topMutRW (read or write lock).
-func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error, it *Iter) {
+func txFindIt(tx *txBase, smod SearchModifier, key string, x bool) (kvc *KVcloser, exact bool, err error, it *Iter) {
 	it = tx.newIter()
 	lazyLarge := (smod&LAZY_LARGE != 0)
 	lazySmall := (smod&LAZY_SMALL != 0)
@@ -212,7 +212,7 @@ func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact
 
 	// Auto-fetch large value unless LAZY_LARGE was requested.
 	if !lazyLarge && kvc.HasVPtr() {
-		val, _, _, fetchErr := tx.db.resolveVPtr(kvc.KV)
+		val, _, _, fetchErr := tx.db.resolveVPtr(kvc.KV, x)
 		if fetchErr != nil {
 			kvc = nil
 			err = fetchErr
@@ -298,9 +298,10 @@ func (tx *WriteTx) Rollback() error {
 }
 
 func (tx *WriteTx) rollbackOpen() error {
+	const x = true
 	db := tx.db
-	db.mt.ks.clear()
-	db.mt.empty = true
+	db.mt.ks.clear(x)
+	db.mt.empty.Store(true)
 	db.mt.size = 0
 	db.liveKeys = tx.beginLiveKeys
 	db.liveBigKeys = tx.beginBigKeys
@@ -328,11 +329,12 @@ func (tx *WriteTx) resetRollbackBaseline() {
 // Get retrieves the value for key. Returns (nil, false, nil) if not found
 // or deleted. The returned []byte is a copy, safe to retain.
 func (tx *WriteTx) Get(key string) (value []byte, found bool, vtyp uint64, hlc HLC, err error) {
+	const x = true
 	if err := tx.checkOpen(); err != nil {
 		return nil, false, 0, 0, err
 	}
 	tx.db.requireReadsAllowed()
-	return tx.db.someLockHeldGet(key)
+	return tx.db.someLockHeldGet(key, x)
 }
 
 // GetKV is equivalent to tx.Find(Exact, key).
@@ -386,7 +388,7 @@ func (tx *WriteTx) Commit() (err error) {
 		}
 		autoVacuumHandoff := false
 		if err == nil {
-			autoVacuumHandoff = tx.db.maybeStartAutoVacuumLocked()
+			autoVacuumHandoff = tx.db.maybeStartAutoVacuumXLocked()
 		}
 		if !autoVacuumHandoff {
 			tx.db.topMutRW.Unlock()
@@ -411,11 +413,12 @@ func (tx *WriteTx) Commit() (err error) {
 // Warning: the user must call Close() on the kvc *KVcloser when done copying any
 // value out, or else memory and resource leaks will ensue.
 func (tx *WriteTx) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error) {
+	const x = true
 	if err := tx.checkOpen(); err != nil {
 		return nil, false, err
 	}
 	tx.db.requireReadsAllowed()
-	kvc, exact, err = txFind(&tx.txBase, smod, key)
+	kvc, exact, err = txFind(&tx.txBase, smod, key, x)
 	return
 }
 
@@ -424,22 +427,24 @@ func (tx *WriteTx) Find(smod SearchModifier, key string) (kvc *KVcloser, exact b
 // call kvc.Close() when done with the initial result, and use the iterator
 // for continued scanning. The iterator is auto-closed when the transaction ends.
 func (tx *WriteTx) FindIt(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error, it *Iter) {
+	const x = true
 	if err := tx.checkOpen(); err != nil {
 		return nil, false, err, nil
 	}
 	tx.db.requireReadsAllowed()
-	kvc, exact, err, it = txFindIt(&tx.txBase, smod, key)
+	kvc, exact, err, it = txFindIt(&tx.txBase, smod, key, x)
 	return
 }
 
 // FetchLarge retrieves the full value for a KV. For VLOG-stored
 // values it reads from disk; for inline values it returns kv.Value directly.
 func (tx *WriteTx) FetchLarge(kv *KV) (val []byte, vtyp uint64, hlc HLC, err error) {
+	const x = true
 	if err := tx.checkOpen(); err != nil {
 		return nil, 0, 0, err
 	}
 	tx.db.requireReadsAllowed()
-	return tx.db.lockHeldFetchLarge(kv)
+	return tx.db.lockHeldFetchLarge(kv, x)
 }
 
 // NewIter returns a new iterator over the database. It is
@@ -653,7 +658,8 @@ type ReadOnlyTx struct{ txBase }
 // Get retrieves the value for key. Returns (nil, false, nil) if not found
 // or deleted. The returned []byte is a copy, safe to retain.
 func (roTx *ReadOnlyTx) Get(key string) (value []byte, found bool, vtyp uint64, hlc HLC, err error) {
-	return roTx.db.someLockHeldGet(key)
+	const x = false
+	return roTx.db.someLockHeldGet(key, x)
 }
 
 // GetKV is equivalent to roTx.Find(Exact, key).
@@ -666,7 +672,8 @@ func (roTx *ReadOnlyTx) GetKV(key string) (kv *KVcloser, err error) {
 // and returns a KVcloser. nil KVcloser means not found. exact is true when the
 // returned key equals the query. Supports LAZY_SMALL, LAZY_LARGE, and LAZY flags.
 func (roTx *ReadOnlyTx) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error) {
-	kvc, exact, err = txFind(&roTx.txBase, smod, key)
+	const x = false
+	kvc, exact, err = txFind(&roTx.txBase, smod, key, x)
 	return
 }
 
@@ -675,14 +682,16 @@ func (roTx *ReadOnlyTx) Find(smod SearchModifier, key string) (kvc *KVcloser, ex
 // call kvc.Close() when done with the initial result, and use the iterator
 // for continued scanning. The iterator is auto-closed when the transaction ends.
 func (roTx *ReadOnlyTx) FindIt(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error, it *Iter) {
-	kvc, exact, err, it = txFindIt(&roTx.txBase, smod, key)
+	const x = false
+	kvc, exact, err, it = txFindIt(&roTx.txBase, smod, key, x)
 	return
 }
 
 // FetchLarge retrieves the full value for a KV. For VLOG-stored
 // values it reads from disk; for inline values it returns kv.Value directly.
 func (roTx *ReadOnlyTx) FetchLarge(kv *KV) (val []byte, vtyp uint64, hlc HLC, err error) {
-	return roTx.db.lockHeldFetchLarge(kv)
+	const x = false
+	return roTx.db.lockHeldFetchLarge(kv, x)
 }
 
 // NewIter returns a new iterator over the database. It is
@@ -829,7 +838,7 @@ func (db *FlexDB) Update(fn func(rw *WriteTx) error) (err error) {
 		}
 		if tx.done {
 			if err == nil {
-				autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+				autoVacuumHandoff = db.maybeStartAutoVacuumXLocked()
 			}
 			return
 		}
@@ -839,7 +848,7 @@ func (db *FlexDB) Update(fn func(rw *WriteTx) error) (err error) {
 		}
 		err = tx.Commit()
 		if err == nil {
-			autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+			autoVacuumHandoff = db.maybeStartAutoVacuumXLocked()
 		}
 	}()
 	return fn(tx)

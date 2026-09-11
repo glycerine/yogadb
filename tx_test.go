@@ -76,7 +76,8 @@ func TestTxPutReturnsMemWALBeginErrorBeforeApplyingWrite(t *testing.T) {
 	if !errors.Is(err, errMemWALWriteForTest) {
 		t.Fatalf("Update error = %v, want injected MEMWAL write failure", err)
 	}
-	if _, ok := db.mt.get("wal-fail"); ok {
+	const x = false
+	if _, ok := db.mt.get("wal-fail", x); ok {
 		t.Fatal("failed transaction write was applied to memtable")
 	}
 	db.AllowReads()

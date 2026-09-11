@@ -13,7 +13,8 @@ func demo() {
 	if replaced {
 		panicf("we should be fresh! instead we replace prev = '%v'", prev)
 	}
-	got, found := tree.get(key)
+	topWriteLocked := true
+	got, found := tree.get(key, topWriteLocked)
 	if !found {
 		panicf("why was just inserted key '%v' not found?", key)
 	}

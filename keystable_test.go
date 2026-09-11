@@ -212,6 +212,7 @@ func TestKeyStableSetGetAndReplaceKV(t *testing.T) {
 			t.Fatalf("set(%q) replaced old KV %#v, want fresh insert", kv.Key, old)
 		}
 	}
+	const x = true
 
 	old, replaced := s.set(KV{Key: "b", Value: []byte("vb2"), Vptr: VPtr{Length: 3, Offset: 99}, Hlc: 3})
 	if !replaced {
@@ -224,7 +225,7 @@ func TestKeyStableSetGetAndReplaceKV(t *testing.T) {
 		t.Fatalf("Len after replacement = %d, want 2", s.Len())
 	}
 
-	got, found := s.get("b")
+	got, found := s.get("b", x)
 	if !found {
 		t.Fatal("get(b) was not found")
 	}
@@ -387,8 +388,8 @@ func TestKeyStableClearReusesTable(t *testing.T) {
 	s.addKey([]byte("b"))
 	s.addKey([]byte("a"))
 	s.delKey([]byte("a"))
-
-	s.clear()
+	const x = true
+	s.clear(x)
 	if len(s.keys) != 0 || len(s.stable) != 0 || len(s.sorted) != 0 {
 		t.Fatalf("clear left lengths keys=%d stable=%d sorted=%v",
 			len(s.keys), len(s.stable), len(s.sorted))
@@ -407,7 +408,8 @@ func TestKeyStableClearZerosRetainedKVSlots(t *testing.T) {
 	s := newKeyStable(2)
 	s.set(KV{Key: "a", Value: []byte("value"), Vptr: VPtr{Length: 5, Offset: 9}, Hlc: 11})
 	retained := s.kvs[:len(s.kvs)]
-	s.clear()
+	const x = true
+	s.clear(x)
 
 	if retained[0].Key != "" || retained[0].Value != nil || retained[0].Vptr != (VPtr{}) || retained[0].Hlc != 0 {
 		t.Fatalf("clear retained stale KV slot: %#v", retained[0])
@@ -489,6 +491,7 @@ func FuzzKeyStableInsertDeleteGet(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		s := newKeyStable(0)
 		model := make(map[string]KV)
+		const x = false
 
 		for i, step := 0, 0; i < len(data); step++ {
 			op := data[i]
@@ -525,7 +528,7 @@ func FuzzKeyStableInsertDeleteGet(f *testing.F) {
 				}
 				delete(model, key)
 			case 2:
-				got, found := s.get(key)
+				got, found := s.get(key, x)
 				want, wantFound := model[key]
 				if found != wantFound {
 					t.Fatalf("step %d: get(%q) found=%v, want %v", step, keyBytes, found, wantFound)
@@ -547,12 +550,13 @@ func BenchmarkKeyStableSet(b *testing.B) {
 	keys := benchmarkKeyStableKeys(1 << 16)
 	value := []byte("value")
 	s := makeKeyStable(len(keys))
+	const x = true
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if i > 0 && i%len(keys) == 0 {
-			s.clear()
+			s.clear(x)
 		}
 		s.set(KV{
 			Key:   keys[i&(len(keys)-1)],
@@ -561,21 +565,23 @@ func BenchmarkKeyStableSet(b *testing.B) {
 			Hlc:   HLC(i + 1),
 		})
 	}
-	keyStableBenchKV, _ = s.get(keys[(b.N-1)&(len(keys)-1)])
+	keyStableBenchKV, _ = s.get(keys[(b.N-1)&(len(keys)-1)], x)
 }
 
 func BenchmarkKeyStableGet(b *testing.B) {
 	keys := benchmarkKeyStableKeys(1 << 16)
 	value := []byte("value")
 	s := makeKeyStable(len(keys))
+	x := true
 	for i, key := range keys {
 		s.set(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)})
 	}
+	x = false
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		kv, found := s.get(keys[i&(len(keys)-1)])
+		kv, found := s.get(keys[i&(len(keys)-1)], x)
 		if !found {
 			b.Fatalf("get(%q) was not found", keys[i&(len(keys)-1)])
 		}
@@ -725,8 +731,9 @@ func assertKeyStableKVModel(t *testing.T, s *keyStable, model map[string]KV) {
 		t.Fatalf("Scan keys = %#v, want %#v", gotKeys, wantKeys)
 	}
 
+	const x = false
 	for where, key := range wantKeys {
-		got, found := s.get(key)
+		got, found := s.get(key, x)
 		if !found {
 			t.Fatalf("get(%q) was not found", key)
 		}
@@ -799,8 +806,9 @@ func randomKeyStableKey(rng *rand.Rand) []byte {
 
 func TestKeyStable_set_then_set(t *testing.T) {
 	s := newKeyStable(0)
+	const x = true
 	s.set(KV{Key: "a", Value: []byte{1}})
-	kv, found0 := s.get("a")
+	kv, found0 := s.get("a", x)
 	if !found0 {
 		t.Fatalf("expected to find key 'a'")
 	}
@@ -830,7 +838,7 @@ func TestKeyStable_set_then_set(t *testing.T) {
 	if 0 != bytes.Compare(oldKV.Value, []byte{1}) {
 		t.Fatalf("expected oldKV to have Value 1, but got: '%v'", string(oldKV.Value))
 	}
-	kv, found3 := s.get("a")
+	kv, found3 := s.get("a", x)
 
 	if !found3 {
 		t.Fatalf("expected to find key 'a'")

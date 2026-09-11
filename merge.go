@@ -697,7 +697,7 @@ func (db *FlexDB) mergeKVSlicesIntoOutput(oldKVs, newKVs []KV, opts MergeOptions
 	return nil
 }
 
-func (db *FlexDB) mergeReloadBulkLocked() error {
+func (db *FlexDB) mergeReloadBulkXLocked() error {
 	if db.mt.bulk.count == 0 {
 		return nil
 	}
@@ -727,15 +727,16 @@ func (db *FlexDB) MergeFromWithOptions(src *FlexDB, opts MergeOptions) (*MergeSt
 
 	src.topMutRW.Lock()
 	defer src.topMutRW.Unlock()
-	if !src.mt.empty {
+	if !src.mt.empty.Load() {
 		if err := src.writeLockHeldSync(); err != nil {
 			return nil, fmt.Errorf("flexdb: sync source before merge: %w", err)
 		}
 	}
 
 	db.topMutRW.Lock()
+	const x = true
 	defer db.topMutRW.Unlock()
-	if !db.mt.empty {
+	if !db.mt.empty.Load() {
 		if err := db.writeLockHeldSync(); err != nil {
 			return nil, fmt.Errorf("flexdb: sync destination before merge: %w", err)
 		}
@@ -746,11 +747,11 @@ func (db *FlexDB) MergeFromWithOptions(src *FlexDB, opts MergeOptions) (*MergeSt
 		if !kv.HasVPtr() {
 			return kv, nil
 		}
-		val, vtyp, hlc, err := src.lockHeldFetchLarge(&kv)
+		val, vtyp, hlc, err := src.lockHeldFetchLarge(&kv, x)
 		if err != nil {
 			return KV{}, err
 		}
-		vp, _, err := db.vlog.appendDedupAndSync(val, hlc, db.lookupOldVPtr(kv.Key), db.cfg.OmitMemWalFsync)
+		vp, _, err := db.vlog.appendDedupAndSync(val, hlc, db.lookupOldVPtr(kv.Key, x), db.cfg.OmitMemWalFsync)
 		if err != nil {
 			return KV{}, err
 		}

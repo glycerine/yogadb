@@ -310,12 +310,15 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 	db := s.db
 
 	db.topMutRW.Lock()
+	x := true
+
 	autoVacuumHandoff := false
 	defer func() {
 		if err == nil {
-			autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+			autoVacuumHandoff = db.maybeStartAutoVacuumXLocked()
 		}
 		if !autoVacuumHandoff {
+			x = false
 			db.topMutRW.Unlock()
 		}
 	}()
@@ -393,7 +396,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 						return s.puts[largeIndices[lookupOrder[i]]].Key < s.puts[largeIndices[lookupOrder[j]]].Key
 					})
 					for _, j := range lookupOrder {
-						oldVPs[j] = db.lookupOldFlexSpaceVPtrWithHint(s.puts[largeIndices[j]].Key, &nh)
+						oldVPs[j] = db.lookupOldFlexSpaceVPtrWithHint(s.puts[largeIndices[j]].Key, &nh, x)
 					}
 				} else {
 					largeOldStates = make([]keyState, len(largeIndices))
@@ -413,7 +416,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 							lookupOrder = append(lookupOrder, j)
 							continue
 						}
-						if db.keyBloomMayExistLocked(s.puts[idx].Key) {
+						if db.keyBloomMayExistLocked(s.puts[idx].Key, x) {
 							lookupOrder = append(lookupOrder, j)
 						} else {
 							largeOldStates[j] = ksNotExists
@@ -423,7 +426,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 						return s.puts[largeIndices[lookupOrder[i]]].Key < s.puts[largeIndices[lookupOrder[j]]].Key
 					})
 					for _, j := range lookupOrder {
-						oldKV, oldFound, oldVP := db.lookupOldKVAndVPtrWithHintNoBloom(s.puts[largeIndices[j]].Key, &nh)
+						oldKV, oldFound, oldVP := db.lookupOldKVAndVPtrWithHintNoBloom(s.puts[largeIndices[j]].Key, &nh, x)
 						oldVPs[j] = oldVP
 						if oldFound {
 							largeOldStates[j] = kvToState(oldKV)
@@ -492,7 +495,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 				}
 			} else {
 				mt.appendBulkValueIsKeyBatch(s.aliasKeys, curHLC)
-				mt.empty = false
+				mt.empty.Store(false)
 				for _, key := range s.aliasKeys {
 					db.rememberKeyBloomLocked(key)
 				}
@@ -527,7 +530,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		}
 		if batchWalAppended {
 			mt.appendBulkBatch(s.puts, s.allValuesAliasKeys)
-			mt.empty = false
+			mt.empty.Store(false)
 			for i := range s.puts {
 				db.rememberKeyBloomLocked(s.puts[i].Key)
 			}
@@ -587,7 +590,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 				return HLCInterval{}, nil, fmt.Errorf("flexdb: batch flush memwal: %w", err)
 			}
 
-			if err := db.flushMemtable(); err != nil {
+			if err := db.flushMemtable(x); err != nil {
 				return HLCInterval{}, nil, fmt.Errorf("flexdb: batch flush memtable: %w", err)
 			}
 			if err := db.cache.flushDirtyPages(); err != nil {
@@ -596,9 +599,9 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 			db.persistCounters()
 			db.ff.Sync()
 
-			mt.ks.clear()
+			mt.ks.clear(x)
 			mt.vtypArena = nil
-			mt.empty = true
+			mt.empty.Store(true)
 			mt.size = 0
 			db.flushSeq++
 		}
@@ -635,7 +638,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		} else {
 			old, replaced = mt.put(putKV)
 		}
-		mt.empty = false
+		mt.empty.Store(false)
 		oldState := ksNotExists
 		oldKV := old
 		oldKVFound := replaced
@@ -648,8 +651,8 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 					oldKV = largeOldKV
 					oldKVFound = largeOldKVFound
 				}
-			} else if db.ff.Size() != 0 && db.keyBloomMayExistLocked(putKV.Key) {
-				oldKV, oldKVFound, _ = db.getPassthroughKV(putKV.Key)
+			} else if db.ff.Size() != 0 && db.keyBloomMayExistLocked(putKV.Key, x) {
+				oldKV, oldKVFound, _ = db.getPassthroughKV(putKV.Key, x)
 				if oldKVFound {
 					oldState = kvToState(oldKV)
 				}
@@ -666,7 +669,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		}
 	}
 
-	mt.empty = false
+	mt.empty.Store(false)
 
 	// Batch WAL writes for this chunk under a single logMu hold.
 
@@ -1079,7 +1082,7 @@ func (db *FlexDB) rememberNewKeyBloomLocked(key string) {
 	}
 }
 
-func (db *FlexDB) keyBloomMayExistLocked(key string) bool {
+func (db *FlexDB) keyBloomMayExistLocked(key string, x bool) bool {
 	if !db.keyBloomComplete || db.keyBloom == nil {
 		return true
 	}
@@ -1330,13 +1333,14 @@ func (db *FlexDB) noteAutoVacuumDeletedLogical(kv KV, includeKey bool) {
 // Called when a key is new to the memtable.
 // Caller must hold topMutRW.Lock().
 func (db *FlexDB) writeLockHeldKeyState(key string) keyState {
+	const x = true
 	if db.ff.Size() == 0 {
 		return ksNotExists
 	}
-	if !db.keyBloomMayExistLocked(key) {
+	if !db.keyBloomMayExistLocked(key, true) {
 		return ksNotExists
 	}
-	kv, ok, err := db.getPassthroughKV(key)
+	kv, ok, err := db.getPassthroughKV(key, x)
 	if err != nil || !ok {
 		return ksNotExists
 	}
@@ -1348,21 +1352,21 @@ func (db *FlexDB) writeLockHeldKeyState(key string) keyState {
 // Returns a zero VPtr if the key doesn't exist or doesn't have a VLOG value.
 // Used by the VLOG dedup path to avoid writing duplicate large values.
 // Caller must hold topMutRW.Lock().
-func (db *FlexDB) lookupOldVPtr(key string) VPtr {
-	_, _, vp := db.lookupOldKVAndVPtr(key)
+func (db *FlexDB) lookupOldVPtr(key string, x bool) VPtr {
+	_, _, vp := db.lookupOldKVAndVPtr(key, x)
 	return vp
 }
 
-func (db *FlexDB) lookupOldKVAndVPtr(key string) (KV, bool, VPtr) {
-	if !db.keyBloomMayExistLocked(key) {
+func (db *FlexDB) lookupOldKVAndVPtr(key string, x bool) (KV, bool, VPtr) {
+	if !db.keyBloomMayExistLocked(key, x) {
 		return KV{}, false, VPtr{}
 	}
-	return db.lookupOldKVAndVPtrNoBloom(key)
+	return db.lookupOldKVAndVPtrNoBloom(key, x)
 }
 
-func (db *FlexDB) lookupOldKVAndVPtrNoBloom(key string) (KV, bool, VPtr) {
+func (db *FlexDB) lookupOldKVAndVPtrNoBloom(key string, x bool) (KV, bool, VPtr) {
 	// Check memtable first (most likely hit for repeated overwrites).
-	if kv, ok := db.mt.get(key); ok {
+	if kv, ok := db.mt.get(key, x); ok {
 		if kv.HasVPtr() {
 			return kv, true, kv.Vptr
 		}
@@ -1372,23 +1376,23 @@ func (db *FlexDB) lookupOldKVAndVPtrNoBloom(key string) (KV, bool, VPtr) {
 	if db.ff.Size() == 0 {
 		return KV{}, false, VPtr{}
 	}
-	kv, ok, _ := db.getPassthroughKV(key)
+	kv, ok, _ := db.getPassthroughKV(key, x)
 	if ok && kv.HasVPtr() {
 		return kv, true, kv.Vptr
 	}
 	return kv, ok, VPtr{}
 }
 
-func (db *FlexDB) lookupOldKVAndVPtrWithHint(key string, nh *memSparseIndexTreeHandler) (KV, bool, VPtr) {
-	if !db.keyBloomMayExistLocked(key) {
+func (db *FlexDB) lookupOldKVAndVPtrWithHint(key string, nh *memSparseIndexTreeHandler, x bool) (KV, bool, VPtr) {
+	if !db.keyBloomMayExistLocked(key, x) {
 		return KV{}, false, VPtr{}
 	}
-	return db.lookupOldKVAndVPtrWithHintNoBloom(key, nh)
+	return db.lookupOldKVAndVPtrWithHintNoBloom(key, nh, x)
 }
 
-func (db *FlexDB) lookupOldKVAndVPtrWithHintNoBloom(key string, nh *memSparseIndexTreeHandler) (KV, bool, VPtr) {
+func (db *FlexDB) lookupOldKVAndVPtrWithHintNoBloom(key string, nh *memSparseIndexTreeHandler, x bool) (KV, bool, VPtr) {
 	// Check memtable first (most likely hit for repeated overwrites).
-	if kv, ok := db.mt.get(key); ok {
+	if kv, ok := db.mt.get(key, x); ok {
 		if kv.HasVPtr() {
 			return kv, true, kv.Vptr
 		}
@@ -1398,7 +1402,7 @@ func (db *FlexDB) lookupOldKVAndVPtrWithHintNoBloom(key string, nh *memSparseInd
 	if db.ff.Size() == 0 {
 		return KV{}, false, VPtr{}
 	}
-	kv, ok, _ := db.getPassthroughKVWithHint(key, nh)
+	kv, ok, _ := db.getPassthroughKVWithHint(key, nh, x)
 	if ok && kv.HasVPtr() {
 		return kv, true, kv.Vptr
 	}
@@ -1411,28 +1415,28 @@ func (db *FlexDB) lookupOldKVAndVPtrWithHintNoBloom(key string, nh *memSparseInd
 // the load path. During pristine initial bulk loads there is no old FlexSpace
 // value anyway, and during reload/merge loads this still permits dedup against
 // the previously materialized database.
-func (db *FlexDB) lookupOldFlexSpaceVPtr(key string) VPtr {
+func (db *FlexDB) lookupOldFlexSpaceVPtr(key string, x bool) VPtr {
 	if db.ff.Size() == 0 {
 		return VPtr{}
 	}
-	if !db.keyBloomMayExistLocked(key) {
+	if !db.keyBloomMayExistLocked(key, x) {
 		return VPtr{}
 	}
-	kv, ok, _ := db.getPassthroughKV(key)
+	kv, ok, _ := db.getPassthroughKV(key, x)
 	if ok && kv.HasVPtr() {
 		return kv.Vptr
 	}
 	return VPtr{}
 }
 
-func (db *FlexDB) lookupOldFlexSpaceVPtrWithHint(key string, nh *memSparseIndexTreeHandler) VPtr {
+func (db *FlexDB) lookupOldFlexSpaceVPtrWithHint(key string, nh *memSparseIndexTreeHandler, x bool) VPtr {
 	if db.ff.Size() == 0 {
 		return VPtr{}
 	}
-	if !db.keyBloomMayExistLocked(key) {
+	if !db.keyBloomMayExistLocked(key, x) {
 		return VPtr{}
 	}
-	kv, ok, _ := db.getPassthroughKVWithHint(key, nh)
+	kv, ok, _ := db.getPassthroughKVWithHint(key, nh, x)
 	if ok && kv.HasVPtr() {
 		return kv.Vptr
 	}
@@ -1493,9 +1497,9 @@ func (db *FlexDB) reconcileBulkInitialCountsLocked(m *memtable) {
 	m.bulk.dirty = false
 }
 
-func (db *FlexDB) materializeBulkInitialLocked() error {
+func (db *FlexDB) materializeBulkInitialXLocked() error {
 	if db.mt.bulk.count > 0 && db.ff.Size() > 0 {
-		return db.mergeReloadBulkLocked()
+		return db.mergeReloadBulkXLocked()
 	}
 	if db.mt.bulk.count > 0 && db.mt.bulk.dirty {
 		db.reconcileBulkInitialCountsLocked(&db.mt)
@@ -1787,6 +1791,7 @@ func (db *FlexDB) Close() *Metrics {
 	}
 
 	db.topMutRW.Lock()
+	const x = true
 	defer db.topMutRW.Unlock()
 
 	if db.closed {
@@ -1795,11 +1800,11 @@ func (db *FlexDB) Close() *Metrics {
 	db.closed = true
 
 	// Flush any data that is still in the memtable.
-	if !db.mt.empty {
+	if !db.mt.empty.Load() {
 		if err := db.mt.logFlush(); err != nil {
 			panicf("Close flush memwal: %v", err)
 		}
-		if err := db.flushMemtable(); err != nil {
+		if err := db.flushMemtable(x); err != nil {
 			panicf("Close flush memtable: %v", err)
 		}
 		if err := db.cache.flushDirtyPages(); err != nil {
@@ -2207,7 +2212,7 @@ func (db *FlexDB) writeLockHeldAutoVacuumMetrics(m *Metrics) {
 // resolveVPtr reads the value from the VLOG file for a KV that has HasVPtr() true.
 // For small inline values where HasVPtr() is false, we return kv.Value.
 // Returns the resolved value bytes, or an error.
-func (db *FlexDB) resolveVPtr(kv KV) (val []byte, vtyp uint64, hlc HLC, err error) {
+func (db *FlexDB) resolveVPtr(kv KV, x bool) (val []byte, vtyp uint64, hlc HLC, err error) {
 	if testHookResolveVPtr != nil {
 		if err := testHookResolveVPtr(kv); err != nil {
 			return nil, 0, 0, err
@@ -2227,7 +2232,7 @@ func (db *FlexDB) resolveVPtr(kv KV) (val []byte, vtyp uint64, hlc HLC, err erro
 	if len(kv.Value) == 8 {
 		vtyp = getUint64(kv.Value)
 	}
-	val, err = db.vlog.read(kv.Vptr)
+	val, err = db.vlog.read(kv.Vptr, x)
 	hlc = kv.Hlc
 	return
 }
@@ -2245,38 +2250,39 @@ func (db *FlexDB) FetchLarge(kv *KV) (val []byte, vtyp uint64, hlc HLC, err erro
 	db.requireReadsAllowed()
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
-	return db.resolveVPtrForUserKV(*kv)
+	return db.resolveVPtrForUserKV(*kv, false)
 }
 
 // lockHeldFetchLarge is the lock-held body of FetchLarge.
-// Caller must hold topMutRW.RLock() or topMutRW.Lock().
-func (db *FlexDB) lockHeldFetchLarge(kv *KV) (val []byte, vtyp uint64, hlc HLC, err error) {
+// Caller must hold topMutRW.RLock() or topMutRW.Lock(), and
+// indicate which using the x argument (true=>exclusive access, top write lock held).
+func (db *FlexDB) lockHeldFetchLarge(kv *KV, x bool) (val []byte, vtyp uint64, hlc HLC, err error) {
 	if kv == nil {
 		return nil, 0, 0, fmt.Errorf("flexdb: FetchLarge called with nil KV")
 	}
-	return db.resolveVPtrForUserKV(*kv)
+	return db.resolveVPtrForUserKV(*kv, x)
 }
 
-func (db *FlexDB) resolveVPtrForUserKV(kv KV) (val []byte, vtyp uint64, hlc HLC, err error) {
-	val, vtyp, hlc, err = db.resolveVPtr(kv)
+func (db *FlexDB) resolveVPtrForUserKV(kv KV, x bool) (val []byte, vtyp uint64, hlc HLC, err error) {
+	val, vtyp, hlc, err = db.resolveVPtr(kv, x)
 	if err != nil || !kv.HasVPtr() || len(kv.Value) == 8 {
 		return
 	}
-	if lookedUp, ok := db.lookupLargeVtypLocked(kv); ok {
+	if lookedUp, ok := db.lookupLargeVtypLocked(kv, x); ok {
 		vtyp = lookedUp
 	}
 	return
 }
 
-func (db *FlexDB) lookupLargeVtypLocked(kv KV) (uint64, bool) {
+func (db *FlexDB) lookupLargeVtypLocked(kv KV, x bool) (uint64, bool) {
 	if kv.Key == "" || !kv.HasVPtr() {
 		return 0, false
 	}
 	sameKV := func(cur KV) bool {
 		return cur.HasVPtr() && cur.Vptr == kv.Vptr && cur.Hlc == kv.Hlc
 	}
-	if !db.mt.empty {
-		cur, ok := db.mt.get(kv.Key)
+	if !db.mt.empty.Load() {
+		cur, ok := db.mt.get(kv.Key, x)
 		if ok {
 			if sameKV(cur) {
 				return cur.Vtyp(), true
@@ -2284,10 +2290,10 @@ func (db *FlexDB) lookupLargeVtypLocked(kv KV) (uint64, bool) {
 			return 0, false
 		}
 	}
-	if db.ff.Size() == 0 || !db.keyBloomMayExistLocked(kv.Key) {
+	if db.ff.Size() == 0 || !db.keyBloomMayExistLocked(kv.Key, x) {
 		return 0, false
 	}
-	cur, ok, err := db.getPassthroughKV(kv.Key)
+	cur, ok, err := db.getPassthroughKV(kv.Key, x)
 	if err != nil || !ok || !sameKV(cur) {
 		return 0, false
 	}
@@ -2327,10 +2333,11 @@ func (db *FlexDB) VacuumVLOG() (*VacuumVLOGStats, error) {
 	db.requireReadsAllowed()
 	db.topMutRW.Lock()
 	defer db.topMutRW.Unlock()
-	return db.vacuumVLOGLocked()
+	return db.vacuumVLOGXLocked()
 }
 
-func (db *FlexDB) vacuumVLOGLocked() (*VacuumVLOGStats, error) {
+func (db *FlexDB) vacuumVLOGXLocked() (*VacuumVLOGStats, error) {
+	const x = true
 	if db.vlog == nil {
 		return nil, fmt.Errorf("flexdb: VLOG is disabled")
 	}
@@ -2397,7 +2404,7 @@ func (db *FlexDB) vacuumVLOGLocked() (*VacuumVLOGStats, error) {
 					continue
 				}
 				// Read value from old VLOG.
-				val, err := db.vlog.read(updated[i].Vptr)
+				val, err := db.vlog.read(updated[i].Vptr, x)
 				if err != nil {
 					partition.releaseEntry(fce)
 					newVL.close()
@@ -2549,6 +2556,7 @@ func (db *FlexDB) recoverVLOGVacuumTemp() error {
 }
 
 func (db *FlexDB) checkVLOGPointersNoLock() error {
+	const x = false
 	if db.tree == nil {
 		return nil
 	}
@@ -2573,7 +2581,7 @@ func (db *FlexDB) checkVLOGPointersNoLock() error {
 				if !kv.HasVPtr() {
 					continue
 				}
-				if _, err := db.vlog.read(kv.Vptr); err != nil {
+				if _, err := db.vlog.read(kv.Vptr, x); err != nil {
 					partition.releaseEntry(fce)
 					return fmt.Errorf("anchor key=%q kv=%q vptr={off:%d len:%d}: %w",
 						anchor.key, kv.Key, kv.Vptr.Offset, kv.Vptr.Length, err)
@@ -2960,6 +2968,7 @@ func (db *FlexDB) extraAnchorTagsInInterval(anchorLoff uint64, psize uint64) []u
 func (db *FlexDB) CheckIntegrity() []IntegrityError {
 	db.requireReadsAllowed()
 	db.topMutRW.Lock()
+	const x = true
 	defer db.topMutRW.Unlock()
 
 	var errs []IntegrityError
@@ -3124,7 +3133,7 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 			return
 		}
 		// read() verifies hdrCRC, valCRC, and blake3 of the value bytes.
-		_, err := db.vlog.read(kv.Vptr)
+		_, err := db.vlog.read(kv.Vptr, x)
 		if err != nil {
 			addErr("vlog_blake3",
 				fmt.Sprintf("anchor %d (key=%q): KV %q VPtr{Off=%d,Len=%d}: %v",
@@ -3249,7 +3258,7 @@ func (db *FlexDB) Sync() (err error) {
 	autoVacuumHandoff := false
 	defer func() {
 		if err == nil {
-			autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+			autoVacuumHandoff = db.maybeStartAutoVacuumXLocked()
 		}
 		if !autoVacuumHandoff {
 			db.topMutRW.Unlock()
@@ -3315,10 +3324,12 @@ func (db *FlexDB) autoVacuumShouldRunLocked() bool {
 	return float64(deleted)/float64(denom) >= db.cfg.AutoVacuumPct
 }
 
-// maybeStartAutoVacuumLocked starts a one-shot background vacuum by handing
+// maybeStartAutoVacuumXLockedLocked starts a one-shot background vacuum by handing
 // off the caller's topMutRW write lock. If it returns true, the caller must
 // not unlock topMutRW; the autovacuum goroutine now owns that responsibility.
-func (db *FlexDB) maybeStartAutoVacuumLocked() bool {
+// The X suffix indicates the topMutRW write lock is held and the caller
+// has eXclusive access to the db.
+func (db *FlexDB) maybeStartAutoVacuumXLocked() bool {
 	if !db.autoVacuumShouldRunLocked() {
 		return false
 	}
@@ -3335,7 +3346,8 @@ func (db *FlexDB) writeLockHeldSyncCheckpoint() error {
 }
 
 func (db *FlexDB) writeLockHeldSyncR(forceTreeCheckpoint bool) error {
-	mtWasEmpty := db.mt.empty
+	const x = true
+	mtWasEmpty := db.mt.empty.Load()
 	cacheDirty := db.cache != nil && db.cache.hasDirtyPages()
 	if mtWasEmpty && !forceTreeCheckpoint && !cacheDirty && !db.dirSyncNeeded {
 		return nil // nothing to flush
@@ -3349,7 +3361,7 @@ func (db *FlexDB) writeLockHeldSyncR(forceTreeCheckpoint bool) error {
 		if err := db.mt.logFlush(); err != nil {
 			return fmt.Errorf("flexdb: Sync flush memwal: %w", err)
 		}
-		if err := db.flushMemtable(); err != nil {
+		if err := db.flushMemtable(x); err != nil {
 			return fmt.Errorf("flexdb: Sync flush memtable: %w", err)
 		}
 	}
@@ -3394,9 +3406,9 @@ func (db *FlexDB) writeLockHeldSyncR(forceTreeCheckpoint bool) error {
 		return fmt.Errorf("flexdb: Sync truncate memwal: %w", err)
 	}
 
-	db.mt.ks.clear()
+	db.mt.ks.clear(x)
 	db.mt.vtypArena = nil
-	db.mt.empty = true
+	db.mt.empty.Store(true)
 	db.mt.size = 0
 
 	return nil
@@ -3486,7 +3498,7 @@ func (db *FlexDB) Put(key string, value []byte, vtyp uint64) (hlc HLC, err error
 	autoVacuumHandoff := false
 	defer func() {
 		if err == nil {
-			autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+			autoVacuumHandoff = db.maybeStartAutoVacuumXLocked()
 		}
 		if !autoVacuumHandoff {
 			db.topMutRW.Unlock()
@@ -3496,10 +3508,10 @@ func (db *FlexDB) Put(key string, value []byte, vtyp uint64) (hlc HLC, err error
 }
 
 func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string, value []byte, vtyp uint64, doDelete bool) (HLC, error) {
+	const x = true
 	if doDelete && len(value) > 0 {
 		return 0, fmt.Errorf("flexdb API use error: cannot supply a value and also delete it's key, this is a contradiction. Do not set a value on delete of a key: '%v'.", key)
 	}
-
 	if err := validateUserKey(key); err != nil {
 		return 0, err
 	}
@@ -3532,7 +3544,7 @@ func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string,
 		// then FlexSpace (loads interval cache). If the old value has the
 		// same blake3 checksum, we reuse the old VPtr and skip the VLOG write.
 		// See "HLC STALENESS IN VLOG HEADERS" in vlog.go.
-		oldVP := db.lookupOldVPtr(key)
+		oldVP := db.lookupOldVPtr(key, x)
 		vp, _, err := db.vlog.appendDedupAndSync(value, hlcVal, oldVP, db.cfg.OmitMemWalFsync)
 		if err != nil {
 			return 0, fmt.Errorf("flexdb: vlog append: %w", err)
@@ -3562,7 +3574,7 @@ func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string,
 			if err := db.mt.logFlush(); err != nil {
 				return 0, fmt.Errorf("flexdb: Put inline flush memwal: %w", err)
 			}
-			if err := db.flushMemtable(); err != nil {
+			if err := db.flushMemtable(x); err != nil {
 				return 0, fmt.Errorf("flexdb: Put inline flush memtable: %w", err)
 			}
 			if err := db.cache.flushDirtyPages(); err != nil {
@@ -3571,9 +3583,9 @@ func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string,
 			db.persistCounters()
 			db.ff.Sync()
 
-			db.mt.ks.clear()
+			db.mt.ks.clear(x)
 			db.mt.vtypArena = nil
-			db.mt.empty = true
+			db.mt.empty.Store(true)
 			db.mt.size = 0
 			db.flushSeq++
 		}
@@ -3592,16 +3604,16 @@ func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string,
 	}
 
 	old, replaced := db.mt.put(kv)
-	db.mt.empty = false
+	db.mt.empty.Store(false)
 	oldState := ksNotExists
 	oldKV := old
 	oldKVFound := replaced
 	if replaced {
 		oldState = kvToState(old)
 	} else {
-		if db.ff.Size() != 0 && db.keyBloomMayExistLocked(key) {
+		if db.ff.Size() != 0 && db.keyBloomMayExistLocked(key, x) {
 			var getErr error
-			oldKV, oldKVFound, getErr = db.getPassthroughKV(key)
+			oldKV, oldKVFound, getErr = db.getPassthroughKV(key, x)
 			if getErr == nil && oldKVFound {
 				oldState = kvToState(oldKV)
 			}
@@ -3774,6 +3786,7 @@ func findBuildKV(it *Iter) *KV {
 func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bool, err error) {
 	db.requireReadsAllowed()
 	db.topMutRW.RLock()
+	const x = false
 	defer db.topMutRW.RUnlock()
 	defer recoverIterIOErr(&err)
 
@@ -3832,7 +3845,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 
 		// Auto-fetch large value unless LAZY_LARGE was requested
 		if !lazyLarge && kvc.HasVPtr() {
-			val, _, _, fetchErr := db.resolveVPtr(kvc.KV)
+			val, _, _, fetchErr := db.resolveVPtr(kvc.KV, x)
 			if fetchErr != nil {
 				kvc = nil
 				err = fetchErr
@@ -3916,11 +3929,12 @@ func (s *KVcloser) Fetch() error {
 	if !s.HasVPtr() {
 		return nil // inline value already present
 	}
+	const x = false
 	var val []byte
 	var vtyp uint64
 	var err error
 	if s.lockHeld {
-		val, vtyp, _, err = s.db.lockHeldFetchLarge(&s.KV)
+		val, vtyp, _, err = s.db.lockHeldFetchLarge(&s.KV, x)
 	} else {
 		val, vtyp, _, err = s.db.FetchLarge(&s.KV)
 	}
@@ -3995,17 +4009,18 @@ func (db *FlexDB) GetKV(key string) (kv *KVcloser, err error) {
 func (db *FlexDB) Get(key string) (value []byte, found bool, vtyp uint64, hlc HLC, err error) {
 	db.requireReadsAllowed()
 	db.topMutRW.RLock()
+	const x = false
 	defer db.topMutRW.RUnlock()
 	defer recoverIterIOErr(&err)
 
 	// Check memtable
-	if !db.mt.empty {
-		kv, ok := db.mt.get(key)
+	if !db.mt.empty.Load() {
+		kv, ok := db.mt.get(key, x)
 		if ok {
 			if kv.isTombstone() {
 				return nil, false, 0, 0, nil // tombstone
 			}
-			val, vtype, _, err := db.resolveVPtr(kv)
+			val, vtype, _, err := db.resolveVPtr(kv, x)
 			if err != nil {
 				return nil, false, 0, 0, err
 			}
@@ -4019,20 +4034,20 @@ func (db *FlexDB) Get(key string) (value []byte, found bool, vtyp uint64, hlc HL
 	}
 
 	// Check FlexSpace via sparse index
-	return db.getPassthrough(key)
+	return db.getPassthrough(key, x)
 }
 
 // someLockHeldGet retrieves the value for key without acquiring topMutRW.
 // Caller must already hold topMutRW.Lock() or topMutRW.RLock().
-func (db *FlexDB) someLockHeldGet(key string) (val []byte, found bool, vtyp uint64, hlc HLC, err error) {
+func (db *FlexDB) someLockHeldGet(key string, x bool) (val []byte, found bool, vtyp uint64, hlc HLC, err error) {
 	// Check memtable
-	if !db.mt.empty {
-		kv, ok := db.mt.get(key)
+	if !db.mt.empty.Load() {
+		kv, ok := db.mt.get(key, x)
 		if ok {
 			if kv.isTombstone() {
 				return nil, false, 0, 0, nil
 			}
-			val, vtyp, _, err = db.resolveVPtr(kv)
+			val, vtyp, _, err = db.resolveVPtr(kv, x)
 			if err != nil {
 				return
 			}
@@ -4049,7 +4064,7 @@ func (db *FlexDB) someLockHeldGet(key string) (val []byte, found bool, vtyp uint
 	}
 
 	// Check FlexSpace via sparse index
-	return db.getPassthrough(key)
+	return db.getPassthrough(key, x)
 }
 
 // Delete removes key from the store. Delete requires AllowReads.
@@ -4059,7 +4074,7 @@ func (db *FlexDB) Delete(key string) error {
 	_, err := db.writeLockHeldPutWithHook(nil, key, nil, 0, true)
 	autoVacuumHandoff := false
 	if err == nil {
-		autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+		autoVacuumHandoff = db.maybeStartAutoVacuumXLocked()
 	}
 	if !autoVacuumHandoff {
 		db.topMutRW.Unlock()
@@ -4102,7 +4117,7 @@ func (db *FlexDB) DeleteRange(includeLarge bool, begKey, endKey string, begInclu
 	autoVacuumHandoff := false
 	defer func() {
 		if err == nil {
-			autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+			autoVacuumHandoff = db.maybeStartAutoVacuumXLocked()
 		}
 		if !autoVacuumHandoff {
 			db.topMutRW.Unlock()
@@ -4139,7 +4154,7 @@ func (db *FlexDB) writeLockHeldDeleteRangeWithHook(beforeWrite func() error, inc
 	}
 
 	// Phase 1: Tombstone all non-tombstone keys in range in the memtable.
-	if !db.mt.empty {
+	if !db.mt.empty.Load() {
 		// Collect keys first since writeLockHeldPut mutates the memtable.
 		var keys []string
 		db.mt.ks.Ascend(KV{Key: begKey}, func(item KV) bool {
@@ -4195,7 +4210,7 @@ func (db *FlexDB) Clear(includeLarge bool) (allGone bool, err error) {
 	autoVacuumHandoff := false
 	defer func() {
 		if err == nil {
-			autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+			autoVacuumHandoff = db.maybeStartAutoVacuumXLocked()
 		}
 		if !autoVacuumHandoff {
 			db.topMutRW.Unlock()
@@ -4223,7 +4238,7 @@ func (db *FlexDB) writeLockHeldClearWithHook(beforeWrite func() error, includeLa
 	// !includeLarge: must iterate and tombstone only small-value keys.
 
 	// Phase 1: Tombstone small-value keys in the memtable.
-	if !db.mt.empty {
+	if !db.mt.empty.Load() {
 		var keys []string
 		db.mt.ks.Scan(func(item KV) bool {
 			if !item.isTombstone() && !item.HasVPtr() {
@@ -4258,7 +4273,7 @@ func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey string, begInclusive
 	}
 
 	// Check memtable min/max keys.
-	if !db.mt.empty {
+	if !db.mt.empty.Load() {
 		// Min key (first in ascending order).
 		var minKV KV
 		var minFound bool
@@ -4462,6 +4477,7 @@ func deleteRangePastEnd(key, endKey string, endInclusive bool) bool {
 //
 // Caller must hold topMutRW.Lock().
 func (db *FlexDB) deleteRangeFlexSpace(beforeWrite func() error, begKey, endKey string, begInclusive, endInclusive, includeLarge bool) (int64, error) {
+	const x = true
 	var n int64
 	target := begKey
 	// On first seek, whether we include target depends on begInclusive.
@@ -4535,7 +4551,7 @@ func (db *FlexDB) deleteRangeFlexSpace(beforeWrite func() error, begKey, endKey 
 				if kv.isTombstone() {
 					continue
 				}
-				if db.memtableShadowsKeyLocked(kv.Key) {
+				if db.memtableShadowsKeyLocked(kv.Key, x) {
 					continue
 				}
 				if !includeLarge && kv.HasVPtr() {
@@ -4574,6 +4590,7 @@ func (db *FlexDB) deleteRangeFlexSpace(beforeWrite func() error, begKey, endKey 
 //
 // Caller must hold topMutRW.Lock().
 func (db *FlexDB) deleteRangeFlexSpaceClearSmall(beforeWrite func() error) (int64, error) {
+	const x = true
 	var n int64
 	var target string
 	seekStrict := false
@@ -4650,7 +4667,7 @@ func (db *FlexDB) deleteRangeFlexSpaceClearSmall(beforeWrite func() error) (int6
 				if kv.isTombstone() || kv.HasVPtr() {
 					continue // skip tombstones and large-value keys
 				}
-				if db.memtableShadowsKeyLocked(kv.Key) {
+				if db.memtableShadowsKeyLocked(kv.Key, x) {
 					continue
 				}
 
@@ -4675,11 +4692,11 @@ func (db *FlexDB) deleteRangeFlexSpaceClearSmall(beforeWrite func() error) (int6
 	}
 }
 
-func (db *FlexDB) memtableShadowsKeyLocked(key string) bool {
-	if db.mt.empty {
+func (db *FlexDB) memtableShadowsKeyLocked(key string, x bool) bool {
+	if db.mt.empty.Load() {
 		return false
 	}
-	_, ok := db.mt.get(key)
+	_, ok := db.mt.get(key, x)
 	return ok
 }
 
@@ -4773,7 +4790,7 @@ func (db *FlexDB) Merge(key string, fn func(oldVal []byte, exists bool, oldVtyp 
 	autoVacuumHandoff := false
 	defer func() {
 		if err == nil {
-			autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+			autoVacuumHandoff = db.maybeStartAutoVacuumXLocked()
 		}
 		if !autoVacuumHandoff {
 			db.topMutRW.Unlock()
@@ -4798,14 +4815,15 @@ func (db *FlexDB) writeLockHeldMergeWithHook(beforeWrite func() error, key strin
 	var exists bool
 	var oldVtyp uint64
 	var shadowedByMemtable bool
+	const x = true
 
-	if !db.mt.empty {
-		kv, ok := db.mt.get(key)
+	if !db.mt.empty.Load() {
+		kv, ok := db.mt.get(key, x)
 		if ok {
 			shadowedByMemtable = true
 			if !kv.isTombstone() {
 				oldVtyp = kv.Vptr.Offset
-				val, vtyp, _, err := db.resolveVPtr(kv)
+				val, vtyp, _, err := db.resolveVPtr(kv, x)
 				if err != nil {
 					return err
 				}
@@ -4818,7 +4836,7 @@ func (db *FlexDB) writeLockHeldMergeWithHook(beforeWrite func() error, key strin
 
 	if !exists && !shadowedByMemtable {
 		// Phase 2: check FlexSpace (getPassthrough already resolves VPtrs).
-		val, found, vtyp, _, err := db.getPassthrough(key)
+		val, found, vtyp, _, err := db.getPassthrough(key, x)
 		if err != nil {
 			return fmt.Errorf("flexdb: merge getPassthrough: %w", err)
 		}
@@ -4851,7 +4869,7 @@ func (db *FlexDB) writeLockHeldMergeWithHook(beforeWrite func() error, key strin
 // These operate directly on FlexSpace + sparse index.
 // Caller must hold db.topMutRW. but is RLock sufficient? should be since we change nothing.
 
-func (db *FlexDB) getPassthrough(key string) (val []byte, found bool, vtyp uint64, hlc HLC, err0 error) {
+func (db *FlexDB) getPassthrough(key string, x bool) (val []byte, found bool, vtyp uint64, hlc HLC, err0 error) {
 	var nh memSparseIndexTreeHandler
 	db.tree.findAnchorPos(key, &nh)
 	anchor := nh.node.anchors[nh.idx]
@@ -4872,7 +4890,7 @@ func (db *FlexDB) getPassthrough(key string) (val []byte, found bool, vtyp uint6
 	if kv.isTombstone() {
 		return nil, false, 0, 0, nil
 	}
-	val, vtyp, _, err0 = db.resolveVPtr(kv)
+	val, vtyp, _, err0 = db.resolveVPtr(kv, x)
 	if err0 != nil {
 		return nil, false, 0, 0, err0
 	}
@@ -4885,14 +4903,14 @@ func (db *FlexDB) getPassthrough(key string) (val []byte, found bool, vtyp uint6
 }
 
 // getPassthroughKV returns the full KV (including HLC) from the passthrough layer.
-func (db *FlexDB) getPassthroughKV(key string) (KV, bool, error) {
+func (db *FlexDB) getPassthroughKV(key string, x bool) (KV, bool, error) {
 	var nh memSparseIndexTreeHandler
-	return db.getPassthroughKVWithHint(key, &nh)
+	return db.getPassthroughKVWithHint(key, &nh, x)
 }
 
 // getPassthroughKVWithHint is getPassthroughKV with a reusable sparse-index
 // cursor. It is profitable when callers probe keys in ascending order.
-func (db *FlexDB) getPassthroughKVWithHint(key string, nh *memSparseIndexTreeHandler) (KV, bool, error) {
+func (db *FlexDB) getPassthroughKVWithHint(key string, nh *memSparseIndexTreeHandler, x bool) (KV, bool, error) {
 	db.tree.treeNodeHandlerNextAnchor(nh, key)
 	anchor := nh.node.anchors[nh.idx]
 	anchorLoff := uint64(anchor.loff + nh.shift)
@@ -5643,7 +5661,7 @@ func (db *FlexDB) doAutoVacuumLocked() error {
 
 	var err error
 	if atomic.LoadInt64(&db.autoVacuumVLOGDeletedBytes) > 0 && db.vlog != nil {
-		_, err = db.vacuumVLOGLocked()
+		_, err = db.vacuumVLOGXLocked()
 		if err != nil {
 			db.autoVacuumLastErr = err.Error()
 			return fmt.Errorf("autovacuum VacuumVLOG: %w", err)
@@ -5666,20 +5684,22 @@ func (db *FlexDB) doAutoVacuumLocked() error {
 // only called by the flushWorker goroutine.
 func (db *FlexDB) doFlush() (err error) {
 	db.topMutRW.Lock()
+	x := true
 	autoVacuumHandoff := false
 	defer func() {
 		if false {
 			vv("end of doFlush: sessionMetrics() = '%v'", db.writeLockHeldSessionMetrics())
 		}
 		if err == nil {
-			autoVacuumHandoff = db.maybeStartAutoVacuumLocked()
+			autoVacuumHandoff = db.maybeStartAutoVacuumXLocked()
 		}
 		if !autoVacuumHandoff {
+			x = false
 			db.topMutRW.Unlock()
 		}
 	}()
 
-	if db.mt.empty {
+	if db.mt.empty.Load() {
 		return nil
 	}
 	if !db.allowReads.Load() && db.mt.bulk.count > 0 {
@@ -5700,7 +5720,7 @@ func (db *FlexDB) doFlush() (err error) {
 	atomic.AddInt64(&db.MemWALFsyncs, 1)
 
 	// Flush memtable to FlexSpace
-	if err := db.flushMemtable(); err != nil {
+	if err := db.flushMemtable(x); err != nil {
 		return fmt.Errorf("doFlush flush memtable: %w", err)
 	}
 	if err := db.cache.flushDirtyPages(); err != nil {
@@ -5717,18 +5737,18 @@ func (db *FlexDB) doFlush() (err error) {
 	}
 
 	// Clear the memtable
-	db.mt.ks.clear()
+	db.mt.ks.clear(x)
 	db.mt.vtypArena = nil
-	db.mt.empty = true
+	db.mt.empty.Store(true)
 	db.mt.size = 0
 	db.flushSeq++
 	return nil
 }
 
-func (db *FlexDB) flushMemtable() error {
+func (db *FlexDB) flushMemtable(x bool) error {
 	m := &db.mt
 	if !db.allowReads.Load() && m.bulk.count > 0 && db.ff.Size() > 0 {
-		return db.mergeReloadBulkLocked()
+		return db.mergeReloadBulkXLocked()
 	}
 	if ok, err := db.flushMemtableBulkInitial(m); ok || err != nil {
 		return err

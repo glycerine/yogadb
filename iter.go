@@ -862,6 +862,7 @@ func (db *FlexDB) flexCursorPrevInterval(fc *flexCursor) error {
 // resolving duplicates by priority (memtable > FlexSpace) and skipping tombstones.
 // If strict is true, finds smallest key > target. Caller must hold topMutRW.RLock().
 func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, hlc HLC, hasVPtr bool, vptr VPtr, vtyp uint64, found bool) {
+	const x = false
 	for {
 		var candidates [2]KV
 		var have [2]bool
@@ -911,7 +912,7 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 		if bestKV.HasVPtr() {
 			return []byte(minKey), nil, bestKV.Hlc, true, bestKV.Vptr, bestKV.Vtyp(), true
 		}
-		val, vtype, _, err := db.resolveVPtr(bestKV)
+		val, vtype, _, err := db.resolveVPtr(bestKV, x)
 		if err != nil {
 			iterIOPanic(err)
 			return
@@ -1033,11 +1034,12 @@ func (it *Iter) servePrefetchReverse() bool {
 // memtable and the stateful FlexSpace cursor. The cursor should already be
 // positioned at or past the target. Caller must hold topMutRW.RLock().
 func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, vtyp uint64, found bool) {
+	const x = false
 	db := it.db
 
 	// Fast path: memtable empty -> pure FlexSpace iteration.
 	// Skip memtable seek and 2-way merging.
-	if db.mt.empty {
+	if db.mt.empty.Load() {
 		kv, found = it.flexSpaceOnlySeekGE(target, strict)
 		it.valueNeedsCopy = found
 		it.valueResolved = false // value is lazy cache reference
@@ -1106,7 +1108,7 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, v
 		if bestKV.HasVPtr() {
 			return &KV{Key: minKey, Hlc: bestKV.Hlc, Vptr: bestKV.Vptr, Value: dupBytes(bestKV.Value)}, bestKV.Vtyp(), true
 		}
-		val, vtype, _, err := db.resolveVPtr(bestKV)
+		val, vtype, _, err := db.resolveVPtr(bestKV, x)
 		if err != nil {
 			iterIOPanic(err)
 			return
@@ -1276,7 +1278,7 @@ func (it *Iter) Seek(target string) {
 	it.initFlexCursorSeekGE(target)
 
 	// Prefetch fast path: memtable empty -> fill buffer from FlexSpace.
-	if db.mt.empty {
+	if db.mt.empty.Load() {
 		it.prefetchFillFlexSpaceOnly()
 		if it.pfSpanCount == 0 || !it.servePrefetch() {
 			it.valid = false
@@ -1300,7 +1302,7 @@ func (it *Iter) seekLE(target string, strict bool) {
 	it.initFlexCursorSeekLE(target)
 
 	// Prefetch fast path: memtable empty -> fill buffer backward from FlexSpace.
-	if db.mt.empty {
+	if db.mt.empty.Load() {
 		if strict {
 			it.retreatFlexCursorBefore(target, true)
 		}
@@ -1332,7 +1334,7 @@ func (it *Iter) SeekLast() {
 	it.initFlexCursorSeekLE("")
 
 	// Prefetch fast path: memtable empty -> fill buffer backward from FlexSpace.
-	if db.mt.empty {
+	if db.mt.empty.Load() {
 		it.prefetchFillFlexSpaceReverse()
 		if it.pfSpanCount == 0 || !it.servePrefetchReverse() {
 			it.valid = false
@@ -1429,7 +1431,7 @@ func (it *Iter) Next() {
 	db := it.db
 	if it.dir == 1 && it.snapshotHLC == currentHLC && it.snapshotHLC != 0 {
 		// Cursor still valid. Try prefetch refill on the FlexSpace-only fast path.
-		if db.mt.empty {
+		if db.mt.empty.Load() {
 			// Inline single-interval refill: if the cursor still has entries
 			// in its current interval, create a span directly without calling
 			// prefetchFillFlexSpaceOnly (avoids function call + loop overhead).
@@ -1495,7 +1497,7 @@ func (it *Iter) Next() {
 	it.initFlexCursorSeekGE(curKey)
 
 	// Try prefetch on fresh cursor if memtable is empty.
-	if db.mt.empty {
+	if db.mt.empty.Load() {
 		// Position cursor past curKey (strict > curKey).
 		it.positionFlexCursorForSeek(curKey, true)
 		it.prefetchFillFlexSpaceOnly()
@@ -1554,7 +1556,7 @@ func (it *Iter) Prev() {
 
 	if it.dir == -1 && it.snapshotHLC == currentHLC && it.snapshotHLC != 0 {
 		// Cursor still valid. Try prefetch refill on the FlexSpace-only fast path.
-		if db.mt.empty {
+		if db.mt.empty.Load() {
 			it.prefetchFillFlexSpaceReverse()
 			it.snapshotHLC = currentHLC
 			if it.pfSpanCount == 0 || !it.servePrefetchReverse() {
@@ -1585,7 +1587,7 @@ func (it *Iter) Prev() {
 	}
 
 	// Try prefetch on fresh cursor if memtable is empty.
-	if db.mt.empty {
+	if db.mt.empty.Load() {
 		it.prefetchFillFlexSpaceReverse()
 		if it.pfSpanCount == 0 || !it.servePrefetchReverse() {
 			it.valid = false
@@ -1751,7 +1753,8 @@ func (it *Iter) FetchV() (val []byte, vtyp uint64, hlc HLC, err error) {
 	}
 	// seems buggy: return it.db.resolveVPtr(KV{Vptr: it.pKV.Vptr})
 	// since resolveVPtr needs to see the kv.Vptr to distinguish large VLOG from inline Value.
-	return it.db.resolveVPtr(*it.pKV)
+	const x = false
+	return it.db.resolveVPtr(*it.pKV, x)
 }
 
 // ====================== Callback-based iteration ======================
@@ -1765,7 +1768,8 @@ func (it *Iter) iterResolvedValue() []byte {
 	if !it.pKV.HasVPtr() {
 		return it.Vin()
 	}
-	val, _, _, err := it.db.resolveVPtr(*it.pKV)
+	const x = false
+	val, _, _, err := it.db.resolveVPtr(*it.pKV, x)
 	if err != nil {
 		iterIOPanic(err)
 	}

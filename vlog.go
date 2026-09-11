@@ -443,7 +443,7 @@ func validateVPtrForRead(vp VPtr) error {
 
 // read reads a value from the VLOG at the given VPtr.
 // Thread-safe (uses pread).
-func (vl *valueLog) read(vp VPtr) ([]byte, error) {
+func (vl *valueLog) read(vp VPtr, topWriteLocked bool) ([]byte, error) {
 	if err := validateVPtrForRead(vp); err != nil {
 		return nil, err
 	}

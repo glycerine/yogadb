@@ -238,7 +238,7 @@ func TestAllowReadsSyncsPreReadBulkLoad(t *testing.T) {
 	if db.mt.ks.Len() != 0 {
 		t.Fatalf("memtable keyStable length after AllowReads = %d, want 0", db.mt.ks.Len())
 	}
-	if !db.mt.empty {
+	if !db.mt.empty.Load() {
 		t.Fatal("memtable is not empty after AllowReads sync")
 	}
 }

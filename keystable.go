@@ -71,6 +71,9 @@ type keyStable struct {
 	mu sync.Mutex
 }
 
+// A sync.Mutex must not be copied after first use, but we
+// return a copy from makeKeyStable, so be sure not
+// to use the the mu during makeKeyStable().
 func makeKeyStable(n int) keyStable {
 	if n <= 0 {
 		n = 256 << 10
@@ -90,9 +93,11 @@ func newKeyStable(n int) *keyStable {
 	return &s
 }
 
-func (s *keyStable) clear() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *keyStable) clear(x bool) {
+	if !x {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
 
 	for i := range s.kvs {
 		s.kvs[i] = KV{}
@@ -304,12 +309,15 @@ func (s *keyStable) set(kv KV) (old KV, replaced bool) {
 	return KV{}, false
 }
 
-func (s *keyStable) get(key string) (kv KV, found bool) {
+func (s *keyStable) get(key string, x bool) (kv KV, found bool) {
+
 	var stableIdx int
 	h := xxhash.Sum64String(key)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if !x {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
 
 	stableIdx, found = s.findStableByString(key, h)
 	if !found {

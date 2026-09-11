@@ -28,8 +28,8 @@ type memtable struct {
 	vtypArena         []byte
 
 	memWalMut sync.Mutex
-	size      int64 // approximate bytes in this memtable
-	empty     bool  // true when memtable has no data (freshly created or flushed+cleared)
+	size      int64       // approximate bytes in this memtable
+	empty     atomic.Bool // true when memtable has no data (freshly created or flushed+cleared)
 
 	// metric to update for observability
 	memWalBytesWritten *int64 // points to FlexDB.WALBytesWritten (nil if standalone)
@@ -37,20 +37,22 @@ type memtable struct {
 }
 
 func newMemtable(memWalFD vfs.File) *memtable {
-	return &memtable{
+	mt := &memtable{
 		ks:                makeKeyStable(1024),
 		memWalFD:          memWalFD,
 		memWalBuf:         make([]byte, 0, memtableWalBufCap),
 		memWalWriteOffset: memWalHeaderSize,
-		empty:             true,
 	}
+	mt.empty.Store(true)
+	return mt
 }
 
 // called with db write lock held.
 func (m *memtable) reset() {
-	m.ks.clear()
+	const x = true
+	m.ks.clear(x)
 	m.vtypArena = nil
-	m.empty = true
+	m.empty.Store(true)
 	m.size = 0
 	m.bulk.reset()
 }
@@ -118,11 +120,11 @@ func (m *memtable) materializeBulk() {
 	m.bulk.reset()
 }
 
-func (m *memtable) get(key string) (KV, bool) {
-	if kv, ok := m.bulk.get(key); ok {
+func (m *memtable) get(key string, x bool) (KV, bool) {
+	if kv, ok := m.bulk.get(key, x); ok {
 		return kv, true
 	}
-	return m.ks.get(key)
+	return m.ks.get(key, x)
 }
 
 func (m *memtable) logAppend(kv KV) error {

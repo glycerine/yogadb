@@ -76,7 +76,8 @@ func TestValueLogReadRejectsInvalidVPtrsBeforeAllocation(t *testing.T) {
 					t.Fatalf("valueLog.read panicked for %s VPtr: %v", tc.name, r)
 				}
 			}()
-			_, err := vl.read(tc.vp)
+			const x = false
+			_, err := vl.read(tc.vp, x)
 			if err == nil {
 				t.Fatalf("valueLog.read(%#v) error = nil, want %q", tc.vp, tc.wantErrSub)
 			}
@@ -144,7 +145,8 @@ func TestValueLogReadRejectsShortReadAtCount(t *testing.T) {
 	}
 	vl.fd = shortCountReadAtFileForTest{File: vl.fd}
 
-	_, err = vl.read(vp)
+	const x = false
+	_, err = vl.read(vp, x)
 	if err == nil {
 		t.Fatal("valueLog.read accepted a short ReadAt count with nil error")
 	}

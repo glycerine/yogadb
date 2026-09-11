@@ -532,7 +532,8 @@ func TestFlexDB_HLC_PutMonotonic(t *testing.T) {
 		}
 		// Read back from the active memtable to get the HLC.
 		db.topMutRW.RLock()
-		kv, ok := db.mt.get(k)
+		const x = false
+		kv, ok := db.mt.get(k, x)
 		db.topMutRW.RUnlock()
 		if !ok {
 			t.Fatalf("key %q not found in memtable", k)
@@ -641,8 +642,9 @@ func TestFlexDB_HLC_Persistence(t *testing.T) {
 
 	// Capture HLCs from the memtable before flush.
 	db.topMutRW.RLock()
-	kv1, _ := db.mt.get("pk1")
-	kv2, _ := db.mt.get("pk2")
+	const x = false
+	kv1, _ := db.mt.get("pk1", x)
+	kv2, _ := db.mt.get("pk2", x)
 	db.topMutRW.RUnlock()
 	hlc1 := kv1.Hlc
 	hlc2 := kv2.Hlc

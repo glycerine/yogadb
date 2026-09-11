@@ -1624,8 +1624,9 @@ func TestFlexDB_HLC_UpdatedOnReload(t *testing.T) {
 	}
 	db2.AllowReads()
 	hlcs1 := make(map[string]HLC)
+	const x = true
 	for _, k := range keys {
-		kv, ok, err := db2.getPassthroughKV(k)
+		kv, ok, err := db2.getPassthroughKV(k, x)
 		panicOn(err)
 		if !ok {
 			t.Fatalf("session 2: key %q not found in passthrough", k)
@@ -1654,7 +1655,7 @@ func TestFlexDB_HLC_UpdatedOnReload(t *testing.T) {
 	}
 	db3.AllowReads()
 	for _, k := range keys {
-		kv, ok, err := db3.getPassthroughKV(k)
+		kv, ok, err := db3.getPassthroughKV(k, x)
 		panicOn(err)
 		if !ok {
 			t.Fatalf("session 3: key %q not found in passthrough", k)

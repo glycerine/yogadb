@@ -35,7 +35,7 @@ func generateBenchKeysNseed(n int, seed0 byte) [][]byte {
 // rog linux: about 75K writes/sec.
 func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	//if !testing.Short() {
-	t.Skip("long test; only run for -short because it is opposites day!")
+	//t.Skip("long test; only run for -short because it is opposites day!")
 	//}
 	dir := t.TempDir()
 	// if we are right on the border of 5 seconds, sometimes the

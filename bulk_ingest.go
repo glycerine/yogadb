@@ -187,7 +187,7 @@ func (b *bulkIngestBuilder) ensureIndex() {
 	}
 }
 
-func (b *bulkIngestBuilder) get(key string) (KV, bool) {
+func (b *bulkIngestBuilder) get(key string, x bool) (KV, bool) {
 	b.ensureIndex()
 	ref, ok := b.index[key]
 	if !ok {
