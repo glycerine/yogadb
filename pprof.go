@@ -27,7 +27,7 @@ func WriteMemProfiles(fn string) {
 	ap := pprof.Lookup("allocs")
 	//gp := pprof.Lookup("goroutine")
 
-	panicOn(hp.WriteTo(h, 1)) // 1=> text format, human readable. 0=>gzipped protobuf.
-	panicOn(ap.WriteTo(a, 1))
+	panicOn(hp.WriteTo(h, 0)) // 1=> text format, human readable. 0=>gzipped protobuf.
+	panicOn(ap.WriteTo(a, 0)) // go tool pprof needs 0
 	//panicOn(gp.WriteTo(g, 2)) // 2=> goroutine stacks printed in same form as SIGQUIT crash
 }
