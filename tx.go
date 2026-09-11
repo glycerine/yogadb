@@ -3,6 +3,7 @@ package yogadb
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -104,7 +105,7 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 	found, exact = findSeekIter(it, smod, key)
 	if found {
 		zc := findBuildKV(it)
-		resultKey := zc.Key
+		resultKey := strings.Clone(zc.Key)
 		vtyp := zc.Vtyp()
 		valueFromCache := it.valueNeedsCopy
 
@@ -122,6 +123,8 @@ func txFind(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact b
 				return
 			}
 			if kvc != nil {
+				kvc.Key = resultKey
+				kvc.Vtyp = vtyp
 				return
 			}
 		}
@@ -175,7 +178,7 @@ func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact
 		return
 	}
 	zc := findBuildKV(it)
-	resultKey := zc.Key
+	resultKey := strings.Clone(zc.Key)
 	vtyp := zc.Vtyp()
 	valueFromCache := it.valueNeedsCopy
 
@@ -191,6 +194,8 @@ func txFindIt(tx *txBase, smod SearchModifier, key string) (kvc *KVcloser, exact
 			return
 		}
 		if kvc != nil {
+			kvc.Key = resultKey
+			kvc.Vtyp = vtyp
 			return
 		}
 	}

@@ -91,8 +91,8 @@ type prefetchSpan struct {
 // one transaction. All iterators are auto-closed when the transaction
 // callback returns, but may be closed earlier via it.Close().
 //
-// Zero-copy access to cache memory is safe because the transaction
-// holds a lock (write lock for Update, read lock for View).
+// Zero-copy access to cache memory and the memtable key arena is safe because
+// the transaction holds a lock (write lock for Update, read lock for View).
 //
 // Large values (stored in VLOG) are not fetched by default. Use
 // Large() to check and FetchV() to fetch on demand.
@@ -106,7 +106,8 @@ type Iter struct {
 	db *FlexDB
 
 	// pKV points to the current key-value pair. It may point directly into
-	// cache memory, so user-facing accessors must not write through it.
+	// cache memory or hold a key borrowed from the memtable key arena, so
+	// user-facing accessors must not write through it or retain borrowed fields.
 	pKV *KV
 
 	valid      bool
@@ -1630,7 +1631,8 @@ func (it *Iter) KV() *KV {
 	return &it.kvBuf
 }
 
-// GetAnySize returns values large or small, if available.
+// GetAnySize returns values large or small, if available. The returned key has
+// the same borrowed lifetime as Key().
 func (it *Iter) GetAnySize() (key string, val []byte, vtyp uint64, hlc HLC, found bool, err error) {
 	if !it.valid || it.pKV == nil {
 		return
@@ -1647,9 +1649,9 @@ func (it *Iter) GetAnySize() (key string, val []byte, vtyp uint64, hlc HLC, foun
 	return
 }
 
-// Key returns the current key. On the fast path this is a direct pointer
-// into cache memory (zero-copy). Call dupBytes(it.Key) if you need to
-// keep a copy beyond the next Next()/Prev() call.
+// Key returns the current key. It may be borrowed from cache memory or the
+// memtable key arena. Call strings.Clone(it.Key()) if you need to keep a copy
+// beyond the next Next()/Prev()/Seek() call or beyond the transaction callback.
 func (it *Iter) Key() string {
 	if it.pKV == nil {
 		return ""

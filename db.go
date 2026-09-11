@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -3635,11 +3636,11 @@ func findSeekIter(it *Iter, smod SearchModifier, key string) (found, exact bool)
 	return true, it.Key() == key
 }
 
-// findBuildKV constructs a *KV from the iterator's current
-// position. Returns a shallow copy of the internal KV - Key
-// and Value alias cache memory (zero-copy). This is safe
-// because the iterator user holds topMutRW read or write lock,
-// preventing concurrent mutation.
+// findBuildKV constructs a *KV from the iterator's current position. Returns a
+// shallow copy of the internal KV; Key can alias the memtable arena and Value
+// can alias cache memory. This is safe only while the caller holds topMutRW.
+// API boundaries that return a KV after releasing the lock must clone Key and
+// any retained inline Value.
 func findBuildKV(it *Iter) *KV {
 	if it.pKV == nil {
 		return nil
@@ -3741,7 +3742,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 	found, exact = findSeekIter(it, smod, key)
 	if found {
 		zc := findBuildKV(it)
-		resultKey := zc.Key
+		resultKey := strings.Clone(zc.Key)
 		vtyp := zc.Vtyp()
 		valueFromCache := it.valueNeedsCopy
 
@@ -3761,6 +3762,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 				return
 			}
 			if kvc != nil {
+				kvc.Key = resultKey
 				kvc.Vtyp = vtyp
 				return
 			}
@@ -4089,7 +4091,7 @@ func (db *FlexDB) writeLockHeldDeleteRangeWithHook(beforeWrite func() error, inc
 				if !includeLarge && item.HasVPtr() {
 					return true // skip large-value keys
 				}
-				keys = append(keys, item.Key)
+				keys = append(keys, strings.Clone(item.Key))
 			}
 			return true
 		})
@@ -4161,7 +4163,7 @@ func (db *FlexDB) writeLockHeldClearWithHook(beforeWrite func() error, includeLa
 		var keys []string
 		db.mt.ks.Scan(func(item KV) bool {
 			if !item.isTombstone() && !item.HasVPtr() {
-				keys = append(keys, item.Key)
+				keys = append(keys, strings.Clone(item.Key))
 			}
 			return true
 		})

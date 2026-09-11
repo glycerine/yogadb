@@ -14,6 +14,16 @@ import (
 // INVAR: if i is the index into stable for a given key (the i-th key we added):
 // key i=0 is stored in s.keys[0             :s.stable[i]]
 // key i>0 is stored in s.keys[s.stable[i-1] :s.stable[i]]
+//
+// LIFETIME INVAR: KV.Key strings returned by kvAt, get, seekGE, seekLE,
+// Ascend, Descend, Scan, and Reverse borrow from s.keys. They are valid only
+// until this keyStable is mutated or cleared, and must not cross an API
+// boundary where the memtable lock is released. Callers that need keys to
+// outlive a memtable step must clone the string or use AscendOwnedKeys.
+//
+// AscendOwnedKeys is the escape hatch for flush/build paths: it copies keys
+// into a per-call arena, so returned keys do not borrow from s.keys and remain
+// valid after keyStable.clear.
 type keyStable struct {
 	keys   []byte // arena with a copy of all keys, stacked end to end.
 	stable []int  // stable store, this never changes, is only appended to. says where to find the string in keys[[]

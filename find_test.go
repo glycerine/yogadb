@@ -384,6 +384,85 @@ func TestFind_KVOwnership(t *testing.T) {
 	kvc.Close()
 }
 
+func TestFind_MemtableKeyOwnershipSurvivesClearAndReuse(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+	mustPut(t, db, "arena1", "value1")
+
+	kvc, exact, err := db.Find(Exact, "arena1")
+	panicOn(err)
+	if kvc == nil || !exact {
+		t.Fatalf("Find(Exact, arena1) = (%#v, %v), want hit", kvc, exact)
+	}
+	defer kvc.Close()
+
+	skipKVC, exact, err := db.Find(Exact|SKIP_VALUES, "arena1")
+	panicOn(err)
+	if skipKVC == nil || !exact {
+		t.Fatalf("Find(Exact|SKIP_VALUES, arena1) = (%#v, %v), want hit", skipKVC, exact)
+	}
+	defer skipKVC.Close()
+
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	mustPut(t, db, "zzzzzz", "value2")
+
+	if got, want := kvc.Key, "arena1"; got != want {
+		t.Fatalf("Find KVcloser key mutated after memtable clear/reuse: got %q, want %q", got, want)
+	}
+	if got, want := string(kvc.Value), "value1"; got != want {
+		t.Fatalf("Find KVcloser value mutated after memtable clear/reuse: got %q, want %q", got, want)
+	}
+	if got, want := skipKVC.Key, "arena1"; got != want {
+		t.Fatalf("Find SKIP_VALUES KVcloser key mutated after memtable clear/reuse: got %q, want %q", got, want)
+	}
+}
+
+func TestTxFind_MemtableKeyOwnershipSurvivesClearAndReuse(t *testing.T) {
+	db, _ := openTestDB(t, nil)
+	mustPut(t, db, "txmem1", "value1")
+
+	var findKVC *KVcloser
+	var findItKVC *KVcloser
+	if err := db.View(func(ro *ReadOnlyTx) error {
+		var exact bool
+		var err error
+		findKVC, exact, err = ro.Find(Exact, "txmem1")
+		if err != nil {
+			return err
+		}
+		if findKVC == nil || !exact {
+			t.Fatalf("ro.Find(Exact, txmem1) = (%#v, %v), want hit", findKVC, exact)
+		}
+
+		var it *Iter
+		findItKVC, exact, err, it = ro.FindIt(Exact, "txmem1")
+		if err != nil {
+			return err
+		}
+		if findItKVC == nil || !exact || it == nil || !it.Valid() {
+			t.Fatalf("ro.FindIt(Exact, txmem1) = (%#v, %v, it=%#v), want hit and iterator", findItKVC, exact, it)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("View: %v", err)
+	}
+	defer findKVC.Close()
+	defer findItKVC.Close()
+
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	mustPut(t, db, "yyyyyy", "value2")
+
+	if got, want := findKVC.Key, "txmem1"; got != want {
+		t.Fatalf("transaction Find KVcloser key mutated after memtable clear/reuse: got %q, want %q", got, want)
+	}
+	if got, want := findItKVC.Key, "txmem1"; got != want {
+		t.Fatalf("transaction FindIt KVcloser key mutated after memtable clear/reuse: got %q, want %q", got, want)
+	}
+}
+
 // TestFind_HLCPopulated verifies that the returned KV has a non-zero HLC.
 func TestFind_HLCPopulated(t *testing.T) {
 	db, _ := openTestDB(t, nil)
