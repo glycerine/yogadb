@@ -636,7 +636,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		if useBulkInitial {
 			old, replaced = mt.putBulk(putKV)
 		} else {
-			old, replaced = mt.put(putKV)
+			old, replaced = mt.put(putKV, x)
 		}
 		mt.empty.Store(false)
 		oldState := ksNotExists
@@ -3603,7 +3603,7 @@ func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string,
 		return 0, fmt.Errorf("flexdb: append memwal key=%q: %w", key, err)
 	}
 
-	old, replaced := db.mt.put(kv)
+	old, replaced := db.mt.put(kv, x)
 	db.mt.empty.Store(false)
 	oldState := ksNotExists
 	oldKV := old

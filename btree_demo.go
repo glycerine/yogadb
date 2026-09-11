@@ -6,15 +6,16 @@ func demo() {
 	var seed [32]byte
 	prng := newPRNG(seed)
 
+	const x = true
 	key := prng.NewCallID()
 	val := prng.NewCallID()
 	kv := KV{Key: key, Value: []byte(val), Vptr: VPtr{Length: uint64(len(val))}}
-	prev, replaced := tree.set(kv)
+	prev, replaced := tree.set(kv, x)
 	if replaced {
 		panicf("we should be fresh! instead we replace prev = '%v'", prev)
 	}
-	topWriteLocked := true
-	got, found := tree.get(key, topWriteLocked)
+
+	got, found := tree.get(key, x)
 	if !found {
 		panicf("why was just inserted key '%v' not found?", key)
 	}

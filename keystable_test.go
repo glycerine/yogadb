@@ -204,17 +204,17 @@ func TestKeyStableCompareStringBytes(t *testing.T) {
 
 func TestKeyStableSetGetAndReplaceKV(t *testing.T) {
 	s := newKeyStable(4)
+	const x = true
 	for _, kv := range []KV{
 		{Key: "b", Value: []byte("vb"), Vptr: VPtr{Length: 2}, Hlc: 1},
 		{Key: "a", Value: []byte("va"), Vptr: VPtr{Length: 2}, Hlc: 2},
 	} {
-		if old, replaced := s.set(kv); replaced {
+		if old, replaced := s.set(kv, x); replaced {
 			t.Fatalf("set(%q) replaced old KV %#v, want fresh insert", kv.Key, old)
 		}
 	}
-	const x = true
 
-	old, replaced := s.set(KV{Key: "b", Value: []byte("vb2"), Vptr: VPtr{Length: 3, Offset: 99}, Hlc: 3})
+	old, replaced := s.set(KV{Key: "b", Value: []byte("vb2"), Vptr: VPtr{Length: 3, Offset: 99}, Hlc: 3}, x)
 	if !replaced {
 		t.Fatal("set duplicate did not report replacement")
 	}
@@ -239,6 +239,8 @@ func TestKeyStableSetGetAndReplaceKV(t *testing.T) {
 
 func TestKeyStableSeekEdges(t *testing.T) {
 	s := newKeyStable(4)
+	const x = true
+
 	if _, found := s.seekGE("anything", false); found {
 		t.Fatal("seekGE on empty keyStable found a key")
 	}
@@ -247,7 +249,7 @@ func TestKeyStableSeekEdges(t *testing.T) {
 	}
 
 	for _, key := range []string{"b", "d", "f"} {
-		s.set(KV{Key: key, Value: []byte("v-" + key), Vptr: VPtr{Length: 3}, Hlc: 1})
+		s.set(KV{Key: key, Value: []byte("v-" + key), Vptr: VPtr{Length: 3}, Hlc: 1}, x)
 	}
 	for _, tc := range []struct {
 		target string
@@ -291,8 +293,9 @@ func TestKeyStableSeekEdges(t *testing.T) {
 
 func TestKeyStableSeekLEEmptySortsDirtyTable(t *testing.T) {
 	s := newKeyStable(4)
+	const x = true
 	for _, key := range []string{"m", "z", "a"} {
-		s.set(KV{Key: key, Value: []byte("v-" + key), Vptr: VPtr{Length: 3}, Hlc: 1})
+		s.set(KV{Key: key, Value: []byte("v-" + key), Vptr: VPtr{Length: 3}, Hlc: 1}, x)
 	}
 	got, found := s.seekLE("", false)
 	if !found {
@@ -305,8 +308,9 @@ func TestKeyStableSeekLEEmptySortsDirtyTable(t *testing.T) {
 
 func TestKeyStableIterationMethodsAndEarlyStop(t *testing.T) {
 	s := newKeyStable(4)
+	const x = true
 	for _, key := range []string{"c", "a", "d", "b"} {
-		s.set(KV{Key: key, Value: []byte("v-" + key), Vptr: VPtr{Length: 3}, Hlc: 1})
+		s.set(KV{Key: key, Value: []byte("v-" + key), Vptr: VPtr{Length: 3}, Hlc: 1}, x)
 	}
 
 	var scan []string
@@ -406,9 +410,10 @@ func TestKeyStableClearReusesTable(t *testing.T) {
 
 func TestKeyStableClearZerosRetainedKVSlots(t *testing.T) {
 	s := newKeyStable(2)
-	s.set(KV{Key: "a", Value: []byte("value"), Vptr: VPtr{Length: 5, Offset: 9}, Hlc: 11})
-	retained := s.kvs[:len(s.kvs)]
 	const x = true
+
+	s.set(KV{Key: "a", Value: []byte("value"), Vptr: VPtr{Length: 5, Offset: 9}, Hlc: 11}, x)
+	retained := s.kvs[:len(s.kvs)]
 	s.clear(x)
 
 	if retained[0].Key != "" || retained[0].Value != nil || retained[0].Vptr != (VPtr{}) || retained[0].Hlc != 0 {
@@ -511,7 +516,7 @@ func FuzzKeyStableInsertDeleteGet(f *testing.F) {
 			switch op % 3 {
 			case 0:
 				kv := keyStableFuzzKV(step, op, keyBytes)
-				old, replaced := s.set(kv)
+				old, replaced := s.set(kv, x)
 				wantOld, hadOld := model[key]
 				if replaced != hadOld {
 					t.Fatalf("step %d: set(%q) replaced=%v, want %v", step, keyBytes, replaced, hadOld)
@@ -563,7 +568,7 @@ func BenchmarkKeyStableSet(b *testing.B) {
 			Value: value,
 			Vptr:  VPtr{Length: uint64(len(value))},
 			Hlc:   HLC(i + 1),
-		})
+		}, x)
 	}
 	keyStableBenchKV, _ = s.get(keys[(b.N-1)&(len(keys)-1)], x)
 }
@@ -574,7 +579,7 @@ func BenchmarkKeyStableGet(b *testing.B) {
 	s := makeKeyStable(len(keys))
 	x := true
 	for i, key := range keys {
-		s.set(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)})
+		s.set(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)}, x)
 	}
 	x = false
 
@@ -592,13 +597,14 @@ func BenchmarkKeyStableGet(b *testing.B) {
 func BenchmarkKeyStableEnsureSorted(b *testing.B) {
 	keys := benchmarkKeyStableKeys(4096)
 	value := []byte("value")
+	const x = true
 
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		s := makeKeyStable(len(keys))
 		for j, key := range keys {
-			s.set(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(j + 1)})
+			s.set(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(j + 1)}, x)
 		}
 		b.StartTimer()
 		s.ensureSorted()
@@ -610,8 +616,9 @@ func BenchmarkKeyStableScan(b *testing.B) {
 	keys := benchmarkKeyStableKeys(4096)
 	value := []byte("value")
 	s := makeKeyStable(len(keys))
+	const x = true
 	for i, key := range keys {
-		s.set(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)})
+		s.set(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)}, x)
 	}
 	s.ensureSorted()
 
@@ -631,8 +638,9 @@ func BenchmarkKeyStableAscendOwnedKeys(b *testing.B) {
 	keys := benchmarkKeyStableKeys(4096)
 	value := []byte("value")
 	s := makeKeyStable(len(keys))
+	const x = true
 	for i, key := range keys {
-		s.set(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)})
+		s.set(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)}, x)
 	}
 	s.ensureSorted()
 
@@ -807,7 +815,7 @@ func randomKeyStableKey(rng *rand.Rand) []byte {
 func TestKeyStable_set_then_set(t *testing.T) {
 	s := newKeyStable(0)
 	const x = true
-	s.set(KV{Key: "a", Value: []byte{1}})
+	s.set(KV{Key: "a", Value: []byte{1}}, x)
 	kv, found0 := s.get("a", x)
 	if !found0 {
 		t.Fatalf("expected to find key 'a'")
@@ -825,7 +833,7 @@ func TestKeyStable_set_then_set(t *testing.T) {
 
 	//vv("s = '%s'", s)
 
-	oldKV, replaced := s.set(KV{Key: "a", Value: []byte{2}})
+	oldKV, replaced := s.set(KV{Key: "a", Value: []byte{2}}, x)
 
 	//vv("after set of key 'a' value:2, we have: s = '%s'", s)
 

@@ -11,7 +11,7 @@ import (
 
 // keyStable is a place to keep your keys
 // when you think of them like horses.
-// Horses live in a stable. Get it? It's a pun.
+// Horses live in a stable.
 //
 // You can also read it as: "key's table".
 //
@@ -67,7 +67,8 @@ type keyStable struct {
 
 	// get() calls can force sorts which are mutation, and
 	// get() can be concurrent from multiple readers at once. so protect
-	// the sorting.
+	// the sorting when x is false (x true means exclusive db access;
+	// that the db.topMutRW is write locked).
 	mu sync.Mutex
 }
 
@@ -291,11 +292,13 @@ func (s *keyStable) storeKVAt(stableIdx int, kv KV) {
 	s.kvs[stableIdx] = kv
 }
 
-func (s *keyStable) set(kv KV) (old KV, replaced bool) {
+func (s *keyStable) set(kv KV, x bool) (old KV, replaced bool) {
 	h := xxhash.Sum64String(kv.Key)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if !x {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
 
 	stableIdx, found := s.findStableByString(kv.Key, h)
 	//vv("set(): kv.Key='%v' was found='%v'; stableIdx=%v", kv.Key, found, stableIdx)

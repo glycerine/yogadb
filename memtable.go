@@ -70,8 +70,8 @@ func (m *memtable) vtypBytes(vtyp uint64) []byte {
 // caller should set m.empty to false after calling put()
 // (e.g. db.go:165 in Batch.Commit)
 // Returns the previous KV for the same key and whether it was replaced.
-func (m *memtable) put(kv KV) (KV, bool) {
-	old, replaced := m.ks.set(kv)
+func (m *memtable) put(kv KV, x bool) (KV, bool) {
+	old, replaced := m.ks.set(kv, x)
 	if replaced {
 		m.size -= int64(kvSizeApprox(&old))
 	}
@@ -111,10 +111,11 @@ func (m *memtable) materializeBulk() {
 	if m.bulk.count == 0 {
 		return
 	}
+	const x = true
 	for si := range m.bulk.segments {
 		seg := &m.bulk.segments[si]
 		for i, n := 0, seg.len(); i < n; i++ {
-			m.ks.set(seg.kv(i))
+			m.ks.set(seg.kv(i), x)
 		}
 	}
 	m.bulk.reset()
