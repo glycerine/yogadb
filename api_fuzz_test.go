@@ -229,8 +229,93 @@ type apiFuzzHarness struct {
 func TestYogaDBAPI(t *testing.T) {
 	startSeed, seedFromEnv := apiFuzzStartSeed(t)
 	runs := apiFuzzRunCount(t, seedFromEnv)
-	t.Logf("YogaDB API randomized test: start_seed=0x%016x runs=%d", startSeed, runs)
+	workers := apiFuzzWorkerCount(t, runs)
+	memBudget := apiFuzzMemBudget()
+	if memBudget > 0 {
+		old := debug.SetMemoryLimit(memBudget)
+		t.Cleanup(func() { debug.SetMemoryLimit(old) })
+	}
+	runMemBudget := memBudget
+	if workers > 1 && runMemBudget > 0 {
+		runMemBudget /= int64(workers)
+		if runMemBudget <= 0 {
+			runMemBudget = 1
+		}
+	}
+	t.Logf("YogaDB API randomized test: start_seed=0x%016x runs=%d goroutines=%d mem_budget=%d run_memfs_quota=%d",
+		startSeed, runs, workers, memBudget, runMemBudget)
+	if workers == 1 {
+		apiFuzzRunSequential(t, startSeed, runs, runMemBudget)
+		return
+	}
 
+	runTimes := make([]time.Duration, 0, runs)
+	var runTimesMu sync.Mutex
+	var firstFailure string
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				apiFuzzRunOne(t, startSeed, runs, i, runMemBudget, &runTimesMu, &runTimes, &firstFailure)
+			}
+		}()
+	}
+	for i := 0; i < runs; i++ {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+
+	runTimesMu.Lock()
+	if runs%10 != 0 {
+		t.Logf("api randomized complete: completed=%d/%d overall_median=%s start_seed=0x%016x",
+			len(runTimes), runs, apiFuzzMedianDuration(runTimes), startSeed)
+	}
+	failure := firstFailure
+	runTimesMu.Unlock()
+	if failure != "" {
+		t.Fatal(failure)
+	}
+}
+
+func apiFuzzRunOne(t *testing.T, startSeed uint64, runs, i int, memBudget int64, mu *sync.Mutex, runTimes *[]time.Duration, firstFailure *string) {
+	t.Helper()
+	runSeed := apiFuzzRunSeed(startSeed, i)
+	started := time.Now()
+	ok := t.Run(fmt.Sprintf("run_%04d_seed_%016x", i, runSeed), func(t *testing.T) {
+		t.Logf("api randomized run: start_seed=0x%016x run=%d seed=0x%016x", startSeed, i, runSeed)
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("api randomized panic: start_seed=0x%016x run=%d seed=0x%016x panic=%v", startSeed, i, runSeed, r)
+			}
+		}()
+		apiFuzzRun(t, runSeed, memBudget)
+	})
+	elapsed := time.Since(started)
+	var progress string
+	mu.Lock()
+	*runTimes = append(*runTimes, elapsed)
+	completed := len(*runTimes)
+	if !ok && *firstFailure == "" {
+		*firstFailure = fmt.Sprintf("api randomized failure: start_seed=0x%016x run=%d seed=0x%016x elapsed=%s; replay with YOGADB_API_FUZZ_SEED=0x%016x YOGADB_API_FUZZ_RUNS=1 go test -run '^TestYogaDBAPI$' -count=1 -v .",
+			startSeed, i, runSeed, elapsed, runSeed)
+	}
+	if completed%10 == 0 {
+		last10 := (*runTimes)[completed-10:]
+		progress = fmt.Sprintf("api randomized progress: completed=%d/%d last10_median=%s overall_median=%s start_seed=0x%016x last_seed=0x%016x",
+			completed, runs, apiFuzzMedianDuration(last10), apiFuzzMedianDuration(*runTimes), startSeed, runSeed)
+	}
+	mu.Unlock()
+	if progress != "" {
+		t.Logf("%s", progress)
+	}
+}
+
+func apiFuzzRunSequential(t *testing.T, startSeed uint64, runs int, memBudget int64) {
+	t.Helper()
 	runTimes := make([]time.Duration, 0, runs)
 	for i := 0; i < runs; i++ {
 		runSeed := apiFuzzRunSeed(startSeed, i)
@@ -242,7 +327,7 @@ func TestYogaDBAPI(t *testing.T) {
 					t.Fatalf("api randomized panic: start_seed=0x%016x run=%d seed=0x%016x panic=%v", startSeed, i, runSeed, r)
 				}
 			}()
-			apiFuzzRun(t, runSeed)
+			apiFuzzRun(t, runSeed, memBudget)
 		})
 		elapsed := time.Since(started)
 		runTimes = append(runTimes, elapsed)
@@ -262,14 +347,9 @@ func TestYogaDBAPI(t *testing.T) {
 	}
 }
 
-func apiFuzzRun(t *testing.T, seed uint64) {
+func apiFuzzRun(t *testing.T, seed uint64, memBudget int64) {
 	t.Helper()
 	data := apiFuzzDataForSeed(seed)
-	memBudget := apiFuzzMemBudget()
-	if memBudget > 0 {
-		old := debug.SetMemoryLimit(memBudget)
-		t.Cleanup(func() { debug.SetMemoryLimit(old) })
-	}
 
 	rng := rand.New(rand.NewSource(int64(seed)))
 	zipf := rand.NewZipf(rng, 1.18, 1, apiFuzzMaxValueSize)
@@ -1727,6 +1807,22 @@ func apiFuzzRunCount(t *testing.T, seedFromEnv bool) int {
 		t.Fatalf("YOGADB_API_FUZZ_RUNS=%q: want positive integer", raw)
 	}
 	return runs
+}
+
+func apiFuzzWorkerCount(t *testing.T, runs int) int {
+	t.Helper()
+	raw := os.Getenv("YOGADB_API_FUZZ_GOROUTINES")
+	if raw == "" {
+		return 1
+	}
+	workers, err := strconv.Atoi(raw)
+	if err != nil || workers <= 0 {
+		t.Fatalf("YOGADB_API_FUZZ_GOROUTINES=%q: want positive integer", raw)
+	}
+	if workers > runs {
+		return runs
+	}
+	return workers
 }
 
 func apiFuzzParseSeed(raw string) (uint64, error) {

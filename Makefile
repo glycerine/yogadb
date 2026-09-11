@@ -3,6 +3,7 @@
 
 YOGADB_API_FUZZ_RUNS ?= 100000
 YOGADB_API_FUZZ_SEED ?= 0x9e3779b97f4a7c15
+YOGADB_API_FUZZ_GOROUTINES ?= 1
 
 all: 
 	go install
@@ -18,7 +19,7 @@ fuzz:
 	#rm -rf ~/anchorfuzz/
 	#go test -c -fuzz=FuzzAnchorTreeDrift -tags memfs # for gdb.
 	#go test -tags memfs -fuzz FuzzAnchorTreeDrift -fuzztime 30m -run=xxx -timeout 35m
-	YOGADB_API_FUZZ_RUNS=$(YOGADB_API_FUZZ_RUNS) YOGADB_API_FUZZ_SEED=$(YOGADB_API_FUZZ_SEED) go test -run '^TestYogaDBAPI$$' -count=1 -timeout 20h -tags memfs -v || true
+	YOGADB_API_FUZZ_RUNS=$(YOGADB_API_FUZZ_RUNS) YOGADB_API_FUZZ_SEED=$(YOGADB_API_FUZZ_SEED) YOGADB_API_FUZZ_GOROUTINES=$(YOGADB_API_FUZZ_GOROUTINES) go test -run '^TestYogaDBAPI$$' -count=1 -timeout 20h -tags memfs -v || true
 	go test -fuzz KeyStable -fuzztime=5m -run=xxx -tags memfs || true
 	go test -fuzz FuzzBulkLoadReloadBeforeAllowReads -fuzztime 5m -run=xxx -tags memfs || true
 	go test -fuzz FuzzBulkLoadBeforeAllowReads -fuzztime 5m -run=xxx -tags memfs || true
