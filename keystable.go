@@ -31,8 +31,8 @@ import (
 // key i>0 is stored in s.keys[s.stable[i-1] :s.stable[i]]
 //
 // On returning KV.Key strings. KV.Key string returned by
-// any keystable method will be interned in the global unique package
-// string table and are safe for clients to retain.
+// any keystable method must be safe for clients to retain
+// as long as they wish.
 //
 // INVAR: returned string memory can never be tied to the memtable
 // lifetime or generation. The memtable can be flushed in the middle
@@ -254,6 +254,7 @@ func compareStringBytes(a string, b []byte) int {
 func (s *keyStable) kvAt(stableIdx int) KV {
 	kv := s.kvs[stableIdx]
 	key := s.at(stableIdx)
+	//kv.Key = string(key)
 	kv.Key = unique.Make(string(key)).Value() // intern to recycle
 	if s.valueAliasKey[stableIdx] {
 		kv.Value = key
