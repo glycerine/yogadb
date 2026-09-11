@@ -28,6 +28,10 @@ func generateBenchKeysNseed(n int, seed0 byte) [][]byte {
 	return keys
 }
 
+// TODO: worst case for keystable as memtable would be
+// alternating some inserts and some searches. maybe
+// add a test like that.
+
 // rog linux: about 75K writes/sec.
 func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	//if !testing.Short() {
