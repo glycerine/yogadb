@@ -477,9 +477,6 @@ func TestKeyStableDelKeyReleasesKVStorage(t *testing.T) {
 		s.kvs[stableIdx].Vptr != (VPtr{}) || s.kvs[stableIdx].Hlc != 0 {
 		t.Fatalf("delKey retained stale KV slot: %#v", s.kvs[stableIdx])
 	}
-	if s.valueAliasKey[stableIdx] {
-		t.Fatal("delKey left valueAliasKey true for deleted key")
-	}
 	if _, found := s.get("a"); found {
 		t.Fatal("get(a) found deleted key")
 	}
@@ -554,7 +551,6 @@ func FuzzKeyStableInsertDeleteGet(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		s := newKeyStable(0)
 		model := make(map[string]KV)
-		aliases := make(map[string]bool)
 
 		for i, step := 0, 0; i < len(data); step++ {
 			op := data[i]
@@ -573,12 +569,8 @@ func FuzzKeyStableInsertDeleteGet(f *testing.F) {
 
 			switch op % 3 {
 			case 0:
-				kv, alias, mutate := keyStableFuzzKV(step, op, keyBytes)
-				expected := keyStableExpectedKV(kv)
+				kv := keyStableFuzzKV(step, op, keyBytes)
 				old, replaced := s.set(kv)
-				if mutate != nil {
-					mutate()
-				}
 				wantOld, hadOld := model[key]
 				if replaced != hadOld {
 					t.Fatalf("step %d: set(%q) replaced=%v, want %v", step, keyBytes, replaced, hadOld)
@@ -586,17 +578,7 @@ func FuzzKeyStableInsertDeleteGet(f *testing.F) {
 				if hadOld {
 					assertKeyStableKVEqual(t, "old replacement", old, wantOld)
 				}
-				model[key] = expected
-				aliases[key] = alias
-				if alias {
-					got, found := s.get(key)
-					if !found {
-						t.Fatalf("step %d: alias set(%q) was not found immediately", step, keyBytes)
-					}
-					if !slottedInlineValueAliasesKey(got) {
-						t.Fatalf("step %d: alias set(%q) lost key/value aliasing: %#v", step, keyBytes, got)
-					}
-				}
+				model[key] = kv
 			case 1:
 				got := s.delKey(keyBytes)
 				_, want := model[key]
@@ -604,7 +586,6 @@ func FuzzKeyStableInsertDeleteGet(f *testing.F) {
 					t.Fatalf("step %d: delKey(%q) = %v, want %v", step, keyBytes, got, want)
 				}
 				delete(model, key)
-				delete(aliases, key)
 			case 2:
 				got, found := s.get(key)
 				want, wantFound := model[key]
@@ -613,18 +594,14 @@ func FuzzKeyStableInsertDeleteGet(f *testing.F) {
 				}
 				if wantFound {
 					assertKeyStableKVEqual(t, "get", got, want)
-					if aliases[key] != slottedInlineValueAliasesKey(got) {
-						t.Fatalf("step %d: get(%q) alias=%v, want %v in %#v",
-							step, keyBytes, slottedInlineValueAliasesKey(got), aliases[key], got)
-					}
 				}
 			}
 
 			if step%17 == 0 {
-				assertKeyStableKVModel(t, s, model, aliases)
+				assertKeyStableKVModel(t, s, model)
 			}
 		}
-		assertKeyStableKVModel(t, s, model, aliases)
+		assertKeyStableKVModel(t, s, model)
 	})
 }
 
@@ -792,7 +769,7 @@ func assertKeyStableMatchesModel(t *testing.T, s *keyStable, model map[string]in
 	}
 }
 
-func assertKeyStableKVModel(t *testing.T, s *keyStable, model map[string]KV, aliases map[string]bool) {
+func assertKeyStableKVModel(t *testing.T, s *keyStable, model map[string]KV) {
 	t.Helper()
 
 	wantKeys := make([]string, 0, len(model))
@@ -812,10 +789,6 @@ func assertKeyStableKVModel(t *testing.T, s *keyStable, model map[string]KV, ali
 			t.Fatalf("Scan visited unexpected key %q in %#v", kv.Key, kv)
 		}
 		assertKeyStableKVEqual(t, "Scan", kv, want)
-		if aliases[kv.Key] != slottedInlineValueAliasesKey(kv) {
-			t.Fatalf("Scan key %q alias=%v, want %v in %#v",
-				kv.Key, slottedInlineValueAliasesKey(kv), aliases[kv.Key], kv)
-		}
 		return true
 	})
 	if !slices.Equal(gotKeys, wantKeys) {
@@ -828,10 +801,6 @@ func assertKeyStableKVModel(t *testing.T, s *keyStable, model map[string]KV, ali
 			t.Fatalf("get(%q) was not found", key)
 		}
 		assertKeyStableKVEqual(t, "get", got, model[key])
-		if aliases[key] != slottedInlineValueAliasesKey(got) {
-			t.Fatalf("get(%q) alias=%v, want %v in %#v",
-				key, slottedInlineValueAliasesKey(got), aliases[key], got)
-		}
 
 		gotWhere, found := s.findKeyString(key)
 		if !found || gotWhere != where {
@@ -847,45 +816,19 @@ func assertKeyStableKVEqual(t *testing.T, label string, got, want KV) {
 	}
 }
 
-func keyStableFuzzKV(step int, op byte, keyBytes []byte) (KV, bool, func()) {
+func keyStableFuzzKV(step int, op byte, keyBytes []byte) KV {
 	key := string(keyBytes)
+	value := []byte{byte(step), byte(len(keyBytes)), op}
 	if len(keyBytes) > 0 && op&0x80 != 0 {
-		arena := slices.Clone(keyBytes)
-		key = string(arena)
-		kv := KV{
-			Key:   key,
-			Value: arena,
-			Vptr:  VPtr{Length: uint64(len(arena))},
-			Hlc:   HLC(step + 1),
-		}
-		return kv, true, func() {
-			for i := range arena {
-				arena[i] ^= 0xff
-			}
-		}
+		value = slices.Clone(keyBytes)
 	}
 
-	value := []byte{byte(step), byte(len(keyBytes)), op}
 	return KV{
 		Key:   key,
 		Value: value,
 		Vptr:  VPtr{Offset: uint64(op >> 2), Length: uint64(len(value))},
 		Hlc:   HLC(step + 1),
-	}, false, nil
-}
-
-func keyStableExpectedKV(kv KV) KV {
-	expected := KV{
-		Key:  string([]byte(kv.Key)),
-		Vptr: kv.Vptr,
-		Hlc:  kv.Hlc,
 	}
-	if slottedInlineValueAliasesKey(kv) {
-		expected.Value = []byte(expected.Key)
-	} else {
-		expected.Value = slices.Clone(kv.Value)
-	}
-	return expected
 }
 
 func benchmarkKeyStableKeys(n int) []string {

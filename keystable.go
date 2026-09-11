@@ -3,7 +3,6 @@ package yogadb
 import (
 	"bytes"
 	"sort"
-	"unique"
 
 	"github.com/cespare/xxhash/v2"
 )
@@ -43,9 +42,8 @@ type keyStable struct {
 	sorted []int  // sorted indexes of stable in ascending key order.
 	tomb   []int  // index in stable of all deleted keys
 
-	kvs           []KV   // parallel to stable; Key is kept empty to avoid retaining caller key storage.
-	valueAliasKey []bool // true when kv.Value should alias the arena key bytes.
-	hashNext      []int  // collision chain for imap; parallel to stable.
+	kvs      []KV  // parallel to stable; Key is kept empty to avoid retaining caller key storage.
+	hashNext []int // collision chain for imap; parallel to stable.
 
 	// xxhash.Sum64(key) -> index in stable.
 	imap        map[uint64]int
@@ -79,7 +77,6 @@ func (s *keyStable) clear() {
 	s.sorted = s.sorted[:0]
 	s.tomb = s.tomb[:0]
 	s.kvs = s.kvs[:0]
-	s.valueAliasKey = s.valueAliasKey[:0]
 	s.hashNext = s.hashNext[:0]
 	clear(s.imap)
 	s.sortedDirty = false
@@ -116,7 +113,6 @@ func (s *keyStable) appendKeyCommon(keylen int, h uint64) (whereInStable int) {
 	whereInStable = len(s.stable)
 	s.stable = append(s.stable, len(s.keys)+keylen)
 	s.kvs = append(s.kvs, KV{})
-	s.valueAliasKey = append(s.valueAliasKey, false)
 	s.hashNext = append(s.hashNext, s.imap[h]-1)
 	s.imap[h] = whereInStable + 1
 	s.sorted = append(s.sorted, whereInStable)
@@ -253,23 +249,11 @@ func compareStringBytes(a string, b []byte) int {
 
 func (s *keyStable) kvAt(stableIdx int) KV {
 	kv := s.kvs[stableIdx]
-	key := s.at(stableIdx)
-	//kv.Key = string(key)
-	kv.Key = unique.Make(string(key)).Value() // intern to recycle
-	if s.valueAliasKey[stableIdx] {
-		kv.Value = key
-	}
 	return kv
 }
 
 func (s *keyStable) storeKVAt(stableIdx int, kv KV) {
-	valueAliasKey := slottedInlineValueAliasesKey(kv)
-	kv.Key = ""
-	if valueAliasKey {
-		kv.Value = nil
-	}
 	s.kvs[stableIdx] = kv
-	s.valueAliasKey[stableIdx] = valueAliasKey
 }
 
 func (s *keyStable) set(kv KV) (old KV, replaced bool) {
@@ -384,7 +368,6 @@ func (s *keyStable) delKey(needle []byte) (found bool) {
 	}
 	s.tomb[tw] = deleted
 	s.kvs[deleted] = KV{}
-	s.valueAliasKey[deleted] = false
 
 	last := len(s.sorted) - 1
 	if w < last {
