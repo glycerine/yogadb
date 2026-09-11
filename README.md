@@ -43,22 +43,26 @@ Here YogaDB is 2x faster than BoltDB for a full-table-scan, and 15x faster than 
 Update: 2026 Sept 9 update to compare versus the github.com/facebook/RocksDB LSM tree:
 
 ~~~
-Results from rocksdb_bench_test.go, averaged from the 3 reported 10x samples:
+Results from rocksdb_bench_test.go micro benchmark, averaged from the 3 reported 10x samples:
   
-DB         avg load time          ns/key    full table scan keys/sec
+DB         avg load time    write ns/key    read full (4MB) table ns/key
 ━━━━━━━━━  ━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━  ━━━━━━━━━━
-YogaDB          23.84 ms      238 ns/key     4.19M/s
+YogaDB          23.84 ms       238 ns/key      4 ns/key
 ─────────  ───────────────  ──────────────  ──────────
-Pebble          85.36 ms      854 ns/key     1.17M/s
+Pebble          85.36 ms       854 ns/key     121 ns/key
 ─────────  ───────────────  ──────────────  ──────────
-RocksDB        169.01 ms    1,690 ns/key     0.59M/s
-					
+RocksDB        169.01 ms     1,690 ns/key     201 ns/key
+─────────  ───────────────  ──────────────  ──────────
+BoltDB        9877.29 ms    98,772 ns/key    15.6 ns/key
+
 Here:
 
-- YogaDB is about 7.1x faster than Facebook's RocksDB at writing.
+- YogaDB is about 7.1x faster than Facebook's RocksDB at writing. 
 - YogaDB is about 3.6x faster than CockroachDB's Pebble at writing.
+- YogaDB is about 400x faster than BoltDB at writing.
+- YogaDB is about 3.9x faster than BoltDB at reading.
 
-See 'make rocks' to benchmark. Requires linux and having built the rocksdb library
+See 'make rocks' for the benchmark. Requires linux and having built the rocksdb library
 from source in ~/go/src/github.com/facebook/rocksdb ; see also rocksdb_cgo.go.
 ~~~
 
