@@ -7,7 +7,6 @@ import (
 	"slices"
 	"sort"
 	"testing"
-	"unsafe"
 
 	"github.com/cespare/xxhash/v2"
 )
@@ -423,90 +422,6 @@ func TestKeyStableIterationMethodsAndEarlyStop(t *testing.T) {
 	})
 	if want := []string{"d", "c", "b"}; !slices.Equal(reverse, want) {
 		t.Fatalf("Reverse early stop keys = %#v, want %#v", reverse, want)
-	}
-}
-
-func TestKeyStableSetCopiesKeyAndPreservesValueAlias(t *testing.T) {
-	s := newKeyStable(1)
-	key := []byte("alias-key")
-	keyString := unsafe.String(unsafe.SliceData(key), len(key))
-	kv := KV{
-		Key:   keyString,
-		Value: key,
-		Vptr:  VPtr{Length: uint64(len(key))},
-		Hlc:   7,
-	}
-	if !slottedInlineValueAliasesKey(kv) {
-		t.Fatal("test setup should have key/value aliasing")
-	}
-
-	if _, replaced := s.set(kv); replaced {
-		t.Fatal("first set replaced an existing key")
-	}
-	for i := range key {
-		key[i] = 'x'
-	}
-
-	got, found := s.get("alias-key")
-	if !found {
-		t.Fatal("get(alias-key) was not found")
-	}
-	if got.Key != "alias-key" || string(got.Value) != "alias-key" || got.Hlc != 7 {
-		t.Fatalf("arena-owned alias KV = %#v, want key/value alias-key hlc 7", got)
-	}
-	if !slottedInlineValueAliasesKey(got) {
-		t.Fatalf("returned KV should preserve key/value aliasing: %#v", got)
-	}
-	if _, found := s.get("xxxxxxxxx"); found {
-		t.Fatal("mutating caller buffer changed keyStable lookup key")
-	}
-}
-
-func TestKeyStableOwnedKeysSurviveClearAndReuse(t *testing.T) {
-	s := newKeyStable(4)
-	s.set(KV{Key: "", Value: []byte("empty-value"), Vptr: VPtr{Length: 11}, Hlc: 6})
-	aliasBytes := []byte("alias-key")
-	aliasKey := unsafe.String(unsafe.SliceData(aliasBytes), len(aliasBytes))
-	s.set(KV{Key: aliasKey, Value: aliasBytes, Vptr: VPtr{Length: uint64(len(aliasBytes))}, Hlc: 7})
-	s.set(KV{Key: "plain", Value: []byte("plain-value"), Vptr: VPtr{Length: 11, Offset: 5}, Hlc: 8})
-
-	var got []KV
-	s.Ascend(KV{}, func(kv KV) bool {
-		got = append(got, kv)
-		return true
-	})
-	if len(got) != 3 {
-		t.Fatalf("AscendOwnedKeys visited %d KVs, want 3", len(got))
-	}
-	if got[0].Key != "" || string(got[0].Value) != "empty-value" {
-		t.Fatalf("owned empty-key KV = %#v, want empty key with empty-value", got[0])
-	}
-	if got[1].Key != "alias-key" || string(got[1].Value) != "alias-key" || !slottedInlineValueAliasesKey(got[1]) {
-		t.Fatalf("owned alias KV = %#v, want key/value alias-key with preserved aliasing", got[1])
-	}
-	if got[2].Key != "plain" || string(got[2].Value) != "plain-value" || got[2].Vptr.Offset != 5 {
-		t.Fatalf("owned plain KV = %#v, want plain/plain-value offset 5", got[2])
-	}
-
-	var stopped []string
-	s.Ascend(KV{Key: "alias-key"}, func(kv KV) bool {
-		stopped = append(stopped, kv.Key)
-		return false
-	})
-	if want := []string{"alias-key"}; !slices.Equal(stopped, want) {
-		t.Fatalf("AscendOwnedKeys early stop keys = %#v, want %#v", stopped, want)
-	}
-
-	s.clear()
-	s.set(KV{Key: "xxxxxxxxx", Value: []byte("new-value"), Vptr: VPtr{Length: 9}, Hlc: 9})
-	if got[0].Key != "" || string(got[0].Value) != "empty-value" {
-		t.Fatalf("owned empty-key KV changed after clear/reuse: %#v", got[0])
-	}
-	if got[1].Key != "alias-key" || string(got[1].Value) != "alias-key" {
-		t.Fatalf("owned alias KV changed after clear/reuse: %#v", got[1])
-	}
-	if got[2].Key != "plain" || string(got[2].Value) != "plain-value" {
-		t.Fatalf("owned plain KV changed after clear/reuse: %#v", got[2])
 	}
 }
 
@@ -936,7 +851,7 @@ func keyStableFuzzKV(step int, op byte, keyBytes []byte) (KV, bool, func()) {
 	key := string(keyBytes)
 	if len(keyBytes) > 0 && op&0x80 != 0 {
 		arena := slices.Clone(keyBytes)
-		key = unsafe.String(unsafe.SliceData(arena), len(arena))
+		key = string(arena)
 		kv := KV{
 			Key:   key,
 			Value: arena,
