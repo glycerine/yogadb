@@ -78,13 +78,13 @@ Commands:
 Common flags:
   -dataset     Dataset profile: udb, zippydb, sys (default: udb)
   -dir         Database directory (default: /tmp/yogabench)
-  -threads     Number of goroutines (default: %d)
+  -threads     Number of goroutines (default: %v)
   -count       Exact operation/fill count; disables fill-to-size preload behavior
   -gb          Fill-size target in GiB (default: %v; fill phases keep writing until exceeded unless -count is set)
   -nodisk      Run in-memory only (no disk I/O)
   -duration    how long to run. (default: 60s)
   -workload    A-F or ALL for ycsb
-`, defaultDatasetGB, runtime.NumCPU())
+`, runtime.NumCPU(), defaultDatasetGB)
 }
 
 // DatasetProfile defines a workload's key/value sizes and default operation count.
