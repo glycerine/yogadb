@@ -501,17 +501,22 @@ allows one writer at a time, and multiple readers can read
 simultaneously (when there is no writer).
 
 Read-only (View) and read-write (Update) transactions are available.
+Inside a write transaction, `Clear(true)` and `DeleteRange` calls that return
+`allGone=true` are applied immediately and become the new rollback baseline for
+that same transaction. Later write operations are allowed and behave like a
+fresh write transaction: commit keeps them, while rollback discards only those
+later writes. The all-gone clear/delete itself is not rolled back.
 
 ~~~
 
   In db.go:
    - topMutRW sync.RWMutex in FlexDB for serializing write transactions
    - Tx struct with atomic state, COW btree snapshots, write buffer
-   - db.Update(fn) - serializable read-write transaction (single-writer via txMu)
+   - db.Update(fn) / db.BeginUpdate() - serializable read-write transaction
    - db.View(fn) - concurrent read-only transaction
    - tx.Get() - reads write buffer > memtable snapshots > FlexSpace
    - tx.Put() / tx.Delete() - buffers writes locally (Update only)
-   - tx.Commit() / tx.Cancel() - first-wins semantics
+   - tx.Commit() / tx.Rollback() - first-wins semantics
           
  Tests of Tx: flexdb_tx_test.go (11 tests):
    - Double Commit, Double Cancel (both idempotent)

@@ -442,9 +442,7 @@ func (h *apiFuzzHarness) updateCommit() {
 	ops := h.randomOps(1+h.rng.Intn(8), false)
 	pending := apiFuzzCloneModel(h.model)
 	err := h.db.Update(func(tx *WriteTx) error {
-		if h.applyTxOps(tx, pending, ops, false) {
-			return nil
-		}
+		_ = h.applyTxOps(tx, pending, ops, false)
 		h.exerciseWriteTxReaders(tx, pending)
 		return nil
 	})
@@ -459,15 +457,12 @@ func (h *apiFuzzHarness) updateCommit() {
 func (h *apiFuzzHarness) updateRollback() {
 	ops := h.randomOps(1+h.rng.Intn(8), false)
 	before := apiFuzzCloneModel(h.model)
-	terminal := false
-	terminalModel := before
+	rollbackBaseline := before
 	sentinel := errors.New("api fuzz rollback")
 	err := h.db.Update(func(tx *WriteTx) error {
 		pending := apiFuzzCloneModel(h.model)
-		if h.applyTxOps(tx, pending, ops, false) {
-			terminal = true
-			terminalModel = apiFuzzCloneModel(pending)
-			return sentinel
+		if baseline := h.applyTxOps(tx, pending, ops, false); baseline != nil {
+			rollbackBaseline = baseline
 		}
 		h.exerciseWriteTxReaders(tx, pending)
 		return sentinel
@@ -476,11 +471,7 @@ func (h *apiFuzzHarness) updateRollback() {
 		apiFuzzFatalIfNotQuota(h.t, err, "Update rollback")
 		return
 	}
-	if terminal {
-		h.model = terminalModel
-	} else {
-		h.model = before
-	}
+	h.model = rollbackBaseline
 	h.verifyModel("after Update rollback")
 }
 
@@ -492,10 +483,9 @@ func (h *apiFuzzHarness) beginUpdateManual() {
 	}
 	ops := h.randomOps(1+h.rng.Intn(8), false)
 	pending := apiFuzzCloneModel(h.model)
-	if h.applyTxOps(tx, pending, ops, false) {
-		h.model = pending
-		h.verifyModel("after terminal BeginUpdate")
-		return
+	rollbackBaseline := h.model
+	if baseline := h.applyTxOps(tx, pending, ops, false); baseline != nil {
+		rollbackBaseline = baseline
 	}
 	h.exerciseWriteTxReaders(tx, pending)
 	if h.rng.Intn(2) == 0 {
@@ -512,6 +502,7 @@ func (h *apiFuzzHarness) beginUpdateManual() {
 			apiFuzzFatalIfNotQuota(h.t, err, "WriteTx.Rollback")
 			return
 		}
+		h.model = rollbackBaseline
 		if err := tx.Commit(); err != nil {
 			h.t.Fatalf("Commit after Rollback err=%v, want nil", err)
 		}
@@ -569,18 +560,18 @@ func (h *apiFuzzHarness) crashTransactionAtomicity() {
 	h.verifyModel("after committed transaction crash probe")
 }
 
-func (h *apiFuzzHarness) applyTxOps(tx *WriteTx, model map[string]apiFuzzValue, ops []apiFuzzOp, noRangeOrClear bool) (terminal bool) {
+func (h *apiFuzzHarness) applyTxOps(tx *WriteTx, model map[string]apiFuzzValue, ops []apiFuzzOp, noRangeOrClear bool) map[string]apiFuzzValue {
 	for i, op := range ops {
 		if op.delete {
 			if err := tx.Delete(op.key); err != nil {
 				apiFuzzFatalIfNotQuota(h.t, err, "tx.Delete")
-				return false
+				return nil
 			}
 			delete(model, op.key)
 		} else {
 			if _, err := tx.Put(op.key, op.value, op.vtyp); err != nil {
 				apiFuzzFatalIfNotQuota(h.t, err, "tx.Put")
-				return false
+				return nil
 			}
 			model[op.key] = apiFuzzValue{value: apiFuzzCopy(op.value), vtyp: op.vtyp}
 		}
@@ -589,7 +580,7 @@ func (h *apiFuzzHarness) applyTxOps(tx *WriteTx, model map[string]apiFuzzValue, 
 		}
 	}
 	if noRangeOrClear {
-		return false
+		return nil
 	}
 	switch h.rng.Intn(6) {
 	case 0:
@@ -600,7 +591,7 @@ func (h *apiFuzzHarness) applyTxOps(tx *WriteTx, model map[string]apiFuzzValue, 
 			return value, true, false, vtyp
 		}); err != nil {
 			apiFuzzFatalIfNotQuota(h.t, err, "tx.Merge")
-			return false
+			return nil
 		}
 		model[key] = apiFuzzValue{value: apiFuzzCopy(value), vtyp: vtyp}
 	case 1:
@@ -613,20 +604,33 @@ func (h *apiFuzzHarness) applyTxOps(tx *WriteTx, model map[string]apiFuzzValue, 
 		_, allGone, err := tx.DeleteRange(includeLarge, beg, end, true, true)
 		if err != nil {
 			apiFuzzFatalIfNotQuota(h.t, err, "tx.DeleteRange")
-			return false
+			return nil
+		}
+		if allGone {
+			for key := range model {
+				delete(model, key)
+			}
+			baseline := apiFuzzCloneModel(model)
+			return h.applyPostAllGoneTxOps(tx, model, baseline)
 		}
 		for key, rec := range model {
 			if key >= beg && key <= end && (includeLarge || len(rec.value) <= vlogInlineThreshold) {
 				delete(model, key)
 			}
 		}
-		if allGone {
-			return true
-		}
 	case 2:
-		if _, err := tx.Clear(false); err != nil {
-			apiFuzzFatalIfNotQuota(h.t, err, "tx.Clear(false)")
-			return false
+		includeLarge := h.rng.Intn(4) == 0
+		allGone, err := tx.Clear(includeLarge)
+		if err != nil {
+			apiFuzzFatalIfNotQuota(h.t, err, "tx.Clear")
+			return nil
+		}
+		if allGone {
+			for key := range model {
+				delete(model, key)
+			}
+			baseline := apiFuzzCloneModel(model)
+			return h.applyPostAllGoneTxOps(tx, model, baseline)
 		}
 		for key, rec := range model {
 			if len(rec.value) <= vlogInlineThreshold {
@@ -634,7 +638,129 @@ func (h *apiFuzzHarness) applyTxOps(tx *WriteTx, model map[string]apiFuzzValue, 
 			}
 		}
 	}
-	return false
+	return nil
+}
+
+func (h *apiFuzzHarness) applyPostAllGoneTxOps(tx *WriteTx, model, baseline map[string]apiFuzzValue) map[string]apiFuzzValue {
+	for i := 0; i < 1+h.rng.Intn(4); i++ {
+		key := apiFuzzKey(h.rng.Intn(apiFuzzKeyCount))
+		switch h.rng.Intn(5) {
+		case 0:
+			value := h.randomValue()
+			vtyp := h.randomVtyp()
+			if _, err := tx.Put(key, value, vtyp); err != nil {
+				apiFuzzFatalIfNotQuota(h.t, err, "tx.Put after allGone")
+				return baseline
+			}
+			model[key] = apiFuzzValue{value: apiFuzzCopy(value), vtyp: vtyp}
+			h.expectTxGet(tx, model, key)
+		case 1:
+			if err := tx.Delete(key); err != nil {
+				apiFuzzFatalIfNotQuota(h.t, err, "tx.Delete after allGone")
+				return baseline
+			}
+			delete(model, key)
+			h.expectTxGet(tx, model, key)
+		case 2:
+			if !h.txMergeOne(tx, model, key, "after allGone") {
+				return baseline
+			}
+			h.expectTxGet(tx, model, key)
+		case 3:
+			beg := apiFuzzRangeKey(h.rng.Intn(apiFuzzKeyCount + 2))
+			end := apiFuzzRangeKey(h.rng.Intn(apiFuzzKeyCount + 2))
+			if beg > end {
+				beg, end = end, beg
+			}
+			begInclusive := h.rng.Intn(2) == 0
+			endInclusive := h.rng.Intn(2) == 0
+			includeLarge := h.rng.Intn(2) == 0
+			_, allGone, err := tx.DeleteRange(includeLarge, beg, end, begInclusive, endInclusive)
+			if err != nil {
+				apiFuzzFatalIfNotQuota(h.t, err, "tx.DeleteRange after allGone")
+				return baseline
+			}
+			if allGone {
+				for key := range model {
+					delete(model, key)
+				}
+				baseline = apiFuzzCloneModel(model)
+				continue
+			}
+			for key, rec := range model {
+				if apiFuzzInDeleteRange(key, beg, end, begInclusive, endInclusive) && (includeLarge || len(rec.value) <= vlogInlineThreshold) {
+					delete(model, key)
+				}
+			}
+		case 4:
+			includeLarge := h.rng.Intn(2) == 0
+			allGone, err := tx.Clear(includeLarge)
+			if err != nil {
+				apiFuzzFatalIfNotQuota(h.t, err, "tx.Clear after allGone")
+				return baseline
+			}
+			if allGone {
+				for key := range model {
+					delete(model, key)
+				}
+				baseline = apiFuzzCloneModel(model)
+				continue
+			}
+			for key, rec := range model {
+				if len(rec.value) <= vlogInlineThreshold {
+					delete(model, key)
+				}
+			}
+		}
+	}
+	return baseline
+}
+
+func (h *apiFuzzHarness) txMergeOne(tx *WriteTx, model map[string]apiFuzzValue, key, phase string) bool {
+	wantOld, wantExists := model[key]
+	mode := h.rng.Intn(4)
+	newValue := h.randomValue()
+	newVtyp := h.randomVtyp()
+	called := false
+	err := tx.Merge(key, func(oldVal []byte, exists bool, oldVtyp uint64) ([]byte, bool, bool, uint64) {
+		called = true
+		if exists != wantExists {
+			h.t.Fatalf("tx.Merge %s callback key=%q exists=%v want %v; model keys=%v",
+				phase, key, exists, wantExists, apiFuzzSortedKeys(model))
+		}
+		if exists && (!bytes.Equal(oldVal, wantOld.value) || oldVtyp != wantOld.vtyp) {
+			h.t.Fatalf("tx.Merge %s callback old value mismatch for %q: len=%d vtyp=%#x want len=%d vtyp=%#x",
+				phase, key, len(oldVal), oldVtyp, len(wantOld.value), wantOld.vtyp)
+		}
+		switch mode {
+		case 0:
+			return nil, false, false, 0
+		case 1:
+			return newValue, true, false, newVtyp
+		case 2:
+			return nil, false, true, 0
+		default:
+			return append(apiFuzzCopy(oldVal), byte(len(oldVal))), true, false, oldVtyp ^ uint64(len(oldVal)+1)
+		}
+	})
+	if err != nil {
+		apiFuzzFatalIfNotQuota(h.t, err, "tx.Merge "+phase)
+		return false
+	}
+	if !called {
+		h.t.Fatal("tx.Merge callback was not called " + phase)
+	}
+	switch mode {
+	case 1:
+		model[key] = apiFuzzValue{value: apiFuzzCopy(newValue), vtyp: newVtyp}
+	case 2:
+		delete(model, key)
+	case 3:
+		old := wantOld.value
+		oldVtyp := wantOld.vtyp
+		model[key] = apiFuzzValue{value: append(apiFuzzCopy(old), byte(len(old))), vtyp: oldVtyp ^ uint64(len(old)+1)}
+	}
+	return true
 }
 
 func (h *apiFuzzHarness) exerciseWriteTxReaders(tx *WriteTx, model map[string]apiFuzzValue) {

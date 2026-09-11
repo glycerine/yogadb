@@ -231,7 +231,6 @@ type WriteTx struct {
 	txBase
 	walTxnBegun     bool
 	done            bool
-	terminalPanic   string
 	managedByUpdate bool
 	beginLiveKeys   int64
 	beginBigKeys    int64
@@ -246,9 +245,6 @@ var ErrWriteTxClosed = errors.New("yogadb: write transaction already committed o
 
 func (tx *WriteTx) checkOpen() error {
 	if tx.done {
-		if tx.terminalPanic != "" {
-			panic(tx.terminalPanic)
-		}
 		return ErrWriteTxClosed
 	}
 	return nil
@@ -288,12 +284,6 @@ func (tx *WriteTx) finish() {
 	}
 }
 
-func (tx *WriteTx) finishAfterAllGone(op string) {
-	tx.walTxnBegun = false
-	tx.terminalPanic = fmt.Sprintf("yogadb: WriteTx was committed by non-rollbackable %s(allGone=true); no further operations are allowed", op)
-	tx.finish()
-}
-
 // Rollback discards all writes made in this WriteTx. It is safe to defer:
 // if Commit already won, Rollback is a no-op.
 func (tx *WriteTx) Rollback() error {
@@ -323,6 +313,14 @@ func (tx *WriteTx) rollbackOpen() error {
 		return fmt.Errorf("flexdb: rollback truncate memwal: %w", err)
 	}
 	return nil
+}
+
+func (tx *WriteTx) resetRollbackBaseline() {
+	tx.beginLiveKeys = tx.db.liveKeys
+	tx.beginBigKeys = tx.db.liveBigKeys
+	tx.beginSmallKeys = tx.db.liveSmallKeys
+	tx.beginAutoDel = atomic.LoadInt64(&tx.db.autoVacuumDeletedBytes)
+	tx.beginAutoVLOG = atomic.LoadInt64(&tx.db.autoVacuumVLOGDeletedBytes)
 }
 
 // Get retrieves the value for key. Returns (nil, false, nil) if not found
@@ -479,17 +477,19 @@ func (tx *WriteTx) LenBigSmall() (big, small int64) {
 // references are invalidated.
 //
 // Transactional caveat: when allGone is true inside a WriteTx, DeleteRange
-// immediately commits this destructive operation and closes the WriteTx. Any
-// later use of the same WriteTx panics, except Commit/Rollback which remain
-// safe no-ops for cleanup. This avoids logging the whole database just to
-// support rollback of a full keyspace delete.
+// immediately applies this destructive operation and makes the resulting
+// database state the new rollback baseline for the same WriteTx. Later writes
+// in the transaction are allowed and behave as if a fresh WriteTx had just
+// started: Commit keeps them, while Rollback discards only those later writes.
+// The allGone delete itself is not rolled back.
 func (tx *WriteTx) DeleteRange(includeLarge bool, begKey, endKey string, begInclusive, endInclusive bool) (n int64, allGone bool, err error) {
 	if err := tx.checkOpen(); err != nil {
 		return 0, false, err
 	}
 	n, allGone, err = tx.db.writeLockHeldDeleteRangeWithHook(tx.ensureWalTxn, includeLarge, begKey, endKey, begInclusive, endInclusive)
 	if allGone && err == nil {
-		tx.finishAfterAllGone("DeleteRange")
+		tx.walTxnBegun = false
+		tx.resetRollbackBaseline()
 	}
 	return
 }
@@ -502,17 +502,19 @@ func (tx *WriteTx) DeleteRange(includeLarge bool, begKey, endKey string, begIncl
 // writes in the same WriteTx.
 //
 // Transactional caveat: when allGone is true inside a WriteTx, Clear
-// immediately commits this destructive operation and closes the WriteTx. Any
-// later use of the same WriteTx panics, except Commit/Rollback which remain
-// safe no-ops for cleanup. This avoids logging the whole database just to
-// support rollback of a full keyspace clear.
+// immediately applies this destructive operation and makes the resulting
+// database state the new rollback baseline for the same WriteTx. Later writes
+// in the transaction are allowed and behave as if a fresh WriteTx had just
+// started: Commit keeps them, while Rollback discards only those later writes.
+// The allGone clear itself is not rolled back.
 func (tx *WriteTx) Clear(includeLarge bool) (allGone bool, err error) {
 	if err := tx.checkOpen(); err != nil {
 		return false, err
 	}
 	allGone, err = tx.db.writeLockHeldClearWithHook(tx.ensureWalTxn, includeLarge)
 	if allGone && err == nil {
-		tx.finishAfterAllGone("Clear")
+		tx.walTxnBegun = false
+		tx.resetRollbackBaseline()
 	}
 	return
 }
@@ -788,8 +790,10 @@ func (roTx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, callback f
 // discard this transaction's memtable changes. If fn returns nil, Update calls
 // Commit. If fn returns an error, Update calls Rollback and returns the error.
 // If fn calls Clear(true) or a DeleteRange that returns allGone=true, that
-// destructive operation commits immediately, closes the WriteTx, and later use
-// of rw panics; callback code should return immediately after such a call.
+// destructive operation immediately becomes the rollback baseline for the same
+// WriteTx. Later writes are allowed and behave like writes in a fresh
+// transaction: Commit keeps them, while Rollback discards only those later
+// writes.
 //
 // Do NOT call db.Put/db.Get/db.Delete/db.Sync inside fn - use rw
 // methods on the WriteTx instead (to avoid deadlock).
