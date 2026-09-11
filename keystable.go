@@ -315,6 +315,7 @@ func (s *keyStable) seekLE(target string, strict bool) (KV, bool) {
 	if len(s.sorted) == 0 {
 		return KV{}, false
 	}
+	s.ensureSorted()
 	if target == "" {
 		return s.kvAt(s.sorted[len(s.sorted)-1]), true
 	}
