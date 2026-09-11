@@ -353,6 +353,20 @@ func TestKeyStableSeekEdges(t *testing.T) {
 	}
 }
 
+func TestKeyStableSeekLEEmptySortsDirtyTable(t *testing.T) {
+	s := newKeyStable(4)
+	for _, key := range []string{"m", "z", "a"} {
+		s.set(KV{Key: key, Value: []byte("v-" + key), Vptr: VPtr{Length: 3}, Hlc: 1})
+	}
+	got, found := s.seekLE("", false)
+	if !found {
+		t.Fatal("seekLE empty on dirty populated table did not find a key")
+	}
+	if got.Key != "z" {
+		t.Fatalf("seekLE empty on dirty table = %q, want z", got.Key)
+	}
+}
+
 func TestKeyStableIterationMethodsAndEarlyStop(t *testing.T) {
 	s := newKeyStable(4)
 	for _, key := range []string{"c", "a", "d", "b"} {
