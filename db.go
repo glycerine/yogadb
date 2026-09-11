@@ -5558,7 +5558,7 @@ func (db *FlexDB) logRedo(fd vfs.File, fileSize int64) error {
 		}
 	}
 	if inTxn {
-		vv("flexdb: logRedo: discarding incomplete GreenMEMWAL transaction with %d pending KVs", len(pending))
+		//vv("flexdb: logRedo: discarding incomplete GreenMEMWAL transaction with %d pending KVs", len(pending))
 	}
 	return nil
 }
