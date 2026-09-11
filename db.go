@@ -2,10 +2,10 @@ package yogadb
 
 // yogadb/db.go - Go port of flexspace/flexdb.c
 // FlexDB: a persistent ordered key-value store backed by FlexSpace.
-// Uses keyStable's sorted key arena for the in-memory write buffer (memtable).
+// Uses keyUniq's sorted interned-key table for the in-memory write buffer (memtable).
 //
 // Architecture:
-//   Active Memtable (keyStable + WAL) -> (flush) -> FlexSpace
+//   Active Memtable (keyUniq + WAL) -> (flush) -> FlexSpace
 //   Reads: check active memtable -> check inactive memtable -> check FlexSpace via sparse index
 //   Crash recovery: rebuild sparse index from FlexSpace tags, replay WAL logs.
 
@@ -19,7 +19,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -3637,10 +3636,9 @@ func findSeekIter(it *Iter, smod SearchModifier, key string) (found, exact bool)
 }
 
 // findBuildKV constructs a *KV from the iterator's current position. Returns a
-// shallow copy of the internal KV; Key can alias the memtable arena and Value
-// can alias cache memory. This is safe only while the caller holds topMutRW.
-// API boundaries that return a KV after releasing the lock must clone Key and
-// any retained inline Value.
+// shallow copy of the internal KV; Key is an ordinary immutable Go string, but
+// Value can alias cache memory. API boundaries that return a KV after releasing
+// the lock must copy any retained inline Value.
 func findBuildKV(it *Iter) *KV {
 	if it.pKV == nil {
 		return nil
@@ -3742,7 +3740,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 	found, exact = findSeekIter(it, smod, key)
 	if found {
 		zc := findBuildKV(it)
-		resultKey := strings.Clone(zc.Key)
+		resultKey := zc.Key
 		vtyp := zc.Vtyp()
 		valueFromCache := it.valueNeedsCopy
 
@@ -4078,10 +4076,11 @@ func (db *FlexDB) writeLockHeldDeleteRangeWithHook(beforeWrite func() error, inc
 	if !db.mt.empty {
 		// Collect keys first since writeLockHeldPut mutates the memtable.
 		var keys []string
-		db.mt.ks.Ascend(KV{Key: begKey}, func(item KV) bool {
-			if !deleteRangeInBounds(item.Key, begKey, endKey, begInclusive, endInclusive) {
+		db.mt.ks.Ascend(KVX{Key: keyH(begKey)}, func(item KVX) bool {
+			key := keyString(item.Key)
+			if !deleteRangeInBounds(key, begKey, endKey, begInclusive, endInclusive) {
 				// Past endKey - stop iteration.
-				if deleteRangePastEnd(item.Key, endKey, endInclusive) {
+				if deleteRangePastEnd(key, endKey, endInclusive) {
 					return false
 				}
 				// Before begKey (exclusive match) - skip but continue.
@@ -4091,7 +4090,7 @@ func (db *FlexDB) writeLockHeldDeleteRangeWithHook(beforeWrite func() error, inc
 				if !includeLarge && item.HasVPtr() {
 					return true // skip large-value keys
 				}
-				keys = append(keys, strings.Clone(item.Key))
+				keys = append(keys, key)
 			}
 			return true
 		})
@@ -4161,9 +4160,9 @@ func (db *FlexDB) writeLockHeldClearWithHook(beforeWrite func() error, includeLa
 	// Phase 1: Tombstone small-value keys in the memtable.
 	if !db.mt.empty {
 		var keys []string
-		db.mt.ks.Scan(func(item KV) bool {
+		db.mt.ks.Scan(func(item KVX) bool {
 			if !item.isTombstone() && !item.HasVPtr() {
-				keys = append(keys, strings.Clone(item.Key))
+				keys = append(keys, keyString(item.Key))
 			}
 			return true
 		})
@@ -4196,25 +4195,25 @@ func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey string, begInclusive
 	// Check memtable min/max keys.
 	if !db.mt.empty {
 		// Min key (first in ascending order).
-		var minKV KV
+		var minKV KVX
 		var minFound bool
-		db.mt.ks.Scan(func(item KV) bool {
+		db.mt.ks.Scan(func(item KVX) bool {
 			minKV = item
 			minFound = true
 			return false
 		})
-		if minFound && !inBounds(minKV.Key) {
+		if minFound && !inBounds(keyString(minKV.Key)) {
 			return false
 		}
 		// Max key (first in descending order).
-		var maxKV KV
+		var maxKV KVX
 		var maxFound bool
-		db.mt.ks.Reverse(func(item KV) bool {
+		db.mt.ks.Reverse(func(item KVX) bool {
 			maxKV = item
 			maxFound = true
 			return false
 		})
-		if maxFound && !inBounds(maxKV.Key) {
+		if maxFound && !inBounds(keyString(maxKV.Key)) {
 			return false
 		}
 	}
@@ -5640,8 +5639,8 @@ func (db *FlexDB) flushMemtable() error {
 	batch := make([]KV, 0, memtableFlushBatch)
 	var err error
 
-	m.ks.AscendOwnedKeys(KV{}, func(item KV) bool {
-		batch = append(batch, item)
+	m.ks.AscendOwnedKeys(KVX{}, func(item KVX) bool {
+		batch = append(batch, item.kv())
 		if len(batch) >= memtableFlushBatch {
 			for _, kv := range batch {
 				if err = db.putPassthrough(kv, &nh); err != nil {
@@ -6083,7 +6082,9 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 			}
 		}
 	} else {
-		m.ks.AscendOwnedKeys(KV{}, consumeItem)
+		m.ks.AscendOwnedKeys(KVX{}, func(item KVX) bool {
+			return consumeItem(item.kv())
+		})
 	}
 	if err != nil {
 		return true, err

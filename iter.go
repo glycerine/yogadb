@@ -91,8 +91,9 @@ type prefetchSpan struct {
 // one transaction. All iterators are auto-closed when the transaction
 // callback returns, but may be closed earlier via it.Close().
 //
-// Zero-copy access to cache memory and the memtable key arena is safe because
-// the transaction holds a lock (write lock for Update, read lock for View).
+// Zero-copy access to cache memory is safe because the transaction holds a
+// lock (write lock for Update, read lock for View). Memtable keys are interned
+// strings; values may still be cache-backed or iterator-owned.
 //
 // Large values (stored in VLOG) are not fetched by default. Use
 // Large() to check and FetchV() to fetch on demand.
@@ -106,8 +107,8 @@ type Iter struct {
 	db *FlexDB
 
 	// pKV points to the current key-value pair. It may point directly into
-	// cache memory or hold a key borrowed from the memtable key arena, so
-	// user-facing accessors must not write through it or retain borrowed fields.
+	// cache memory, so user-facing accessors must not write through it or retain
+	// borrowed value fields.
 	pKV *KV
 
 	valid      bool
@@ -291,16 +292,18 @@ func (it *Iter) currentValueBytes(src []byte) []byte {
 
 // ====================== memtable one-shot seek helpers ======================
 
-// keyStableSeekGE does a one-shot seek in a keyStable: finds the first item >= target.
+// keyUniqSeekGE does a one-shot seek in a keyUniq: finds the first item >= target.
 // If strict is true, skips exact matches (finds first item > target).
-func keyStableSeekGE(ks *keyStable, target string, strict bool) (KV, bool) {
-	return ks.seekGE(target, strict)
+func keyUniqSeekGE(ks *keyUniq, target string, strict bool) (KV, bool) {
+	kvx, ok := ks.seekGE(target, strict)
+	return kvx.kv(), ok
 }
 
-// keyStableSeekLE does a one-shot seek in a keyStable: finds the last item <= target.
+// keyUniqSeekLE does a one-shot seek in a keyUniq: finds the last item <= target.
 // If strict is true, skips exact matches (finds last item < target).
-func keyStableSeekLE(ks *keyStable, target string, strict bool) (KV, bool) {
-	return ks.seekLE(target, strict)
+func keyUniqSeekLE(ks *keyUniq, target string, strict bool) (KV, bool) {
+	kvx, ok := ks.seekLE(target, strict)
+	return kvx.kv(), ok
 }
 
 // ====================== FlexSpace one-shot seek helpers ======================
@@ -866,7 +869,7 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 		var candidates [2]KV
 		var have [2]bool
 
-		candidates[0], have[0] = keyStableSeekGE(&db.mt.ks, target, strict)
+		candidates[0], have[0] = keyUniqSeekGE(&db.mt.ks, target, strict)
 		var seekErr error
 		candidates[1], have[1], seekErr = db.flexSpaceSeekGE(target, strict)
 		if seekErr != nil {
@@ -1029,7 +1032,7 @@ func (it *Iter) servePrefetchReverse() bool {
 	return false
 }
 
-// mergedSeekGEFastFlexSpace performs a merged seek using one-shot keyStable seeks for
+// mergedSeekGEFastFlexSpace performs a merged seek using one-shot keyUniq seeks for
 // memtable and the stateful FlexSpace cursor. The cursor should already be
 // positioned at or past the target. Caller must hold topMutRW.RLock().
 func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, vtyp uint64, found bool) {
@@ -1052,7 +1055,7 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, v
 		var have [2]bool
 
 		// Memtable: one-shot seek
-		candidates[0], have[0] = keyStableSeekGE(&db.mt.ks, target, strict)
+		candidates[0], have[0] = keyUniqSeekGE(&db.mt.ks, target, strict)
 
 		// FlexSpace: use stateful cursor
 		it.positionFlexCursorForSeek(target, strict)
@@ -1205,7 +1208,7 @@ func (db *FlexDB) mergedSeekLE(target string, strict bool) (kv *KV, found bool) 
 		var candidates [2]KV
 		var have [2]bool
 
-		candidates[0], have[0] = keyStableSeekLE(&db.mt.ks, target, strict)
+		candidates[0], have[0] = keyUniqSeekLE(&db.mt.ks, target, strict)
 		var seekErr error
 		candidates[1], have[1], seekErr = db.flexSpaceSeekLE(target, strict)
 		if seekErr != nil {
@@ -1618,7 +1621,7 @@ func (it *Iter) Valid() bool { return it.valid }
 // from cache memory). It does not fetch large values from the VLOG.
 // The returned pointer is owned by the iterator
 // and must not be retained past the next Next()/Prev()/Seek() call.
-// Copy Key and Value if you need them to outlive the iterator step.
+// Copy Value if you need it to outlive the iterator step.
 func (it *Iter) KV() *KV {
 	if it.pKV == nil || !it.valid {
 		return nil
@@ -1631,8 +1634,7 @@ func (it *Iter) KV() *KV {
 	return &it.kvBuf
 }
 
-// GetAnySize returns values large or small, if available. The returned key has
-// the same borrowed lifetime as Key().
+// GetAnySize returns values large or small, if available.
 func (it *Iter) GetAnySize() (key string, val []byte, vtyp uint64, hlc HLC, found bool, err error) {
 	if !it.valid || it.pKV == nil {
 		return
@@ -1649,9 +1651,7 @@ func (it *Iter) GetAnySize() (key string, val []byte, vtyp uint64, hlc HLC, foun
 	return
 }
 
-// Key returns the current key. It may be borrowed from cache memory or the
-// memtable key arena. Call strings.Clone(it.Key()) if you need to keep a copy
-// beyond the next Next()/Prev()/Seek() call or beyond the transaction callback.
+// Key returns the current key as an immutable Go string.
 func (it *Iter) Key() string {
 	if it.pKV == nil {
 		return ""

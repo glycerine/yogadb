@@ -14,8 +14,8 @@ import (
 // ====================== memtable ======================
 
 type memtable struct {
-	// backing in-memory sorted key arena.
-	ks keyStable
+	// backing in-memory sorted interned-key table.
+	ks keyUniq
 	// bulk is used only for pristine initial batch loads. It
 	// avoid per-key sorted-table insertion until a read requires materialization or
 	// Sync streams the sorted entries directly to FlexSpace.
@@ -38,7 +38,7 @@ type memtable struct {
 
 func newMemtable(memWalFD vfs.File) *memtable {
 	return &memtable{
-		ks:                makeKeyStable(0),
+		ks:                makeKeyUniq(0),
 		memWalFD:          memWalFD,
 		memWalBuf:         make([]byte, 0, memtableWalBufCap),
 		memWalWriteOffset: memWalHeaderSize,
@@ -68,10 +68,11 @@ func (m *memtable) vtypBytes(vtyp uint64) []byte {
 // (e.g. db.go:165 in Batch.Commit)
 // Returns the previous KV for the same key and whether it was replaced.
 func (m *memtable) put(kv KV) (KV, bool) {
-	old, replaced := m.ks.set(kv)
+	oldX, replaced := m.ks.set(kv)
 	if replaced {
-		m.size -= int64(kvSizeApprox(&old))
+		m.size -= int64(kvxSizeApprox(&oldX))
 	}
+	old := oldX.kv()
 	m.size += int64(kvSizeApprox(&kv))
 	if m.size <= 0 {
 		panicf("bad: memtable with some content should have size(%v) > 0: %#v", m.size, m)
@@ -121,7 +122,8 @@ func (m *memtable) get(key string) (KV, bool) {
 	if kv, ok := m.bulk.get(key); ok {
 		return kv, true
 	}
-	return m.ks.get(key)
+	kvx, ok := m.ks.get(key)
+	return kvx.kv(), ok
 }
 
 func (m *memtable) logAppend(kv KV) error {
