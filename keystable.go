@@ -3,13 +3,21 @@ package yogadb
 import (
 	"bytes"
 	"sort"
-	"unsafe"
+	"unique"
 
 	"github.com/cespare/xxhash/v2"
 )
 
 // keyStable is a place to keep your keys
 // when you think of them like horses.
+// Horses live in a stable. Get it? It's a pun.
+//
+// You can also read it as: "key's table".
+//
+// More importantly, the point is _stable_ storage:
+// The array index stable[i] is a stable and never changing
+// integer reference to the key string (stable for the lifetime
+// of this memtable generation, before it is cleared).
 //
 // INVAR: if i is the index into stable for a given key (the i-th key we added):
 // key i=0 is stored in s.keys[0             :s.stable[i]]
@@ -242,33 +250,36 @@ func bytesArenaString(b []byte) string {
 	if len(b) == 0 {
 		return ""
 	}
-	return unsafe.String(unsafe.SliceData(b), len(b))
+	// intern the string so we share key strings as much as possible.
+	return unique.Make(string(b)).Value()
+	//return unsafe.String(unsafe.SliceData(b), len(b))
 }
 
 func (s *keyStable) kvAt(stableIdx int) KV {
 	kv := s.kvs[stableIdx]
 	key := s.at(stableIdx)
-	kv.Key = bytesArenaString(key)
+	//kv.Key = bytesArenaString(key) // here
+	kv.Key = unique.Make(string(key)).Value() // intern to recycle
 	if s.valueAliasKey[stableIdx] {
 		kv.Value = key
 	}
 	return kv
 }
 
-func (s *keyStable) kvAtOwnedKey(stableIdx int, keyArena *[]byte) KV {
-	kv := s.kvAt(stableIdx)
-	if len(kv.Key) == 0 {
-		return kv
-	}
-	start := len(*keyArena)
-	*keyArena = append(*keyArena, s.at(stableIdx)...)
-	key := (*keyArena)[start:]
-	kv.Key = bytesArenaString(key)
-	if s.valueAliasKey[stableIdx] {
-		kv.Value = key
-	}
-	return kv
-}
+// func (s *keyStable) kvAtOwnedKey(stableIdx int, keyArena *[]byte) KV {
+// 	kv := s.kvAt(stableIdx)
+// 	if len(kv.Key) == 0 {
+// 		return kv
+// 	}
+// 	start := len(*keyArena)
+// 	*keyArena = append(*keyArena, s.at(stableIdx)...)
+// 	key := (*keyArena)[start:]
+// 	kv.Key = bytesArenaString(key) // here
+// 	if s.valueAliasKey[stableIdx] {
+// 		kv.Value = key
+// 	}
+// 	return kv
+// }
 
 func (s *keyStable) storeKVAt(stableIdx int, kv KV) {
 	valueAliasKey := slottedInlineValueAliasesKey(kv)
@@ -301,6 +312,10 @@ func (s *keyStable) get(key string) (KV, bool) {
 }
 
 func (s *keyStable) seekGE(target string, strict bool) (KV, bool) {
+	if len(s.sorted) == 0 {
+		return KV{}, false
+	}
+	s.ensureSorted()
 	w, found := s.findKeyString(target)
 	if strict && found {
 		w++
@@ -338,6 +353,17 @@ func (s *keyStable) Ascend(pivot KV, iter func(KV) bool) {
 	}
 }
 
+func (s *keyStable) AscendOwnedKeys(pivot KV, iter func(KV) bool) {
+	w, _ := s.findKeyString(pivot.Key)
+	//keyArena := make([]byte, 0, len(s.keys))
+	for ; w < len(s.sorted); w++ {
+		//if !iter(s.kvAtOwnedKey(s.sorted[w])) {
+		if !iter(s.kvAt(s.sorted[w])) {
+			return
+		}
+	}
+}
+
 func (s *keyStable) Descend(pivot KV, iter func(KV) bool) {
 	if pivot.Key == "" {
 		return
@@ -366,16 +392,6 @@ func (s *keyStable) Reverse(iter func(KV) bool) {
 	s.ensureSorted()
 	for i := len(s.sorted) - 1; i >= 0; i-- {
 		if !iter(s.kvAt(s.sorted[i])) {
-			return
-		}
-	}
-}
-
-func (s *keyStable) AscendOwnedKeys(pivot KV, iter func(KV) bool) {
-	w, _ := s.findKeyString(pivot.Key)
-	keyArena := make([]byte, 0, len(s.keys))
-	for ; w < len(s.sorted); w++ {
-		if !iter(s.kvAtOwnedKey(s.sorted[w], &keyArena)) {
 			return
 		}
 	}

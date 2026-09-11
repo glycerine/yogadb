@@ -3,6 +3,7 @@ package yogadb
 import (
 	"bytes"
 	"os"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -105,6 +106,9 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	m0 := &runtime.MemStats{}
+	runtime.ReadMemStats(m0)
+
 	t0 := time.Now()
 	batch = db.NewBatch()
 	for i, k := range keys2 {
@@ -117,6 +121,11 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	}
 	batch.Commit(true)
 	pprof.StopCPUProfile()
+
+	m2 := &runtime.MemStats{}
+	runtime.ReadMemStats(m2)
+	vv("end new writes: HeapAlloc = %v (diff: %v);  HeapInuse = %v (diff: %v)", formatUint64Under(m2.HeapAlloc), formatUint64Under(m2.HeapAlloc-m0.HeapAlloc), formatUint64Under(m2.HeapInuse), formatUint64Under(m2.HeapInuse-m0.HeapInuse))
+
 	WriteMemProfiles("profile.memory.afterbulk_new_writes.out")
 
 	//_, metrics, err := batch.CommitGetMetrics(true)
@@ -253,6 +262,9 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	m0 := &runtime.MemStats{}
+	runtime.ReadMemStats(m0)
+
 	t0 := time.Now()
 	batch = db.NewBatch()
 
@@ -267,6 +279,11 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 	}
 	batch.Commit(true)
 	pprof.StopCPUProfile()
+
+	m2 := &runtime.MemStats{}
+	runtime.ReadMemStats(m2)
+	vv("end replacements: HeapAlloc = %v (diff: %v);  HeapInuse = %v (diff: %v)", formatUint64Under(m2.HeapAlloc), formatUint64Under(m2.HeapAlloc-m0.HeapAlloc), formatUint64Under(m2.HeapInuse), formatUint64Under(m2.HeapInuse-m0.HeapInuse))
+
 	WriteMemProfiles("profile.memory.afterbulk_replacement.out")
 
 	//_, metrics, err := batch.CommitGetMetrics(true)

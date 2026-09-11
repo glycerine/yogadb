@@ -6,6 +6,10 @@ import (
 	"strings"
 )
 
+func formatUint64Under(n uint64) string {
+	return formatInt64Under(int64(n))
+}
+
 // formatInt64Under formats an int64 with underscores every 3 digits.
 func formatInt64Under(n int64) string {
 	str := strconv.FormatInt(n, 10)
