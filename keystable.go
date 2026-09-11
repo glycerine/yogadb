@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/cespare/xxhash/v2"
 )
@@ -63,6 +64,11 @@ type keyStable struct {
 	// xxhash.Sum64(key) -> index in stable.
 	headmap     map[uint64]int
 	sortedDirty bool
+
+	// get() calls can force sorts which are mutation, and
+	// get() can be concurrent from multiple readers at once. so protect
+	// the sorting.
+	mu sync.Mutex
 }
 
 func makeKeyStable(n int) keyStable {
@@ -85,6 +91,9 @@ func newKeyStable(n int) *keyStable {
 }
 
 func (s *keyStable) clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	for i := range s.kvs {
 		s.kvs[i] = KV{}
 	}
@@ -180,6 +189,7 @@ func (s *keyStable) findKeyString(needle string) (where int, found bool) {
 }
 
 func (s *keyStable) ensureSorted() {
+
 	if !s.sortedDirty {
 		return
 	}
@@ -278,6 +288,10 @@ func (s *keyStable) storeKVAt(stableIdx int, kv KV) {
 
 func (s *keyStable) set(kv KV) (old KV, replaced bool) {
 	h := xxhash.Sum64String(kv.Key)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	stableIdx, found := s.findStableByString(kv.Key, h)
 	//vv("set(): kv.Key='%v' was found='%v'; stableIdx=%v", kv.Key, found, stableIdx)
 	if found {
@@ -293,6 +307,10 @@ func (s *keyStable) set(kv KV) (old KV, replaced bool) {
 func (s *keyStable) get(key string) (kv KV, found bool) {
 	var stableIdx int
 	h := xxhash.Sum64String(key)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	stableIdx, found = s.findStableByString(key, h)
 	if !found {
 		return
@@ -301,6 +319,10 @@ func (s *keyStable) get(key string) (kv KV, found bool) {
 }
 
 func (s *keyStable) seekGE(target string, strict bool) (KV, bool) {
+	// called by iter.go Iter.Seek etc.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if len(s.sorted) == 0 {
 		return KV{}, false
 	}
@@ -316,6 +338,9 @@ func (s *keyStable) seekGE(target string, strict bool) (KV, bool) {
 }
 
 func (s *keyStable) seekLE(target string, strict bool) (KV, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if len(s.sorted) == 0 {
 		return KV{}, false
 	}
@@ -334,6 +359,9 @@ func (s *keyStable) seekLE(target string, strict bool) (KV, bool) {
 }
 
 func (s *keyStable) Ascend(pivot KV, iter func(KV) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	w, _ := s.findKeyString(pivot.Key)
 	for ; w < len(s.sorted); w++ {
 		if !iter(s.kvAt(s.sorted[w])) {
@@ -343,6 +371,8 @@ func (s *keyStable) Ascend(pivot KV, iter func(KV) bool) {
 }
 
 func (s *keyStable) Descend(pivot KV, iter func(KV) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	w := len(s.sorted)
 	if w == 0 {
@@ -367,6 +397,9 @@ func (s *keyStable) Descend(pivot KV, iter func(KV) bool) {
 }
 
 func (s *keyStable) Scan(iter func(KV) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.ensureSorted()
 	for _, stableIdx := range s.sorted {
 		if !iter(s.kvAt(stableIdx)) {
@@ -376,6 +409,9 @@ func (s *keyStable) Scan(iter func(KV) bool) {
 }
 
 func (s *keyStable) Reverse(iter func(KV) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.ensureSorted()
 	for i := len(s.sorted) - 1; i >= 0; i-- {
 		if !iter(s.kvAt(s.sorted[i])) {
@@ -384,7 +420,11 @@ func (s *keyStable) Reverse(iter func(KV) bool) {
 	}
 }
 
+// might be able to get rid of, but keystable_test.go uses it a bit.
 func (s *keyStable) delKey(needle []byte) (found bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	var w int // where the needle lives in s.sorted
 	w, found = s.findKey(needle)
 	if !found {

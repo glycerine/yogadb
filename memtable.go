@@ -46,6 +46,7 @@ func newMemtable(memWalFD vfs.File) *memtable {
 	}
 }
 
+// called with db write lock held.
 func (m *memtable) reset() {
 	m.ks.clear()
 	m.vtypArena = nil
