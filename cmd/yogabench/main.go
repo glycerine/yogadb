@@ -80,11 +80,11 @@ Common flags:
   -dir         Database directory (default: /tmp/yogabench)
   -threads     Number of goroutines (default: %d)
   -count       Exact operation/fill count; disables fill-to-size preload behavior
-  -gb          Fill-size target in GiB (default: 500; fill phases keep writing until exceeded unless -count is set)
+  -gb          Fill-size target in GiB (default: %v; fill phases keep writing until exceeded unless -count is set)
   -nodisk      Run in-memory only (no disk I/O)
   -duration    how long to run. (default: 60s)
   -workload    A-F or ALL for ycsb
-`, runtime.NumCPU())
+`, defaultDatasetGB, runtime.NumCPU())
 }
 
 // DatasetProfile defines a workload's key/value sizes and default operation count.
@@ -95,7 +95,7 @@ type DatasetProfile struct {
 	FillOps int64 // default fill count for defaultDatasetGB
 }
 
-const defaultDatasetGB = 500.0
+const defaultDatasetGB = 1.0
 
 var datasets = map[string]DatasetProfile{
 	"udb":     {Name: "udb", KeyLen: 27, ValLen: 127, FillOps: 420_000_000},
