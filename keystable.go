@@ -70,7 +70,7 @@ func makeKeyStable(n int) keyStable {
 		n = 256 << 10
 	}
 	return keyStable{
-		keys:     make([]byte, 0, 8<<20),
+		keys:     make([]byte, 0, n),
 		stable:   make([]int, 0, n),
 		hashNext: make([]int, 0, n),
 		sorted:   make([]int, 0, n),
@@ -343,12 +343,21 @@ func (s *keyStable) Ascend(pivot KV, iter func(KV) bool) {
 }
 
 func (s *keyStable) Descend(pivot KV, iter func(KV) bool) {
-	if pivot.Key == "" {
+
+	w := len(s.sorted)
+	if w == 0 {
 		return
 	}
-	w, found := s.findKeyString(pivot.Key)
+	var found bool
+	if pivot.Key == "" {
+		// start from largest key, like tx.go:576 says.
+		s.ensureSorted()
+	} else {
+		// calls sort.Find(), which returns w = len(s.sorted) if not found
+		w, found = s.findKeyString(pivot.Key)
+	}
 	if !found {
-		w--
+		w-- // so w is len(s.sorted) - 1, the last legal index.
 	}
 	for ; w >= 0; w-- {
 		if !iter(s.kvAt(s.sorted[w])) {
