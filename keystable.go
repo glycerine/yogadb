@@ -67,8 +67,9 @@ type keyStable struct {
 
 	// get() calls can force sorts which are mutation, and
 	// get() can be concurrent from multiple readers at once. so protect
-	// the sorting when x is false (x true means exclusive db access;
-	// that the db.topMutRW is write locked).
+	// the sorting when the call argument x is false. An x == true means
+	// exclusive db access; that the db.topMutRW is already write locked
+	// by the caller. In this case, we can skip locking mu.
 	mu sync.Mutex
 }
 
@@ -112,6 +113,7 @@ func (s *keyStable) clear(x bool) {
 	s.sortedDirty = false
 }
 
+// test-only use by keystable_test.go, so does not need to lock mu.
 func (s *keyStable) addKey(key []byte) (whereInStable int) {
 
 	// INVAR: string i=0 is stored in s.keys[0             :s.stable[i]]
@@ -125,18 +127,21 @@ func (s *keyStable) addKey(key []byte) (whereInStable int) {
 	return s.appendKeyBytes(key, h)
 }
 
+// test-only, no mu lock needed.
 func (s *keyStable) appendKeyBytes(key []byte, h uint64) (whereInStable int) {
 	whereInStable = s.appendKeyCommon(len(key), h)
 	s.keys = append(s.keys, key...)
 	return whereInStable
 }
 
+// internal: called by set(), mu or x must hold already.
 func (s *keyStable) appendKeyString(key string, h uint64) (whereInStable int) {
 	whereInStable = s.appendKeyCommon(len(key), h)
 	s.keys = append(s.keys, key...)
 	return whereInStable
 }
 
+// internal: called by appendKeyString() which is called by set(), mu or x must hold already.
 func (s *keyStable) appendKeyCommon(keylen int, h uint64) (whereInStable int) {
 	if s.headmap == nil {
 		s.ensureHeadmap()
@@ -156,6 +161,7 @@ func (s *keyStable) appendKeyCommon(keylen int, h uint64) (whereInStable int) {
 	return whereInStable
 }
 
+// internal: mu or x hold is already handled by our caller.
 func (s *keyStable) Less(i, j int) bool {
 	if i == j {
 		return false
@@ -165,6 +171,7 @@ func (s *keyStable) Less(i, j int) bool {
 	return bytes.Compare(ib, jb) < 0
 }
 
+// internal
 func (s *keyStable) at(i int) []byte {
 	if i == 0 {
 		return s.keys[:s.stable[0]]
@@ -172,14 +179,17 @@ func (s *keyStable) at(i int) []byte {
 	return s.keys[s.stable[i-1]:s.stable[i]]
 }
 
+// internal
 func (s *keyStable) Swap(i, j int) {
 	s.sorted[i], s.sorted[j] = s.sorted[j], s.sorted[i]
 }
 
+// internal
 func (s *keyStable) Len() int {
 	return len(s.sorted)
 }
 
+// internal
 func (s *keyStable) findKey(needle []byte) (where int, found bool) {
 	s.ensureSorted()
 	return sort.Find(len(s.sorted), func(i int) int {
@@ -187,6 +197,7 @@ func (s *keyStable) findKey(needle []byte) (where int, found bool) {
 	})
 }
 
+// internal
 func (s *keyStable) findKeyString(needle string) (where int, found bool) {
 	s.ensureSorted()
 	return sort.Find(len(s.sorted), func(i int) int {
@@ -194,6 +205,7 @@ func (s *keyStable) findKeyString(needle string) (where int, found bool) {
 	})
 }
 
+// internal
 func (s *keyStable) ensureSorted() {
 
 	if !s.sortedDirty {
@@ -203,6 +215,7 @@ func (s *keyStable) ensureSorted() {
 	s.sortedDirty = false
 }
 
+// internal
 func (s *keyStable) ensureHeadmap() {
 	if s.headmap != nil {
 		return
@@ -221,6 +234,7 @@ func (s *keyStable) ensureHeadmap() {
 	}
 }
 
+// internal
 func (s *keyStable) findStableByBytes(key []byte, h uint64) (stableIdx int, found bool) {
 	s.ensureHeadmap()
 	for stableIdx = s.headmap[h] - 1; stableIdx >= 0; stableIdx = s.nextSameHash[stableIdx] {
@@ -231,6 +245,7 @@ func (s *keyStable) findStableByBytes(key []byte, h uint64) (stableIdx int, foun
 	return 0, false
 }
 
+// internal
 func (s *keyStable) findStableByString(key string, h uint64) (stableIdx int, found bool) {
 	s.ensureHeadmap()
 	for stableIdx = s.headmap[h] - 1; stableIdx >= 0; stableIdx = s.nextSameHash[stableIdx] {
@@ -241,6 +256,7 @@ func (s *keyStable) findStableByString(key string, h uint64) (stableIdx int, fou
 	return 0, false
 }
 
+// internal
 func (s *keyStable) removeStableFromHeadmap(stableIdx int) {
 	h := xxhash.Sum64(s.at(stableIdx))
 	prev := -1
@@ -283,15 +299,13 @@ func compareStringBytes(a string, b []byte) int {
 	return 0
 }
 
+// internal
 func (s *keyStable) kvAt(stableIdx int) KV {
 	kv := s.kvs[stableIdx]
 	return kv
 }
 
-func (s *keyStable) storeKVAt(stableIdx int, kv KV) {
-	s.kvs[stableIdx] = kv
-}
-
+// external
 func (s *keyStable) set(kv KV, x bool) (old KV, replaced bool) {
 	h := xxhash.Sum64String(kv.Key)
 
@@ -304,14 +318,15 @@ func (s *keyStable) set(kv KV, x bool) (old KV, replaced bool) {
 	//vv("set(): kv.Key='%v' was found='%v'; stableIdx=%v", kv.Key, found, stableIdx)
 	if found {
 		old = s.kvAt(stableIdx)
-		s.storeKVAt(stableIdx, kv)
+		s.kvs[stableIdx] = kv
 		return old, true
 	}
 	stableIdx = s.appendKeyString(kv.Key, h)
-	s.storeKVAt(stableIdx, kv)
+	s.kvs[stableIdx] = kv
 	return KV{}, false
 }
 
+// external
 func (s *keyStable) get(key string, x bool) (kv KV, found bool) {
 
 	var stableIdx int
@@ -329,6 +344,7 @@ func (s *keyStable) get(key string, x bool) (kv KV, found bool) {
 	return s.kvAt(stableIdx), true
 }
 
+// external
 func (s *keyStable) seekGE(target string, strict bool, x bool) (KV, bool) {
 	// called by iter.go Iter.Seek etc.
 	if !x {
@@ -349,6 +365,7 @@ func (s *keyStable) seekGE(target string, strict bool, x bool) (KV, bool) {
 	return s.kvAt(s.sorted[w]), true
 }
 
+// external
 func (s *keyStable) seekLE(target string, strict bool, x bool) (KV, bool) {
 	if !x {
 		s.mu.Lock()
@@ -372,6 +389,7 @@ func (s *keyStable) seekLE(target string, strict bool, x bool) (KV, bool) {
 	return s.kvAt(s.sorted[w]), true
 }
 
+// external
 func (s *keyStable) Ascend(x bool, pivot KV, iter func(KV) bool) {
 	if !x {
 		s.mu.Lock()
@@ -386,6 +404,7 @@ func (s *keyStable) Ascend(x bool, pivot KV, iter func(KV) bool) {
 	}
 }
 
+// external
 func (s *keyStable) Descend(x bool, pivot KV, iter func(KV) bool) {
 	if !x {
 		s.mu.Lock()
@@ -413,6 +432,7 @@ func (s *keyStable) Descend(x bool, pivot KV, iter func(KV) bool) {
 	}
 }
 
+// external
 func (s *keyStable) Scan(x bool, iter func(KV) bool) {
 	if !x {
 		s.mu.Lock()
@@ -426,6 +446,7 @@ func (s *keyStable) Scan(x bool, iter func(KV) bool) {
 	}
 }
 
+// external
 func (s *keyStable) Reverse(x bool, iter func(KV) bool) {
 	if !x {
 		s.mu.Lock()
@@ -439,13 +460,10 @@ func (s *keyStable) Reverse(x bool, iter func(KV) bool) {
 	}
 }
 
+// test-only use by keystable_test.go, so does not need to lock mu.
 // might be able to get rid of, but keystable_test.go uses it a bit.
 func (s *keyStable) delKey(needle []byte) (found bool) {
-	const x = true
-	if !x {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-	}
+
 	var w int // where the needle lives in s.sorted
 	w, found = s.findKey(needle)
 	if !found {
@@ -463,6 +481,7 @@ func (s *keyStable) delKey(needle []byte) (found bool) {
 	return
 }
 
+// test/debugging only. does not lock mu.
 func (s *keyStable) String() string {
 	keys := "["
 	for i := range s.stable {
