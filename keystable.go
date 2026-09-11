@@ -20,13 +20,17 @@ import (
 // of this memtable generation, before it is cleared).
 //
 // We do a single key copy, and we avoid making
-// more work for the garbage collector.
+// work for the garbage collector, because there are
+// almost no pointers.
 //
 // The benefit: we improved write throughput significantly in the
 // afterbulk_test.go benchmarks of newly written key-value pairs;
 // up to 2x fold for some cases.
 //
-// We use keyStable for our memtable.
+// We use keyStable for our memtable. In-memory B-trees and
+// skip-lists are used as the memtable by other databases,
+// but we took inspiration from Entity-Component-System (ECS)
+// designs and just use integer indexing to avoid alot of pointers.
 //
 // INVAR: if i is the index into stable for a given key (the i-th key we added):
 // key i=0 is stored in s.keys[0             :s.stable[i]]
@@ -47,9 +51,11 @@ import (
 // for deletes or tombstones here. memtable.go only does
 // set(), get(), and clear().
 type keyStable struct {
-	keys   []byte // arena with a copy of all keys, stacked end to end.
-	stable []int  // stable store, this never changes, is only appended to. says where to find the string in keys[[]
-	sorted []int  // sorted indexes of stable in ascending key order.
+	keys []byte // arena with a copy of all keys, stacked end to end.
+
+	// stable store. only appended to, or overwritten.
+	stable []int // where to find the string in keys[]
+	sorted []int // sorted indexes of stable in ascending key order.
 
 	kvs      []KV  // parallel to stable
 	hashNext []int // collision chain for imap; parallel to stable.
