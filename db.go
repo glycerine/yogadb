@@ -3960,8 +3960,8 @@ func (db *FlexDB) findBuildKVZeroCopy(key string) (*KVcloser, error) {
 		return nil, err
 	}
 
-	idx, ok := intervalCacheEntryFindKeyGE(fce, key)
-	if !ok || fce.kvs[idx].isTombstone() {
+	idx, exact := intervalCacheEntryFindKeyGE(fce, key)
+	if !exact || idx >= fce.count || fce.kvs[idx].Key != key || fce.kvs[idx].isTombstone() {
 		partition.releaseEntry(fce)
 		return nil, nil
 	}

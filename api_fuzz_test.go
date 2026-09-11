@@ -300,8 +300,8 @@ func apiFuzzRunOne(t *testing.T, startSeed uint64, runs, i int, memBudget int64,
 	*runTimes = append(*runTimes, elapsed)
 	completed := len(*runTimes)
 	if !ok && *firstFailure == "" {
-		*firstFailure = fmt.Sprintf("api randomized failure: start_seed=0x%016x run=%d seed=0x%016x elapsed=%s; replay with YOGADB_API_FUZZ_SEED=0x%016x YOGADB_API_FUZZ_RUNS=1 go test -run '^TestYogaDBAPI$' -count=1 -v .",
-			startSeed, i, runSeed, elapsed, runSeed)
+		*firstFailure = fmt.Sprintf("api randomized failure: start_seed=0x%016x run=%d seed=0x%016x elapsed=%s; exact replay with YOGADB_API_FUZZ_SEED=0x%016x YOGADB_API_FUZZ_RUNS=%d go test -run '^TestYogaDBAPI$' -count=1 -v .; single-run probe with YOGADB_API_FUZZ_SEED=0x%016x YOGADB_API_FUZZ_RUNS=1",
+			startSeed, i, runSeed, elapsed, startSeed, i+1, runSeed)
 	}
 	if completed%10 == 0 {
 		last10 := (*runTimes)[completed-10:]
@@ -332,8 +332,8 @@ func apiFuzzRunSequential(t *testing.T, startSeed uint64, runs int, memBudget in
 		elapsed := time.Since(started)
 		runTimes = append(runTimes, elapsed)
 		if !ok {
-			t.Fatalf("api randomized failure: start_seed=0x%016x run=%d seed=0x%016x elapsed=%s; replay with YOGADB_API_FUZZ_SEED=0x%016x YOGADB_API_FUZZ_RUNS=1 go test -run '^TestYogaDBAPI$' -count=1 -v .",
-				startSeed, i, runSeed, elapsed, runSeed)
+			t.Fatalf("api randomized failure: start_seed=0x%016x run=%d seed=0x%016x elapsed=%s; exact replay with YOGADB_API_FUZZ_SEED=0x%016x YOGADB_API_FUZZ_RUNS=%d go test -run '^TestYogaDBAPI$' -count=1 -v .; single-run probe with YOGADB_API_FUZZ_SEED=0x%016x YOGADB_API_FUZZ_RUNS=1",
+				startSeed, i, runSeed, elapsed, startSeed, i+1, runSeed)
 		}
 		if (i+1)%10 == 0 {
 			last10 := runTimes[len(runTimes)-10:]
@@ -391,9 +391,15 @@ func apiFuzzRun(t *testing.T, seed uint64, memBudget int64) {
 	}
 	defer func() {
 		if h.db != nil {
-			if t.Failed() {
-				return
-			}
+			defer func() {
+				if r := recover(); r != nil {
+					if t.Failed() {
+						t.Logf("Close after randomized API failure panicked: %v", r)
+						return
+					}
+					panic(r)
+				}
+			}()
 			h.db.Close()
 		}
 	}()
