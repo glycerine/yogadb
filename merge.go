@@ -475,6 +475,8 @@ func (db *FlexDB) installMergedTreeLocked(newTree *FlexTree, appendEnd uint64, s
 	if stats.MaxMergedResultHLC > 0 {
 		db.hlc.ReceiveMessageWithHLC(stats.MaxMergedResultHLC)
 	}
+	db.rebuildAnchorsFromTags(true)
+	db.recomputeKeyCountsLocked()
 	db.persistCounters()
 	if err := db.ff.tree.SyncCoW(); err != nil {
 		return fmt.Errorf("flexdb merge: sync cow: %w", err)
@@ -486,7 +488,6 @@ func (db *FlexDB) installMergedTreeLocked(newTree *FlexTree, appendEnd uint64, s
 	if err := db.mt.logTruncateWithVersion(ts, db.ff.tree.PersistentVersion); err != nil {
 		return fmt.Errorf("flexdb merge: truncate memwal: %w", err)
 	}
-	db.rebuildAnchorsFromTags(true)
 	db.mt.reset()
 	db.flushSeq++
 	return nil

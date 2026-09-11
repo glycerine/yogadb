@@ -54,7 +54,7 @@ const (
 	intervalCacheEntryChance = 2
 
 	// see memtable.go for memtable
-	memtableFlushTime = 5 * time.Second
+	defaultBackgroundFlushInterval = 5 * time.Second
 )
 
 var sep = string(os.PathSeparator)
@@ -1155,6 +1155,11 @@ type Config struct {
 	// only catches panics on the test goroutine, not background goroutines).
 	DisableBackgroundFlush bool
 
+	// BackgroundFlushInterval controls how often the background flush worker
+	// wakes up to flush the memtable. If zero or negative, the default is 5s.
+	// DisableBackgroundFlush still disables the worker entirely.
+	BackgroundFlushInterval time.Duration
+
 	// PaddedSplits controls whether treeInsertAnchor pads both split
 	// halves to slottedPageMaxSize. Default false uses tight encoding,
 	// which cuts space amplification substantially. When true, the old
@@ -1590,6 +1595,9 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	}
 	if cfg.CacheMB == 0 {
 		cfg.CacheMB = 32
+	}
+	if cfg.BackgroundFlushInterval <= 0 {
+		cfg.BackgroundFlushInterval = defaultBackgroundFlushInterval
 	}
 	if cfg.LowBlockUtilizationPct <= 0 || cfg.LowBlockUtilizationPct > 1 {
 		cfg.LowBlockUtilizationPct = 0.50
@@ -2237,7 +2245,7 @@ func (db *FlexDB) FetchLarge(kv *KV) (val []byte, vtyp uint64, hlc HLC, err erro
 	db.requireReadsAllowed()
 	db.topMutRW.RLock()
 	defer db.topMutRW.RUnlock()
-	return db.resolveVPtr(*kv)
+	return db.resolveVPtrForUserKV(*kv)
 }
 
 // lockHeldFetchLarge is the lock-held body of FetchLarge.
@@ -2246,7 +2254,44 @@ func (db *FlexDB) lockHeldFetchLarge(kv *KV) (val []byte, vtyp uint64, hlc HLC, 
 	if kv == nil {
 		return nil, 0, 0, fmt.Errorf("flexdb: FetchLarge called with nil KV")
 	}
-	return db.resolveVPtr(*kv)
+	return db.resolveVPtrForUserKV(*kv)
+}
+
+func (db *FlexDB) resolveVPtrForUserKV(kv KV) (val []byte, vtyp uint64, hlc HLC, err error) {
+	val, vtyp, hlc, err = db.resolveVPtr(kv)
+	if err != nil || !kv.HasVPtr() || len(kv.Value) == 8 {
+		return
+	}
+	if lookedUp, ok := db.lookupLargeVtypLocked(kv); ok {
+		vtyp = lookedUp
+	}
+	return
+}
+
+func (db *FlexDB) lookupLargeVtypLocked(kv KV) (uint64, bool) {
+	if kv.Key == "" || !kv.HasVPtr() {
+		return 0, false
+	}
+	sameKV := func(cur KV) bool {
+		return cur.HasVPtr() && cur.Vptr == kv.Vptr && cur.Hlc == kv.Hlc
+	}
+	if !db.mt.empty {
+		cur, ok := db.mt.get(kv.Key)
+		if ok {
+			if sameKV(cur) {
+				return cur.Vtyp(), true
+			}
+			return 0, false
+		}
+	}
+	if db.ff.Size() == 0 || !db.keyBloomMayExistLocked(kv.Key) {
+		return 0, false
+	}
+	cur, ok, err := db.getPassthroughKV(kv.Key)
+	if err != nil || !ok || !sameKV(cur) {
+		return 0, false
+	}
+	return cur.Vtyp(), true
 }
 
 // VacuumVLOGStats reports the results of a VacuumVLOG operation.
@@ -4458,6 +4503,9 @@ func (db *FlexDB) deleteRangeFlexSpace(beforeWrite func() error, begKey, endKey 
 				if kv.isTombstone() {
 					continue
 				}
+				if db.memtableShadowsKeyLocked(kv.Key) {
+					continue
+				}
 				if !includeLarge && kv.HasVPtr() {
 					continue // skip large-value keys
 				}
@@ -4570,6 +4618,9 @@ func (db *FlexDB) deleteRangeFlexSpaceClearSmall(beforeWrite func() error) (int6
 				if kv.isTombstone() || kv.HasVPtr() {
 					continue // skip tombstones and large-value keys
 				}
+				if db.memtableShadowsKeyLocked(kv.Key) {
+					continue
+				}
 
 				prevSeq := db.flushSeq
 				if _, err := db.writeLockHeldPutWithHook(beforeWrite, kv.Key, nil, 0, true); err != nil {
@@ -4590,6 +4641,14 @@ func (db *FlexDB) deleteRangeFlexSpaceClearSmall(beforeWrite func() error) (int6
 			}
 		}
 	}
+}
+
+func (db *FlexDB) memtableShadowsKeyLocked(key string) bool {
+	if db.mt.empty {
+		return false
+	}
+	_, ok := db.mt.get(key)
+	return ok
 }
 
 // decodeIntervalDirect reads and decodes an interval from FlexSpace
@@ -4706,24 +4765,26 @@ func (db *FlexDB) writeLockHeldMergeWithHook(beforeWrite func() error, key strin
 	var oldVal []byte
 	var exists bool
 	var oldVtyp uint64
+	var shadowedByMemtable bool
 
 	if !db.mt.empty {
 		kv, ok := db.mt.get(key)
 		if ok {
+			shadowedByMemtable = true
 			if !kv.isTombstone() {
 				oldVtyp = kv.Vptr.Offset
 				val, vtyp, _, err := db.resolveVPtr(kv)
-				if err == nil {
-					// large VLOG value.
-					oldVal = val
-					exists = true
-					oldVtyp = vtyp
+				if err != nil {
+					return err
 				}
+				oldVal = val
+				exists = true
+				oldVtyp = vtyp
 			}
 		}
 	}
 
-	if !exists {
+	if !exists && !shadowedByMemtable {
 		// Phase 2: check FlexSpace (getPassthrough already resolves VPtrs).
 		val, found, vtyp, _, err := db.getPassthrough(key)
 		if err != nil {
@@ -5481,7 +5542,7 @@ func greenMEMWALTornTail(err error) bool {
 
 func (db *FlexDB) flushWorker() {
 
-	ticker := time.NewTicker(memtableFlushTime)
+	ticker := time.NewTicker(db.cfg.BackgroundFlushInterval)
 	defer func() {
 		ticker.Stop()
 		db.flushHalt.ReqStop.Close()
@@ -5689,7 +5750,6 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 	var nh memSparseIndexTreeHandler
 	nh.node = db.tree.root
 	nh.idx = db.tree.root.count
-	var flushedBig, flushedSmall int64
 
 	flushPageItems := func(pageItems []KV, itemsBase HLC, itemsSize int, itemsApproxSize int, cacheOwnsItems bool, itemsValuesAliasKeys bool) error {
 		if len(pageItems) == 0 {
@@ -5789,14 +5849,7 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 		if item.isTombstone() {
 			itemSmallInlineZeroVtyp = false
 		} else if !allSmallInlineZeroVtyp {
-			if item.HasVPtr() {
-				flushedBig++
-			} else {
-				flushedSmall++
-			}
 			itemSmallInlineZeroVtyp = slottedKVSmallInlineZeroVtyp(item)
-		} else {
-			flushedSmall++
 		}
 		itemValuesAliasKeys := itemSmallInlineZeroVtyp && allValuesAliasKeys
 		if len(page) == 0 {
@@ -5890,7 +5943,6 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 		return true
 	}
 	consumeAliasKey := func(key string, hlc HLC) bool {
-		flushedSmall++
 		if len(page) == 0 {
 			pageBase = hlc
 			pageSize = slottedPageHeaderSize + slottedPageCRCSize
@@ -5990,7 +6042,6 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 					if err = flushPageItems(chunk, chunkBase, chunkSize, chunkApproxSize, true, allValuesAliasKeys); err != nil {
 						break
 					}
-					flushedSmall += int64(end - start)
 					start = end
 				}
 				if err != nil {
@@ -6091,10 +6142,8 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable) (bool, error) {
 	if err := flushPage(); err != nil {
 		return true, err
 	}
-	db.liveBigKeys = flushedBig
-	db.liveSmallKeys = flushedSmall
-	db.liveKeys = flushedBig + flushedSmall
 	m.bulk.reset()
+	db.recomputeKeyCountsLocked()
 	return true, nil
 }
 
