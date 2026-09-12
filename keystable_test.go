@@ -936,3 +936,94 @@ func BenchmarkKeyStable_Mixed_ReadsWrites(b *testing.B) {
 		}
 	}
 }
+
+/* based on these measurements, we'll pursue wormhole optimization and drop pebbeleskip from further study.
+go test -v -run=xxx -bench BenchmarkKeyStable_Mixed_ReadsWrites
+goos: linux
+goarch: amd64
+pkg: github.com/glycerine/yogadb
+cpu: AMD Ryzen Threadripper 3960X 24-Core Processor
+
+BenchmarkKeyStable_Mixed_ReadsWrites                          mixed keystable
+BenchmarkKeyStable_Mixed_ReadsWrites-48     5967286           170.5 ns/op     150 B/op       0 allocs/op
+
+BenchmarkKeyStableSet                                         write keystable
+BenchmarkKeyStableSet-48                   17641639           61.76 ns/op       0 B/op       0 allocs/op
+
+BenchmarkKeyStableGet                                         read keystable
+BenchmarkKeyStableGet-48                   21541628           56.64 ns/op       0 B/op       0 allocs/op
+
+BenchmarkPutWormhole                          write wormhole
+BenchmarkPutWormhole-48         7389782       140.6 ns/op     150 B/op       0 allocs/op
+
+BenchmarkMixedWormhole                        mixed wormhole
+BenchmarkMixedWormhole-48      16627498        71.89 ns/op      37 B/op       0 allocs/op
+
+BenchmarkScanWormhole
+BenchmarkScanWormhole-48           3988    304024 ns/op       0 B/op       0 allocs/op
+
+BenchmarkPutPebbleSkip                        write pebbleskip
+BenchmarkPutPebbleSkip-48       4441321       294.0 ns/op       0 B/op       0 allocs/op
+
+BenchmarkMixedPebbleSkip                      mixed pebbleskip
+BenchmarkMixedPebbleSkip-48     5240282       244.3 ns/op       0 B/op       0 allocs/op
+
+BenchmarkScanPebbleSkip
+BenchmarkScanPebbleSkip-48         2514    465670 ns/op       2 B/op       0 allocs/op
+
+Q: Is there an algorithmic or structural reason that wormhole
+is beating pebbleskip so well? I am glad. but also surprised.
+
+Codex 5.5 xhigh: I'd frame it as: wormhole is winning because
+this benchmark is exactly where a leaf-oriented structure should
+shine, and pebbleskip is paying for general concurrent skiplist
+machinery we are not really using in the benchmark.
+
+  Main reasons:
+
+  1. Cache locality
+     Wormhole searches inside compact sorted []KV leaves. Once it
+     finds a leaf, it is mostly walking contiguous memory.
+     Pebbleskip walks pointer/offset links
+     across nodes, so every search is more pointer-chase heavy.
+
+  2. The benchmark is append-biased
+     BenchmarkMixedWormhole writes increasing keys. Wormhole now
+     has a tail-leaf fast path, so those writes often avoid the
+     top-level leaf search. Pebbleskip still does a normal skiplist
+     insert path with random height, splice finding, and CAS-linked tower updates.
+
+  3. The reads are hot and patterned
+     The mixed benchmark reads repeatedly from a 4096-key ring. Wormhole's
+     cached leaf plus per-leaf read hint is very effective there. Pebbleskip does a top-
+     down skiplist walk for each Get.
+
+  4. Less single-thread overhead
+     Pebbleskip is built around atomics/CAS and immutable arena nodes.
+     That is good for concurrent insertion semantics, but in a
+     single goroutine benchmark it is mostly overhead. Wormhole uses
+     ordinary locks, but uncontended locks are cheap, and the fast paths
+     avoid global structural changes most of the time.
+
+  5. Fewer comparisons and less decoding
+     Wormhole stores KV.Key as a Go string directly. Pebbleskip stores
+     key bytes in the arena and turns them into strings for comparisons/returns. That is
+     zero-copy, but still more work than direct string fields.
+
+  6. Mutable leaves fit YogaDB better
+     Wormhole can replace/delete in-place within leaves. Pebbleskip is
+     still closer to Pebble's immutable memtable model: no delete, duplicate Add rejected,
+     tombstones represented above the container. That makes pebbleskip robust,
+     but less shaped to this exact YogaDB memtable use case.
+
+  The caveat: this does not prove wormhole wins everywhere. The current mixed
+  benchmark is single-threaded, append-heavy, and has clustered reads. Pebbleskip
+  may look better under heavier concurrent writers/readers, less locality, or
+  workloads where avoiding global structural locks matters.
+
+  But the result is not suspicious to me. It is the classic tradeoff: a skiplist
+  buys general concurrency and simple incremental ordering, while wormhole's
+  sorted leaf layout buys locality and low constant factors. For YogaDB's
+  memtable-shaped workload, those constant factors are doing real work.
+
+*/
