@@ -9,6 +9,10 @@ import (
 	"github.com/cespare/xxhash/v2"
 )
 
+// Currently our wormhole has better performance, in
+// particular on frequently mixed and interleaved reads and writes.
+// keyStable is kept for now as a backup: see the worm2 branch.
+//
 // keyStable is a place to keep your keys
 // when you think of them like horses.
 // Horses live in a stable.
