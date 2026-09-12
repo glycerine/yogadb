@@ -299,16 +299,16 @@ func (it *Iter) currentValueBytes(src []byte) []byte {
 
 // ====================== memtable one-shot seek helpers ======================
 
-// keyStableSeekGE does a one-shot seek in a keyStable: finds the first item >= target.
+// memtableSeekGE does a one-shot seek in the active memtable: finds the first item >= target.
 // If strict is true, skips exact matches (finds first item > target).
-func keyStableSeekGE(ks *keyStable, target string, strict bool, x bool) (KV, bool) {
-	return ks.seekGE(target, strict, x)
+func memtableSeekGE(mt *memtable, target string, strict bool, x bool) (KV, bool) {
+	return mt.seekGE(target, strict)
 }
 
-// keyStableSeekLE does a one-shot seek in a keyStable: finds the last item <= target.
+// memtableSeekLE does a one-shot seek in the active memtable: finds the last item <= target.
 // If strict is true, skips exact matches (finds last item < target).
-func keyStableSeekLE(ks *keyStable, target string, strict bool, x bool) (KV, bool) {
-	return ks.seekLE(target, strict, x)
+func memtableSeekLE(mt *memtable, target string, strict bool, x bool) (KV, bool) {
+	return mt.seekLE(target, strict)
 }
 
 // ====================== stateful FlexSpace cursor ======================
@@ -810,7 +810,7 @@ func (it *Iter) servePrefetchReverse() bool {
 // resolving duplicates by priority (memtable > FlexSpace) and skipping
 // tombstones. If strict is true, finds the smallest key > target.
 //
-// The memtable side uses a one-shot keyStable seek. The FlexSpace side reuses
+// The memtable side uses a one-shot seek. The FlexSpace side reuses
 // the iterator's stateful cursor, which should already be positioned at or past
 // the target. Caller must hold topMutRW.RLock().
 func (it *Iter) mergedSeekGE(target string, strict bool, x bool) (kv *KV, found bool) {
@@ -834,7 +834,7 @@ func (it *Iter) mergedSeekGE(target string, strict bool, x bool) (kv *KV, found 
 		var have [2]bool
 
 		// Memtable: one-shot seek
-		candidates[0], have[0] = keyStableSeekGE(&db.mt.ks, target, strict, x)
+		candidates[0], have[0] = memtableSeekGE(&db.mt, target, strict, x)
 
 		// FlexSpace: use stateful cursor
 		it.positionFlexCursorForSeek(target, strict)
@@ -1022,7 +1022,7 @@ func (it *Iter) retreatFlexCursorBefore(target string, strict bool) {
 // resolving duplicates by priority (memtable > FlexSpace) and skipping
 // tombstones. If strict is true, finds the largest key < target.
 //
-// The memtable side uses a one-shot keyStable seek. The FlexSpace side reuses
+// The memtable side uses a one-shot active-memtable seek. The FlexSpace side reuses
 // the iterator's stateful cursor, which should already be positioned at or
 // before the target. Caller must hold topMutRW.RLock().
 func (it *Iter) mergedSeekLE(target string, strict bool, x bool) (kv *KV, found bool) {
@@ -1044,7 +1044,7 @@ func (it *Iter) mergedSeekLE(target string, strict bool, x bool) (kv *KV, found 
 		var candidates [2]KV
 		var have [2]bool
 
-		candidates[0], have[0] = keyStableSeekLE(&db.mt.ks, target, strict, x)
+		candidates[0], have[0] = memtableSeekLE(&db.mt, target, strict, x)
 
 		// FlexSpace: use stateful cursor
 		it.positionFlexCursorForSeekLE(target, strict)

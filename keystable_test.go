@@ -973,7 +973,7 @@ func BenchmarkMemtableInitialLoadThenOrderedScan(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				m := New(wormConfig{})
+				m := newWormhole(wormConfig{})
 				for _, kv := range kvs {
 					m.Put(kv)
 				}
@@ -1156,7 +1156,7 @@ BenchmarkKeyStableAscendOwnedKeys
 BenchmarkKeyStableAscendOwnedKeys-48       	   37836	     30067 ns/op	       0 B/op	       0 allocs/op
 
 PASS
-ok  	github.com/glycerine/yogadb/wormhole	26.378s
+ok  	github.com/glycerine/yogadb	26.378s
 
 Compilation finished at Fri Sep 11 22:20:08
 */

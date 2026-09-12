@@ -14,8 +14,8 @@ import (
 // ====================== memtable ======================
 
 type memtable struct {
-	// backing in-memory sorted key arena.
-	ks keyStable
+	// backing in-memory ordered write buffer.
+	wh wormhole
 	// bulk is used only for pristine initial batch loads. It
 	// avoid per-key sorted-table insertion until a read requires materialization or
 	// Sync streams the sorted entries directly to FlexSpace.
@@ -38,7 +38,7 @@ type memtable struct {
 
 func newMemtable(memWalFD vfs.File) *memtable {
 	mt := &memtable{
-		ks:                makeKeyStable(1024),
+		wh:                *newWormhole(wormConfig{}),
 		memWalFD:          memWalFD,
 		memWalBuf:         make([]byte, 0, memtableWalBufCap),
 		memWalWriteOffset: memWalHeaderSize,
@@ -50,11 +50,19 @@ func newMemtable(memWalFD vfs.File) *memtable {
 // called with db write lock held.
 func (m *memtable) reset() {
 	const x = true
-	m.ks.clear(x)
+	m.clearData(x)
+}
+
+func (m *memtable) clearData(x bool) {
+	m.wh = *newWormhole(wormConfig{})
 	m.vtypArena = nil
 	m.empty.Store(true)
 	m.size = 0
 	m.bulk.reset()
+}
+
+func (m *memtable) activeLen() int64 {
+	return m.wh.Len()
 }
 
 func (m *memtable) vtypBytes(vtyp uint64) []byte {
@@ -71,7 +79,10 @@ func (m *memtable) vtypBytes(vtyp uint64) []byte {
 // (e.g. db.go:165 in Batch.Commit)
 // Returns the previous KV for the same key and whether it was replaced.
 func (m *memtable) put(kv KV, x bool) (KV, bool) {
-	old, replaced := m.ks.set(kv, x)
+	old, replaced := m.wh.Get(kv.Key)
+	if putReplaced := m.wh.Put(kv); putReplaced != replaced {
+		panicf("wormhole Put(%q) replaced=%v, want %v", kv.Key, putReplaced, replaced)
+	}
 	if replaced {
 		m.size -= int64(kvSizeApprox(&old))
 	}
@@ -111,11 +122,10 @@ func (m *memtable) materializeBulk() {
 	if m.bulk.count == 0 {
 		return
 	}
-	const x = true
 	for si := range m.bulk.segments {
 		seg := &m.bulk.segments[si]
 		for i, n := 0, seg.len(); i < n; i++ {
-			m.ks.set(seg.kv(i), x)
+			m.wh.Put(seg.kv(i))
 		}
 	}
 	m.bulk.reset()
@@ -125,7 +135,27 @@ func (m *memtable) get(key string, x bool) (KV, bool) {
 	if kv, ok := m.bulk.get(key); ok {
 		return kv, true
 	}
-	return m.ks.get(key, x)
+	return m.wh.Get(key)
+}
+
+func (m *memtable) ascend(start string, fn func(KV) bool) {
+	m.wh.Ascend(start, fn)
+}
+
+func (m *memtable) scan(fn func(KV) bool) {
+	m.wh.Ascend("", fn)
+}
+
+func (m *memtable) reverse(fn func(KV) bool) {
+	m.wh.Descend("", fn)
+}
+
+func (m *memtable) seekGE(target string, strict bool) (KV, bool) {
+	return m.wh.SeekGE(target, strict)
+}
+
+func (m *memtable) seekLE(target string, strict bool) (KV, bool) {
+	return m.wh.SeekLE(target, strict)
 }
 
 func (m *memtable) logAppend(kv KV) error {

@@ -300,9 +300,7 @@ func (tx *WriteTx) Rollback() error {
 func (tx *WriteTx) rollbackOpen() error {
 	const x = true
 	db := tx.db
-	db.mt.ks.clear(x)
-	db.mt.empty.Store(true)
-	db.mt.size = 0
+	db.mt.clearData(x)
 	db.liveKeys = tx.beginLiveKeys
 	db.liveBigKeys = tx.beginBigKeys
 	db.liveSmallKeys = tx.beginSmallKeys

@@ -28,7 +28,8 @@ import (
 // afterbulk_test.go benchmarks of newly written key-value pairs;
 // up to 2x fold for some cases.
 //
-// We use keyStable for our memtable. In-memory B-trees and
+// keyStable is kept as an alternate in-memory table implementation. Earlier
+// yogadb versions used it as the memtable. In-memory B-trees and
 // skip-lists are used as the memtable by other databases,
 // but we took inspiration from Entity-Component-System (ECS)
 // designs and just use integer indexing to avoid alot of pointers.

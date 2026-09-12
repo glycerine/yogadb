@@ -21,7 +21,7 @@ func TestWormholeRandomizedSetGetDeleteCorrectness(t *testing.T) {
 	for run := 0; run == 0 || time.Now().Before(deadline); run++ {
 		seed := baseSeed + uint64(run)*0x9e3779b97f4a7c15
 		rng := rand.New(rand.NewSource(int64(seed)))
-		m := New(wormConfig{leafCapacity: leafCaps[rng.Intn(len(leafCaps))]})
+		m := newWormhole(wormConfig{leafCapacity: leafCaps[rng.Intn(len(leafCaps))]})
 		if rng.Intn(2) == 0 {
 			m.BuildPointIndex()
 		}

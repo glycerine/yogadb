@@ -2,11 +2,11 @@ package yogadb
 
 // yogadb/db.go - Go port of flexspace/flexdb.c
 // FlexDB: a persistent ordered key-value store backed by FlexSpace.
-// Uses keyStable's sorted key arena for the in-memory write buffer (memtable).
+// Uses wormhole's ordered in-memory table for the write buffer (memtable).
 //
 // Architecture:
-//   Active Memtable (keyStable + WAL) -> (flush) -> FlexSpace
-//   Reads: check active memtable -> check inactive memtable -> check FlexSpace via sparse index
+//   Active Memtable (wormhole + WAL) -> (flush) -> FlexSpace
+//   Reads: check active memtable -> check FlexSpace via sparse index
 //   Crash recovery: rebuild sparse index from FlexSpace tags, replay WAL logs.
 
 import (
@@ -598,10 +598,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 			db.persistCounters()
 			db.ff.Sync()
 
-			mt.ks.clear(x)
-			mt.vtypArena = nil
-			mt.empty.Store(true)
-			mt.size = 0
+			mt.clearData(x)
 			db.flushSeq++
 		}
 		putKV := s.puts[idx]
@@ -1508,7 +1505,7 @@ func (db *FlexDB) materializeBulkInitialXLocked() error {
 }
 
 func (db *FlexDB) bulkInitialFastPathEligibleLocked(m *memtable) bool {
-	return !db.allowReads.Load() && m.ks.Len() == 0
+	return !db.allowReads.Load() && m.activeLen() == 0
 }
 
 func (db *FlexDB) requireReadsAllowed() {
@@ -3401,10 +3398,7 @@ func (db *FlexDB) writeLockHeldSyncR(forceTreeCheckpoint bool) error {
 		return fmt.Errorf("flexdb: Sync truncate memwal: %w", err)
 	}
 
-	db.mt.ks.clear(x)
-	db.mt.vtypArena = nil
-	db.mt.empty.Store(true)
-	db.mt.size = 0
+	db.mt.clearData(x)
 
 	return nil
 }
@@ -3578,10 +3572,7 @@ func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string,
 			db.persistCounters()
 			db.ff.Sync()
 
-			db.mt.ks.clear(x)
-			db.mt.vtypArena = nil
-			db.mt.empty.Store(true)
-			db.mt.size = 0
+			db.mt.clearData(x)
 			db.flushSeq++
 		}
 	}
@@ -4153,7 +4144,7 @@ func (db *FlexDB) writeLockHeldDeleteRangeWithHook(beforeWrite func() error, inc
 	if !db.mt.empty.Load() {
 		// Collect keys first since writeLockHeldPut mutates the memtable.
 		var keys []string
-		db.mt.ks.Ascend(x, KV{Key: begKey}, func(item KV) bool {
+		db.mt.ascend(begKey, func(item KV) bool {
 			if !deleteRangeInBounds(item.Key, begKey, endKey, begInclusive, endInclusive) {
 				// Past endKey - stop iteration.
 				if deleteRangePastEnd(item.Key, endKey, endInclusive) {
@@ -4237,7 +4228,7 @@ func (db *FlexDB) writeLockHeldClearWithHook(beforeWrite func() error, includeLa
 	// Phase 1: Tombstone small-value keys in the memtable.
 	if !db.mt.empty.Load() {
 		var keys []string
-		db.mt.ks.Scan(x, func(item KV) bool {
+		db.mt.scan(func(item KV) bool {
 			if !item.isTombstone() && !item.HasVPtr() {
 				keys = append(keys, strings.Clone(item.Key))
 			}
@@ -4275,7 +4266,7 @@ func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey string, begInclusive
 		// Min key (first in ascending order).
 		var minKV KV
 		var minFound bool
-		db.mt.ks.Scan(x, func(item KV) bool {
+		db.mt.scan(func(item KV) bool {
 			minKV = item
 			minFound = true
 			return false
@@ -4286,7 +4277,7 @@ func (db *FlexDB) writeLockHeldCoversAllKeys(begKey, endKey string, begInclusive
 		// Max key (first in descending order).
 		var maxKV KV
 		var maxFound bool
-		db.mt.ks.Reverse(x, func(item KV) bool {
+		db.mt.reverse(func(item KV) bool {
 			maxKV = item
 			maxFound = true
 			return false
@@ -5735,10 +5726,7 @@ func (db *FlexDB) doFlush() (err error) {
 	}
 
 	// Clear the memtable
-	db.mt.ks.clear(x)
-	db.mt.vtypArena = nil
-	db.mt.empty.Store(true)
-	db.mt.size = 0
+	db.mt.clearData(x)
 	db.flushSeq++
 	return nil
 }
@@ -5758,7 +5746,7 @@ func (db *FlexDB) flushMemtable(x bool) error {
 	batch := make([]KV, 0, memtableFlushBatch)
 	var err error
 
-	m.ks.Ascend(x, KV{}, func(item KV) bool {
+	m.ascend("", func(item KV) bool {
 		batch = append(batch, item)
 		if len(batch) >= memtableFlushBatch {
 			for _, kv := range batch {
@@ -6191,7 +6179,7 @@ func (db *FlexDB) flushMemtableBulkInitial(m *memtable, x bool) (bool, error) {
 			}
 		}
 	} else {
-		m.ks.Ascend(x, KV{}, consumeItem)
+		m.ascend("", consumeItem)
 	}
 	if err != nil {
 		return true, err

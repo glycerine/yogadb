@@ -235,8 +235,8 @@ func TestAllowReadsSyncsPreReadBulkLoad(t *testing.T) {
 	if db.mt.bulk.count != 0 {
 		t.Fatalf("bulk count after AllowReads = %d, want 0", db.mt.bulk.count)
 	}
-	if db.mt.ks.Len() != 0 {
-		t.Fatalf("memtable keyStable length after AllowReads = %d, want 0", db.mt.ks.Len())
+	if db.mt.activeLen() != 0 {
+		t.Fatalf("active memtable length after AllowReads = %d, want 0", db.mt.activeLen())
 	}
 	if !db.mt.empty.Load() {
 		t.Fatal("memtable is not empty after AllowReads sync")
@@ -450,8 +450,8 @@ func TestReopenedExistingDBBatchSetDeleteBeforeAllowReadsMergesAtAllowReads(t *t
 	if db.mt.bulk.count != 4 {
 		t.Fatalf("reopened pre-AllowReads batch should use reload bulk builder: bulk.count=%d, want 4", db.mt.bulk.count)
 	}
-	if db.mt.ks.Len() != 0 {
-		t.Fatalf("reopened pre-AllowReads batch should not use normal memtable path: keyStable.Len()=%d, want 0", db.mt.ks.Len())
+	if db.mt.activeLen() != 0 {
+		t.Fatalf("reopened pre-AllowReads batch should not use normal memtable path: active memtable length=%d, want 0", db.mt.activeLen())
 	}
 
 	if err := db.Sync(); err != nil {

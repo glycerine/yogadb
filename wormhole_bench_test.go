@@ -67,7 +67,7 @@ func newWormTidwallBtree() *tbtree.BTreeG[KV] {
 }
 
 func BenchmarkWormholePut(b *testing.B) {
-	m := New(wormConfig{})
+	m := newWormhole(wormConfig{})
 	kvs := wormBenchKVs(b.N, 0)
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -101,7 +101,7 @@ func BenchmarkPebbleSkipPut(b *testing.B) {
 
 func BenchmarkWormholeAscendingScan(b *testing.B) {
 	const n = 65536
-	m := New(wormConfig{})
+	m := newWormhole(wormConfig{})
 	for i := 0; i < n; i++ {
 		m.Put(wormBenchKV(i))
 	}
@@ -163,7 +163,7 @@ func BenchmarkPebbleSkipAscendingScan(b *testing.B) {
 }
 
 func BenchmarkWormhole_Mixed_ReadsWrites(b *testing.B) {
-	m := New(wormConfig{})
+	m := newWormhole(wormConfig{})
 	initial := wormBenchKVs(4096, 0)
 	for i := 0; i < 4096; i++ {
 		m.Put(initial[i])
@@ -278,7 +278,7 @@ var (
 func BenchmarkWormholeGet(b *testing.B) {
 	keys := wormBenchmarkKeyStableKeys(1 << 16)
 	value := []byte("value")
-	s := New(wormConfig{})
+	s := newWormhole(wormConfig{})
 
 	for i, key := range keys {
 		s.Put(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)})
@@ -299,7 +299,7 @@ func BenchmarkWormholeGet(b *testing.B) {
 func BenchmarkWormholeGetOrdered(b *testing.B) {
 	keys := wormBenchmarkKeyStableKeys(1 << 16)
 	value := []byte("value")
-	s := New(wormConfig{})
+	s := newWormhole(wormConfig{})
 
 	for i, key := range keys {
 		s.Put(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)})
