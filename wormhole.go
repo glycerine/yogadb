@@ -65,7 +65,7 @@ type wormKvPage struct {
 	kvs [wormPageSize]KV
 }
 
-func New(opts wormConfig) *wormhole {
+func newWormhole(opts wormConfig) *wormhole {
 	leafCap := opts.leafCapacity
 	if leafCap <= 0 {
 		leafCap = 256
@@ -441,6 +441,52 @@ func (m *wormhole) DescendRange(start, end string, fn func(KV) bool) {
 		}
 		l.mu.RUnlock()
 	}
+}
+
+func (m *wormhole) SeekGE(target string, strict bool) (KV, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	idx := 0
+	if target != "" {
+		idx = m.findLeafIndexLocked(target)
+	}
+	for ; idx < len(m.leaves); idx++ {
+		l := m.leaves[idx]
+		l.mu.RLock()
+		for _, kvIdx := range l.items {
+			kv := m.store.get(kvIdx)
+			if target == "" || kv.Key > target || (!strict && kv.Key >= target) {
+				l.mu.RUnlock()
+				return kv, true
+			}
+		}
+		l.mu.RUnlock()
+	}
+	return KV{}, false
+}
+
+func (m *wormhole) SeekLE(target string, strict bool) (KV, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	idx := len(m.leaves) - 1
+	if target != "" {
+		idx = m.findLeafIndexLocked(target)
+	}
+	for ; idx >= 0; idx-- {
+		l := m.leaves[idx]
+		l.mu.RLock()
+		for i := len(l.items) - 1; i >= 0; i-- {
+			kv := m.store.get(l.items[i])
+			if target == "" || kv.Key < target || (!strict && kv.Key <= target) {
+				l.mu.RUnlock()
+				return kv, true
+			}
+		}
+		l.mu.RUnlock()
+	}
+	return KV{}, false
 }
 
 func (m *wormhole) findLeafIndexLocked(key string) int {
