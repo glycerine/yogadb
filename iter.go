@@ -862,11 +862,9 @@ func (db *FlexDB) flexCursorPrevInterval(fc *flexCursor) error {
 // resolving duplicates by priority (memtable > FlexSpace) and skipping tombstones.
 // If strict is true, finds smallest key > target. Caller must hold topMutRW.RLock().
 //
-// note: does not appear to be used at the moment. might be vestigial?
-// commenting out to rebuild without it
-/*
-func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, hlc HLC, hasVPtr bool, vptr VPtr, vtyp uint64, found bool) {
-	const x = false
+// note: does not appear to be used at the moment. does this lack of symmetry point to a bug?
+func (db *FlexDB) mergedSeekGE(target string, strict bool, x bool) (kv *KV, found bool) {
+
 	for {
 		var candidates [2]KV
 		var have [2]bool
@@ -912,19 +910,27 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 			strict = true
 			continue // skip tombstone, seek past it
 		}
-
+		found = true
 		if bestKV.HasVPtr() {
-			return []byte(minKey), nil, bestKV.Hlc, true, bestKV.Vptr, bestKV.Vtyp(), true
-		}
-		val, vtype, _, err := db.resolveVPtr(bestKV, x)
-		if err != nil {
-			iterIOPanic(err)
+			kv = &KV{}
+			*kv = bestKV
+			kv.Key = minKey
+			kv.Value = dupBytes(bestKV.Value)
 			return
+			//was just: return []byte(minKey), nil, bestKV.Hlc, true, bestKV.Vptr, bestKV.Vtyp(), true
 		}
-		return []byte(minKey), dupBytes(val), bestKV.Hlc, false, bestKV.Vptr, vtype, true
+		//val, vtype, _, err := db.resolveVPtr(bestKV, x)
+		//if err != nil {
+		//	iterIOPanic(err)
+		//	return
+		//}
+		//return []byte(minKey), dupBytes(val), bestKV.Hlc, false, bestKV.Vptr, vtype, true
+
+		// bestKV has inline .Value
+		kv = &KV{Key: minKey, Value: dupBytes(bestKV.Value), Vptr: bestKV.Vptr, Hlc: bestKV.Hlc}
+		return
 	}
 }
-*/
 
 // ====================== fast-path stateful iteration ======================
 
@@ -1205,7 +1211,7 @@ func (it *Iter) retreatFlexCursorBefore(target string, strict bool) {
 }
 
 // mergedSeekLE finds the largest key <= target across memtable + FlexSpace,
-// resolving duplicates by priority and skipping tombstones.
+// resolving duplicates by priority (memtable > FlexSpace) and skipping tombstones.
 // If strict is true, finds largest key < target. Caller must hold topMutRW.RLock().
 func (db *FlexDB) mergedSeekLE(target string, strict bool, x bool) (kv *KV, found bool) {
 	for {
@@ -1250,7 +1256,7 @@ func (db *FlexDB) mergedSeekLE(target string, strict bool, x bool) (kv *KV, foun
 		if !haveBest || bestKV.isTombstone() {
 			target = maxKey
 			strict = true
-			continue
+			continue // skip tombstone, seek past it
 		}
 		found = true
 		if bestKV.HasVPtr() {
@@ -1261,11 +1267,6 @@ func (db *FlexDB) mergedSeekLE(target string, strict bool, x bool) (kv *KV, foun
 			return
 		}
 		// bestKV has inline .Value
-		if bestKV.Vptr.Length == rawVlenTombstone {
-			target = maxKey
-			strict = true
-			continue
-		}
 		kv = &KV{Key: maxKey, Value: dupBytes(bestKV.Value), Vptr: bestKV.Vptr, Hlc: bestKV.Hlc}
 		return
 	}

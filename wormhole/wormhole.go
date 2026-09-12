@@ -344,9 +344,7 @@ func (m *Map) findInLeafForRead(l *leaf, key string) (int, bool) {
 }
 
 func (m *Map) invalidatePointIndex() {
-	if m.point.Load() != nil {
-		m.point.Store(nil)
-	}
+	m.point.Store(nil)
 }
 
 func (idx *pointIndex) get(key string) (KV, bool) {
