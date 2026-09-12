@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/glycerine/yogadb/pebbleskip"
+	tbtree "github.com/tidwall/btree"
 )
 
 func benchKey(i int) string {
@@ -61,6 +62,14 @@ func benchReadKeys(mask int) []string {
 	return keys
 }
 
+func tidwallKVLess(a, b KV) bool {
+	return a.Key < b.Key
+}
+
+func newTidwallBtree() *tbtree.BTreeG[KV] {
+	return tbtree.NewBTreeGOptions[KV](tidwallKVLess, tbtree.Options{Degree: 32})
+}
+
 func BenchmarkWormholePut(b *testing.B) {
 	m := New(Options{})
 	kvs := benchKVs(b.N, 0)
@@ -68,6 +77,16 @@ func BenchmarkWormholePut(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		m.Put(kvs[i])
+	}
+}
+
+func BenchmarkTidwallBtreePut(b *testing.B) {
+	tree := newTidwallBtree()
+	kvs := benchKVs(b.N, 0)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tree.Set(kvs[i])
 	}
 }
 
@@ -95,6 +114,26 @@ func BenchmarkWormholeAscendingScan(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		count := 0
 		m.Ascend("", func(KV) bool {
+			count++
+			return true
+		})
+		if count != n {
+			b.Fatalf("count=%d want %d", count, n)
+		}
+	}
+}
+
+func BenchmarkTidwallBtreeAscendingScan(b *testing.B) {
+	const n = 65536
+	tree := newTidwallBtree()
+	for i := 0; i < n; i++ {
+		tree.Set(benchKV(i))
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		count := 0
+		tree.Scan(func(KV) bool {
 			count++
 			return true
 		})
@@ -148,6 +187,27 @@ func BenchmarkWormhole_Mixed_ReadsWrites(b *testing.B) {
 	}
 }
 
+func BenchmarkTidwallBtree_Mixed_ReadsWrites(b *testing.B) {
+	tree := newTidwallBtree()
+	initial := benchKVs(4096, 0)
+	for i := 0; i < 4096; i++ {
+		tree.Set(initial[i])
+	}
+	writes := benchKVs((b.N+3)/4, 4096)
+	readKeys := benchReadKeys(4095)
+	b.ReportAllocs()
+	b.ResetTimer()
+	writeIdx := 0
+	for i := 0; i < b.N; i++ {
+		if i%4 == 0 {
+			tree.Set(writes[writeIdx])
+			writeIdx++
+		} else {
+			_, _ = tree.Get(KV{Key: readKeys[i&4095]})
+		}
+	}
+}
+
 func BenchmarkPebbleSkip_Mixed_ReadsWrites(b *testing.B) {
 	s := pebbleskip.New(b.N*128+(2<<20), nil)
 	initial := benchSkipKVs(4096, 0)
@@ -170,6 +230,46 @@ func BenchmarkPebbleSkip_Mixed_ReadsWrites(b *testing.B) {
 		} else {
 			_, _ = s.Get(readKeys[i&4095])
 		}
+	}
+}
+
+func BenchmarkTidwallBtreeGet(b *testing.B) {
+	keys := benchmarkKeyStableKeys(1 << 16)
+	value := []byte("value")
+	tree := newTidwallBtree()
+
+	for i, key := range keys {
+		tree.Set(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)})
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		kv, found := tree.Get(KV{Key: keys[i&(len(keys)-1)]})
+		if !found {
+			b.Fatalf("get(%q) was not found", keys[i&(len(keys)-1)])
+		}
+		keyStableBenchKV = kv
+	}
+}
+
+func BenchmarkTidwallBtreeGetOrdered(b *testing.B) {
+	keys := benchmarkKeyStableKeys(1 << 16)
+	value := []byte("value")
+	tree := newTidwallBtree()
+
+	for i, key := range keys {
+		tree.Set(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)})
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		kv, found := tree.Get(KV{Key: keys[i&(len(keys)-1)]})
+		if !found {
+			b.Fatalf("get(%q) was not found", keys[i&(len(keys)-1)])
+		}
+		keyStableBenchKV = kv
 	}
 }
 
