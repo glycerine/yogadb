@@ -55,16 +55,20 @@ func TestRandomizedSetGetDeleteCorrectness(t *testing.T) {
 					t.Fatalf("seed=0x%x run=%d step=%d Delete(%q)=%v want %v", seed, run, step, key, deleted, existed)
 				}
 				delete(model, key)
-			case op < 90:
+			case op < 89:
 				start := randomizedOptionalWormholeKey(rng)
 				assertWormholeAscend(t, m, model, start, seed, run, step)
-			case op < 96:
+			case op < 93:
 				start := randomizedOptionalWormholeKey(rng)
 				assertWormholeDescend(t, m, model, start, seed, run, step)
-			case op < 99:
+			case op < 96:
 				start := randomizedOptionalWormholeKey(rng)
 				end := randomizedOptionalWormholeKey(rng)
 				assertWormholeRange(t, m, model, start, end, seed, run, step)
+			case op < 99:
+				lessOrEqual := randomizedOptionalWormholeKey(rng)
+				greaterThan := randomizedOptionalWormholeKey(rng)
+				assertWormholeDescendRange(t, m, model, lessOrEqual, greaterThan, seed, run, step)
 			default:
 				m.BuildPointIndex()
 			}
@@ -242,5 +246,31 @@ func assertWormholeRange(t *testing.T, m *Map, model map[string]KV, start, end s
 	want := modelKVsForKeys(model, wantKeys)
 	if diff := compareKVLists(got, want); diff != "" {
 		t.Fatalf("seed=0x%x run=%d step=%d AscendRange(%q,%q): %s", seed, run, step, start, end, diff)
+	}
+}
+
+func assertWormholeDescendRange(t *testing.T, m *Map, model map[string]KV, lessOrEqual, greaterThan string, seed uint64, run, step int) {
+	t.Helper()
+	var got []KV
+	m.DescendRange(lessOrEqual, greaterThan, func(kv KV) bool {
+		got = append(got, cloneKV(kv))
+		return true
+	})
+
+	keys := modelSortedKeys(model)
+	wantKeys := make([]string, 0, len(keys))
+	for i := len(keys) - 1; i >= 0; i-- {
+		key := keys[i]
+		if lessOrEqual != "" && key > lessOrEqual {
+			continue
+		}
+		if greaterThan != "" && key <= greaterThan {
+			continue
+		}
+		wantKeys = append(wantKeys, key)
+	}
+	want := modelKVsForKeys(model, wantKeys)
+	if diff := compareKVLists(got, want); diff != "" {
+		t.Fatalf("seed=0x%x run=%d step=%d DescendRange(%q,%q): %s", seed, run, step, lessOrEqual, greaterThan, diff)
 	}
 }

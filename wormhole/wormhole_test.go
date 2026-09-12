@@ -74,6 +74,47 @@ func TestBasicPutGetDeleteScan(t *testing.T) {
 	}
 }
 
+func TestDescendRange(t *testing.T) {
+	m := New(Options{LeafCapacity: 4})
+	for i := 0; i < 10; i++ {
+		m.Put(whKV(i))
+	}
+
+	tests := []struct {
+		lessOrEqual string
+		greaterThan string
+		want        []string
+	}{
+		{"", "", []string{"k00009", "k00008", "k00007", "k00006", "k00005", "k00004", "k00003", "k00002", "k00001", "k00000"}},
+		{"k00007", "k00003", []string{"k00007", "k00006", "k00005", "k00004"}},
+		{"", "k00007", []string{"k00009", "k00008"}},
+		{"k00003", "", []string{"k00003", "k00002", "k00001", "k00000"}},
+		{"k00005", "k00005", nil},
+		{"k00003", "k00007", nil},
+	}
+
+	for _, tc := range tests {
+		var got []string
+		m.DescendRange(tc.lessOrEqual, tc.greaterThan, func(kv KV) bool {
+			got = append(got, kv.Key)
+			return true
+		})
+		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Fatalf("DescendRange(%q,%q)=%v want %v", tc.lessOrEqual, tc.greaterThan, got, tc.want)
+		}
+	}
+
+	var early []string
+	m.DescendRange("", "", func(kv KV) bool {
+		early = append(early, kv.Key)
+		return len(early) < 3
+	})
+	wantEarly := []string{"k00009", "k00008", "k00007"}
+	if fmt.Sprint(early) != fmt.Sprint(wantEarly) {
+		t.Fatalf("early stop DescendRange=%v want %v", early, wantEarly)
+	}
+}
+
 func TestAgainstSortedMapModel(t *testing.T) {
 	m := New(Options{LeafCapacity: 8})
 	model := map[string][]byte{}

@@ -413,6 +413,10 @@ func (m *Map) AscendRange(start, end string, fn func(KV) bool) {
 }
 
 func (m *Map) Descend(start string, fn func(KV) bool) {
+	m.DescendRange(start, "", fn)
+}
+
+func (m *Map) DescendRange(start, end string, fn func(KV) bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -427,6 +431,10 @@ func (m *Map) Descend(start string, fn func(KV) bool) {
 			kv := m.store.get(l.items[i])
 			if start != "" && kv.Key > start {
 				continue
+			}
+			if end != "" && kv.Key <= end {
+				l.mu.RUnlock()
+				return
 			}
 			if !fn(kv) {
 				l.mu.RUnlock()
