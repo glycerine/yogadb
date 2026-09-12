@@ -146,6 +146,53 @@ func TestFlexDB_IteratorDirectionChangeAfterReversePrefetch(t *testing.T) {
 	}
 }
 
+func TestFlexDB_IteratorDescendingMergedMemtableAndFlexSpace(t *testing.T) {
+	db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
+
+	for _, k := range []string{"a", "b", "d", "f"} {
+		mustPut(t, db, k, "flex:"+k)
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	mustPut(t, db, "c", "mem:c")
+	mustPut(t, db, "d", "mem:d")
+	mustPut(t, db, "e", "mem:e")
+	mustDelete(t, db, "f")
+
+	kvc, exact, err := db.Find(LT, "")
+	if err != nil {
+		t.Fatalf("Find(LT, empty): %v", err)
+	}
+	if kvc == nil {
+		t.Fatal("Find(LT, empty) found nothing, want last key")
+	}
+	defer kvc.Close()
+	if exact || kvc.Key != "e" {
+		t.Fatalf("Find(LT, empty) = key %q exact=%v, want key e exact=false", kvc.Key, exact)
+	}
+
+	if err := db.View(func(roDB *ReadOnlyTx) error {
+		it := roDB.NewIter()
+		defer it.Close()
+
+		it.SeekLast()
+		var keys []string
+		var vals []string
+		for it.Valid() {
+			keys = append(keys, it.Key())
+			vals = append(vals, string(it.Vin()))
+			it.Prev()
+		}
+		expectKeys(t, "descending merged keys", keys, []string{"e", "d", "c", "b", "a"})
+		expectKeys(t, "descending merged values", vals, []string{"mem:e", "mem:d", "mem:c", "flex:b", "flex:a"})
+		return nil
+	}); err != nil {
+		t.Fatalf("View: %v", err)
+	}
+}
+
 func TestFlexDB_IteratorGetAnySizeDoesNotPoisonInlineCache(t *testing.T) {
 	db, _ := openTestDB(t, &Config{DisableBackgroundFlush: true})
 
