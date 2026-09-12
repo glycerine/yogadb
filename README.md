@@ -1105,6 +1105,85 @@ Populate in `SessionMetrics()`, `CumulativeMetrics()`, `finalMetrics()`.
 
 ~~~
 
+# recent benchmarks of YogaDB versus RocksDB, Pebble, BoltDB
+
+~~~
+(goivy-venv) jaten@rog ~/yogadb (master) $ make rocks
+# benchmark versus RocksDB and CockroachDB/Pebble. Requires rocksdb source installed locally on linux.
+# note that the benchmem allocations will be off for rocksdb since most are in opqaque C/C++.
+CGO_ENABLED=1 go test -tags rocksdb -run '^$' \
+-bench 'Benchmark_LoadOnly_RocksDB|Benchmark_Iter_RocksDB_Ascend' \
+-benchtime=10x -count=3
+
+rocksdb_bench_test.go:31 [pid 298689] 2026-09-12 03:27:18.428507044 +0000 UTC rocksdb insert 167.509204ms
+goos: linux
+goarch: amd64
+pkg: github.com/glycerine/yogadb
+cpu: AMD Ryzen Threadripper 3960X 24-Core Processor 
+Benchmark_Iter_RocksDB_Ascend-48    	
+rocksdb_bench_test.go:31 [pid 298689] 2026-09-12 03:27:18.665111971 +0000 UTC rocksdb insert 156.991495ms
+      10	  21915138 ns/op	       207.8 iter_ns/key
+Benchmark_Iter_RocksDB_Ascend-48    	
+rocksdb_bench_test.go:31 [pid 298689] 2026-09-12 03:27:19.068001703 +0000 UTC rocksdb insert 146.817619ms
+
+rocksdb_bench_test.go:31 [pid 298689] 2026-09-12 03:27:19.309364427 +0000 UTC rocksdb insert 158.676178ms
+      10	  21692266 ns/op	       199.5 iter_ns/key
+Benchmark_Iter_RocksDB_Ascend-48    	
+rocksdb_bench_test.go:31 [pid 298689] 2026-09-12 03:27:19.719896340 +0000 UTC rocksdb insert 149.669231ms
+
+rocksdb_bench_test.go:31 [pid 298689] 2026-09-12 03:27:19.950344320 +0000 UTC rocksdb insert 144.861139ms
+      10	  21613064 ns/op	       199.5 iter_ns/key
+Benchmark_LoadOnly_RocksDB-48       	      10	 147895029 ns/op	      88 B/op	      11 allocs/op
+Benchmark_LoadOnly_RocksDB-48       	      10	 153793083 ns/op	      88 B/op	      11 allocs/op
+Benchmark_LoadOnly_RocksDB-48       	      10	 155381193 ns/op	      88 B/op	      11 allocs/op
+PASS
+ok  	github.com/glycerine/yogadb	7.671s
+go test -v -run=xxx -bench=Iter
+goos: linux
+goarch: amd64
+pkg: github.com/glycerine/yogadb
+cpu: AMD Ryzen Threadripper 3960X 24-Core Processor 
+Benchmark_Iter_YogaDB_Ascend
+
+iter_bench_test.go:60 [pid 299644] 2026-09-12 03:27:29.433308921 +0000 UTC yogadb insert 35.850167ms
+
+iter_bench_test.go:60 [pid 299644] 2026-09-12 03:27:29.574110589 +0000 UTC yogadb insert 25.497722ms
+
+iter_bench_test.go:60 [pid 299644] 2026-09-12 03:27:29.684827953 +0000 UTC yogadb insert 24.784286ms
+Benchmark_Iter_YogaDB_Ascend-48     	    3110	    386167 ns/op	         3.757 iter_ns/key
+Benchmark_Iter_YogaDB_Descend
+
+iter_bench_test.go:116 [pid 299644] 2026-09-12 03:27:30.977870621 +0000 UTC yogadb insert 29.855278ms
+
+iter_bench_test.go:116 [pid 299644] 2026-09-12 03:27:31.068394427 +0000 UTC yogadb insert 34.311942ms
+
+iter_bench_test.go:116 [pid 299644] 2026-09-12 03:27:31.193806642 +0000 UTC yogadb insert 24.639782ms
+Benchmark_Iter_YogaDB_Descend-48    	    2912	    394721 ns/op	         3.999 iter_ns/key
+Benchmark_Iter_Pebble
+2026/09/12 03:27:32 Found 0 WALs
+
+iter_bench_test.go:162 [pid 299644] 2026-09-12 03:27:32.464978231 +0000 UTC pebble insert 80.849891ms
+2026/09/12 03:27:32 Found 0 WALs
+
+iter_bench_test.go:162 [pid 299644] 2026-09-12 03:27:32.626968918 +0000 UTC pebble insert 80.220585ms
+2026/09/12 03:27:33 Found 0 WALs
+
+iter_bench_test.go:162 [pid 299644] 2026-09-12 03:27:33.216699820 +0000 UTC pebble insert 79.579106ms
+Benchmark_Iter_Pebble-48            	      93	  12573197 ns/op	       117.7 iter_ns/key
+Benchmark_Iter_Bolt
+
+iter_bench_test.go:273 [pid 299644] 2026-09-12 03:27:44.137819525 +0000 UTC bbolt insert 9.701307227s
+
+iter_bench_test.go:273 [pid 299644] 2026-09-12 03:27:53.870988233 +0000 UTC bbolt insert 9.703124552s
+
+iter_bench_test.go:273 [pid 299644] 2026-09-12 03:28:03.759599262 +0000 UTC bbolt insert 9.724223099s
+Benchmark_Iter_Bolt-48              	     956	   1566003 ns/op	        12.48 iter_ns/key
+PASS
+ok  	github.com/glycerine/yogadb	35.946s
+
+Sat Sep 12 03:30:02 AM UTC 2026
+~~~
+
 ---------
 Author: Jason E. Aten, Ph.D.
 

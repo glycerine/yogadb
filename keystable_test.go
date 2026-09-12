@@ -1046,3 +1046,45 @@ machinery we are not really using in the benchmark.
   memtable-shaped workload, those constant factors are doing real work.
 
 */
+
+/*
+BenchmarkWormhole_Mixed_ReadsWrites
+BenchmarkWormhole_Mixed_ReadsWrites-48        	14524537	        71.08 ns/op	      37 B/op	       0 allocs/op
+BenchmarkWormholePut
+BenchmarkWormholePut-48                       	 8625784	       116.3 ns/op	     150 B/op	       0 allocs/op
+BenchmarkWormholeGet
+BenchmarkWormholeGet-48                       	28695087	        40.42 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWormholeGetOrdered
+BenchmarkWormholeGetOrdered-48                	 4462280	       263.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWormholeAscendingScan
+BenchmarkWormholeAscendingScan-48             	    3944	    305115 ns/op	       0 B/op	       0 allocs/op
+
+BenchmarkTidwallBtree_Mixed_ReadsWrites
+BenchmarkTidwallBtree_Mixed_ReadsWrites-48    	 5181943	       256.6 ns/op	      33 B/op	       0 allocs/op
+BenchmarkTidwallBtreeGet
+BenchmarkTidwallBtreeGet-48                   	 3486928	       326.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTidwallBtreeGetOrdered
+BenchmarkTidwallBtreeGetOrdered-48            	 3376312	       325.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTidwallBtreePut
+BenchmarkTidwallBtreePut-48                   	 3800167	       363.0 ns/op	     134 B/op	       0 allocs/op
+BenchmarkTidwallBtreeAscendingScan
+BenchmarkTidwallBtreeAscendingScan-48         	    4318	    274293 ns/op	       0 B/op	       0 allocs/op
+
+BenchmarkKeyStable_Mixed_ReadsWrites
+BenchmarkKeyStable_Mixed_ReadsWrites-48    	 6736432	       163.7 ns/op	     155 B/op	       0 allocs/op
+BenchmarkKeyStableGet
+BenchmarkKeyStableGet-48                   	20852252	        56.58 ns/op	       0 B/op	       0 allocs/op
+BenchmarkKeyStableSet
+BenchmarkKeyStableSet-48                   	17216834	        63.88 ns/op	       0 B/op	       0 allocs/op
+BenchmarkKeyStableEnsureSorted
+BenchmarkKeyStableEnsureSorted-48          	     975	   1240524 ns/op	      67 B/op	       4 allocs/op
+BenchmarkKeyStableScan
+BenchmarkKeyStableScan-48                  	   39039	     29752 ns/op	       0 B/op	       0 allocs/op
+BenchmarkKeyStableAscendOwnedKeys
+BenchmarkKeyStableAscendOwnedKeys-48       	   37836	     30067 ns/op	       0 B/op	       0 allocs/op
+
+PASS
+ok  	github.com/glycerine/yogadb/wormhole	26.378s
+
+Compilation finished at Fri Sep 11 22:20:08
+*/
