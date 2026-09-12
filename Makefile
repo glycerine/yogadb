@@ -41,3 +41,7 @@ rocks:
 	-bench 'Benchmark_LoadOnly_RocksDB|Benchmark_Iter_RocksDB_Ascend' \
 	-benchtime=10x -count=3
 	go test -v -run=xxx -bench=Iter
+
+bench:
+	cd cmd/yogabench && go install
+	rm -rf ycsb.out.dir/; yogabench ycsb -dir ycsb.out.dir -gb 1
