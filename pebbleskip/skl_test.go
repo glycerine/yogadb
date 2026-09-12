@@ -129,6 +129,30 @@ func TestArenaFull(t *testing.T) {
 	}
 }
 
+func TestInserterRejectsDuplicateCachedNext(t *testing.T) {
+	s := New(1<<20, nil)
+	if err := s.Add(testKV(100)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(testKV(120)); err != nil {
+		t.Fatal(err)
+	}
+
+	prev, next, found := s.findSpliceForLevel(testKeyString(110), 0, s.head)
+	if found || prev == s.head || next == s.tail {
+		t.Fatalf("test setup failed: prev=%#v next=%#v found=%v", prev, next, found)
+	}
+
+	var ins Inserter
+	ins.height = 1
+	ins.spl[0].init(prev, next)
+	s.height.Store(1)
+
+	if err := ins.Add(s, testKV(120)); !errors.Is(err, ErrRecordExists) {
+		t.Fatalf("cached-next duplicate Add err = %v, want %v", err, ErrRecordExists)
+	}
+}
+
 func TestConcurrentAddGetIterate(t *testing.T) {
 	const n = 2000
 	s := New(8<<20, nil)

@@ -867,3 +867,72 @@ func TestKeyStable_set_then_set(t *testing.T) {
 		t.Fatalf("expected nstable = 1; got %v", nstable)
 	}
 }
+
+// port over the wormhole mixed read/write benchmark to compare keystable against wormhole and pebbleskip
+
+func benchKey(i int) string {
+	var buf [10]byte
+	buf[0] = 'k'
+	for pos := len(buf) - 1; pos > 0; pos-- {
+		buf[pos] = byte('0' + i%10)
+		i /= 10
+	}
+	return string(buf[:])
+}
+
+func benchValue(i int) []byte {
+	var buf [15]byte
+	copy(buf[:], "value-")
+	for pos := len(buf) - 1; pos >= len("value-"); pos-- {
+		buf[pos] = byte('0' + i%10)
+		i /= 10
+	}
+	return buf[:]
+
+}
+
+func benchKV(i int) KV {
+	v := benchValue(i)
+	return KV{Key: benchKey(i), Value: v, Vptr: VPtr{Length: uint64(len(v))}, Hlc: HLC(i + 1)}
+}
+
+func benchKVs(n int, base int) []KV {
+	kvs := make([]KV, n)
+	for i := range kvs {
+		kvs[i] = benchKV(base + i)
+	}
+	return kvs
+}
+
+func benchReadKeys(mask int) []string {
+	keys := make([]string, mask+1)
+	for i := range keys {
+		keys[i] = benchKey(i & mask)
+	}
+	return keys
+}
+
+func BenchmarkKeyStable_Mixed_ReadsWrites(b *testing.B) {
+
+	N := 4096
+	m := makeKeyStable(N)
+
+	const x = false
+	initial := benchKVs(N, 0)
+	for i := 0; i < N; i++ {
+		m.set(initial[i], x)
+	}
+	writes := benchKVs((b.N+3)/4, N)
+	readKeys := benchReadKeys(N - 1)
+	b.ReportAllocs()
+	b.ResetTimer()
+	writeIdx := 0
+	for i := 0; i < b.N; i++ {
+		if i%4 == 0 {
+			m.set(writes[writeIdx], x)
+			writeIdx++
+		} else {
+			_, _ = m.get(readKeys[i&4095], x)
+		}
+	}
+}

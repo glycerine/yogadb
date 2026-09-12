@@ -294,13 +294,25 @@ func (s *Skiplist) findSplice(key string, ins *Inserter) (found bool) {
 			if s.getNext(spl.prev, level) != spl.next {
 				continue
 			}
-			if spl.prev != s.head && !s.keyIsAfterNode(spl.prev, key) {
-				level = int(listHeight)
-				break
+			if spl.prev != s.head {
+				prevCmp := s.cmp(spl.prev.keyString(s.arena), key)
+				if prevCmp == 0 {
+					return true
+				}
+				if prevCmp > 0 {
+					level = int(listHeight)
+					break
+				}
 			}
-			if spl.next != s.tail && s.keyIsAfterNode(spl.next, key) {
-				level = int(listHeight)
-				break
+			if spl.next != s.tail {
+				nextCmp := s.cmp(spl.next.keyString(s.arena), key)
+				if nextCmp == 0 {
+					return true
+				}
+				if nextCmp < 0 {
+					level = int(listHeight)
+					break
+				}
 			}
 			prev = spl.prev
 			break
@@ -342,11 +354,6 @@ func (s *Skiplist) findSpliceForLevel(key string, level int, start *node) (prev,
 	}
 
 	return prev, next, found
-}
-
-func (s *Skiplist) keyIsAfterNode(nd *node, key string) bool {
-	ndKey := nd.keyString(s.arena)
-	return s.cmp(ndKey, key) < 0
 }
 
 func stringCompare(a, b string) int {
