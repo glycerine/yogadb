@@ -139,7 +139,7 @@ func TestDeleteEmptyMiddleLeafKeepsSearchCorrect(t *testing.T) {
 	}
 }
 
-func TestBuildPointIndexInvalidatesOnMutation(t *testing.T) {
+func TestBuildPointIndexTracksMutation(t *testing.T) {
 	m := New(Options{LeafCapacity: 4})
 	for i := 0; i < 8; i++ {
 		m.Put(whKV(i))
@@ -159,9 +159,16 @@ func TestBuildPointIndexInvalidatesOnMutation(t *testing.T) {
 		t.Fatalf("Get after indexed overwrite=%#v,%v", got, ok)
 	}
 
-	m.BuildPointIndex()
+	if replaced := m.Put(KV{Key: whKey(99), Value: []byte("new"), Vptr: VPtr{Length: 3}, Hlc: 199}); replaced {
+		t.Fatal("new insert after BuildPointIndex reported replaced")
+	}
+	got, ok = m.Get(whKey(99))
+	if !ok || string(got.Value) != "new" {
+		t.Fatalf("Get after indexed insert=%#v,%v", got, ok)
+	}
+
 	if !m.Delete(whKey(3)) {
-		t.Fatal("delete after rebuilding point index failed")
+		t.Fatal("delete after BuildPointIndex failed")
 	}
 	if got, ok := m.Get(whKey(3)); ok {
 		t.Fatalf("Get after indexed delete=%#v,true", got)

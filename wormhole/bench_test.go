@@ -62,12 +62,8 @@ func benchReadKeys(mask int) []string {
 	return keys
 }
 
-func tidwallKVLess(a, b KV) bool {
-	return a.Key < b.Key
-}
-
 func newTidwallBtree() *tbtree.BTreeG[KV] {
-	return tbtree.NewBTreeGOptions[KV](tidwallKVLess, tbtree.Options{Degree: 32})
+	return tbtree.NewBTreeGOptions[KV](func(a, b KV) bool { return a.Key < b.Key }, tbtree.Options{Degree: 32})
 }
 
 func BenchmarkWormholePut(b *testing.B) {
