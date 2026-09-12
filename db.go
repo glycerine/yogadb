@@ -60,7 +60,6 @@ const (
 var sep = string(os.PathSeparator)
 
 var testHookVacuumVLOGAfterFlexSpaceSyncBeforeRename func(*FlexDB) error
-var testHookResolveVPtr func(KV) error
 
 // Batch submits a set of writes all together at once for load efficiency.
 // It writes standalone MEMWAL_KV records; use Update for BEGIN/COMMIT grouped
@@ -2213,11 +2212,7 @@ func (db *FlexDB) writeLockHeldAutoVacuumMetrics(m *Metrics) {
 // For small inline values where HasVPtr() is false, we return kv.Value.
 // Returns the resolved value bytes, or an error.
 func (db *FlexDB) resolveVPtr(kv KV, x bool) (val []byte, vtyp uint64, hlc HLC, err error) {
-	if testHookResolveVPtr != nil {
-		if err := testHookResolveVPtr(kv); err != nil {
-			return nil, 0, 0, err
-		}
-	}
+
 	if kv.Vptr.Length == rawVlenTombstone {
 		return nil, 0, 0, ErrTomb
 	}

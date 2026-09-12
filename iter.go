@@ -102,6 +102,14 @@ type iterIOErr struct{ err error }
 
 func iterIOPanic(err error) { panic(iterIOErr{err}) }
 
+// Iter is an iterator, used to traverse key-value pairs in sorted order.
+//
+// Policy on VLOG large values: by default, an iteration should never automatically pull in
+// big values. Let the user do that in the code that uses the iterator, only
+// if they so wish.
+//
+// db.go internals set Iter.skipValues and Iter.lazyLarge flags, but they
+// are never read anywhere in the iterator routines, at the moment.
 type Iter struct {
 	db *FlexDB
 
@@ -862,7 +870,9 @@ func (db *FlexDB) flexCursorPrevInterval(fc *flexCursor) error {
 // resolving duplicates by priority (memtable > FlexSpace) and skipping tombstones.
 // If strict is true, finds smallest key > target. Caller must hold topMutRW.RLock().
 //
-// note: does not appear to be used at the moment. does this lack of symmetry point to a bug?
+// unused? note: does not appear to be used at the moment. does this lack of symmetry point to a bug?
+// maybe it was replaced by mergedSeekGEFastFlexSpace()... well then why shouldn't
+// mergedSeekLE be replaced too by mergedSeekLEFastFlexSpace() ? which does not exist.
 func (db *FlexDB) mergedSeekGE(target string, strict bool, x bool) (kv *KV, found bool) {
 
 	for {
@@ -890,7 +900,6 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool, x bool) (kv *KV, foun
 		}
 		if !haveMin {
 			return
-			//return nil, nil, 0, false, VPtr{}, 0, false
 		}
 
 		// Pick highest-priority source at minKey (memtable wins)
@@ -910,25 +919,9 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool, x bool) (kv *KV, foun
 			strict = true
 			continue // skip tombstone, seek past it
 		}
-		found = true
-		if bestKV.HasVPtr() {
-			kv = &KV{}
-			*kv = bestKV
-			kv.Key = minKey
-			kv.Value = dupBytes(bestKV.Value)
-			return
-			//was just: return []byte(minKey), nil, bestKV.Hlc, true, bestKV.Vptr, bestKV.Vtyp(), true
-		}
-		//val, vtype, _, err := db.resolveVPtr(bestKV, x)
-		//if err != nil {
-		//	iterIOPanic(err)
-		//	return
-		//}
-		//return []byte(minKey), dupBytes(val), bestKV.Hlc, false, bestKV.Vptr, vtype, true
 
-		// bestKV has inline .Value
-		kv = &KV{Key: minKey, Value: dupBytes(bestKV.Value), Vptr: bestKV.Vptr, Hlc: bestKV.Hlc}
-		return
+		// return a copy
+		return &KV{Key: minKey, Value: dupBytes(bestKV.Value), Vptr: bestKV.Vptr, Hlc: bestKV.Hlc}, true
 	}
 }
 
@@ -1044,8 +1037,10 @@ func (it *Iter) servePrefetchReverse() bool {
 // mergedSeekGEFastFlexSpace performs a merged seek using one-shot keyStable seeks for
 // memtable and the stateful FlexSpace cursor. The cursor should already be
 // positioned at or past the target. Caller must hold topMutRW.RLock().
-func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, vtyp uint64, found bool) {
-	const x = false
+// Three call points, one in Iter.Seek(target) at iter.go:1269, two in Iter.Next()
+// at iter.go:1464 and iter.go:1493
+func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool, x bool) (kv *KV, found bool) {
+
 	db := it.db
 
 	// Fast path: memtable empty -> pure FlexSpace iteration.
@@ -1116,15 +1111,8 @@ func (it *Iter) mergedSeekGEFastFlexSpace(target string, strict bool) (kv *KV, v
 			continue
 		}
 
-		if bestKV.HasVPtr() {
-			return &KV{Key: minKey, Hlc: bestKV.Hlc, Vptr: bestKV.Vptr, Value: dupBytes(bestKV.Value)}, bestKV.Vtyp(), true
-		}
-		val, vtype, _, err := db.resolveVPtr(bestKV, x)
-		if err != nil {
-			iterIOPanic(err)
-			return
-		}
-		return &KV{Key: minKey, Value: dupBytes(val), Vptr: bestKV.Vptr, Hlc: bestKV.Hlc}, vtype, true
+		// iter should not pull in big values. let the user do that in code if they want them.
+		return &KV{Key: minKey, Value: dupBytes(bestKV.Value), Vptr: bestKV.Vptr, Hlc: bestKV.Hlc}, true
 	}
 }
 
@@ -1258,17 +1246,9 @@ func (db *FlexDB) mergedSeekLE(target string, strict bool, x bool) (kv *KV, foun
 			strict = true
 			continue // skip tombstone, seek past it
 		}
-		found = true
-		if bestKV.HasVPtr() {
-			kv = &KV{}
-			*kv = bestKV
-			kv.Key = maxKey
-			kv.Value = dupBytes(bestKV.Value)
-			return
-		}
-		// bestKV has inline .Value
-		kv = &KV{Key: maxKey, Value: dupBytes(bestKV.Value), Vptr: bestKV.Vptr, Hlc: bestKV.Hlc}
-		return
+
+		// return a copy of the maxKey KV
+		return &KV{Key: maxKey, Value: dupBytes(bestKV.Value), Vptr: bestKV.Vptr, Hlc: bestKV.Hlc}, true
 	}
 }
 
@@ -1292,7 +1272,9 @@ func (it *Iter) Seek(target string) {
 		return
 	}
 
-	it.pKV, _, it.valid = it.mergedSeekGEFastFlexSpace(target, false)
+	const x = false
+	// only call? no, also 1493, 1522 -- both in Next()
+	it.pKV, it.valid = it.mergedSeekGEFastFlexSpace(target, false, x)
 	it.dir = 1
 	it.valueNeedsCopy = false
 	it.valueResolved = true
@@ -1360,6 +1342,7 @@ func (it *Iter) Next() {
 	if !it.valid || it.closed {
 		return
 	}
+	const x = false
 
 	currentHLC := it.db.hlc.Aload()
 
@@ -1486,7 +1469,7 @@ func (it *Iter) Next() {
 
 		// Non-empty memtable: single merged seek with cursor reuse.
 		curKey := it.pKV.Key // save before re-seek overwrites pKV
-		it.pKV, _, it.valid = it.mergedSeekGEFastFlexSpace(curKey, true)
+		it.pKV, it.valid = it.mergedSeekGEFastFlexSpace(curKey, true, x)
 		it.valueNeedsCopy = false
 		it.valueResolved = true
 		return
@@ -1515,7 +1498,7 @@ func (it *Iter) Next() {
 		return
 	}
 
-	it.pKV, _, it.valid = it.mergedSeekGEFastFlexSpace(curKey, true)
+	it.pKV, it.valid = it.mergedSeekGEFastFlexSpace(curKey, true, x)
 	it.dir = 1
 	it.valueNeedsCopy = false
 	it.valueResolved = true
@@ -1762,8 +1745,6 @@ func (it *Iter) FetchV() (val []byte, vtyp uint64, hlc HLC, err error) {
 	if !it.pKV.HasVPtr() {
 		return it.Vin(), it.pKV.Vtyp(), it.pKV.Hlc, nil
 	}
-	// seems buggy: return it.db.resolveVPtr(KV{Vptr: it.pKV.Vptr})
-	// since resolveVPtr needs to see the kv.Vptr to distinguish large VLOG from inline Value.
 	const x = false
 	return it.db.resolveVPtr(*it.pKV, x)
 }
