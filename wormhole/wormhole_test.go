@@ -139,6 +139,35 @@ func TestDeleteEmptyMiddleLeafKeepsSearchCorrect(t *testing.T) {
 	}
 }
 
+func TestBuildPointIndexInvalidatesOnMutation(t *testing.T) {
+	m := New(Options{LeafCapacity: 4})
+	for i := 0; i < 8; i++ {
+		m.Put(whKV(i))
+	}
+	m.BuildPointIndex()
+
+	got, ok := m.Get(whKey(3))
+	if !ok || got.Key != whKey(3) {
+		t.Fatalf("indexed Get(%q)=%#v,%v", whKey(3), got, ok)
+	}
+
+	if !m.Put(KV{Key: whKey(3), Value: []byte("after"), Vptr: VPtr{Length: 5}, Hlc: 99}) {
+		t.Fatal("overwrite after BuildPointIndex did not report replaced")
+	}
+	got, ok = m.Get(whKey(3))
+	if !ok || string(got.Value) != "after" {
+		t.Fatalf("Get after indexed overwrite=%#v,%v", got, ok)
+	}
+
+	m.BuildPointIndex()
+	if !m.Delete(whKey(3)) {
+		t.Fatal("delete after rebuilding point index failed")
+	}
+	if got, ok := m.Get(whKey(3)); ok {
+		t.Fatalf("Get after indexed delete=%#v,true", got)
+	}
+}
+
 func TestConcurrentMixedAccess(t *testing.T) {
 	m := New(Options{LeafCapacity: 16})
 	const writers = 8

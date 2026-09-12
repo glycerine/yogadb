@@ -19,6 +19,7 @@ type Map struct {
 	mu               sync.RWMutex
 	leaves           []*leaf
 	tail             *leaf
+	point            atomic.Pointer[pointIndex]
 	cmp              Compare
 	useStringCompare bool
 	leafCap          int
@@ -35,6 +36,10 @@ type leaf struct {
 	readHint atomic.Int64
 }
 
+type pointIndex struct {
+	byKey map[string]KV
+}
+
 func New(opts Options) *Map {
 	cmp := opts.Compare
 	useStringCompare := cmp == nil
@@ -49,13 +54,14 @@ func New(opts Options) *Map {
 		leafCap = 4
 	}
 	l := &leaf{items: make([]KV, 0, leafCap+1)}
-	return &Map{
+	m := &Map{
 		leaves:           []*leaf{l},
 		tail:             l,
 		cmp:              cmp,
 		useStringCompare: useStringCompare,
 		leafCap:          leafCap,
 	}
+	return m
 }
 
 func stringCompare(a, b string) int {
@@ -72,7 +78,35 @@ func (m *Map) Len() int64 {
 	return m.liveKeys.Load()
 }
 
+// BuildPointIndex builds a read-only hash index for fast point lookups. The
+// index is invalidated by the next Put or Delete, keeping the default write path
+// cheap instead of maintaining a hash index on every mutation.
+func (m *Map) BuildPointIndex() {
+	if !m.useStringCompare {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	capHint := int(m.liveKeys.Load())
+	if capHint < m.leafCap {
+		capHint = m.leafCap
+	}
+	byKey := make(map[string]KV, capHint)
+	for _, l := range m.leaves {
+		l.mu.RLock()
+		for _, kv := range l.items {
+			byKey[kv.Key] = kv
+		}
+		l.mu.RUnlock()
+	}
+
+	m.point.Store(&pointIndex{byKey: byKey})
+}
+
 func (m *Map) Put(kv KV) (replaced bool) {
+	m.invalidatePointIndex()
 	key := kv.Key
 
 	for {
@@ -117,6 +151,10 @@ func (m *Map) Put(kv KV) (replaced bool) {
 }
 
 func (m *Map) Get(key string) (KV, bool) {
+	if idx := m.point.Load(); idx != nil {
+		return idx.get(key)
+	}
+
 	m.mu.RLock()
 	l := m.cachedLeafLocked(key)
 	if l == nil {
@@ -138,6 +176,7 @@ func (m *Map) Get(key string) (KV, bool) {
 }
 
 func (m *Map) Delete(key string) bool {
+	m.invalidatePointIndex()
 	m.mu.Lock()
 	idx := m.findLeafIndexLocked(key)
 	l := m.leaves[idx]
@@ -302,6 +341,17 @@ func (m *Map) findInLeafForRead(l *leaf, key string) (int, bool) {
 		return l.findStringWithHint(key)
 	}
 	return l.find(m.cmp, key)
+}
+
+func (m *Map) invalidatePointIndex() {
+	if m.point.Load() != nil {
+		m.point.Store(nil)
+	}
+}
+
+func (idx *pointIndex) get(key string) (KV, bool) {
+	kv, found := idx.byKey[key]
+	return kv, found
 }
 
 func (m *Map) splitLeafLocked(idx int, l *leaf) {

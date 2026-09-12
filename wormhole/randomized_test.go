@@ -22,6 +22,9 @@ func TestRandomizedSetGetDeleteCorrectness(t *testing.T) {
 		seed := baseSeed + uint64(run)*0x9e3779b97f4a7c15
 		rng := rand.New(rand.NewSource(int64(seed)))
 		m := New(Options{LeafCapacity: leafCaps[rng.Intn(len(leafCaps))]})
+		if rng.Intn(2) == 0 {
+			m.BuildPointIndex()
+		}
 		model := make(map[string]KV)
 
 		for step := 0; step < 2048 && time.Now().Before(deadline); step++ {
@@ -52,16 +55,18 @@ func TestRandomizedSetGetDeleteCorrectness(t *testing.T) {
 					t.Fatalf("seed=0x%x run=%d step=%d Delete(%q)=%v want %v", seed, run, step, key, deleted, existed)
 				}
 				delete(model, key)
-			case op < 92:
+			case op < 90:
 				start := randomizedOptionalWormholeKey(rng)
 				assertWormholeAscend(t, m, model, start, seed, run, step)
-			case op < 98:
+			case op < 96:
 				start := randomizedOptionalWormholeKey(rng)
 				assertWormholeDescend(t, m, model, start, seed, run, step)
-			default:
+			case op < 99:
 				start := randomizedOptionalWormholeKey(rng)
 				end := randomizedOptionalWormholeKey(rng)
 				assertWormholeRange(t, m, model, start, end, seed, run, step)
+			default:
+				m.BuildPointIndex()
 			}
 			assertWormholeAll(t, m, model, seed, run, step)
 		}

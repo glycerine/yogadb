@@ -182,8 +182,27 @@ var (
 func BenchmarkWormholeGet(b *testing.B) {
 	keys := benchmarkKeyStableKeys(1 << 16)
 	value := []byte("value")
-	//s := makeKeyStable(len(keys))
+	s := New(Options{})
 
+	for i, key := range keys {
+		s.Put(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)})
+	}
+	s.BuildPointIndex()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		kv, found := s.Get(keys[i&(len(keys)-1)])
+		if !found {
+			b.Fatalf("get(%q) was not found", keys[i&(len(keys)-1)])
+		}
+		keyStableBenchKV = kv
+	}
+}
+
+func BenchmarkWormholeGetOrdered(b *testing.B) {
+	keys := benchmarkKeyStableKeys(1 << 16)
+	value := []byte("value")
 	s := New(Options{})
 
 	for i, key := range keys {
