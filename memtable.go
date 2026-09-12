@@ -122,7 +122,7 @@ func (m *memtable) materializeBulk() {
 }
 
 func (m *memtable) get(key string, x bool) (KV, bool) {
-	if kv, ok := m.bulk.get(key, x); ok {
+	if kv, ok := m.bulk.get(key); ok {
 		return kv, true
 	}
 	return m.ks.get(key, x)
