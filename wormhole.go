@@ -21,6 +21,14 @@ type wormConfig struct {
 	leafCapacity int
 }
 
+// wormhole is our memtable. The name comes from the wormhole data structure
+// used in the original C FlexDB implementation for the memtable. We
+// have optimized our Go version of wormhole to the point where,
+// besides the name, the internal algorithms are probably
+// un-recognizable and completely different. But still, its a good name.
+//
+// wormhole now benchmarks better than the alternative memtables we tried:
+// tidwall's Btree, pebble's skiplist, our own keyStable arena.
 type wormhole struct {
 	mu        sync.RWMutex
 	leaves    []*wormLeaf
