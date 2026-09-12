@@ -861,6 +861,10 @@ func (db *FlexDB) flexCursorPrevInterval(fc *flexCursor) error {
 // mergedSeekGE finds the smallest key >= target across memtable + FlexSpace,
 // resolving duplicates by priority (memtable > FlexSpace) and skipping tombstones.
 // If strict is true, finds smallest key > target. Caller must hold topMutRW.RLock().
+//
+// note: does not appear to be used at the moment. might be vestigial?
+// commenting out to rebuild without it
+/*
 func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, hlc HLC, hasVPtr bool, vptr VPtr, vtyp uint64, found bool) {
 	const x = false
 	for {
@@ -920,6 +924,7 @@ func (db *FlexDB) mergedSeekGE(target string, strict bool) (key, value []byte, h
 		return []byte(minKey), dupBytes(val), bestKV.Hlc, false, bestKV.Vptr, vtype, true
 	}
 }
+*/
 
 // ====================== fast-path stateful iteration ======================
 
