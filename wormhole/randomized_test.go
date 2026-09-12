@@ -21,7 +21,7 @@ func TestRandomizedSetGetDeleteCorrectness(t *testing.T) {
 	for run := 0; run == 0 || time.Now().Before(deadline); run++ {
 		seed := baseSeed + uint64(run)*0x9e3779b97f4a7c15
 		rng := rand.New(rand.NewSource(int64(seed)))
-		m := New(Options{LeafCapacity: leafCaps[rng.Intn(len(leafCaps))]})
+		m := New(wormConfig{leafCapacity: leafCaps[rng.Intn(len(leafCaps))]})
 		if rng.Intn(2) == 0 {
 			m.BuildPointIndex()
 		}
@@ -160,7 +160,7 @@ func kvKeys(kvs []KV) []string {
 	return keys
 }
 
-func assertWormholeGet(t *testing.T, m *Map, model map[string]KV, key string, seed uint64, run, step int) {
+func assertWormholeGet(t *testing.T, m *wormhole, model map[string]KV, key string, seed uint64, run, step int) {
 	t.Helper()
 	got, ok := m.Get(key)
 	want, wantOK := model[key]
@@ -169,7 +169,7 @@ func assertWormholeGet(t *testing.T, m *Map, model map[string]KV, key string, se
 	}
 }
 
-func assertWormholeAll(t *testing.T, m *Map, model map[string]KV, seed uint64, run, step int) {
+func assertWormholeAll(t *testing.T, m *wormhole, model map[string]KV, seed uint64, run, step int) {
 	t.Helper()
 	if got, want := m.Len(), int64(len(model)); got != want {
 		t.Fatalf("seed=0x%x run=%d step=%d Len=%d want %d", seed, run, step, got, want)
@@ -181,7 +181,7 @@ func assertWormholeAll(t *testing.T, m *Map, model map[string]KV, seed uint64, r
 	assertWormholeDescend(t, m, model, "", seed, run, step)
 }
 
-func assertWormholeAscend(t *testing.T, m *Map, model map[string]KV, start string, seed uint64, run, step int) {
+func assertWormholeAscend(t *testing.T, m *wormhole, model map[string]KV, start string, seed uint64, run, step int) {
 	t.Helper()
 	var got []KV
 	m.Ascend(start, func(kv KV) bool {
@@ -202,7 +202,7 @@ func assertWormholeAscend(t *testing.T, m *Map, model map[string]KV, start strin
 	}
 }
 
-func assertWormholeDescend(t *testing.T, m *Map, model map[string]KV, start string, seed uint64, run, step int) {
+func assertWormholeDescend(t *testing.T, m *wormhole, model map[string]KV, start string, seed uint64, run, step int) {
 	t.Helper()
 	var got []KV
 	m.Descend(start, func(kv KV) bool {
@@ -224,7 +224,7 @@ func assertWormholeDescend(t *testing.T, m *Map, model map[string]KV, start stri
 	}
 }
 
-func assertWormholeRange(t *testing.T, m *Map, model map[string]KV, start, end string, seed uint64, run, step int) {
+func assertWormholeRange(t *testing.T, m *wormhole, model map[string]KV, start, end string, seed uint64, run, step int) {
 	t.Helper()
 	var got []KV
 	m.AscendRange(start, end, func(kv KV) bool {
@@ -249,7 +249,7 @@ func assertWormholeRange(t *testing.T, m *Map, model map[string]KV, start, end s
 	}
 }
 
-func assertWormholeDescendRange(t *testing.T, m *Map, model map[string]KV, lessOrEqual, greaterThan string, seed uint64, run, step int) {
+func assertWormholeDescendRange(t *testing.T, m *wormhole, model map[string]KV, lessOrEqual, greaterThan string, seed uint64, run, step int) {
 	t.Helper()
 	var got []KV
 	m.DescendRange(lessOrEqual, greaterThan, func(kv KV) bool {

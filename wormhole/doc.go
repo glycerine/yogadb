@@ -2,8 +2,8 @@
 // ordered-map shape used by the C reference in study/flexspace/c/wh.c.
 //
 // The C implementation combines fixed-size sorted leaves, prefix/hash metadata,
-// per-leaf locks, and QSBR memory reclamation. This Go version keeps the
-// leaf-oriented concurrency model and split-on-overflow behavior, but uses a
+// per-wormLeaf locks, and QSBR memory reclamation. This Go version keeps the
+// wormLeaf-oriented concurrency model and split-on-overflow behavior, but uses a
 // Go slice anchor index protected by a structural RWMutex instead of the C
 // hash-prefix metadata table. It is intended for memtable experiments where
 // scans and writes are interleaved more heavily than keyStable handles well.
@@ -15,5 +15,5 @@
 //
 // Scan callbacks receive values that alias immutable map storage and are only
 // promised valid for the duration of the callback. Callbacks must not re-enter
-// the same Map.
+// the same wormhole.
 package wormhole

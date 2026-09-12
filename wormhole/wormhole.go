@@ -5,79 +5,77 @@ import (
 	"sync/atomic"
 )
 
-const DefaultLeafCapacity = 256
-
 const (
-	kvPageBits  = 11
-	kvPageSize  = 1 << kvPageBits
-	kvPageMask  = kvPageSize - 1
-	kvBlockBits = 10
-	kvBlockSize = 1 << kvBlockBits
-	kvBlockMask = kvBlockSize - 1
-	kvDirSize   = 1024
+	wormPageBits  = 11
+	wormPageSize  = 1 << wormPageBits
+	wormPageMask  = wormPageSize - 1
+	wormBlockBits = 10
+	wormBlockSize = 1 << wormBlockBits
+	wormBlockMask = wormBlockSize - 1
+	wormDirSize   = 1024
 )
 
-type kvRef uint32
+type wormRef uint32
 
-type Options struct {
-	LeafCapacity int
+type wormConfig struct {
+	leafCapacity int
 }
 
-type Map struct {
+type wormhole struct {
 	mu        sync.RWMutex
-	leaves    []*leaf
-	tail      *leaf
-	store     kvStore
+	leaves    []*wormLeaf
+	tail      *wormLeaf
+	store     wormKVstore
 	point     atomic.Pointer[pointIndex]
 	leafCap   int
 	liveKeys  atomic.Int64
-	readCache atomic.Pointer[leaf]
+	readCache atomic.Pointer[wormLeaf]
 }
 
-type leaf struct {
+type wormLeaf struct {
 	mu       sync.RWMutex
 	anchor   string
 	high     string
-	prev     *leaf
-	next     *leaf
-	items    []kvRef
+	prev     *wormLeaf
+	next     *wormLeaf
+	items    []wormRef
 	readHint atomic.Int64
 }
 
 type pointIndex struct {
-	base  map[string]kvRef
+	base  map[string]wormRef
 	delta *sync.Map
 }
 
 type pointMutation struct {
-	idx     kvRef
+	idx     wormRef
 	deleted bool
 }
 
-type kvStore struct {
+type wormKVstore struct {
 	next   atomic.Int64
-	blocks [kvDirSize]atomic.Pointer[kvPageBlock]
+	blocks [wormDirSize]atomic.Pointer[wormPageBlock]
 }
 
-type kvPageBlock struct {
-	pages [kvBlockSize]atomic.Pointer[kvPage]
+type wormPageBlock struct {
+	pages [wormBlockSize]atomic.Pointer[wormKvPage]
 }
 
-type kvPage struct {
-	kvs [kvPageSize]KV
+type wormKvPage struct {
+	kvs [wormPageSize]KV
 }
 
-func New(opts Options) *Map {
-	leafCap := opts.LeafCapacity
+func New(opts wormConfig) *wormhole {
+	leafCap := opts.leafCapacity
 	if leafCap <= 0 {
-		leafCap = DefaultLeafCapacity
+		leafCap = 256
 	}
 	if leafCap < 4 {
 		leafCap = 4
 	}
-	l := &leaf{items: make([]kvRef, 0, leafCap+1)}
-	m := &Map{
-		leaves:  []*leaf{l},
+	l := &wormLeaf{items: make([]wormRef, 0, leafCap+1)}
+	m := &wormhole{
+		leaves:  []*wormLeaf{l},
 		tail:    l,
 		leafCap: leafCap,
 	}
@@ -85,29 +83,29 @@ func New(opts Options) *Map {
 	return m
 }
 
-func (s *kvStore) init() {}
+func (s *wormKVstore) init() {}
 
-func (s *kvStore) append(kv KV) kvRef {
+func (s *wormKVstore) append(kv KV) wormRef {
 	idx := int(s.next.Add(1) - 1)
-	pageIdx := idx >> kvPageBits
-	offset := idx & kvPageMask
-	blockIdx := pageIdx >> kvBlockBits
-	if blockIdx >= kvDirSize {
-		panic("wormhole: kvStore capacity exceeded")
+	pageIdx := idx >> wormPageBits
+	offset := idx & wormPageMask
+	blockIdx := pageIdx >> wormBlockBits
+	if blockIdx >= wormDirSize {
+		panic("wormhole: wormKVstore capacity exceeded")
 	}
 	block := s.blocks[blockIdx].Load()
 	if block == nil {
-		newBlock := &kvPageBlock{}
+		newBlock := &wormPageBlock{}
 		if s.blocks[blockIdx].CompareAndSwap(nil, newBlock) {
 			block = newBlock
 		} else {
 			block = s.blocks[blockIdx].Load()
 		}
 	}
-	pageSlot := pageIdx & kvBlockMask
+	pageSlot := pageIdx & wormBlockMask
 	page := block.pages[pageSlot].Load()
 	if page == nil {
-		newPage := &kvPage{}
+		newPage := &wormKvPage{}
 		if block.pages[pageSlot].CompareAndSwap(nil, newPage) {
 			page = newPage
 		} else {
@@ -115,37 +113,37 @@ func (s *kvStore) append(kv KV) kvRef {
 		}
 	}
 	page.kvs[offset] = kv
-	return kvRef(idx)
+	return wormRef(idx)
 }
 
-func (s *kvStore) get(ref kvRef) KV {
+func (s *wormKVstore) get(ref wormRef) KV {
 	idx := int(ref)
-	pageIdx := idx >> kvPageBits
-	block := s.blocks[pageIdx>>kvBlockBits].Load()
-	page := block.pages[pageIdx&kvBlockMask].Load()
-	return page.kvs[idx&kvPageMask]
+	pageIdx := idx >> wormPageBits
+	block := s.blocks[pageIdx>>wormBlockBits].Load()
+	page := block.pages[pageIdx&wormBlockMask].Load()
+	return page.kvs[idx&wormPageMask]
 }
 
-func (s *kvStore) key(ref kvRef) string {
+func (s *wormKVstore) key(ref wormRef) string {
 	idx := int(ref)
-	pageIdx := idx >> kvPageBits
-	block := s.blocks[pageIdx>>kvBlockBits].Load()
-	page := block.pages[pageIdx&kvBlockMask].Load()
-	return page.kvs[idx&kvPageMask].Key
+	pageIdx := idx >> wormPageBits
+	block := s.blocks[pageIdx>>wormBlockBits].Load()
+	page := block.pages[pageIdx&wormBlockMask].Load()
+	return page.kvs[idx&wormPageMask].Key
 }
 
-func (m *Map) Len() int64 {
+func (m *wormhole) Len() int64 {
 	return m.liveKeys.Load()
 }
 
-func (m *Map) appendKV(kv KV) kvRef {
+func (m *wormhole) appendKV(kv KV) wormRef {
 	return m.store.append(kv)
 }
 
 // BuildPointIndex builds a hash index for fast point lookups. The base index is
 // immutable for lock-free reads; later Put/Delete calls record per-key updates
 // in a concurrent delta overlay instead of discarding the whole index.
-func (m *Map) BuildPointIndex() {
+func (m *wormhole) BuildPointIndex() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -153,7 +151,7 @@ func (m *Map) BuildPointIndex() {
 	if capHint < m.leafCap {
 		capHint = m.leafCap
 	}
-	byKey := make(map[string]kvRef, capHint)
+	byKey := make(map[string]wormRef, capHint)
 	for _, l := range m.leaves {
 		l.mu.RLock()
 		for _, idx := range l.items {
@@ -165,7 +163,7 @@ func (m *Map) BuildPointIndex() {
 	m.point.Store(&pointIndex{base: byKey})
 }
 
-func (m *Map) Put(kv KV) (replaced bool) {
+func (m *wormhole) Put(kv KV) (replaced bool) {
 	key := kv.Key
 
 	if replaced, done := m.putTailAppendFast(kv); done {
@@ -221,7 +219,7 @@ func (m *Map) Put(kv KV) (replaced bool) {
 	}
 }
 
-func (m *Map) putTailAppendFast(kv KV) (replaced bool, done bool) {
+func (m *wormhole) putTailAppendFast(kv KV) (replaced bool, done bool) {
 	key := kv.Key
 
 	m.mu.RLock()
@@ -321,7 +319,7 @@ func (m *Map) putTailAppendFast(kv KV) (replaced bool, done bool) {
 	return false, false
 }
 
-func (m *Map) Get(key string) (KV, bool) {
+func (m *wormhole) Get(key string) (KV, bool) {
 	if idx := m.point.Load(); idx != nil {
 		if idx.delta == nil {
 			kvIdx, found := idx.base[key]
@@ -353,7 +351,7 @@ func (m *Map) Get(key string) (KV, bool) {
 	return out, true
 }
 
-func (m *Map) Delete(key string) bool {
+func (m *wormhole) Delete(key string) bool {
 	m.mu.Lock()
 	idx := m.findLeafIndexLocked(key)
 	l := m.leaves[idx]
@@ -379,11 +377,11 @@ func (m *Map) Delete(key string) bool {
 	return true
 }
 
-func (m *Map) Ascend(start string, fn func(KV) bool) {
+func (m *wormhole) Ascend(start string, fn func(KV) bool) {
 	m.AscendRange(start, "", fn)
 }
 
-func (m *Map) AscendRange(start, end string, fn func(KV) bool) {
+func (m *wormhole) AscendRange(start, end string, fn func(KV) bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -412,11 +410,11 @@ func (m *Map) AscendRange(start, end string, fn func(KV) bool) {
 	}
 }
 
-func (m *Map) Descend(start string, fn func(KV) bool) {
+func (m *wormhole) Descend(start string, fn func(KV) bool) {
 	m.DescendRange(start, "", fn)
 }
 
-func (m *Map) DescendRange(start, end string, fn func(KV) bool) {
+func (m *wormhole) DescendRange(start, end string, fn func(KV) bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -445,7 +443,7 @@ func (m *Map) DescendRange(start, end string, fn func(KV) bool) {
 	}
 }
 
-func (m *Map) findLeafIndexLocked(key string) int {
+func (m *wormhole) findLeafIndexLocked(key string) int {
 	if len(m.leaves) == 1 {
 		return 0
 	}
@@ -464,7 +462,7 @@ func (m *Map) findLeafIndexLocked(key string) int {
 	return lo - 1
 }
 
-func (m *Map) cachedLeafLocked(key string) *leaf {
+func (m *wormhole) cachedLeafLocked(key string) *wormLeaf {
 	l := m.readCache.Load()
 	if l == nil || !m.leafContainsKeyLocked(l, key) {
 		return nil
@@ -472,7 +470,7 @@ func (m *Map) cachedLeafLocked(key string) *leaf {
 	return l
 }
 
-func (m *Map) tailLeafLocked(key string) *leaf {
+func (m *wormhole) tailLeafLocked(key string) *wormLeaf {
 	l := m.tail
 	if l == nil || l.next != nil {
 		return nil
@@ -483,7 +481,7 @@ func (m *Map) tailLeafLocked(key string) *leaf {
 	return l
 }
 
-func (m *Map) leafContainsKeyLocked(l *leaf, key string) bool {
+func (m *wormhole) leafContainsKeyLocked(l *wormLeaf, key string) bool {
 	if l.anchor != "" && key < l.anchor {
 		return false
 	}
@@ -493,21 +491,21 @@ func (m *Map) leafContainsKeyLocked(l *leaf, key string) bool {
 	return true
 }
 
-func (m *Map) findInLeaf(l *leaf, key string) (int, bool) {
+func (m *wormhole) findInLeaf(l *wormLeaf, key string) (int, bool) {
 	return m.findStringInLeaf(l, key)
 }
 
-func (m *Map) findInLeafForRead(l *leaf, key string) (int, bool) {
+func (m *wormhole) findInLeafForRead(l *wormLeaf, key string) (int, bool) {
 	return m.findStringInLeafWithHint(l, key)
 }
 
-func (m *Map) updatePointIndexPut(key string, kvIdx kvRef) {
+func (m *wormhole) updatePointIndexPut(key string, kvIdx wormRef) {
 	if idx := m.mutablePointIndex(); idx != nil {
 		idx.put(key, kvIdx)
 	}
 }
 
-func (idx *pointIndex) getWithDelta(m *Map, key string) (KV, bool) {
+func (idx *pointIndex) getWithDelta(m *wormhole, key string) (KV, bool) {
 	if v, found := idx.delta.Load(key); found {
 		mut := v.(pointMutation)
 		if mut.deleted {
@@ -522,7 +520,7 @@ func (idx *pointIndex) getWithDelta(m *Map, key string) (KV, bool) {
 	return m.store.get(kvIdx), true
 }
 
-func (m *Map) mutablePointIndex() *pointIndex {
+func (m *wormhole) mutablePointIndex() *pointIndex {
 	for {
 		idx := m.point.Load()
 		if idx == nil {
@@ -541,24 +539,24 @@ func (m *Map) mutablePointIndex() *pointIndex {
 	}
 }
 
-func (m *Map) updatePointIndexDelete(key string) {
+func (m *wormhole) updatePointIndexDelete(key string) {
 	if idx := m.mutablePointIndex(); idx != nil {
 		idx.delta.Store(key, pointMutation{deleted: true})
 	}
 }
 
-func (idx *pointIndex) put(key string, kvIdx kvRef) {
+func (idx *pointIndex) put(key string, kvIdx wormRef) {
 	idx.delta.Store(key, pointMutation{idx: kvIdx})
 }
 
-func (m *Map) splitLeafLocked(idx int, l *leaf) {
+func (m *wormhole) splitLeafLocked(idx int, l *wormLeaf) {
 	mid := len(l.items) / 2
-	rightItems := make([]kvRef, len(l.items)-mid, m.leafCap+1)
+	rightItems := make([]wormRef, len(l.items)-mid, m.leafCap+1)
 	copy(rightItems, l.items[mid:])
 	l.items = l.items[:mid]
 	m.refreshLeafBounds(l)
 
-	r := &leaf{
+	r := &wormLeaf{
 		anchor: m.store.key(rightItems[0]),
 		high:   m.store.key(rightItems[len(rightItems)-1]),
 		items:  rightItems,
@@ -578,12 +576,12 @@ func (m *Map) splitLeafLocked(idx int, l *leaf) {
 	m.leaves[idx+1] = r
 }
 
-func (m *Map) appendTailLeafLocked(l *leaf, kv KV) kvRef {
+func (m *wormhole) appendTailLeafLocked(l *wormLeaf, kv KV) wormRef {
 	kvIdx := m.appendKV(kv)
-	r := &leaf{
+	r := &wormLeaf{
 		anchor: kv.Key,
 		high:   kv.Key,
-		items:  make([]kvRef, 0, m.leafCap+1),
+		items:  make([]wormRef, 0, m.leafCap+1),
 		prev:   l,
 	}
 	r.items = append(r.items, kvIdx)
@@ -593,7 +591,7 @@ func (m *Map) appendTailLeafLocked(l *leaf, kv KV) kvRef {
 	return kvIdx
 }
 
-func (m *Map) unlinkLeafLocked(idx int, l *leaf) {
+func (m *wormhole) unlinkLeafLocked(idx int, l *wormLeaf) {
 	if l.prev != nil {
 		l.prev.next = l.next
 	}
@@ -620,7 +618,7 @@ func (m *Map) unlinkLeafLocked(idx int, l *leaf) {
 	l.high = ""
 }
 
-func (m *Map) findStringInLeaf(l *leaf, key string) (int, bool) {
+func (m *wormhole) findStringInLeaf(l *wormLeaf, key string) (int, bool) {
 	items := l.items
 	lo, hi := 0, len(items)
 	for lo < hi {
@@ -634,7 +632,7 @@ func (m *Map) findStringInLeaf(l *leaf, key string) (int, bool) {
 	return lo, lo < len(items) && m.store.key(items[lo]) == key
 }
 
-func (m *Map) findStringInLeafWithHint(l *leaf, key string) (int, bool) {
+func (m *wormhole) findStringInLeafWithHint(l *wormLeaf, key string) (int, bool) {
 	items := l.items
 	n := len(items)
 	if n == 0 {
@@ -687,18 +685,18 @@ func (m *Map) findStringInLeafWithHint(l *leaf, key string) (int, bool) {
 	return pos, found
 }
 
-func (l *leaf) putAt(pos int, found bool, kvIdx kvRef) bool {
+func (l *wormLeaf) putAt(pos int, found bool, kvIdx wormRef) bool {
 	if found {
 		l.items[pos] = kvIdx
 		return true
 	}
-	l.items = append(l.items, kvRef(0))
+	l.items = append(l.items, wormRef(0))
 	copy(l.items[pos+1:], l.items[pos:])
 	l.items[pos] = kvIdx
 	return false
 }
 
-func (m *Map) refreshLeafBounds(l *leaf) {
+func (m *wormhole) refreshLeafBounds(l *wormLeaf) {
 	if len(l.items) > 0 {
 		l.anchor = m.store.key(l.items[0])
 		l.high = m.store.key(l.items[len(l.items)-1])

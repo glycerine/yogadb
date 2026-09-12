@@ -8,7 +8,7 @@ import (
 	tbtree "github.com/tidwall/btree"
 )
 
-func benchKey(i int) string {
+func wormBenchKey(i int) string {
 	var buf [10]byte
 	buf[0] = 'k'
 	for pos := len(buf) - 1; pos > 0; pos-- {
@@ -18,7 +18,7 @@ func benchKey(i int) string {
 	return string(buf[:])
 }
 
-func benchValue(i int) []byte {
+func wormBenchValue(i int) []byte {
 	var buf [15]byte
 	copy(buf[:], "value-")
 	for pos := len(buf) - 1; pos >= len("value-"); pos-- {
@@ -28,47 +28,47 @@ func benchValue(i int) []byte {
 	return buf[:]
 }
 
-func benchKV(i int) KV {
-	v := benchValue(i)
-	return KV{Key: benchKey(i), Value: v, Vptr: VPtr{Length: uint64(len(v))}, Hlc: HLC(i + 1)}
+func wormBenchKV(i int) KV {
+	v := wormBenchValue(i)
+	return KV{Key: wormBenchKey(i), Value: v, Vptr: VPtr{Length: uint64(len(v))}, Hlc: HLC(i + 1)}
 }
 
-func benchSkipKV(i int) pebbleskip.KV {
-	v := benchValue(i)
-	return pebbleskip.KV{Key: benchKey(i), Value: v, Vptr: pebbleskip.VPtr{Length: uint64(len(v))}, Hlc: pebbleskip.HLC(i + 1)}
+func wormBenchSkipKV(i int) pebbleskip.KV {
+	v := wormBenchValue(i)
+	return pebbleskip.KV{Key: wormBenchKey(i), Value: v, Vptr: pebbleskip.VPtr{Length: uint64(len(v))}, Hlc: pebbleskip.HLC(i + 1)}
 }
 
-func benchKVs(n int, base int) []KV {
+func wormBenchKVs(n int, base int) []KV {
 	kvs := make([]KV, n)
 	for i := range kvs {
-		kvs[i] = benchKV(base + i)
+		kvs[i] = wormBenchKV(base + i)
 	}
 	return kvs
 }
 
-func benchSkipKVs(n int, base int) []pebbleskip.KV {
+func wormBenchSkipKVs(n int, base int) []pebbleskip.KV {
 	kvs := make([]pebbleskip.KV, n)
 	for i := range kvs {
-		kvs[i] = benchSkipKV(base + i)
+		kvs[i] = wormBenchSkipKV(base + i)
 	}
 	return kvs
 }
 
-func benchReadKeys(mask int) []string {
+func wormBenchReadKeys(mask int) []string {
 	keys := make([]string, mask+1)
 	for i := range keys {
-		keys[i] = benchKey(i & mask)
+		keys[i] = wormBenchKey(i & mask)
 	}
 	return keys
 }
 
-func newTidwallBtree() *tbtree.BTreeG[KV] {
+func newWormTidwallBtree() *tbtree.BTreeG[KV] {
 	return tbtree.NewBTreeGOptions[KV](func(a, b KV) bool { return a.Key < b.Key }, tbtree.Options{Degree: 32})
 }
 
 func BenchmarkWormholePut(b *testing.B) {
-	m := New(Options{})
-	kvs := benchKVs(b.N, 0)
+	m := New(wormConfig{})
+	kvs := wormBenchKVs(b.N, 0)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -77,8 +77,8 @@ func BenchmarkWormholePut(b *testing.B) {
 }
 
 func BenchmarkTidwallBtreePut(b *testing.B) {
-	tree := newTidwallBtree()
-	kvs := benchKVs(b.N, 0)
+	tree := newWormTidwallBtree()
+	kvs := wormBenchKVs(b.N, 0)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -89,7 +89,7 @@ func BenchmarkTidwallBtreePut(b *testing.B) {
 func BenchmarkPebbleSkipPut(b *testing.B) {
 	arenaBytes := b.N*256 + (1 << 20)
 	s := pebbleskip.New(arenaBytes, nil)
-	kvs := benchSkipKVs(b.N, 0)
+	kvs := wormBenchSkipKVs(b.N, 0)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -101,9 +101,9 @@ func BenchmarkPebbleSkipPut(b *testing.B) {
 
 func BenchmarkWormholeAscendingScan(b *testing.B) {
 	const n = 65536
-	m := New(Options{})
+	m := New(wormConfig{})
 	for i := 0; i < n; i++ {
-		m.Put(benchKV(i))
+		m.Put(wormBenchKV(i))
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -121,9 +121,9 @@ func BenchmarkWormholeAscendingScan(b *testing.B) {
 
 func BenchmarkTidwallBtreeAscendingScan(b *testing.B) {
 	const n = 65536
-	tree := newTidwallBtree()
+	tree := newWormTidwallBtree()
 	for i := 0; i < n; i++ {
-		tree.Set(benchKV(i))
+		tree.Set(wormBenchKV(i))
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -143,7 +143,7 @@ func BenchmarkPebbleSkipAscendingScan(b *testing.B) {
 	const n = 65536
 	s := pebbleskip.New(n*256+(1<<20), nil)
 	for i := 0; i < n; i++ {
-		if err := s.Add(benchSkipKV(i)); err != nil {
+		if err := s.Add(wormBenchSkipKV(i)); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -163,13 +163,13 @@ func BenchmarkPebbleSkipAscendingScan(b *testing.B) {
 }
 
 func BenchmarkWormhole_Mixed_ReadsWrites(b *testing.B) {
-	m := New(Options{})
-	initial := benchKVs(4096, 0)
+	m := New(wormConfig{})
+	initial := wormBenchKVs(4096, 0)
 	for i := 0; i < 4096; i++ {
 		m.Put(initial[i])
 	}
-	writes := benchKVs((b.N+3)/4, 4096)
-	readKeys := benchReadKeys(4095)
+	writes := wormBenchKVs((b.N+3)/4, 4096)
+	readKeys := wormBenchReadKeys(4095)
 	b.ReportAllocs()
 	b.ResetTimer()
 	writeIdx := 0
@@ -184,13 +184,13 @@ func BenchmarkWormhole_Mixed_ReadsWrites(b *testing.B) {
 }
 
 func BenchmarkTidwallBtree_Mixed_ReadsWrites(b *testing.B) {
-	tree := newTidwallBtree()
-	initial := benchKVs(4096, 0)
+	tree := newWormTidwallBtree()
+	initial := wormBenchKVs(4096, 0)
 	for i := 0; i < 4096; i++ {
 		tree.Set(initial[i])
 	}
-	writes := benchKVs((b.N+3)/4, 4096)
-	readKeys := benchReadKeys(4095)
+	writes := wormBenchKVs((b.N+3)/4, 4096)
+	readKeys := wormBenchReadKeys(4095)
 	b.ReportAllocs()
 	b.ResetTimer()
 	writeIdx := 0
@@ -206,14 +206,14 @@ func BenchmarkTidwallBtree_Mixed_ReadsWrites(b *testing.B) {
 
 func BenchmarkPebbleSkip_Mixed_ReadsWrites(b *testing.B) {
 	s := pebbleskip.New(b.N*128+(2<<20), nil)
-	initial := benchSkipKVs(4096, 0)
+	initial := wormBenchSkipKVs(4096, 0)
 	for i := 0; i < 4096; i++ {
 		if err := s.Add(initial[i]); err != nil {
 			b.Fatal(err)
 		}
 	}
-	writes := benchSkipKVs((b.N+3)/4, 4096)
-	readKeys := benchReadKeys(4095)
+	writes := wormBenchSkipKVs((b.N+3)/4, 4096)
+	readKeys := wormBenchReadKeys(4095)
 	b.ReportAllocs()
 	b.ResetTimer()
 	writeIdx := 0
@@ -230,9 +230,9 @@ func BenchmarkPebbleSkip_Mixed_ReadsWrites(b *testing.B) {
 }
 
 func BenchmarkTidwallBtreeGet(b *testing.B) {
-	keys := benchmarkKeyStableKeys(1 << 16)
+	keys := wormBenchmarkKeyStableKeys(1 << 16)
 	value := []byte("value")
-	tree := newTidwallBtree()
+	tree := newWormTidwallBtree()
 
 	for i, key := range keys {
 		tree.Set(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)})
@@ -245,14 +245,14 @@ func BenchmarkTidwallBtreeGet(b *testing.B) {
 		if !found {
 			b.Fatalf("get(%q) was not found", keys[i&(len(keys)-1)])
 		}
-		keyStableBenchKV = kv
+		wormholeBenchKV = kv
 	}
 }
 
 func BenchmarkTidwallBtreeGetOrdered(b *testing.B) {
-	keys := benchmarkKeyStableKeys(1 << 16)
+	keys := wormBenchmarkKeyStableKeys(1 << 16)
 	value := []byte("value")
-	tree := newTidwallBtree()
+	tree := newWormTidwallBtree()
 
 	for i, key := range keys {
 		tree.Set(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)})
@@ -265,20 +265,20 @@ func BenchmarkTidwallBtreeGetOrdered(b *testing.B) {
 		if !found {
 			b.Fatalf("get(%q) was not found", keys[i&(len(keys)-1)])
 		}
-		keyStableBenchKV = kv
+		wormholeBenchKV = kv
 	}
 }
 
 // ported from keystable benchmark for apples-to-apples
 
 var (
-	keyStableBenchKV KV
+	wormholeBenchKV KV
 )
 
 func BenchmarkWormholeGet(b *testing.B) {
-	keys := benchmarkKeyStableKeys(1 << 16)
+	keys := wormBenchmarkKeyStableKeys(1 << 16)
 	value := []byte("value")
-	s := New(Options{})
+	s := New(wormConfig{})
 
 	for i, key := range keys {
 		s.Put(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)})
@@ -292,14 +292,14 @@ func BenchmarkWormholeGet(b *testing.B) {
 		if !found {
 			b.Fatalf("get(%q) was not found", keys[i&(len(keys)-1)])
 		}
-		keyStableBenchKV = kv
+		wormholeBenchKV = kv
 	}
 }
 
 func BenchmarkWormholeGetOrdered(b *testing.B) {
-	keys := benchmarkKeyStableKeys(1 << 16)
+	keys := wormBenchmarkKeyStableKeys(1 << 16)
 	value := []byte("value")
-	s := New(Options{})
+	s := New(wormConfig{})
 
 	for i, key := range keys {
 		s.Put(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)})
@@ -312,11 +312,11 @@ func BenchmarkWormholeGetOrdered(b *testing.B) {
 		if !found {
 			b.Fatalf("get(%q) was not found", keys[i&(len(keys)-1)])
 		}
-		keyStableBenchKV = kv
+		wormholeBenchKV = kv
 	}
 }
 
-func benchmarkKeyStableKeys(n int) []string {
+func wormBenchmarkKeyStableKeys(n int) []string {
 	keys := make([]string, n)
 	var buf [16]byte
 	for i := range keys {

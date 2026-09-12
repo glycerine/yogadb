@@ -22,7 +22,7 @@ func whKV(i int) KV {
 	return KV{Key: whKey(i), Value: v, Vptr: VPtr{Length: uint64(len(v))}, Hlc: HLC(i + 1)}
 }
 
-func collectAsc(m *Map) []string {
+func collectAsc(m *wormhole) []string {
 	var keys []string
 	m.Ascend("", func(kv KV) bool {
 		keys = append(keys, kv.Key)
@@ -32,7 +32,7 @@ func collectAsc(m *Map) []string {
 }
 
 func TestBasicPutGetDeleteScan(t *testing.T) {
-	m := New(Options{LeafCapacity: 4})
+	m := New(wormConfig{leafCapacity: 4})
 	for _, i := range []int{7, 1, 9, 3, 5, 2, 4, 6, 8, 0} {
 		if replaced := m.Put(whKV(i)); replaced {
 			t.Fatalf("Put(%d) replaced unexpectedly", i)
@@ -75,7 +75,7 @@ func TestBasicPutGetDeleteScan(t *testing.T) {
 }
 
 func TestDescendRange(t *testing.T) {
-	m := New(Options{LeafCapacity: 4})
+	m := New(wormConfig{leafCapacity: 4})
 	for i := 0; i < 10; i++ {
 		m.Put(whKV(i))
 	}
@@ -116,7 +116,7 @@ func TestDescendRange(t *testing.T) {
 }
 
 func TestAgainstSortedMapModel(t *testing.T) {
-	m := New(Options{LeafCapacity: 8})
+	m := New(wormConfig{leafCapacity: 8})
 	model := map[string][]byte{}
 	rng := rand.New(rand.NewSource(1))
 	for step := 0; step < 5000; step++ {
@@ -155,18 +155,18 @@ func TestAgainstSortedMapModel(t *testing.T) {
 }
 
 func TestDeleteEmptyMiddleLeafKeepsSearchCorrect(t *testing.T) {
-	m := New(Options{LeafCapacity: 4})
+	m := New(wormConfig{leafCapacity: 4})
 	for i := 0; i < 7; i++ {
 		m.Put(whKV(i))
 	}
 
 	if !m.Delete(whKey(2)) || !m.Delete(whKey(3)) {
-		t.Fatal("expected deletes to remove the middle leaf keys")
+		t.Fatal("expected deletes to remove the middle wormLeaf keys")
 	}
 	for _, i := range []int{0, 1, 4, 5, 6} {
 		got, ok := m.Get(whKey(i))
 		if !ok || got.Key != whKey(i) {
-			t.Fatalf("Get(%q)=%#v,%v after empty leaf delete", whKey(i), got, ok)
+			t.Fatalf("Get(%q)=%#v,%v after empty wormLeaf delete", whKey(i), got, ok)
 		}
 	}
 	if _, ok := m.Get(whKey(2)); ok {
@@ -176,12 +176,12 @@ func TestDeleteEmptyMiddleLeafKeepsSearchCorrect(t *testing.T) {
 	got := collectAsc(m)
 	want := []string{"k00000", "k00001", "k00004", "k00005", "k00006"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Fatalf("asc keys after empty leaf delete=%v want %v", got, want)
+		t.Fatalf("asc keys after empty wormLeaf delete=%v want %v", got, want)
 	}
 }
 
 func TestBuildPointIndexTracksMutation(t *testing.T) {
-	m := New(Options{LeafCapacity: 4})
+	m := New(wormConfig{leafCapacity: 4})
 	for i := 0; i < 8; i++ {
 		m.Put(whKV(i))
 	}
@@ -217,7 +217,7 @@ func TestBuildPointIndexTracksMutation(t *testing.T) {
 }
 
 func TestConcurrentMixedAccess(t *testing.T) {
-	m := New(Options{LeafCapacity: 16})
+	m := New(wormConfig{leafCapacity: 16})
 	const writers = 8
 	const perWriter = 500
 

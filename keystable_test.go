@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/cespare/xxhash/v2"
-	wh "github.com/glycerine/yogadb/wormhole"
 )
 
 func TestKeyStableAddFindAndSortedOrder(t *testing.T) {
@@ -942,7 +941,6 @@ func BenchmarkKeyStable_Mixed_ReadsWrites(b *testing.B) {
 func BenchmarkMemtableInitialLoadThenOrderedScan(b *testing.B) {
 	for _, n := range []int{4096, 1 << 16} {
 		kvs := benchmarkInitialLoadKVs(n)
-		whKVs := benchmarkInitialLoadWormholeKVs(kvs)
 
 		b.Run(fmt.Sprintf("keystable_%d", n), func(b *testing.B) {
 			const x = true
@@ -975,13 +973,13 @@ func BenchmarkMemtableInitialLoadThenOrderedScan(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				m := wh.New(wh.Options{})
-				for _, kv := range whKVs {
+				m := New(wormConfig{})
+				for _, kv := range kvs {
 					m.Put(kv)
 				}
 
 				count := 0
-				m.Ascend("", func(kv wh.KV) bool {
+				m.Ascend("", func(kv KV) bool {
 					total += len(kv.Key) + len(kv.Value)
 					count++
 					return true
@@ -1009,19 +1007,6 @@ func benchmarkInitialLoadKVs(n int) []KV {
 		}
 	}
 	return kvs
-}
-
-func benchmarkInitialLoadWormholeKVs(kvs []KV) []wh.KV {
-	out := make([]wh.KV, len(kvs))
-	for i, kv := range kvs {
-		out[i] = wh.KV{
-			Key:   kv.Key,
-			Value: kv.Value,
-			Vptr:  wh.VPtr{Offset: kv.Vptr.Offset, Length: kv.Vptr.Length},
-			Hlc:   wh.HLC(kv.Hlc),
-		}
-	}
-	return out
 }
 
 /* based on these measurements, we'll pursue wormhole optimization and drop pebbeleskip from further study.
