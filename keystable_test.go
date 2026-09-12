@@ -3,12 +3,14 @@ package yogadb
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math/rand"
 	"slices"
 	"sort"
 	"testing"
 
 	"github.com/cespare/xxhash/v2"
+	wh "github.com/glycerine/yogadb/wormhole"
 )
 
 func TestKeyStableAddFindAndSortedOrder(t *testing.T) {
@@ -935,6 +937,91 @@ func BenchmarkKeyStable_Mixed_ReadsWrites(b *testing.B) {
 			_, _ = m.get(readKeys[i&4095], x)
 		}
 	}
+}
+
+func BenchmarkMemtableInitialLoadThenOrderedScan(b *testing.B) {
+	for _, n := range []int{4096, 1 << 16} {
+		kvs := benchmarkInitialLoadKVs(n)
+		whKVs := benchmarkInitialLoadWormholeKVs(kvs)
+
+		b.Run(fmt.Sprintf("keystable_%d", n), func(b *testing.B) {
+			const x = true
+			total := 0
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				s := makeKeyStable(n)
+				for _, kv := range kvs {
+					s.set(kv, x)
+				}
+
+				count := 0
+				s.Scan(x, func(kv KV) bool {
+					total += len(kv.Key) + len(kv.Value)
+					count++
+					return true
+				})
+				if count != n {
+					b.Fatalf("ordered scan count=%d want %d", count, n)
+				}
+			}
+			keyStableBenchInt = total
+		})
+
+		b.Run(fmt.Sprintf("wormhole_%d", n), func(b *testing.B) {
+			total := 0
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				m := wh.New(wh.Options{})
+				for _, kv := range whKVs {
+					m.Put(kv)
+				}
+
+				count := 0
+				m.Ascend("", func(kv wh.KV) bool {
+					total += len(kv.Key) + len(kv.Value)
+					count++
+					return true
+				})
+				if count != n {
+					b.Fatalf("ordered scan count=%d want %d", count, n)
+				}
+			}
+			keyStableBenchInt = total
+		})
+	}
+}
+
+func benchmarkInitialLoadKVs(n int) []KV {
+	keys := benchmarkKeyStableKeys(n)
+	order := rand.New(rand.NewSource(0x51f15e5eed)).Perm(n)
+	value := []byte("value")
+	kvs := make([]KV, n)
+	for i, keyIdx := range order {
+		kvs[i] = KV{
+			Key:   keys[keyIdx],
+			Value: value,
+			Vptr:  VPtr{Length: uint64(len(value))},
+			Hlc:   HLC(keyIdx + 1),
+		}
+	}
+	return kvs
+}
+
+func benchmarkInitialLoadWormholeKVs(kvs []KV) []wh.KV {
+	out := make([]wh.KV, len(kvs))
+	for i, kv := range kvs {
+		out[i] = wh.KV{
+			Key:   kv.Key,
+			Value: kv.Value,
+			Vptr:  wh.VPtr{Offset: kv.Vptr.Offset, Length: kv.Vptr.Length},
+			Hlc:   wh.HLC(kv.Hlc),
+		}
+	}
+	return out
 }
 
 /* based on these measurements, we'll pursue wormhole optimization and drop pebbeleskip from further study.
