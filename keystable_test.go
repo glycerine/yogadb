@@ -965,6 +965,22 @@ BenchmarkWormholeGet-8   	 3759614	       313.3 ns/op	       0 B/op	       0 all
 BenchmarkScanWormhole
 BenchmarkScanWormhole-48           3988    304024 ns/op       0 B/op       0 allocs/op
 
+after addint a fast point lookup hashmap to wormhole, Get() reads are much better at 40 ns/op, but sorted
+reads as in full table scan are still a bit painful at 257 ns/op
+
+BenchmarkWormholePut
+BenchmarkWormholePut-48                   	11773692	       125.8 ns/op	     150 B/op	       0 allocs/op
+BenchmarkWormholeAscendingScan
+BenchmarkWormholeAscendingScan-48         	    3886	    298058 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWormhole_Mixed_ReadsWrites
+BenchmarkWormhole_Mixed_ReadsWrites-48    	16483822	        73.49 ns/op	      37 B/op	       0 allocs/op
+BenchmarkWormholeGet
+BenchmarkWormholeGet-48                   	27967435	        40.41 ns/op	       0 B/op	       0 allocs/op
+BenchmarkWormholeGetOrdered
+BenchmarkWormholeGetOrdered-48            	 4521447	       257.2 ns/op	       0 B/op	       0 allocs/op
+
+
+
 BenchmarkPutPebbleSkip                        write pebbleskip
 BenchmarkPutPebbleSkip-48       4441321       294.0 ns/op       0 B/op       0 allocs/op
 
