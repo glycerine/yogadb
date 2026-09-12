@@ -1,6 +1,7 @@
 package wormhole
 
 import (
+	"encoding/binary"
 	"testing"
 
 	"github.com/glycerine/yogadb/pebbleskip"
@@ -60,7 +61,7 @@ func benchReadKeys(mask int) []string {
 	return keys
 }
 
-func BenchmarkPutWormhole(b *testing.B) {
+func BenchmarkWormholePut(b *testing.B) {
 	m := New(Options{})
 	kvs := benchKVs(b.N, 0)
 	b.ReportAllocs()
@@ -70,7 +71,7 @@ func BenchmarkPutWormhole(b *testing.B) {
 	}
 }
 
-func BenchmarkPutPebbleSkip(b *testing.B) {
+func BenchmarkPebbleSkipPut(b *testing.B) {
 	arenaBytes := b.N*256 + (1 << 20)
 	s := pebbleskip.New(arenaBytes, nil)
 	kvs := benchSkipKVs(b.N, 0)
@@ -83,7 +84,7 @@ func BenchmarkPutPebbleSkip(b *testing.B) {
 	}
 }
 
-func BenchmarkScanWormhole(b *testing.B) {
+func BenchmarkWormholeAscendingScan(b *testing.B) {
 	const n = 65536
 	m := New(Options{})
 	for i := 0; i < n; i++ {
@@ -103,7 +104,7 @@ func BenchmarkScanWormhole(b *testing.B) {
 	}
 }
 
-func BenchmarkScanPebbleSkip(b *testing.B) {
+func BenchmarkPebbleSkipAscendingScan(b *testing.B) {
 	const n = 65536
 	s := pebbleskip.New(n*256+(1<<20), nil)
 	for i := 0; i < n; i++ {
@@ -126,7 +127,7 @@ func BenchmarkScanPebbleSkip(b *testing.B) {
 	}
 }
 
-func BenchmarkMixedWormhole(b *testing.B) {
+func BenchmarkWormhole_Mixed_ReadsWrites(b *testing.B) {
 	m := New(Options{})
 	initial := benchKVs(4096, 0)
 	for i := 0; i < 4096; i++ {
@@ -147,7 +148,7 @@ func BenchmarkMixedWormhole(b *testing.B) {
 	}
 }
 
-func BenchmarkMixedPebbleSkip(b *testing.B) {
+func BenchmarkPebbleSkip_Mixed_ReadsWrites(b *testing.B) {
 	s := pebbleskip.New(b.N*128+(2<<20), nil)
 	initial := benchSkipKVs(4096, 0)
 	for i := 0; i < 4096; i++ {
@@ -170,4 +171,43 @@ func BenchmarkMixedPebbleSkip(b *testing.B) {
 			_, _ = s.Get(readKeys[i&4095])
 		}
 	}
+}
+
+// ported from keystable benchmark for apples-to-apples
+
+var (
+	keyStableBenchKV KV
+)
+
+func BenchmarkWormholeGet(b *testing.B) {
+	keys := benchmarkKeyStableKeys(1 << 16)
+	value := []byte("value")
+	//s := makeKeyStable(len(keys))
+
+	s := New(Options{})
+
+	for i, key := range keys {
+		s.Put(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)})
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		kv, found := s.Get(keys[i&(len(keys)-1)])
+		if !found {
+			b.Fatalf("get(%q) was not found", keys[i&(len(keys)-1)])
+		}
+		keyStableBenchKV = kv
+	}
+}
+
+func benchmarkKeyStableKeys(n int) []string {
+	keys := make([]string, n)
+	var buf [16]byte
+	for i := range keys {
+		binary.LittleEndian.PutUint64(buf[:8], uint64(i)*0x9e3779b97f4a7c15)
+		binary.LittleEndian.PutUint64(buf[8:], uint64(i))
+		keys[i] = string(buf[:])
+	}
+	return keys
 }

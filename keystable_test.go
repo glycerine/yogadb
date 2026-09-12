@@ -959,6 +959,9 @@ BenchmarkPutWormhole-48         7389782       140.6 ns/op     150 B/op       0 a
 BenchmarkMixedWormhole                        mixed wormhole
 BenchmarkMixedWormhole-48      16627498        71.89 ns/op      37 B/op       0 allocs/op
 
+BenchmarkWormholeGet                          read wormhole
+BenchmarkWormholeGet-8   	 3759614	       313.3 ns/op	       0 B/op	       0 allocs/op
+
 BenchmarkScanWormhole
 BenchmarkScanWormhole-48           3988    304024 ns/op       0 B/op       0 allocs/op
 
