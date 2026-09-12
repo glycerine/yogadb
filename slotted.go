@@ -1137,7 +1137,7 @@ func slottedPageDumpImpl(src []byte, vlog *valueLog) string {
 				}
 				if vlog != nil {
 					const x = true
-					data, err := vlog.read(vp, x)
+					data, err := vlog.read(vp)
 					if err != nil {
 						valDesc += fmt.Sprintf(" ERR:%s", err)
 					} else {

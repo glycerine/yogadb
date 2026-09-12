@@ -2224,7 +2224,7 @@ func (db *FlexDB) resolveVPtr(kv KV, x bool) (val []byte, vtyp uint64, hlc HLC, 
 	if len(kv.Value) == 8 {
 		vtyp = getUint64(kv.Value)
 	}
-	val, err = db.vlog.read(kv.Vptr, x)
+	val, err = db.vlog.read(kv.Vptr)
 	hlc = kv.Hlc
 	return
 }
@@ -2396,7 +2396,7 @@ func (db *FlexDB) vacuumVLOGXLocked() (*VacuumVLOGStats, error) {
 					continue
 				}
 				// Read value from old VLOG.
-				val, err := db.vlog.read(updated[i].Vptr, x)
+				val, err := db.vlog.read(updated[i].Vptr)
 				if err != nil {
 					partition.releaseEntry(fce)
 					newVL.close()
@@ -2573,7 +2573,7 @@ func (db *FlexDB) checkVLOGPointersNoLock() error {
 				if !kv.HasVPtr() {
 					continue
 				}
-				if _, err := db.vlog.read(kv.Vptr, x); err != nil {
+				if _, err := db.vlog.read(kv.Vptr); err != nil {
 					partition.releaseEntry(fce)
 					return fmt.Errorf("anchor key=%q kv=%q vptr={off:%d len:%d}: %w",
 						anchor.key, kv.Key, kv.Vptr.Offset, kv.Vptr.Length, err)
@@ -3125,7 +3125,7 @@ func (db *FlexDB) CheckIntegrity() []IntegrityError {
 			return
 		}
 		// read() verifies hdrCRC, valCRC, and blake3 of the value bytes.
-		_, err := db.vlog.read(kv.Vptr, x)
+		_, err := db.vlog.read(kv.Vptr)
 		if err != nil {
 			addErr("vlog_blake3",
 				fmt.Sprintf("anchor %d (key=%q): KV %q VPtr{Off=%d,Len=%d}: %v",
