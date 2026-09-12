@@ -113,6 +113,15 @@ func (n *node) getValue(arena *Arena) []byte {
 	return arena.getBytes(n.keyOffset+n.keySize, n.valueSize)
 }
 
+func (n *node) kv(arena *Arena) KV {
+	return KV{
+		Key:   n.keyString(arena),
+		Value: n.getValue(arena),
+		Vptr:  n.vptr,
+		Hlc:   n.hlc,
+	}
+}
+
 func (n *node) nextOffset(h int) uint32 {
 	return n.tower[h].nextOffset.Load()
 }

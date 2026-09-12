@@ -8,6 +8,11 @@
 // hash-prefix metadata table. It is intended for memtable experiments where
 // scans and writes are interleaved more heavily than keyStable handles well.
 //
+// Put takes ownership of the supplied KV payload. Callers must not modify
+// kv.Value after insertion. This matches YogaDB's memtable path, where the DB
+// API has already made any required defensive user-value copy before building
+// the KV.
+//
 // Scan callbacks receive values that alias immutable map storage and are only
 // promised valid for the duration of the callback. Callbacks must not re-enter
 // the same Map.

@@ -153,12 +153,20 @@ func (s *Skiplist) Add(kv KV) error {
 // Get returns the value for key. The returned value aliases immutable arena
 // memory and remains valid for the lifetime of the skiplist.
 func (s *Skiplist) Get(key string) (KV, bool) {
-	it := Iterator{list: s, nd: s.head}
-	kv := it.SeekGE(key)
-	if kv == nil || s.cmp(kv.Key, key) != 0 {
-		return KV{}, false
+	level := int(s.Height() - 1)
+	prev := s.head
+	for {
+		var next *node
+		var found bool
+		prev, next, found = s.findSpliceForLevel(key, level, prev)
+		if found {
+			return next.kv(s.arena), true
+		}
+		if level == 0 {
+			return KV{}, false
+		}
+		level--
 	}
-	return *kv, true
 }
 
 func (s *Skiplist) addInternal(kv KV, ins *Inserter) error {

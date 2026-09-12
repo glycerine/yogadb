@@ -113,6 +113,32 @@ func TestAgainstSortedMapModel(t *testing.T) {
 	}
 }
 
+func TestDeleteEmptyMiddleLeafKeepsSearchCorrect(t *testing.T) {
+	m := New(Options{LeafCapacity: 4})
+	for i := 0; i < 7; i++ {
+		m.Put(whKV(i))
+	}
+
+	if !m.Delete(whKey(2)) || !m.Delete(whKey(3)) {
+		t.Fatal("expected deletes to remove the middle leaf keys")
+	}
+	for _, i := range []int{0, 1, 4, 5, 6} {
+		got, ok := m.Get(whKey(i))
+		if !ok || got.Key != whKey(i) {
+			t.Fatalf("Get(%q)=%#v,%v after empty leaf delete", whKey(i), got, ok)
+		}
+	}
+	if _, ok := m.Get(whKey(2)); ok {
+		t.Fatal("deleted key k00002 was found")
+	}
+
+	got := collectAsc(m)
+	want := []string{"k00000", "k00001", "k00004", "k00005", "k00006"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("asc keys after empty leaf delete=%v want %v", got, want)
+	}
+}
+
 func TestConcurrentMixedAccess(t *testing.T) {
 	m := New(Options{LeafCapacity: 16})
 	const writers = 8

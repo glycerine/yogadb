@@ -1,18 +1,29 @@
 package wormhole
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/glycerine/yogadb/pebbleskip"
 )
 
 func benchKey(i int) string {
-	return fmt.Sprintf("k%09d", i)
+	var buf [10]byte
+	buf[0] = 'k'
+	for pos := len(buf) - 1; pos > 0; pos-- {
+		buf[pos] = byte('0' + i%10)
+		i /= 10
+	}
+	return string(buf[:])
 }
 
 func benchValue(i int) []byte {
-	return []byte(fmt.Sprintf("value-%09d", i))
+	var buf [15]byte
+	copy(buf[:], "value-")
+	for pos := len(buf) - 1; pos >= len("value-"); pos-- {
+		buf[pos] = byte('0' + i%10)
+		i /= 10
+	}
+	return buf[:]
 }
 
 func benchKV(i int) KV {
@@ -41,8 +52,8 @@ func benchSkipKVs(n int, base int) []pebbleskip.KV {
 	return kvs
 }
 
-func benchReadKeys(n int, mask int) []string {
-	keys := make([]string, n)
+func benchReadKeys(mask int) []string {
+	keys := make([]string, mask+1)
 	for i := range keys {
 		keys[i] = benchKey(i & mask)
 	}
@@ -122,7 +133,7 @@ func BenchmarkMixedWormhole(b *testing.B) {
 		m.Put(initial[i])
 	}
 	writes := benchKVs((b.N+3)/4, 4096)
-	readKeys := benchReadKeys(b.N, 4095)
+	readKeys := benchReadKeys(4095)
 	b.ReportAllocs()
 	b.ResetTimer()
 	writeIdx := 0
@@ -131,7 +142,7 @@ func BenchmarkMixedWormhole(b *testing.B) {
 			m.Put(writes[writeIdx])
 			writeIdx++
 		} else {
-			_, _ = m.Get(readKeys[i])
+			_, _ = m.Get(readKeys[i&4095])
 		}
 	}
 }
@@ -145,7 +156,7 @@ func BenchmarkMixedPebbleSkip(b *testing.B) {
 		}
 	}
 	writes := benchSkipKVs((b.N+3)/4, 4096)
-	readKeys := benchReadKeys(b.N, 4095)
+	readKeys := benchReadKeys(4095)
 	b.ReportAllocs()
 	b.ResetTimer()
 	writeIdx := 0
@@ -156,7 +167,7 @@ func BenchmarkMixedPebbleSkip(b *testing.B) {
 			}
 			writeIdx++
 		} else {
-			_, _ = s.Get(readKeys[i])
+			_, _ = s.Get(readKeys[i&4095])
 		}
 	}
 }
