@@ -5,30 +5,6 @@ import (
 	"sync/atomic"
 )
 
-// a wormhole can be our memtable. A wormhole is an alternative
-// memtable to the keystable.go keyStable. It has better mixed put/get
-// behavior than keystable, and also better initial bulk load
-// beahvior.
-/*
-go test -run '^$' -bench '^BenchmarkMemtableInitialLoadThenOrderedScan$' -benchtime=1s -count=3 -benchmem .
-
-Median results:
-
-4096 items:
-  keystable  ~2.077 ms/op   785 KB/op
-  wormhole   ~1.786 ms/op   312 KB/op
-  wormhole   ~1.16x faster, ~2.5x less memory
-
-65536 items:
-  keystable  ~38.35 ms/op   13.68 MB/op
-  wormhole   ~30.37 ms/op    4.69 MB/op
-  wormhole   ~1.26x faster, ~2.9x less memory
-
-On the “initial load then ordered flush/AllowReads traversal” workload,
-wormhole is already ahead, especially in memory footprint.
-*/
-
-// wormhole constants
 const (
 	wormPageBits  = 11
 	wormPageSize  = 1 << wormPageBits
@@ -435,6 +411,10 @@ func (m *wormhole) AscendRange(start, end string, fn func(KV) bool) {
 }
 
 func (m *wormhole) Descend(start string, fn func(KV) bool) {
+	m.DescendRange(start, "", fn)
+}
+
+func (m *wormhole) DescendRange(start, end string, fn func(KV) bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -449,6 +429,10 @@ func (m *wormhole) Descend(start string, fn func(KV) bool) {
 			kv := m.store.get(l.items[i])
 			if start != "" && kv.Key > start {
 				continue
+			}
+			if end != "" && kv.Key <= end {
+				l.mu.RUnlock()
+				return
 			}
 			if !fn(kv) {
 				l.mu.RUnlock()
