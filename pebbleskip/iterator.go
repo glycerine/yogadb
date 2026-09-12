@@ -35,8 +35,8 @@ type Iterator struct {
 	list  *Skiplist
 	nd    *node
 	kv    KV
-	lower []byte
-	upper []byte
+	lower string
+	upper string
 
 	lowerNode *node
 	upperNode *node
@@ -56,7 +56,7 @@ func (it *Iterator) Close() {
 
 // SetBounds sets optional lower and upper bounds. The iterator must be
 // repositioned after changing bounds.
-func (it *Iterator) SetBounds(lower, upper []byte) {
+func (it *Iterator) SetBounds(lower, upper string) {
 	it.lower = lower
 	it.upper = upper
 	it.lowerNode = nil
@@ -64,13 +64,13 @@ func (it *Iterator) SetBounds(lower, upper []byte) {
 }
 
 // SeekGE moves to the first key >= key.
-func (it *Iterator) SeekGE(key []byte) *KV {
+func (it *Iterator) SeekGE(key string) *KV {
 	_, it.nd, _ = it.seekForBaseSplice(key)
 	if it.nd == it.list.tail || it.nd == it.upperNode {
 		return nil
 	}
 	it.decodeKV()
-	if it.upper != nil && it.list.cmp(it.upper, it.kv.Key) <= 0 {
+	if it.upper != "" && it.list.cmp(it.upper, it.kv.Key) <= 0 {
 		it.upperNode = it.nd
 		return nil
 	}
@@ -78,13 +78,13 @@ func (it *Iterator) SeekGE(key []byte) *KV {
 }
 
 // SeekLT moves to the last key < key.
-func (it *Iterator) SeekLT(key []byte) *KV {
+func (it *Iterator) SeekLT(key string) *KV {
 	it.nd, _, _ = it.seekForBaseSplice(key)
 	if it.nd == it.list.head || it.nd == it.lowerNode {
 		return nil
 	}
 	it.decodeKV()
-	if it.lower != nil && it.list.cmp(it.lower, it.kv.Key) > 0 {
+	if it.lower != "" && it.list.cmp(it.lower, it.kv.Key) > 0 {
 		it.lowerNode = it.nd
 		return nil
 	}
@@ -98,7 +98,7 @@ func (it *Iterator) First() *KV {
 		return nil
 	}
 	it.decodeKV()
-	if it.upper != nil && it.list.cmp(it.upper, it.kv.Key) <= 0 {
+	if it.upper != "" && it.list.cmp(it.upper, it.kv.Key) <= 0 {
 		it.upperNode = it.nd
 		return nil
 	}
@@ -112,7 +112,7 @@ func (it *Iterator) Last() *KV {
 		return nil
 	}
 	it.decodeKV()
-	if it.lower != nil && it.list.cmp(it.lower, it.kv.Key) > 0 {
+	if it.lower != "" && it.list.cmp(it.lower, it.kv.Key) > 0 {
 		it.lowerNode = it.nd
 		return nil
 	}
@@ -126,7 +126,7 @@ func (it *Iterator) Next() *KV {
 		return nil
 	}
 	it.decodeKV()
-	if it.upper != nil && it.list.cmp(it.upper, it.kv.Key) <= 0 {
+	if it.upper != "" && it.list.cmp(it.upper, it.kv.Key) <= 0 {
 		it.upperNode = it.nd
 		return nil
 	}
@@ -140,7 +140,7 @@ func (it *Iterator) Prev() *KV {
 		return nil
 	}
 	it.decodeKV()
-	if it.lower != nil && it.list.cmp(it.lower, it.kv.Key) > 0 {
+	if it.lower != "" && it.list.cmp(it.lower, it.kv.Key) > 0 {
 		it.lowerNode = it.nd
 		return nil
 	}
@@ -148,11 +148,13 @@ func (it *Iterator) Prev() *KV {
 }
 
 func (it *Iterator) decodeKV() {
-	it.kv.Key = it.nd.getKeyBytes(it.list.arena)
+	it.kv.Key = it.nd.keyString(it.list.arena)
 	it.kv.Value = it.nd.getValue(it.list.arena)
+	it.kv.Vptr = it.nd.vptr
+	it.kv.Hlc = it.nd.hlc
 }
 
-func (it *Iterator) seekForBaseSplice(key []byte) (prev, next *node, found bool) {
+func (it *Iterator) seekForBaseSplice(key string) (prev, next *node, found bool) {
 	level := int(it.list.Height() - 1)
 
 	prev = it.list.head

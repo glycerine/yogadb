@@ -17,6 +17,11 @@ func whVal(i int) []byte {
 	return []byte(fmt.Sprintf("v%05d", i))
 }
 
+func whKV(i int) KV {
+	v := whVal(i)
+	return KV{Key: whKey(i), Value: v, Vptr: VPtr{Length: uint64(len(v))}, Hlc: HLC(i + 1)}
+}
+
 func collectAsc(m *Map) []string {
 	var keys []string
 	m.Ascend("", func(kv KV) bool {
@@ -29,18 +34,18 @@ func collectAsc(m *Map) []string {
 func TestBasicPutGetDeleteScan(t *testing.T) {
 	m := New(Options{LeafCapacity: 4})
 	for _, i := range []int{7, 1, 9, 3, 5, 2, 4, 6, 8, 0} {
-		if replaced := m.Put(whKey(i), whVal(i)); replaced {
+		if replaced := m.Put(whKV(i)); replaced {
 			t.Fatalf("Put(%d) replaced unexpectedly", i)
 		}
 	}
 	if got := m.Len(); got != 10 {
 		t.Fatalf("Len=%d want 10", got)
 	}
-	if !m.Put(whKey(3), []byte("new")) {
+	if !m.Put(KV{Key: whKey(3), Value: []byte("new"), Vptr: VPtr{Length: 3}, Hlc: 100}) {
 		t.Fatal("overwrite did not report replaced")
 	}
-	if got, ok := m.Get(whKey(3)); !ok || string(got) != "new" {
-		t.Fatalf("Get overwritten = %q,%v", got, ok)
+	if got, ok := m.Get(whKey(3)); !ok || string(got.Value) != "new" {
+		t.Fatalf("Get overwritten = %q,%v", got.Value, ok)
 	}
 	got := collectAsc(m)
 	want := []string{"k00000", "k00001", "k00002", "k00003", "k00004", "k00005", "k00006", "k00007", "k00008", "k00009"}
@@ -78,13 +83,13 @@ func TestAgainstSortedMapModel(t *testing.T) {
 		switch rng.Intn(3) {
 		case 0:
 			v := []byte(fmt.Sprintf("step-%d", step))
-			m.Put(k, v)
+			m.Put(KV{Key: k, Value: v, Vptr: VPtr{Length: uint64(len(v))}, Hlc: HLC(step + 1)})
 			model[k] = append([]byte(nil), v...)
 		case 1:
 			got, ok := m.Get(k)
 			want, wantOK := model[k]
-			if ok != wantOK || !bytes.Equal(got, want) {
-				t.Fatalf("step %d Get(%q)=%q,%v want %q,%v", step, k, got, ok, want, wantOK)
+			if ok != wantOK || !bytes.Equal(got.Value, want) {
+				t.Fatalf("step %d Get(%q)=%q,%v want %q,%v", step, k, got.Value, ok, want, wantOK)
 			}
 		case 2:
 			got := m.Delete(k)
@@ -120,7 +125,7 @@ func TestConcurrentMixedAccess(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < perWriter; i++ {
 				id := w*perWriter + i
-				m.Put(whKey(id), whVal(id))
+				m.Put(whKV(id))
 				if i%7 == 0 {
 					_, _ = m.Get(whKey(id / 2))
 				}

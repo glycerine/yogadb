@@ -12,12 +12,21 @@ func testKey(i int) []byte {
 	return []byte(fmt.Sprintf("%05d", i))
 }
 
+func testKeyString(i int) string {
+	return fmt.Sprintf("%05d", i)
+}
+
 func testVal(i int) []byte {
 	return []byte(fmt.Sprintf("v%05d", i))
 }
 
+func testKV(i int) KV {
+	v := testVal(i)
+	return KV{Key: testKeyString(i), Value: v, Vptr: VPtr{Length: uint64(len(v))}, Hlc: HLC(i + 1)}
+}
+
 func countForward(s *Skiplist) int {
-	it := s.NewIter(nil, nil)
+	it := s.NewIter("", "")
 	defer it.Close()
 	n := 0
 	for kv := it.First(); kv != nil; kv = it.Next() {
@@ -33,32 +42,32 @@ func TestBasic(t *testing.T) {
 			add := s.Add
 			if useInserter {
 				var ins Inserter
-				add = func(k, v []byte) error { return ins.Add(s, k, v) }
+				add = func(kv KV) error { return ins.Add(s, kv) }
 			}
 
 			for _, i := range []int{3, 1, 2} {
-				if err := add(testKey(i), testVal(i)); err != nil {
+				if err := add(testKV(i)); err != nil {
 					t.Fatalf("Add(%d): %v", i, err)
 				}
 			}
-			if err := add(testKey(2), []byte("dup")); !errors.Is(err, ErrRecordExists) {
+			if err := add(KV{Key: testKeyString(2), Value: []byte("dup")}); !errors.Is(err, ErrRecordExists) {
 				t.Fatalf("duplicate Add err = %v, want %v", err, ErrRecordExists)
 			}
 
 			for _, i := range []int{1, 2, 3} {
-				got, ok := s.Get(testKey(i))
-				if !ok || !bytes.Equal(got, testVal(i)) {
-					t.Fatalf("Get(%d) = %q,%v want %q,true", i, got, ok, testVal(i))
+				got, ok := s.Get(testKeyString(i))
+				if !ok || !bytes.Equal(got.Value, testVal(i)) {
+					t.Fatalf("Get(%d) = %q,%v want %q,true", i, got.Value, ok, testVal(i))
 				}
 			}
-			if got, ok := s.Get([]byte("99999")); ok || got != nil {
+			if got, ok := s.Get("99999"); ok || got.Key != "" {
 				t.Fatalf("missing Get = %q,%v want nil,false", got, ok)
 			}
 
-			it := s.NewIter(nil, nil)
+			it := s.NewIter("", "")
 			defer it.Close()
 			for i, kv := 1, it.First(); i <= 3; i, kv = i+1, it.Next() {
-				if kv == nil || !bytes.Equal(kv.Key, testKey(i)) || !bytes.Equal(kv.Value, testVal(i)) {
+				if kv == nil || kv.Key != testKeyString(i) || !bytes.Equal(kv.Value, testVal(i)) {
 					t.Fatalf("forward[%d] = %#v", i, kv)
 				}
 			}
@@ -67,7 +76,7 @@ func TestBasic(t *testing.T) {
 			}
 
 			for i, kv := 3, it.Last(); i >= 1; i, kv = i-1, it.Prev() {
-				if kv == nil || !bytes.Equal(kv.Key, testKey(i)) {
+				if kv == nil || kv.Key != testKeyString(i) {
 					t.Fatalf("reverse[%d] = %#v", i, kv)
 				}
 			}
@@ -81,25 +90,25 @@ func TestBasic(t *testing.T) {
 func TestBoundsAndSeek(t *testing.T) {
 	s := New(1<<20, nil)
 	for i := 0; i < 10; i++ {
-		if err := s.Add(testKey(i), testVal(i)); err != nil {
+		if err := s.Add(testKV(i)); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	it := s.NewIter(testKey(3), testKey(7))
+	it := s.NewIter(testKeyString(3), testKeyString(7))
 	defer it.Close()
-	if kv := it.SeekGE(testKey(4)); kv == nil || !bytes.Equal(kv.Key, testKey(4)) {
+	if kv := it.SeekGE(testKeyString(4)); kv == nil || kv.Key != testKeyString(4) {
 		t.Fatalf("SeekGE bounded = %#v", kv)
 	}
 	var keys []string
 	for kv := it.First(); kv != nil; kv = it.Next() {
-		keys = append(keys, string(kv.Key))
+		keys = append(keys, kv.Key)
 	}
 	want := []string{"00000", "00001", "00002", "00003", "00004", "00005", "00006"}
 	if fmt.Sprint(keys) != fmt.Sprint(want) {
 		t.Fatalf("bounded forward keys=%v want %v", keys, want)
 	}
-	if kv := it.SeekLT(testKey(3)); kv != nil {
+	if kv := it.SeekLT(testKeyString(3)); kv != nil {
 		t.Fatalf("SeekLT lower bound = %#v, want nil", kv)
 	}
 }
@@ -107,7 +116,7 @@ func TestBoundsAndSeek(t *testing.T) {
 func TestArenaFull(t *testing.T) {
 	s := New(512, nil)
 	for i := 0; ; i++ {
-		err := s.Add(testKey(i), testVal(i))
+		err := s.Add(testKV(i))
 		if errors.Is(err, ErrArenaFull) {
 			return
 		}
@@ -130,7 +139,7 @@ func TestConcurrentAddGetIterate(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if err := s.Add(testKey(i), testVal(i)); err != nil {
+			if err := s.Add(testKV(i)); err != nil {
 				t.Errorf("Add(%d): %v", i, err)
 			}
 		}(i)
@@ -141,9 +150,9 @@ func TestConcurrentAddGetIterate(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			got, ok := s.Get(testKey(i))
-			if !ok || !bytes.Equal(got, testVal(i)) {
-				t.Errorf("Get(%d) = %q,%v", i, got, ok)
+			got, ok := s.Get(testKeyString(i))
+			if !ok || !bytes.Equal(got.Value, testVal(i)) {
+				t.Errorf("Get(%d) = %q,%v", i, got.Value, ok)
 			}
 		}(i)
 	}
@@ -153,11 +162,11 @@ func TestConcurrentAddGetIterate(t *testing.T) {
 		t.Fatalf("countForward = %d, want %d", got, n)
 	}
 
-	it := s.NewIter(nil, nil)
+	it := s.NewIter("", "")
 	defer it.Close()
 	var prev []byte
 	for kv := it.First(); kv != nil; kv = it.Next() {
-		if prev != nil && bytes.Compare(prev, kv.Key) >= 0 {
+		if prev != nil && bytes.Compare(prev, []byte(kv.Key)) >= 0 {
 			t.Fatalf("keys out of order: prev=%q cur=%q", prev, kv.Key)
 		}
 		prev = append(prev[:0], kv.Key...)

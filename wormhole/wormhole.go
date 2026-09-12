@@ -15,11 +15,6 @@ type Options struct {
 	Compare      Compare
 }
 
-type KV struct {
-	Key   string
-	Value []byte
-}
-
 type Map struct {
 	mu       sync.RWMutex
 	leaves   []*leaf
@@ -70,8 +65,9 @@ func (m *Map) Len() int64 {
 	return m.liveKeys.Load()
 }
 
-func (m *Map) Put(key string, value []byte) (replaced bool) {
-	value = append([]byte(nil), value...)
+func (m *Map) Put(kv KV) (replaced bool) {
+	kv.Value = append([]byte(nil), kv.Value...)
+	key := kv.Key
 
 	for {
 		m.mu.RLock()
@@ -81,7 +77,7 @@ func (m *Map) Put(key string, value []byte) (replaced bool) {
 		pos, found := l.find(m.cmp, key)
 		canStayReadLocked := found || (pos > 0 && len(l.items) < m.leafCap)
 		if canStayReadLocked {
-			replaced = l.putAt(pos, found, key, value)
+			replaced = l.putAt(pos, found, kv)
 			l.mu.Unlock()
 			m.mu.RUnlock()
 			if !replaced {
@@ -97,7 +93,7 @@ func (m *Map) Put(key string, value []byte) (replaced bool) {
 		l = m.leaves[idx]
 		l.mu.Lock()
 		pos, found = l.find(m.cmp, key)
-		replaced = l.putAt(pos, found, key, value)
+		replaced = l.putAt(pos, found, kv)
 		l.refreshAnchor()
 		if len(l.items) > m.leafCap {
 			m.splitLeafLocked(idx, l)
@@ -111,7 +107,7 @@ func (m *Map) Put(key string, value []byte) (replaced bool) {
 	}
 }
 
-func (m *Map) Get(key string) ([]byte, bool) {
+func (m *Map) Get(key string) (KV, bool) {
 	m.mu.RLock()
 	idx := m.findLeafIndexLocked(key)
 	l := m.leaves[idx]
@@ -121,9 +117,9 @@ func (m *Map) Get(key string) ([]byte, bool) {
 	pos, found := l.find(m.cmp, key)
 	if !found {
 		l.mu.RUnlock()
-		return nil, false
+		return KV{}, false
 	}
-	out := append([]byte(nil), l.items[pos].Value...)
+	out := l.items[pos]
 	l.mu.RUnlock()
 	return out, true
 }
@@ -248,16 +244,16 @@ func (l *leaf) find(cmp Compare, key string) (int, bool) {
 	return idx, idx < len(l.items) && cmp(l.items[idx].Key, key) == 0
 }
 
-func (l *leaf) putAt(pos int, found bool, key string, value []byte) bool {
+func (l *leaf) putAt(pos int, found bool, kv KV) bool {
 	if found {
-		l.items[pos].Value = value
+		l.items[pos] = kv
 		return true
 	}
 	l.items = append(l.items, KV{})
 	copy(l.items[pos+1:], l.items[pos:])
-	l.items[pos] = KV{Key: key, Value: value}
+	l.items[pos] = kv
 	if pos == 0 {
-		l.anchor = key
+		l.anchor = kv.Key
 	}
 	return false
 }

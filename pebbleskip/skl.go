@@ -18,7 +18,6 @@
 package pebbleskip
 
 import (
-	"bytes"
 	"errors"
 	"math"
 	"math/rand/v2"
@@ -35,17 +34,10 @@ const (
 )
 
 // Compare defines the ordering over user keys.
-type Compare func(a, b []byte) int
+type Compare func(a, b string) int
 
-// DefaultCompare is bytes.Compare.
-var DefaultCompare Compare = bytes.Compare
-
-// KV is an iterator result. Key and Value alias immutable arena memory and
-// remain valid for the lifetime of the skiplist.
-type KV struct {
-	Key   []byte
-	Value []byte
-}
+// DefaultCompare compares keys by Go's byte-wise string order.
+var DefaultCompare Compare = stringCompare
 
 // ErrRecordExists indicates that an entry with the specified key already
 // exists. This fork keeps Pebble's immutable-node model: updates and deletes
@@ -73,8 +65,8 @@ type Inserter struct {
 }
 
 // Add inserts key/value using this inserter's cached splice state.
-func (ins *Inserter) Add(list *Skiplist, key, value []byte) error {
-	return list.addInternal(key, value, ins)
+func (ins *Inserter) Add(list *Skiplist, kv KV) error {
+	return list.addInternal(kv, ins)
 }
 
 var probabilities [maxHeight]uint32
@@ -153,24 +145,24 @@ func (s *Skiplist) Arena() *Arena { return s.arena }
 func (s *Skiplist) Size() uint32 { return s.arena.Size() }
 
 // Add inserts key/value if key does not already exist.
-func (s *Skiplist) Add(key, value []byte) error {
+func (s *Skiplist) Add(kv KV) error {
 	var ins Inserter
-	return s.addInternal(key, value, &ins)
+	return s.addInternal(kv, &ins)
 }
 
 // Get returns the value for key. The returned value aliases immutable arena
 // memory and remains valid for the lifetime of the skiplist.
-func (s *Skiplist) Get(key []byte) ([]byte, bool) {
+func (s *Skiplist) Get(key string) (KV, bool) {
 	it := Iterator{list: s, nd: s.head}
 	kv := it.SeekGE(key)
 	if kv == nil || s.cmp(kv.Key, key) != 0 {
-		return nil, false
+		return KV{}, false
 	}
-	return kv.Value, true
+	return *kv, true
 }
 
-func (s *Skiplist) addInternal(key, value []byte, ins *Inserter) error {
-	if s.findSplice(key, ins) {
+func (s *Skiplist) addInternal(kv KV, ins *Inserter) error {
+	if s.findSplice(kv.Key, ins) {
 		return ErrRecordExists
 	}
 
@@ -178,7 +170,7 @@ func (s *Skiplist) addInternal(key, value []byte, ins *Inserter) error {
 		runtime.Gosched()
 	}
 
-	nd, height, err := s.newNode(key, value)
+	nd, height, err := s.newNode(kv)
 	if err != nil {
 		return err
 	}
@@ -220,7 +212,7 @@ func (s *Skiplist) addInternal(key, value []byte, ins *Inserter) error {
 				break
 			}
 
-			prev, next, found = s.findSpliceForLevel(key, i, prev)
+			prev, next, found = s.findSpliceForLevel(kv.Key, i, prev)
 			if found {
 				if i != 0 {
 					panic("another goroutine inserted a node at a non-base level")
@@ -245,15 +237,15 @@ func (s *Skiplist) addInternal(key, value []byte, ins *Inserter) error {
 // NewIter returns a pooled iterator. Bounds are optional; nil disables a bound.
 // It is safe to copy an iterator by value. Call Close when done if the iterator
 // was allocated by NewIter.
-func (s *Skiplist) NewIter(lower, upper []byte) *Iterator {
+func (s *Skiplist) NewIter(lower, upper string) *Iterator {
 	it := iterPool.Get().(*Iterator)
 	*it = Iterator{list: s, nd: s.head, lower: lower, upper: upper}
 	return it
 }
 
-func (s *Skiplist) newNode(key, value []byte) (nd *node, height uint32, err error) {
+func (s *Skiplist) newNode(kv KV) (nd *node, height uint32, err error) {
 	height = s.randomHeight()
-	nd, err = newNode(s.arena, height, key, value)
+	nd, err = newNode(s.arena, height, kv)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -280,7 +272,7 @@ func (s *Skiplist) randomHeight() uint32 {
 	return h
 }
 
-func (s *Skiplist) findSplice(key []byte, ins *Inserter) (found bool) {
+func (s *Skiplist) findSplice(key string, ins *Inserter) (found bool) {
 	listHeight := s.Height()
 	var level int
 
@@ -319,7 +311,7 @@ func (s *Skiplist) findSplice(key []byte, ins *Inserter) (found bool) {
 	return found
 }
 
-func (s *Skiplist) findSpliceForLevel(key []byte, level int, start *node) (prev, next *node, found bool) {
+func (s *Skiplist) findSpliceForLevel(key string, level int, start *node) (prev, next *node, found bool) {
 	prev = start
 
 	for {
@@ -328,7 +320,7 @@ func (s *Skiplist) findSpliceForLevel(key []byte, level int, start *node) (prev,
 			break
 		}
 
-		nextKey := next.getKeyBytes(s.arena)
+		nextKey := next.keyString(s.arena)
 		cmp := s.cmp(key, nextKey)
 		if cmp < 0 {
 			break
@@ -344,9 +336,19 @@ func (s *Skiplist) findSpliceForLevel(key []byte, level int, start *node) (prev,
 	return prev, next, found
 }
 
-func (s *Skiplist) keyIsAfterNode(nd *node, key []byte) bool {
-	ndKey := nd.getKeyBytes(s.arena)
+func (s *Skiplist) keyIsAfterNode(nd *node, key string) bool {
+	ndKey := nd.keyString(s.arena)
 	return s.cmp(ndKey, key) < 0
+}
+
+func stringCompare(a, b string) int {
+	if a < b {
+		return -1
+	}
+	if a > b {
+		return 1
+	}
+	return 0
 }
 
 func (s *Skiplist) getNext(nd *node, h int) *node {

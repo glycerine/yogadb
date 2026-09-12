@@ -15,22 +15,58 @@ func benchValue(i int) []byte {
 	return []byte(fmt.Sprintf("value-%09d", i))
 }
 
+func benchKV(i int) KV {
+	v := benchValue(i)
+	return KV{Key: benchKey(i), Value: v, Vptr: VPtr{Length: uint64(len(v))}, Hlc: HLC(i + 1)}
+}
+
+func benchSkipKV(i int) pebbleskip.KV {
+	v := benchValue(i)
+	return pebbleskip.KV{Key: benchKey(i), Value: v, Vptr: pebbleskip.VPtr{Length: uint64(len(v))}, Hlc: pebbleskip.HLC(i + 1)}
+}
+
+func benchKVs(n int, base int) []KV {
+	kvs := make([]KV, n)
+	for i := range kvs {
+		kvs[i] = benchKV(base + i)
+	}
+	return kvs
+}
+
+func benchSkipKVs(n int, base int) []pebbleskip.KV {
+	kvs := make([]pebbleskip.KV, n)
+	for i := range kvs {
+		kvs[i] = benchSkipKV(base + i)
+	}
+	return kvs
+}
+
+func benchReadKeys(n int, mask int) []string {
+	keys := make([]string, n)
+	for i := range keys {
+		keys[i] = benchKey(i & mask)
+	}
+	return keys
+}
+
 func BenchmarkPutWormhole(b *testing.B) {
 	m := New(Options{})
+	kvs := benchKVs(b.N, 0)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m.Put(benchKey(i), benchValue(i))
+		m.Put(kvs[i])
 	}
 }
 
 func BenchmarkPutPebbleSkip(b *testing.B) {
 	arenaBytes := b.N*256 + (1 << 20)
 	s := pebbleskip.New(arenaBytes, nil)
+	kvs := benchSkipKVs(b.N, 0)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := s.Add([]byte(benchKey(i)), benchValue(i)); err != nil {
+		if err := s.Add(kvs[i]); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -40,7 +76,7 @@ func BenchmarkScanWormhole(b *testing.B) {
 	const n = 65536
 	m := New(Options{})
 	for i := 0; i < n; i++ {
-		m.Put(benchKey(i), benchValue(i))
+		m.Put(benchKV(i))
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -60,7 +96,7 @@ func BenchmarkScanPebbleSkip(b *testing.B) {
 	const n = 65536
 	s := pebbleskip.New(n*256+(1<<20), nil)
 	for i := 0; i < n; i++ {
-		if err := s.Add([]byte(benchKey(i)), benchValue(i)); err != nil {
+		if err := s.Add(benchSkipKV(i)); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -68,7 +104,7 @@ func BenchmarkScanPebbleSkip(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		count := 0
-		it := s.NewIter(nil, nil)
+		it := s.NewIter("", "")
 		for kv := it.First(); kv != nil; kv = it.Next() {
 			count++
 		}
@@ -81,36 +117,46 @@ func BenchmarkScanPebbleSkip(b *testing.B) {
 
 func BenchmarkMixedWormhole(b *testing.B) {
 	m := New(Options{})
+	initial := benchKVs(4096, 0)
 	for i := 0; i < 4096; i++ {
-		m.Put(benchKey(i), benchValue(i))
+		m.Put(initial[i])
 	}
+	writes := benchKVs((b.N+3)/4, 4096)
+	readKeys := benchReadKeys(b.N, 4095)
 	b.ReportAllocs()
 	b.ResetTimer()
+	writeIdx := 0
 	for i := 0; i < b.N; i++ {
 		if i%4 == 0 {
-			m.Put(benchKey(4096+i), benchValue(i))
+			m.Put(writes[writeIdx])
+			writeIdx++
 		} else {
-			_, _ = m.Get(benchKey(i & 4095))
+			_, _ = m.Get(readKeys[i])
 		}
 	}
 }
 
 func BenchmarkMixedPebbleSkip(b *testing.B) {
 	s := pebbleskip.New(b.N*128+(2<<20), nil)
+	initial := benchSkipKVs(4096, 0)
 	for i := 0; i < 4096; i++ {
-		if err := s.Add([]byte(benchKey(i)), benchValue(i)); err != nil {
+		if err := s.Add(initial[i]); err != nil {
 			b.Fatal(err)
 		}
 	}
+	writes := benchSkipKVs((b.N+3)/4, 4096)
+	readKeys := benchReadKeys(b.N, 4095)
 	b.ReportAllocs()
 	b.ResetTimer()
+	writeIdx := 0
 	for i := 0; i < b.N; i++ {
 		if i%4 == 0 {
-			if err := s.Add([]byte(benchKey(4096+i)), benchValue(i)); err != nil {
+			if err := s.Add(writes[writeIdx]); err != nil {
 				b.Fatal(err)
 			}
+			writeIdx++
 		} else {
-			_, _ = s.Get([]byte(benchKey(i & 4095)))
+			_, _ = s.Get(readKeys[i])
 		}
 	}
 }

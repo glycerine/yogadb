@@ -20,6 +20,7 @@ package pebbleskip
 import (
 	"math"
 	"sync/atomic"
+	"unsafe"
 )
 
 // MaxNodeSize returns the maximum space needed for a node with the specified
@@ -45,24 +46,23 @@ type node struct {
 	keyOffset uint32
 	keySize   uint32
 	valueSize uint32
-
-	// Keep tower aligned on an 8-byte boundary, matching Pebble's layout.
-	_ [4]byte
+	vptr      VPtr
+	hlc       HLC
 
 	// Most nodes do not use the full height of the tower. Allocation truncates
 	// the unused tail, but accesses are still indexed through this declaration.
 	tower [maxHeight]links
 }
 
-func newNode(arena *Arena, height uint32, key, value []byte) (nd *node, err error) {
+func newNode(arena *Arena, height uint32, kv KV) (nd *node, err error) {
 	if height < 1 || height > maxHeight {
 		panic("height cannot be less than one or greater than the max height")
 	}
-	keySize := len(key)
+	keySize := len(kv.Key)
 	if int64(keySize) > math.MaxUint32 {
 		panic("key is too large")
 	}
-	valueSize := len(value)
+	valueSize := len(kv.Value)
 	if int64(valueSize) > math.MaxUint32 {
 		panic("value is too large")
 	}
@@ -74,8 +74,10 @@ func newNode(arena *Arena, height uint32, key, value []byte) (nd *node, err erro
 	if err != nil {
 		return nil, err
 	}
-	copy(nd.getKeyBytes(arena), key)
-	copy(nd.getValue(arena), value)
+	nd.vptr = kv.Vptr
+	nd.hlc = kv.Hlc
+	copy(nd.getKeyBytes(arena), kv.Key)
+	copy(nd.getValue(arena), kv.Value)
 	return nd, nil
 }
 
@@ -97,6 +99,14 @@ func newRawNode(arena *Arena, height uint32, keySize, valueSize uint32) (nd *nod
 
 func (n *node) getKeyBytes(arena *Arena) []byte {
 	return arena.getBytes(n.keyOffset, n.keySize)
+}
+
+func (n *node) keyString(arena *Arena) string {
+	key := n.getKeyBytes(arena)
+	if len(key) == 0 {
+		return ""
+	}
+	return unsafe.String(unsafe.SliceData(key), len(key))
 }
 
 func (n *node) getValue(arena *Arena) []byte {
