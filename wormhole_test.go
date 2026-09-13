@@ -32,7 +32,7 @@ func collectAsc(m *wormhole) []string {
 }
 
 func TestBasicPutGetDeleteScan(t *testing.T) {
-	m := New(wormConfig{leafCapacity: 4})
+	m := newWormhole(wormConfig{leafCapacity: 4})
 	for _, i := range []int{7, 1, 9, 3, 5, 2, 4, 6, 8, 0} {
 		if replaced := m.Put(whKV(i)); replaced {
 			t.Fatalf("Put(%d) replaced unexpectedly", i)
@@ -75,7 +75,7 @@ func TestBasicPutGetDeleteScan(t *testing.T) {
 }
 
 func TestDescendRange(t *testing.T) {
-	m := New(wormConfig{leafCapacity: 4})
+	m := newWormhole(wormConfig{leafCapacity: 4})
 	for i := 0; i < 10; i++ {
 		m.Put(whKV(i))
 	}
@@ -116,7 +116,7 @@ func TestDescendRange(t *testing.T) {
 }
 
 func TestAgainstSortedMapModel(t *testing.T) {
-	m := New(wormConfig{leafCapacity: 8})
+	m := newWormhole(wormConfig{leafCapacity: 8})
 	model := map[string][]byte{}
 	rng := rand.New(rand.NewSource(1))
 	for step := 0; step < 5000; step++ {
@@ -155,7 +155,7 @@ func TestAgainstSortedMapModel(t *testing.T) {
 }
 
 func TestDeleteEmptyMiddleLeafKeepsSearchCorrect(t *testing.T) {
-	m := New(wormConfig{leafCapacity: 4})
+	m := newWormhole(wormConfig{leafCapacity: 4})
 	for i := 0; i < 7; i++ {
 		m.Put(whKV(i))
 	}
@@ -181,7 +181,7 @@ func TestDeleteEmptyMiddleLeafKeepsSearchCorrect(t *testing.T) {
 }
 
 func TestBuildPointIndexTracksMutation(t *testing.T) {
-	m := New(wormConfig{leafCapacity: 4})
+	m := newWormhole(wormConfig{leafCapacity: 4})
 	for i := 0; i < 8; i++ {
 		m.Put(whKV(i))
 	}
@@ -217,7 +217,7 @@ func TestBuildPointIndexTracksMutation(t *testing.T) {
 }
 
 func TestConcurrentMixedAccess(t *testing.T) {
-	m := New(wormConfig{leafCapacity: 16})
+	m := newWormhole(wormConfig{leafCapacity: 16})
 	const writers = 8
 	const perWriter = 500
 

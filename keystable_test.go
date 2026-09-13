@@ -973,7 +973,7 @@ func BenchmarkMemtableInitialLoadThenOrderedScan(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				m := New(wormConfig{})
+				m := newWormhole(wormConfig{})
 				for _, kv := range kvs {
 					m.Put(kv)
 				}
