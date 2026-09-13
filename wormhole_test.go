@@ -222,6 +222,67 @@ func TestBuildPointIndexTracksMutation(t *testing.T) {
 	}
 }
 
+func TestClearReusesStorePages(t *testing.T) {
+	m := newWormhole(wormConfig{leafCapacity: 4})
+	const x = true
+	for i := 0; i < 32; i++ {
+		m.Put(whKV(i), x)
+	}
+	m.BuildPointIndex(x)
+
+	block := m.store.blocks[0].Load()
+	if block == nil {
+		t.Fatal("expected allocated store block before clear")
+	}
+	page := block.pages[0].Load()
+	if page == nil {
+		t.Fatal("expected allocated store page before clear")
+	}
+	if len(m.leaves) < 2 {
+		t.Fatal("test setup expected multiple leaves before clear")
+	}
+
+	m.clear()
+	if got := m.Len(); got != 0 {
+		t.Fatalf("Len after clear=%d want 0", got)
+	}
+	if got := m.store.next.Load(); got != 0 {
+		t.Fatalf("store next after clear=%d want 0", got)
+	}
+	if got := len(m.leaves); got != 1 {
+		t.Fatalf("leaf count after clear=%d want 1", got)
+	}
+	if m.tail != m.leaves[0] {
+		t.Fatal("tail after clear does not point at the sole leaf")
+	}
+	if got, ok := m.Get(whKey(3), x); ok {
+		t.Fatalf("Get after clear=%#v,true", got)
+	}
+	if got := m.store.blocks[0].Load(); got != block {
+		t.Fatal("clear replaced the store block instead of reusing it")
+	}
+	if got := block.pages[0].Load(); got != page {
+		t.Fatal("clear replaced the store page instead of reusing it")
+	}
+	if kv := page.kvs[0]; kv.Key != "" || kv.Value != nil || kv.Vptr != (VPtr{}) || kv.Hlc != 0 {
+		t.Fatalf("clear did not zero old KV slot: %#v", kv)
+	}
+
+	if replaced := m.Put(whKV(100), x); replaced {
+		t.Fatal("first Put after clear reported replaced")
+	}
+	got, ok := m.Get(whKey(100), x)
+	if !ok || got.Key != whKey(100) {
+		t.Fatalf("Get after reuse=%#v,%v", got, ok)
+	}
+	if got := m.store.blocks[0].Load(); got != block {
+		t.Fatal("store block was not reused after Put")
+	}
+	if got := block.pages[0].Load(); got != page {
+		t.Fatal("store page was not reused after Put")
+	}
+}
+
 func TestConcurrentMixedAccess(t *testing.T) {
 	m := newWormhole(wormConfig{leafCapacity: 16})
 	const x = false

@@ -51,19 +51,36 @@ func newMemtableWithKind(memWalFD vfs.File, kind MemtableKind) *memtable {
 		memWalBuf:         make([]byte, 0, memtableWalBufCap),
 		memWalWriteOffset: memWalHeaderSize,
 	}
-	mt.resetBacking()
+	mt.initBacking()
 	mt.empty.Store(true)
 	return mt
 }
 
-func (m *memtable) resetBacking() {
+func (m *memtable) initBacking() {
 	switch m.kind {
 	case MemtableWormhole:
 		m.wh = newWormhole(wormConfig{})
-		m.ks = nil
 	case MemtableKeyStable:
-		m.wh = nil
-		m.ks = newKeyStable(0)
+		m.ks = newKeyStable(1024)
+	default:
+		panicf("invalid memtable kind: %v", m.kind)
+	}
+}
+
+func (m *memtable) resetBacking(x bool) {
+	switch m.kind {
+	case MemtableWormhole:
+		if m.wh == nil {
+			m.wh = newWormhole(wormConfig{})
+		} else {
+			m.wh.clear()
+		}
+	case MemtableKeyStable:
+		if m.ks == nil {
+			m.ks = newKeyStable(1024)
+		} else {
+			m.ks.clear(x)
+		}
 	default:
 		panicf("invalid memtable kind: %v", m.kind)
 	}
@@ -76,7 +93,7 @@ func (m *memtable) reset() {
 }
 
 func (m *memtable) clearData(x bool) {
-	m.resetBacking()
+	m.resetBacking(x)
 	m.vtypArena = nil
 	m.empty.Store(true)
 	m.size = 0

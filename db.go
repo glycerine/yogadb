@@ -1646,6 +1646,7 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	if cfg.AutoVacuumPct > 0 && cfg.AutoVacuumDeletedAboveKB <= 0 {
 		cfg.AutoVacuumDeletedAboveKB = 100 * 1024
 	}
+	vv("using cfg.MemtableKind = %s", cfg.MemtableKind)
 	//vv("using cfg.LowBlockUtilizationPct = %v", cfg.LowBlockUtilizationPct)
 
 	// Resolve VFS: explicit FS > NoDisk > RealVFS.

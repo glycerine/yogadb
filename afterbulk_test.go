@@ -102,7 +102,7 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 		expectedVtyps[string(keys2[i])] = vtyp
 	}
 
-	const profile = false
+	const profile = true
 	if profile {
 		// --- START PROFILING ---
 		f, err := os.Create("cpu_afterbulk_new_writes.out")
@@ -134,11 +134,12 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 		pprof.StopCPUProfile()
 	}
 
+	// do GC, then output HeapAlloc and HeapInuse numbers
+	WriteMemProfiles("profile.memory.afterbulk_new_writes.out")
+
 	m2 := &runtime.MemStats{}
 	runtime.ReadMemStats(m2)
 	vv("end new writes: HeapAlloc = %v (diff: %v);  HeapInuse = %v (diff: %v)", formatUint64Under(m2.HeapAlloc), formatUint64Under(m2.HeapAlloc-m0.HeapAlloc), formatUint64Under(m2.HeapInuse), formatUint64Under(m2.HeapInuse-m0.HeapInuse))
-
-	WriteMemProfiles("profile.memory.afterbulk_new_writes.out")
 
 	//_, metrics, err := batch.CommitGetMetrics(true)
 	insertElapsed := time.Since(t0)

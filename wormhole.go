@@ -93,6 +93,87 @@ func newWormhole(opts wormConfig) *wormhole {
 
 func (s *wormKVstore) init() {}
 
+func (m *wormhole) clear() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	leafCap := m.leafCap
+	if leafCap <= 0 {
+		leafCap = 256
+	}
+	if leafCap < 4 {
+		leafCap = 4
+	}
+	m.leafCap = leafCap
+
+	m.store.clear()
+	m.point.Store(nil)
+	m.readCache.Store(nil)
+	m.liveKeys.Store(0)
+
+	var first *wormLeaf
+	if len(m.leaves) > 0 {
+		first = m.leaves[0]
+	}
+	if first == nil {
+		first = &wormLeaf{items: make([]wormRef, 0, leafCap+1)}
+	}
+
+	for i, l := range m.leaves {
+		if l == nil {
+			continue
+		}
+		l.mu.Lock()
+		l.anchor = ""
+		l.high = ""
+		l.prev = nil
+		l.next = nil
+		l.items = l.items[:0]
+		l.readHint.Store(0)
+		l.mu.Unlock()
+		if i > 0 {
+			m.leaves[i] = nil
+		}
+	}
+
+	if cap(first.items) < leafCap+1 {
+		first.items = make([]wormRef, 0, leafCap+1)
+	}
+	if len(m.leaves) == 0 {
+		m.leaves = append(m.leaves, first)
+	} else {
+		m.leaves[0] = first
+		m.leaves = m.leaves[:1]
+	}
+	m.tail = first
+}
+
+func (s *wormKVstore) clear() {
+	n := int(s.next.Load())
+	for idx := 0; idx < n; {
+		pageIdx := idx >> wormPageBits
+		block := s.blocks[pageIdx>>wormBlockBits].Load()
+		pageRemainder := wormPageSize - (idx & wormPageMask)
+		if block == nil {
+			idx += pageRemainder
+			continue
+		}
+		page := block.pages[pageIdx&wormBlockMask].Load()
+		if page == nil {
+			idx += pageRemainder
+			continue
+		}
+		start := idx & wormPageMask
+		end := wormPageSize
+		if remaining := n - idx; remaining < end-start {
+			end = start + remaining
+		}
+		clear(page.kvs[start:end])
+		idx += end - start
+	}
+	s.next.Store(0)
+}
+
 func (s *wormKVstore) append(kv KV) wormRef {
 	idx := int(s.next.Add(1) - 1)
 	pageIdx := idx >> wormPageBits
