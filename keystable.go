@@ -32,7 +32,7 @@ import (
 // but we took inspiration from Entity-Component-System (ECS)
 // designs and just use integer indexing to avoid alot of pointers.
 //
-// INVAR: if i is the index into stable for a given key, s.kvs[i].Key is that key.
+// INVAR: if i is the index for a given key, s.kvs[i].Key is that key.
 //
 // We no longer inspect or analyze or change the KV that we store.
 // We are not responsible for the lifetime of the KV.Key or KV.Value
@@ -49,14 +49,13 @@ import (
 // for deletes or tombstones here. memtable.go only does
 // set(), get(), and clear().
 type keyStable struct {
-	// stable store. only appended to, or overwritten.
-	stable []int // stable key index into kvs[].
-	sorted []int // sorted indexes of stable in ascending key order.
+	// Store is only appended to, or overwritten.
+	sorted []int // indexes of kvs in ascending key order.
 
-	kvs          []KV  // parallel to stable
-	nextSameHash []int // collision chain for headmap; parallel to stable.
+	kvs          []KV  // stable slot storage.
+	nextSameHash []int // collision chain for headmap; parallel to kvs.
 
-	// xxhash.Sum64(key) -> index in stable.
+	// xxhash.Sum64(key) -> index in kvs.
 	headmap     map[uint64]int
 	sortedDirty bool
 
@@ -76,7 +75,6 @@ func makeKeyStable(n int) keyStable {
 		n = 256 << 10
 	}
 	return keyStable{
-		stable:       make([]int, 0, n),
 		nextSameHash: make([]int, 0, n),
 		sorted:       make([]int, 0, n),
 		kvs:          make([]KV, 0, n),
@@ -98,7 +96,6 @@ func (s *keyStable) clear(x bool) {
 	for i := range s.kvs {
 		s.kvs[i] = KV{}
 	}
-	s.stable = s.stable[:0]
 	s.sorted = s.sorted[:0]
 	s.kvs = s.kvs[:0]
 	s.nextSameHash = s.nextSameHash[:0]
@@ -135,8 +132,7 @@ func (s *keyStable) appendKeyCommon(h uint64) (whereInStable int) {
 	if s.headmap == nil {
 		s.ensureHeadmap()
 	}
-	whereInStable = len(s.stable)
-	s.stable = append(s.stable, whereInStable)
+	whereInStable = len(s.kvs)
 	s.kvs = append(s.kvs, KV{})
 	s.nextSameHash = append(s.nextSameHash, s.headmap[h]-1)
 	// so nextSameHash of -1 means: end of chain; no earlier value,
@@ -160,7 +156,7 @@ func (s *keyStable) Less(i, j int) bool {
 
 // internal
 func (s *keyStable) at(i int) string {
-	return s.kvs[s.stable[i]].Key
+	return s.kvs[i].Key
 }
 
 // internal
@@ -204,9 +200,9 @@ func (s *keyStable) ensureHeadmap() {
 	if s.headmap != nil {
 		return
 	}
-	s.headmap = make(map[uint64]int, len(s.stable))
+	s.headmap = make(map[uint64]int, len(s.kvs))
 	s.nextSameHash = s.nextSameHash[:0]
-	for range s.stable {
+	for range s.kvs {
 		s.nextSameHash = append(s.nextSameHash, -1)
 	}
 	for _, stableIdx := range s.sorted {
@@ -512,13 +508,12 @@ func (s *keyStable) delKey(needle []byte) (found bool) {
 // test/debugging only. does not lock mu.
 func (s *keyStable) String() string {
 	keys := "["
-	for i := range s.stable {
+	for i := range s.kvs {
 		keys += fmt.Sprintf("'%v', ", string(s.at(i)))
 	}
 	keys += "]"
 	return fmt.Sprintf(`keyStable{
 	keys: %v
-	stable: %#v
 	sorted: %#v
 	kvs: %#v
 	nextSameHash: %#v
@@ -526,7 +521,6 @@ func (s *keyStable) String() string {
 	sortedDirty: %v
 }
 `, keys,
-		s.stable,
 		s.sorted,
 		s.kvs,
 		s.nextSameHash,

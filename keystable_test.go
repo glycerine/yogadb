@@ -34,14 +34,14 @@ func TestKeyStableAddFindAndSortedOrder(t *testing.T) {
 	}
 	assertKeyStableMatchesModel(t, s, model)
 
-	stableBefore, kvsBefore, sortedBefore := len(s.stable), len(s.kvs), len(s.sorted)
+	kvsBefore, sortedBefore := len(s.kvs), len(s.sorted)
 	dup := s.addKey([]byte("charlie"))
 	if dup != model["charlie"] {
-		t.Fatalf("duplicate add returned stable index %d, want %d", dup, model["charlie"])
+		t.Fatalf("duplicate add returned kv index %d, want %d", dup, model["charlie"])
 	}
-	if len(s.stable) != stableBefore || len(s.kvs) != kvsBefore || len(s.sorted) != sortedBefore {
-		t.Fatalf("duplicate add changed lengths: stable=%d/%d kvs=%d/%d sorted=%d/%d",
-			len(s.stable), stableBefore, len(s.kvs), kvsBefore, len(s.sorted), sortedBefore)
+	if len(s.kvs) != kvsBefore || len(s.sorted) != sortedBefore {
+		t.Fatalf("duplicate add changed lengths: kvs=%d/%d sorted=%d/%d",
+			len(s.kvs), kvsBefore, len(s.sorted), sortedBefore)
 	}
 	assertKeyStableMatchesModel(t, s, model)
 
@@ -65,17 +65,17 @@ func TestKeyStableConstructorsAndCapHints(t *testing.T) {
 	if s.Len() != 0 {
 		t.Fatalf("fresh makeKeyStable Len = %d, want 0", s.Len())
 	}
-	if cap(s.stable) < 3 || cap(s.sorted) < 3 || cap(s.kvs) < 3 {
-		t.Fatalf("makeKeyStable(3) capacities stable=%d sorted=%d kvs=%d, want at least 3",
-			cap(s.stable), cap(s.sorted), cap(s.kvs))
+	if cap(s.sorted) < 3 || cap(s.kvs) < 3 || cap(s.nextSameHash) < 3 {
+		t.Fatalf("makeKeyStable(3) capacities sorted=%d kvs=%d nextSameHash=%d, want at least 3",
+			cap(s.sorted), cap(s.kvs), cap(s.nextSameHash))
 	}
 	if s.headmap == nil {
 		t.Fatal("makeKeyStable should initialize headmap")
 	}
 
 	defaultSized := makeKeyStable(0)
-	if got, want := cap(defaultSized.stable), 256<<10; got < want {
-		t.Fatalf("makeKeyStable(0) stable cap = %d, want at least %d", got, want)
+	if got, want := cap(defaultSized.kvs), 256<<10; got < want {
+		t.Fatalf("makeKeyStable(0) kvs cap = %d, want at least %d", got, want)
 	}
 
 	sp := newKeyStable(2)
@@ -395,14 +395,14 @@ func TestKeyStableClearReusesTable(t *testing.T) {
 	s.delKey([]byte("a"))
 	const x = true
 	s.clear(x)
-	if len(s.kvs) != 0 || len(s.stable) != 0 || len(s.sorted) != 0 {
-		t.Fatalf("clear left lengths kvs=%d stable=%d sorted=%v",
-			len(s.kvs), len(s.stable), len(s.sorted))
+	if len(s.kvs) != 0 || len(s.sorted) != 0 {
+		t.Fatalf("clear left lengths kvs=%d sorted=%v",
+			len(s.kvs), len(s.sorted))
 	}
 
 	idx := s.addKey([]byte("fresh"))
 	if idx != 0 {
-		t.Fatalf("stable index after clear = %d, want 0", idx)
+		t.Fatalf("kv index after clear = %d, want 0", idx)
 	}
 	if got := keyStableSortedKeys(s); !slices.Equal(got, []string{"fresh"}) {
 		t.Fatalf("sorted keys after clear = %#v, want %#v", got, []string{"fresh"})
@@ -708,9 +708,9 @@ func assertKeyStableMatchesModel(t *testing.T, s *keyStable, model map[string]in
 		if gotWhere != where {
 			t.Fatalf("findKey(%q) where = %d, want %d", key, gotWhere, where)
 		}
-		gotStable := s.sorted[gotWhere]
-		if gotStable != model[key] {
-			t.Fatalf("findKey(%q) stable index = %d, want %d", key, gotStable, model[key])
+		gotIdx := s.sorted[gotWhere]
+		if gotIdx != model[key] {
+			t.Fatalf("findKey(%q) kv index = %d, want %d", key, gotIdx, model[key])
 		}
 	}
 }
@@ -863,9 +863,9 @@ func TestKeyStable_set_then_set(t *testing.T) {
 	if n3 != 1 {
 		t.Fatalf("expected len of 1, got %v", n3)
 	}
-	nstable := len(s.stable)
-	if nstable != 1 {
-		t.Fatalf("expected nstable = 1; got %v", nstable)
+	nkvs := len(s.kvs)
+	if nkvs != 1 {
+		t.Fatalf("expected nkvs = 1; got %v", nkvs)
 	}
 }
 

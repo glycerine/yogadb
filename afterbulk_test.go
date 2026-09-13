@@ -413,7 +413,7 @@ afterbulk_test.go:302 [pid 1181984] 2026-09-13 08:39:07.318008092 +0000 UTC end 
 
 afterbulk_test.go:312 [pid 1181984] 2026-09-13 08:39:07.412607183 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 91455.29651831448 writes/sec
 
-keystable:
+keystable: (and no change with kvs only).
 
 === RUN   Test_Replacement_After_Bulk_Load_YogaDB
 
@@ -432,5 +432,7 @@ db.go:1649 [pid 1185850] 2026-09-13 08:45:09.971175337 +0000 UTC using cfg.Memta
 afterbulk_test.go:302 [pid 1185850] 2026-09-13 08:45:37.360911129 +0000 UTC end replacements: HeapAlloc = 1_653_860_304 (diff: 310_153_088);  HeapInuse = 1_801_084_928 (diff: 323_919_872)
 
 afterbulk_test.go:312 [pid 1185850] 2026-09-13 08:45:37.457766132 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 92707.76059367288 writes/sec
+
+--------
 
 */
