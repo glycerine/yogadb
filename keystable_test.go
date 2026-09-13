@@ -695,7 +695,7 @@ func assertKeyStableMatchesModel(t *testing.T, s *keyStable, model map[string]in
 	for i := 1; i < len(s.sorted); i++ {
 		prev := s.at(s.sorted[i-1])
 		next := s.at(s.sorted[i])
-		if bytes.Compare(prev, next) >= 0 {
+		if prev >= next {
 			t.Fatalf("sorted invariant broken at %d: %q >= %q", i, prev, next)
 		}
 	}

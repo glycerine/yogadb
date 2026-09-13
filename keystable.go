@@ -1,7 +1,6 @@
 package yogadb
 
 import (
-	"bytes"
 	"fmt"
 	"sort"
 	"sync"
@@ -38,9 +37,7 @@ import (
 // but we took inspiration from Entity-Component-System (ECS)
 // designs and just use integer indexing to avoid alot of pointers.
 //
-// INVAR: if i is the index into stable for a given key (the i-th key we added):
-// key i=0 is stored in s.keys[0             :s.stable[i]]
-// key i>0 is stored in s.keys[s.stable[i-1] :s.stable[i]]
+// INVAR: if i is the index into stable for a given key, s.keys[i] is that key.
 //
 // We no longer inspect or analyze or change the KV that we store.
 // We are not responsible for the lifetime of the KV.Key or KV.Value
@@ -57,10 +54,10 @@ import (
 // for deletes or tombstones here. memtable.go only does
 // set(), get(), and clear().
 type keyStable struct {
-	keys []byte // arena with a copy of all keys, stacked end to end.
+	keys []string // key string headers, sharing backing bytes with the inserted KV.Key.
 
 	// stable store. only appended to, or overwritten.
-	stable []int // where to find the string in keys[]
+	stable []int // stable key index into keys[].
 	sorted []int // sorted indexes of stable in ascending key order.
 
 	kvs          []KV  // parallel to stable
@@ -86,7 +83,7 @@ func makeKeyStable(n int) keyStable {
 		n = 256 << 10
 	}
 	return keyStable{
-		keys:         make([]byte, 0, n),
+		keys:         make([]string, 0, n),
 		stable:       make([]int, 0, n),
 		nextSameHash: make([]int, 0, n),
 		sorted:       make([]int, 0, n),
@@ -109,6 +106,7 @@ func (s *keyStable) clear(x bool) {
 	for i := range s.kvs {
 		s.kvs[i] = KV{}
 	}
+	clear(s.keys)
 	s.keys = s.keys[:0]
 	s.stable = s.stable[:0]
 	s.sorted = s.sorted[:0]
@@ -120,10 +118,6 @@ func (s *keyStable) clear(x bool) {
 
 // test-only use by keystable_test.go, so does not need to lock mu.
 func (s *keyStable) addKey(key []byte) (whereInStable int) {
-
-	// INVAR: string i=0 is stored in s.keys[0             :s.stable[i]]
-	//        string i>0 is stored in s.keys[s.stable[i-1] :s.stable[i]]
-
 	h := xxhash.Sum64(key)
 	whereInStable, found := s.findStableByBytes(key, h)
 	if found {
@@ -134,25 +128,25 @@ func (s *keyStable) addKey(key []byte) (whereInStable int) {
 
 // test-only, no mu lock needed.
 func (s *keyStable) appendKeyBytes(key []byte, h uint64) (whereInStable int) {
-	whereInStable = s.appendKeyCommon(len(key), h)
-	s.keys = append(s.keys, key...)
+	whereInStable = s.appendKeyCommon(h)
+	s.keys = append(s.keys, string(key))
 	return whereInStable
 }
 
 // internal: called by set(), mu or x must hold already.
 func (s *keyStable) appendKeyString(key string, h uint64) (whereInStable int) {
-	whereInStable = s.appendKeyCommon(len(key), h)
-	s.keys = append(s.keys, key...)
+	whereInStable = s.appendKeyCommon(h)
+	s.keys = append(s.keys, key)
 	return whereInStable
 }
 
 // internal: called by appendKeyString() which is called by set(), mu or x must hold already.
-func (s *keyStable) appendKeyCommon(keylen int, h uint64) (whereInStable int) {
+func (s *keyStable) appendKeyCommon(h uint64) (whereInStable int) {
 	if s.headmap == nil {
 		s.ensureHeadmap()
 	}
 	whereInStable = len(s.stable)
-	s.stable = append(s.stable, len(s.keys)+keylen)
+	s.stable = append(s.stable, len(s.keys))
 	s.kvs = append(s.kvs, KV{})
 	s.nextSameHash = append(s.nextSameHash, s.headmap[h]-1)
 	// so nextSameHash of -1 means: end of chain; no earlier value,
@@ -171,17 +165,12 @@ func (s *keyStable) Less(i, j int) bool {
 	if i == j {
 		return false
 	}
-	ib := s.at(s.sorted[i])
-	jb := s.at(s.sorted[j])
-	return bytes.Compare(ib, jb) < 0
+	return s.at(s.sorted[i]) < s.at(s.sorted[j])
 }
 
 // internal
-func (s *keyStable) at(i int) []byte {
-	if i == 0 {
-		return s.keys[:s.stable[0]]
-	}
-	return s.keys[s.stable[i-1]:s.stable[i]]
+func (s *keyStable) at(i int) string {
+	return s.keys[s.stable[i]]
 }
 
 // internal
@@ -198,7 +187,7 @@ func (s *keyStable) Len() int {
 func (s *keyStable) findKey(needle []byte) (where int, found bool) {
 	s.ensureSorted()
 	return sort.Find(len(s.sorted), func(i int) int {
-		return bytes.Compare(needle, s.at(s.sorted[i]))
+		return compareBytesString(needle, s.at(s.sorted[i]))
 	})
 }
 
@@ -206,7 +195,7 @@ func (s *keyStable) findKey(needle []byte) (where int, found bool) {
 func (s *keyStable) findKeyString(needle string) (where int, found bool) {
 	s.ensureSorted()
 	return sort.Find(len(s.sorted), func(i int) int {
-		return compareStringBytes(needle, s.at(s.sorted[i]))
+		return compareStringString(needle, s.at(s.sorted[i]))
 	})
 }
 
@@ -231,7 +220,7 @@ func (s *keyStable) ensureHeadmap() {
 		s.nextSameHash = append(s.nextSameHash, -1)
 	}
 	for _, stableIdx := range s.sorted {
-		h := xxhash.Sum64(s.at(stableIdx))
+		h := xxhash.Sum64String(s.at(stableIdx))
 		// becaue the value 0 back from headmap means not present, we undo the +1 bump
 		// (below) by subtracting 1 after pulling from headmap
 		s.nextSameHash[stableIdx] = s.headmap[h] - 1
@@ -243,7 +232,7 @@ func (s *keyStable) ensureHeadmap() {
 func (s *keyStable) findStableByBytes(key []byte, h uint64) (stableIdx int, found bool) {
 	s.ensureHeadmap()
 	for stableIdx = s.headmap[h] - 1; stableIdx >= 0; stableIdx = s.nextSameHash[stableIdx] {
-		if bytes.Equal(key, s.at(stableIdx)) {
+		if compareBytesString(key, s.at(stableIdx)) == 0 {
 			return stableIdx, true
 		}
 	}
@@ -254,7 +243,7 @@ func (s *keyStable) findStableByBytes(key []byte, h uint64) (stableIdx int, foun
 func (s *keyStable) findStableByString(key string, h uint64) (stableIdx int, found bool) {
 	s.ensureHeadmap()
 	for stableIdx = s.headmap[h] - 1; stableIdx >= 0; stableIdx = s.nextSameHash[stableIdx] {
-		if compareStringBytes(key, s.at(stableIdx)) == 0 {
+		if key == s.at(stableIdx) {
 			return stableIdx, true
 		}
 	}
@@ -263,7 +252,7 @@ func (s *keyStable) findStableByString(key string, h uint64) (stableIdx int, fou
 
 // internal
 func (s *keyStable) removeStableFromHeadmap(stableIdx int) {
-	h := xxhash.Sum64(s.at(stableIdx))
+	h := xxhash.Sum64String(s.at(stableIdx))
 	prev := -1
 	for cur := s.headmap[h] - 1; cur >= 0; cur = s.nextSameHash[cur] {
 		if cur == stableIdx {
@@ -280,6 +269,50 @@ func (s *keyStable) removeStableFromHeadmap(stableIdx int) {
 		}
 		prev = cur
 	}
+}
+
+func compareStringString(a string, b string) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] < b[i] {
+			return -1
+		}
+		if a[i] > b[i] {
+			return 1
+		}
+	}
+	if len(a) < len(b) {
+		return -1
+	}
+	if len(a) > len(b) {
+		return 1
+	}
+	return 0
+}
+
+func compareBytesString(a []byte, b string) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] < b[i] {
+			return -1
+		}
+		if a[i] > b[i] {
+			return 1
+		}
+	}
+	if len(a) < len(b) {
+		return -1
+	}
+	if len(a) > len(b) {
+		return 1
+	}
+	return 0
 }
 
 func compareStringBytes(a string, b []byte) int {
