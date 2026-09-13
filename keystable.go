@@ -54,7 +54,8 @@ type keyStable struct {
 	// Store is only appended to, or overwritten.
 	sorted []int // indexes of kvs in ascending key order.
 
-	kvs          []KV  // stable slot storage.
+	kvs          []KV // stable slot storage.
+	hashes       []uint64
 	nextSameHash []int // collision chain for headmap; parallel to kvs.
 
 	// Hash bucket -> index in kvs. Stored as slot+1 so zero means empty.
@@ -78,6 +79,7 @@ func makeKeyStable(n int) keyStable {
 	}
 	return keyStable{
 		nextSameHash: make([]int, 0, n),
+		hashes:       make([]uint64, 0, n),
 		sorted:       make([]int, 0, n),
 		kvs:          make([]KV, 0, n),
 		headmap:      make([]int, keyStableBucketCount(n)),
@@ -112,6 +114,7 @@ func (s *keyStable) clear(x bool) {
 	}
 	s.sorted = s.sorted[:0]
 	s.kvs = s.kvs[:0]
+	s.hashes = s.hashes[:0]
 	s.nextSameHash = s.nextSameHash[:0]
 	clear(s.headmap)
 	s.sortedDirty = false
@@ -148,6 +151,7 @@ func (s *keyStable) appendKeyCommon(h uint64) (slotIdx int) {
 	}
 	slotIdx = len(s.kvs)
 	s.kvs = append(s.kvs, KV{})
+	s.hashes = append(s.hashes, h)
 	s.nextSameHash = append(s.nextSameHash, -1)
 	if len(s.kvs) > len(s.headmap) {
 		s.rebuildHeadmap(keyStableBucketCount(len(s.kvs)))
@@ -232,7 +236,7 @@ func (s *keyStable) rebuildHeadmap(bucketCount int) {
 		s.nextSameHash = append(s.nextSameHash, -1)
 	}
 	for _, slotIdx := range s.sorted {
-		h := xxhash.Sum64String(s.at(slotIdx))
+		h := s.hashes[slotIdx]
 		bucket := s.bucket(h)
 		// because the value 0 back from headmap means not present, we undo the +1 bump
 		// (below) by subtracting 1 after pulling from headmap
@@ -249,7 +253,7 @@ func (s *keyStable) bucket(h uint64) int {
 func (s *keyStable) findSlotByBytes(key []byte, h uint64) (slotIdx int, found bool) {
 	s.ensureHeadmap()
 	for slotIdx = s.headmap[s.bucket(h)] - 1; slotIdx >= 0; slotIdx = s.nextSameHash[slotIdx] {
-		if compareBytesString(key, s.at(slotIdx)) == 0 {
+		if s.hashes[slotIdx] == h && compareBytesString(key, s.at(slotIdx)) == 0 {
 			return slotIdx, true
 		}
 	}
@@ -260,7 +264,7 @@ func (s *keyStable) findSlotByBytes(key []byte, h uint64) (slotIdx int, found bo
 func (s *keyStable) findSlotByString(key string, h uint64) (slotIdx int, found bool) {
 	s.ensureHeadmap()
 	for slotIdx = s.headmap[s.bucket(h)] - 1; slotIdx >= 0; slotIdx = s.nextSameHash[slotIdx] {
-		if key == s.at(slotIdx) {
+		if s.hashes[slotIdx] == h && key == s.at(slotIdx) {
 			return slotIdx, true
 		}
 	}
@@ -269,7 +273,7 @@ func (s *keyStable) findSlotByString(key string, h uint64) (slotIdx int, found b
 
 // internal
 func (s *keyStable) removeSlotFromHeadmap(slotIdx int) {
-	h := xxhash.Sum64String(s.at(slotIdx))
+	h := s.hashes[slotIdx]
 	prev := -1
 	bucket := s.bucket(h)
 	for cur := s.headmap[bucket] - 1; cur >= 0; cur = s.nextSameHash[cur] {
@@ -546,6 +550,7 @@ func (s *keyStable) String() string {
 	sorted: %#v
 	kvs: %#v
 	nextSameHash: %#v
+	hashes: %#v
 	headmap: %#v
 	sortedDirty: %v
 }
@@ -553,6 +558,7 @@ func (s *keyStable) String() string {
 		s.sorted,
 		s.kvs,
 		s.nextSameHash,
+		s.hashes,
 		s.headmap,
 		s.sortedDirty)
 }
