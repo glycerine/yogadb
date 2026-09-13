@@ -8,8 +8,10 @@ import (
 	"github.com/cespare/xxhash/v2"
 )
 
-// Currently our wormhole has better performance; but by only about 12% - 20%, in
-// particular on frequently mixed and interleaved reads and writes.
+// Currently our wormhole has better somewhat performance on frequently
+// mixed and interleaved reads and writes, but keystable is
+// better, much better, with batches of writes and the batches of reads;
+// as well as point queries and point sets (Puts).
 //
 // compare:
 // go test -v -run=xxx -bench BenchmarkWormhole_Mixed_ReadsWrites  126.8 ns/op      23 B/op
@@ -22,9 +24,48 @@ import (
 // 50% load self-managed hash chain:
 // BenchmarkKeyStableGet-48    35613524        33.46 ns/op       0 B/op       0 allocs/op
 //
-// keyStable is a place to keep your keys
+// more thoroughly A/B:
+//
+// Benchmark    keyStable             wormhole                winner
+// -----------------------------------------------------------------
+// Set / Put    40.37 ns/op, 0 B/op   463.0 ns/op, 145 B/op   keyStable, 11.5x
+// Get          39.57 ns/op           38.78 ns/op             tie
+//
+// Mixed_ReadsWrites 167.0 ns/op, 145 B/op   121.0 ns/op, 23 B/op    wormhole, 1.38x
+//
+// Initial Load Then Ordered Scan Medians:
+//
+// Size                       keyStable                           wormhole    Winner
+// ━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━
+// 4096       1.48 ms, 491 KB, 6 allocs    25.93 ms, 112.8 MB, 8277 allocs    keyStable, 17x
+// ───────  ─────────────────────────────  ─────────────────────────────────  ──────────────────
+// 65536    28.06 ms, 7.86 MB, 6 allocs    63.25 ms, 119.5 MB, 9343 allocs    keyStable, 2.25x
+//
+// After_Bulk
+//
+// Test                                keyStable              wormhole    Winner
+// ━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━
+// Fresh writes after bulk    561,504 writes/sec    458,529 writes/sec    keyStable, 1.22x
+// ─────────────────────────  ────────────────────  ────────────────────  ──────────────────
+// Replacements after bulk     94,476 writes/sec     88,828 writes/sec    keyStable, 1.06x
+//
+// Heap deltas were basically comparable on fresh writes:
+//
+// fresh keyStable:  HeapAlloc diff 318,765,704; HeapInuse diff 307,691,520
+// fresh wormhole:   HeapAlloc diff 317,287,656; HeapInuse diff 312,410,112
+//
+// Replacement HeapInuse favored keyStable:
+//
+// replace keyStable: HeapAlloc diff 311,687,688; HeapInuse diff 307,388,416
+// replace wormhole:  HeapAlloc diff 310,218,608; HeapInuse diff 350,314,496
+//
+// conclude: wormhole only wins the synthetic mixed benchmark (1.38x faster),
+// but keyStable crushes Set, crushes initial-load+ordered-scan,
+// and wins both After_Bulk tests.
+//
+// What is it? keyStable is a place to keep your keys
 // when you think of them like horses.
-// Horses live in a stable.
+// Horses live in a stable. KeyStable is stable storage for your memtable KV.
 //
 // You can also read it as: "key's table".
 //
@@ -37,6 +78,8 @@ import (
 // skip-lists are used as the memtable by other databases,
 // but we took inspiration from Entity-Component-System (ECS)
 // designs and just use integer indexing to avoid alot of pointers.
+// As a point of validation, it turns out the TurtleKV mem-table
+// design is almost exactly this design too.
 //
 // INVAR: if i is the index for a given key, s.kvs[i].Key is that key.
 //
@@ -53,7 +96,7 @@ import (
 // Since deletes are just set with KV.Vptr.Length = rawVlenTombstone,
 // and set can replace an old KV, we do not need special handling
 // for deletes or tombstones here. memtable.go only does
-// set(), get(), and clear().
+// set(), get(), and clear(); and ascend/descend ranges.
 type keyStable struct {
 	// Store is only appended to, or overwritten.
 	sorted []int // indexes of kvs in ascending key order.
@@ -63,7 +106,7 @@ type keyStable struct {
 	nextSameHash []int // collision chain for headmap; parallel to kvs.
 
 	// Hash bucket -> index in kvs. Stored as slot+1 so zero means empty.
-	headmap     []int
+	headmap     []int // we manage the growth of this hashmap ourselves.
 	sortedDirty bool
 
 	// get() calls can force sorts which are mutation, and
