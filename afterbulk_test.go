@@ -45,8 +45,8 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	cfg := &Config{
 		DisableBackgroundFlush: true,
 
-		//MemtableKind: MemtableKeyStable,
-		MemtableKind: MemtableWormhole, // wormhole is the default.
+		MemtableKind: MemtableKeyStable,
+		//MemtableKind: MemtableWormhole, // wormhole is the default.
 	}
 	vv("using cfg.MemtableKind = %s", cfg.MemtableKind)
 
@@ -210,7 +210,7 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 // replace all of the first set: use same keys in 2nd set.
 func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 	//if !testing.Short() {
-	//t.Skip("long test; only run for -short because it is opposites day.")
+	t.Skip("long test; only run for -short because it is opposites day.")
 	//}
 	dir := t.TempDir()
 	cfg := &Config{
@@ -434,5 +434,29 @@ afterbulk_test.go:302 [pid 1185850] 2026-09-13 08:45:37.360911129 +0000 UTC end 
 afterbulk_test.go:312 [pid 1185850] 2026-09-13 08:45:37.457766132 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 92707.76059367288 writes/sec
 
 --------
+
+*/
+/* nice: keystable kvs only, "stable []int" gone, is still fast, just less memory allocation.
+go test -v -run After_Bulk
+=== RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB
+
+afterbulk_test.go:51 [pid 1224817] 2026-09-13 09:48:43.285634125 +0000 UTC using cfg.MemtableKind = keystable
+
+afterbulk_test.go:143 [pid 1224817] 2026-09-13 09:48:53.909293637 +0000 UTC end new writes: HeapAlloc = 2_463_366_200 (diff: 342_755_072);  HeapInuse = 2_599_297_024 (diff: 331_792_384)
+
+afterbulk_test.go:154 [pid 1224817] 2026-09-13 09:48:54.065214980 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 552999.9857843058 writes/sec
+
+
+afterbulk_test.go:167 [pid 1224817] 2026-09-13 09:48:56.322440573 +0000 UTC good: all 4000000 keys were distinct. len(vals) = 2000000; len(vals2) = 2000000
+
+afterbulk_test.go:202 [pid 1224817] 2026-09-13 09:49:08.071786377 +0000 UTC good: verified all 4000000 keys
+--- PASS: Test_Writes_Occuring_After_Bulk_Load_YogaDB (29.08s)
+=== RUN   Test_Replacement_After_Bulk_Load_YogaDB
+
+afterbulk_test.go:222 [pid 1224817] 2026-09-13 09:49:12.362383697 +0000 UTC using cfg.MemtableKind = keystable
+
+afterbulk_test.go:309 [pid 1224817] 2026-09-13 09:49:38.366866683 +0000 UTC end replacements: HeapAlloc = 1_679_215_128 (diff: 335_930_008);  HeapInuse = 1_839_546_368 (diff: 379_830_272)
+
+afterbulk_test.go:319 [pid 1224817] 2026-09-13 09:49:38.461990914 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 95558.49254327564 writes/sec
 
 */

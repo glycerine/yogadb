@@ -362,9 +362,9 @@ goarch: amd64
 pkg: github.com/glycerine/yogadb
 cpu: AMD Ryzen Threadripper 3960X 24-Core Processor
 BenchmarkKeyStable_Mixed_ReadsWrites
-BenchmarkKeyStable_Mixed_ReadsWrites-48    	 7638578	       146.7 ns/op	     139 B/op	       0 allocs/op
+BenchmarkKeyStable_Mixed_ReadsWrites-48    	 7793846	       142.7 ns/op	     126 B/op	       0 allocs/op
 PASS
-ok  	github.com/glycerine/yogadb	2.672s
+ok  	github.com/glycerine/yogadb	2.724s
 
 AND
 point reads get faster:
