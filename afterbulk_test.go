@@ -44,6 +44,9 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	// flushes while trying to measure performance.
 	cfg := &Config{
 		DisableBackgroundFlush: true,
+
+		MemtableKind: MemtableKeyStable,
+		//MemtableKind: MemtableWormhole, // wormhole is the default.
 	}
 	db, err := OpenFlexDB(dir, cfg)
 	panicOn(err)
@@ -99,15 +102,18 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 		expectedVtyps[string(keys2[i])] = vtyp
 	}
 
-	// --- START PROFILING ---
-	f, err := os.Create("cpu_afterbulk_new_writes.out")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	const profile = false
+	if profile {
+		// --- START PROFILING ---
+		f, err := os.Create("cpu_afterbulk_new_writes.out")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
 
-	if err := pprof.StartCPUProfile(f); err != nil {
-		t.Fatal(err)
+		if err := pprof.StartCPUProfile(f); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	m0 := &runtime.MemStats{}
@@ -124,7 +130,9 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 		}
 	}
 	batch.Commit(true)
-	pprof.StopCPUProfile()
+	if profile {
+		pprof.StopCPUProfile()
+	}
 
 	m2 := &runtime.MemStats{}
 	runtime.ReadMemStats(m2)
@@ -341,3 +349,21 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 		return nil
 	})
 }
+
+// either: default wormhole:
+/*
+go test -v -run After_Bulk
+=== RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB
+
+afterbulk_test.go:136 [pid 982646] 2026-09-13 03:24:58.735770511 +0000 UTC end new writes: HeapAlloc = 3_580_011_832 (diff: 689_407_920);  HeapInuse = 3_647_299_584 (diff: 732_471_296)
+
+afterbulk_test.go:146 [pid 982646] 2026-09-13 03:24:58.897427917 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 274499.3524071668 writes/sec
+
+keystable:
+
+afterbulk_test.go:139 [pid 984703] 2026-09-13 03:28:08.116100371 +0000 UTC end new writes: HeapAlloc = 4_553_853_288 (diff: 1_914_601_392);  HeapInuse = 4_626_169_856 (diff: 1_966_694_400)
+
+afterbulk_test.go:149 [pid 984703] 2026-09-13 03:28:08.343115056 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 541560.4400940551 writes/sec
+
+
+*/
