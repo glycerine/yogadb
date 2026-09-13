@@ -45,8 +45,8 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	cfg := &Config{
 		DisableBackgroundFlush: true,
 
-		MemtableKind: MemtableKeyStable,
-		//MemtableKind: MemtableWormhole, // wormhole is the default.
+		//MemtableKind: MemtableKeyStable,
+		MemtableKind: MemtableWormhole, // wormhole is the default.
 	}
 	db, err := OpenFlexDB(dir, cfg)
 	panicOn(err)

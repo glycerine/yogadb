@@ -47,6 +47,8 @@ type wormLeaf struct {
 	prev     *wormLeaf
 	next     *wormLeaf
 	items    []wormRef
+	keys     []string
+	prefixes []uint64
 	readHint atomic.Int64
 }
 
@@ -81,7 +83,11 @@ func newWormhole(opts wormConfig) *wormhole {
 	if leafCap < 4 {
 		leafCap = 4
 	}
-	l := &wormLeaf{items: make([]wormRef, 0, leafCap+1)}
+	l := &wormLeaf{
+		items:    make([]wormRef, 0, leafCap+1),
+		keys:     make([]string, 0, leafCap+1),
+		prefixes: make([]uint64, 0, leafCap+1),
+	}
 	m := &wormhole{
 		leaves:  []*wormLeaf{l},
 		tail:    l,
@@ -128,7 +134,11 @@ func (m *wormhole) clear() {
 		l.high = ""
 		l.prev = nil
 		l.next = nil
+		clear(l.keys)
+		clear(l.prefixes)
 		l.items = l.items[:0]
+		l.keys = l.keys[:0]
+		l.prefixes = l.prefixes[:0]
 		l.readHint.Store(0)
 		l.mu.Unlock()
 		if i > 0 {
@@ -138,6 +148,12 @@ func (m *wormhole) clear() {
 
 	if cap(first.items) < leafCap+1 {
 		first.items = make([]wormRef, 0, leafCap+1)
+	}
+	if cap(first.keys) < leafCap+1 {
+		first.keys = make([]string, 0, leafCap+1)
+	}
+	if cap(first.prefixes) < leafCap+1 {
+		first.prefixes = make([]uint64, 0, leafCap+1)
 	}
 	if len(m.leaves) == 0 {
 		m.leaves = append(m.leaves, first)
@@ -229,6 +245,38 @@ func (m *wormhole) appendKV(kv KV) wormRef {
 	return m.store.append(kv)
 }
 
+func wormKeyPrefix(key string) uint64 {
+	n := len(key)
+	if n > 8 {
+		n = 8
+	}
+	var prefix uint64
+	for i := 0; i < n; i++ {
+		prefix = (prefix << 8) | uint64(key[i])
+	}
+	return prefix << uint((8-n)*8)
+}
+
+func wormKeyAtGE(keys []string, prefixes []uint64, pos int, key string, keyPrefix uint64) bool {
+	prefix := prefixes[pos]
+	if prefix != keyPrefix {
+		return prefix > keyPrefix
+	}
+	return keys[pos] >= key
+}
+
+func wormKeyAtLE(keys []string, prefixes []uint64, pos int, key string, keyPrefix uint64) bool {
+	prefix := prefixes[pos]
+	if prefix != keyPrefix {
+		return prefix < keyPrefix
+	}
+	return keys[pos] <= key
+}
+
+func wormKeyAtEQ(keys []string, prefixes []uint64, pos int, key string, keyPrefix uint64) bool {
+	return prefixes[pos] == keyPrefix && keys[pos] == key
+}
+
 // BuildPointIndex builds a hash index for fast point lookups. In shared-access
 // mode the base index is immutable for lock-free reads; later Put/Delete calls
 // record per-key updates in a concurrent delta overlay. In exclusive mode,
@@ -249,8 +297,8 @@ func (m *wormhole) BuildPointIndex(x bool) {
 		if !x {
 			l.mu.RLock()
 		}
-		for _, idx := range l.items {
-			byKey[m.store.key(idx)] = idx
+		for i, idx := range l.items {
+			byKey[l.keys[i]] = idx
 		}
 		if !x {
 			l.mu.RUnlock()
@@ -266,8 +314,9 @@ func (m *wormhole) Put(kv KV, x bool) (old KV, replaced bool) {
 	}
 
 	key := kv.Key
+	keyPrefix := wormKeyPrefix(key)
 
-	if old, replaced, done := m.putTailAppendFast(kv); done {
+	if old, replaced, done := m.putTailAppendFast(kv, keyPrefix); done {
 		return old, replaced
 	}
 
@@ -275,11 +324,11 @@ func (m *wormhole) Put(kv KV, x bool) (old KV, replaced bool) {
 		m.mu.RLock()
 		l := m.tailLeafLocked(key)
 		if l == nil {
-			idx := m.findLeafIndexLocked(key)
+			idx := m.findLeafIndexLockedWithPrefix(key, keyPrefix)
 			l = m.leaves[idx]
 		}
 		l.mu.Lock()
-		pos, found := m.findInLeaf(l, key)
+		pos, found := m.findInLeafWithPrefix(l, key, keyPrefix)
 		canStayReadLocked := found || (pos > 0 && len(l.items) < m.leafCap)
 		if canStayReadLocked {
 			oldLen := len(l.items)
@@ -287,7 +336,7 @@ func (m *wormhole) Put(kv KV, x bool) (old KV, replaced bool) {
 				old = m.store.get(l.items[pos])
 			}
 			kvIdx := m.appendKV(kv)
-			replaced = l.putAt(pos, found, kvIdx)
+			replaced = l.putAt(pos, found, key, keyPrefix, kvIdx)
 			if !replaced && pos == oldLen {
 				l.high = key
 			}
@@ -303,15 +352,15 @@ func (m *wormhole) Put(kv KV, x bool) (old KV, replaced bool) {
 		m.mu.RUnlock()
 
 		m.mu.Lock()
-		idx := m.findLeafIndexLocked(key)
+		idx := m.findLeafIndexLockedWithPrefix(key, keyPrefix)
 		l = m.leaves[idx]
 		l.mu.Lock()
-		pos, found = m.findInLeaf(l, key)
+		pos, found = m.findInLeafWithPrefix(l, key, keyPrefix)
 		if found {
 			old = m.store.get(l.items[pos])
 		}
 		kvIdx := m.appendKV(kv)
-		replaced = l.putAt(pos, found, kvIdx)
+		replaced = l.putAt(pos, found, key, keyPrefix, kvIdx)
 		m.updatePointIndexPut(key, kvIdx, x)
 		m.refreshLeafBounds(l)
 		if len(l.items) > m.leafCap {
@@ -328,19 +377,20 @@ func (m *wormhole) Put(kv KV, x bool) (old KV, replaced bool) {
 
 func (m *wormhole) putExclusive(kv KV) (old KV, replaced bool) {
 	key := kv.Key
+	keyPrefix := wormKeyPrefix(key)
 
-	if old, replaced, done := m.putTailAppendFastExclusive(kv); done {
+	if old, replaced, done := m.putTailAppendFastExclusive(kv, keyPrefix); done {
 		return old, replaced
 	}
 
-	idx := m.findLeafIndexLocked(key)
+	idx := m.findLeafIndexLockedWithPrefix(key, keyPrefix)
 	l := m.leaves[idx]
-	pos, found := m.findInLeaf(l, key)
+	pos, found := m.findInLeafWithPrefix(l, key, keyPrefix)
 	if found {
 		old = m.store.get(l.items[pos])
 	}
 	kvIdx := m.appendKV(kv)
-	replaced = l.putAt(pos, found, kvIdx)
+	replaced = l.putAt(pos, found, key, keyPrefix, kvIdx)
 	m.updatePointIndexPut(key, kvIdx, true)
 	m.refreshLeafBounds(l)
 	if len(l.items) > m.leafCap {
@@ -352,7 +402,7 @@ func (m *wormhole) putExclusive(kv KV) (old KV, replaced bool) {
 	return old, replaced
 }
 
-func (m *wormhole) putTailAppendFast(kv KV) (old KV, replaced bool, done bool) {
+func (m *wormhole) putTailAppendFast(kv KV, keyPrefix uint64) (old KV, replaced bool, done bool) {
 	key := kv.Key
 
 	m.mu.RLock()
@@ -380,6 +430,8 @@ func (m *wormhole) putTailAppendFast(kv KV) (old KV, replaced bool, done bool) {
 	case key > lastKey && n < m.leafCap:
 		kvIdx := m.appendKV(kv)
 		l.items = append(l.items, kvIdx)
+		l.keys = append(l.keys, key)
+		l.prefixes = append(l.prefixes, keyPrefix)
 		l.high = key
 		m.updatePointIndexPut(key, kvIdx, false)
 		l.mu.Unlock()
@@ -390,6 +442,8 @@ func (m *wormhole) putTailAppendFast(kv KV) (old KV, replaced bool, done bool) {
 		old = m.store.get(l.items[n-1])
 		kvIdx := m.appendKV(kv)
 		l.items[n-1] = kvIdx
+		l.keys[n-1] = key
+		l.prefixes[n-1] = keyPrefix
 		l.high = key
 		m.updatePointIndexPut(key, kvIdx, false)
 		l.mu.Unlock()
@@ -414,6 +468,8 @@ func (m *wormhole) putTailAppendFast(kv KV) (old KV, replaced bool, done bool) {
 			l.anchor = key
 			l.high = key
 			l.items = append(l.items, kvIdx)
+			l.keys = append(l.keys, key)
+			l.prefixes = append(l.prefixes, keyPrefix)
 			m.updatePointIndexPut(key, kvIdx, false)
 			l.mu.Unlock()
 			m.mu.Unlock()
@@ -425,6 +481,8 @@ func (m *wormhole) putTailAppendFast(kv KV) (old KV, replaced bool, done bool) {
 		case key > lastKey && n < m.leafCap:
 			kvIdx := m.appendKV(kv)
 			l.items = append(l.items, kvIdx)
+			l.keys = append(l.keys, key)
+			l.prefixes = append(l.prefixes, keyPrefix)
 			l.high = key
 			m.updatePointIndexPut(key, kvIdx, false)
 			l.mu.Unlock()
@@ -442,6 +500,8 @@ func (m *wormhole) putTailAppendFast(kv KV) (old KV, replaced bool, done bool) {
 			old = m.store.get(l.items[n-1])
 			kvIdx := m.appendKV(kv)
 			l.items[n-1] = kvIdx
+			l.keys[n-1] = key
+			l.prefixes[n-1] = keyPrefix
 			l.high = key
 			m.updatePointIndexPut(key, kvIdx, false)
 			l.mu.Unlock()
@@ -454,7 +514,7 @@ func (m *wormhole) putTailAppendFast(kv KV) (old KV, replaced bool, done bool) {
 	return KV{}, false, false
 }
 
-func (m *wormhole) putTailAppendFastExclusive(kv KV) (old KV, replaced bool, done bool) {
+func (m *wormhole) putTailAppendFastExclusive(kv KV, keyPrefix uint64) (old KV, replaced bool, done bool) {
 	key := kv.Key
 	l := m.tail
 	if l == nil || l.next != nil || (l.anchor != "" && key < l.anchor) {
@@ -467,6 +527,8 @@ func (m *wormhole) putTailAppendFastExclusive(kv KV) (old KV, replaced bool, don
 		l.anchor = key
 		l.high = key
 		l.items = append(l.items, kvIdx)
+		l.keys = append(l.keys, key)
+		l.prefixes = append(l.prefixes, keyPrefix)
 		m.updatePointIndexPut(key, kvIdx, true)
 		m.liveKeys.Add(1)
 		return KV{}, false, true
@@ -477,6 +539,8 @@ func (m *wormhole) putTailAppendFastExclusive(kv KV) (old KV, replaced bool, don
 	case key > lastKey && n < m.leafCap:
 		kvIdx := m.appendKV(kv)
 		l.items = append(l.items, kvIdx)
+		l.keys = append(l.keys, key)
+		l.prefixes = append(l.prefixes, keyPrefix)
 		l.high = key
 		m.updatePointIndexPut(key, kvIdx, true)
 		m.liveKeys.Add(1)
@@ -490,6 +554,8 @@ func (m *wormhole) putTailAppendFastExclusive(kv KV) (old KV, replaced bool, don
 		old = m.store.get(l.items[n-1])
 		kvIdx := m.appendKV(kv)
 		l.items[n-1] = kvIdx
+		l.keys[n-1] = key
+		l.prefixes[n-1] = keyPrefix
 		l.high = key
 		m.updatePointIndexPut(key, kvIdx, true)
 		return old, true, true
@@ -566,7 +632,13 @@ func (m *wormhole) Delete(key string, x bool) bool {
 		return false
 	}
 	copy(l.items[pos:], l.items[pos+1:])
+	copy(l.keys[pos:], l.keys[pos+1:])
+	copy(l.prefixes[pos:], l.prefixes[pos+1:])
 	l.items = l.items[:len(l.items)-1]
+	l.keys[len(l.keys)-1] = ""
+	l.keys = l.keys[:len(l.keys)-1]
+	l.prefixes[len(l.prefixes)-1] = 0
+	l.prefixes = l.prefixes[:len(l.prefixes)-1]
 	m.updatePointIndexDelete(key, x)
 	l.readHint.Store(0)
 	if len(l.items) == 0 && len(m.leaves) > 1 {
@@ -601,17 +673,32 @@ func (m *wormhole) AscendRange(start, end string, x bool, fn func(KV) bool) {
 		if !x {
 			l.mu.RLock()
 		}
-		for _, kvIdx := range l.items {
-			kv := m.store.get(kvIdx)
-			if start != "" && kv.Key < start {
+		if start == "" && end == "" {
+			for _, kvIdx := range l.items {
+				if !fn(m.store.get(kvIdx)) {
+					if !x {
+						l.mu.RUnlock()
+					}
+					return
+				}
+			}
+			if !x {
+				l.mu.RUnlock()
+			}
+			continue
+		}
+		for i, kvIdx := range l.items {
+			key := l.keys[i]
+			if start != "" && key < start {
 				continue
 			}
-			if end != "" && kv.Key >= end {
+			if end != "" && key >= end {
 				if !x {
 					l.mu.RUnlock()
 				}
 				return
 			}
+			kv := m.store.get(kvIdx)
 			if !fn(kv) {
 				if !x {
 					l.mu.RUnlock()
@@ -644,17 +731,32 @@ func (m *wormhole) DescendRange(start, end string, x bool, fn func(KV) bool) {
 		if !x {
 			l.mu.RLock()
 		}
+		if start == "" && end == "" {
+			for i := len(l.items) - 1; i >= 0; i-- {
+				if !fn(m.store.get(l.items[i])) {
+					if !x {
+						l.mu.RUnlock()
+					}
+					return
+				}
+			}
+			if !x {
+				l.mu.RUnlock()
+			}
+			continue
+		}
 		for i := len(l.items) - 1; i >= 0; i-- {
-			kv := m.store.get(l.items[i])
-			if start != "" && kv.Key > start {
+			key := l.keys[i]
+			if start != "" && key > start {
 				continue
 			}
-			if end != "" && kv.Key <= end {
+			if end != "" && key <= end {
 				if !x {
 					l.mu.RUnlock()
 				}
 				return
 			}
+			kv := m.store.get(l.items[i])
 			if !fn(kv) {
 				if !x {
 					l.mu.RUnlock()
@@ -683,13 +785,13 @@ func (m *wormhole) SeekGE(target string, strict bool, x bool) (KV, bool) {
 		if !x {
 			l.mu.RLock()
 		}
-		for _, kvIdx := range l.items {
-			kv := m.store.get(kvIdx)
-			if target == "" || kv.Key > target || (!strict && kv.Key >= target) {
+		for i, kvIdx := range l.items {
+			key := l.keys[i]
+			if target == "" || key > target || (!strict && key >= target) {
 				if !x {
 					l.mu.RUnlock()
 				}
-				return kv, true
+				return m.store.get(kvIdx), true
 			}
 		}
 		if !x {
@@ -715,12 +817,12 @@ func (m *wormhole) SeekLE(target string, strict bool, x bool) (KV, bool) {
 			l.mu.RLock()
 		}
 		for i := len(l.items) - 1; i >= 0; i-- {
-			kv := m.store.get(l.items[i])
-			if target == "" || kv.Key < target || (!strict && kv.Key <= target) {
+			key := l.keys[i]
+			if target == "" || key < target || (!strict && key <= target) {
 				if !x {
 					l.mu.RUnlock()
 				}
-				return kv, true
+				return m.store.get(l.items[i]), true
 			}
 		}
 		if !x {
@@ -731,13 +833,24 @@ func (m *wormhole) SeekLE(target string, strict bool, x bool) (KV, bool) {
 }
 
 func (m *wormhole) findLeafIndexLocked(key string) int {
+	return m.findLeafIndexLockedWithPrefix(key, wormKeyPrefix(key))
+}
+
+func (m *wormhole) findLeafIndexLockedWithPrefix(key string, keyPrefix uint64) int {
 	if len(m.leaves) == 1 {
 		return 0
 	}
 	lo, hi := 0, len(m.leaves)
 	for lo < hi {
 		mid := int(uint(lo+hi) >> 1)
-		if m.leaves[mid].anchor > key {
+		l := m.leaves[mid]
+		var anchorPrefix uint64
+		if len(l.prefixes) > 0 {
+			anchorPrefix = l.prefixes[0]
+		} else {
+			anchorPrefix = wormKeyPrefix(l.anchor)
+		}
+		if anchorPrefix > keyPrefix || (anchorPrefix == keyPrefix && l.anchor > key) {
 			hi = mid
 		} else {
 			lo = mid + 1
@@ -779,7 +892,11 @@ func (m *wormhole) leafContainsKeyLocked(l *wormLeaf, key string) bool {
 }
 
 func (m *wormhole) findInLeaf(l *wormLeaf, key string) (int, bool) {
-	return m.findStringInLeaf(l, key)
+	return m.findStringInLeafWithPrefix(l, key, wormKeyPrefix(key))
+}
+
+func (m *wormhole) findInLeafWithPrefix(l *wormLeaf, key string, keyPrefix uint64) (int, bool) {
+	return m.findStringInLeafWithPrefix(l, key, keyPrefix)
 }
 
 func (m *wormhole) findInLeafForRead(l *wormLeaf, key string) (int, bool) {
@@ -851,15 +968,25 @@ func (m *wormhole) splitLeafLocked(idx int, l *wormLeaf) {
 	mid := len(l.items) / 2
 	rightItems := make([]wormRef, len(l.items)-mid, m.leafCap+1)
 	copy(rightItems, l.items[mid:])
+	rightKeys := make([]string, len(l.keys)-mid, m.leafCap+1)
+	copy(rightKeys, l.keys[mid:])
+	rightPrefixes := make([]uint64, len(l.prefixes)-mid, m.leafCap+1)
+	copy(rightPrefixes, l.prefixes[mid:])
+	clear(l.keys[mid:])
+	clear(l.prefixes[mid:])
 	l.items = l.items[:mid]
+	l.keys = l.keys[:mid]
+	l.prefixes = l.prefixes[:mid]
 	m.refreshLeafBounds(l)
 
 	r := &wormLeaf{
-		anchor: m.store.key(rightItems[0]),
-		high:   m.store.key(rightItems[len(rightItems)-1]),
-		items:  rightItems,
-		prev:   l,
-		next:   l.next,
+		anchor:   rightKeys[0],
+		high:     rightKeys[len(rightKeys)-1],
+		items:    rightItems,
+		keys:     rightKeys,
+		prefixes: rightPrefixes,
+		prev:     l,
+		next:     l.next,
 	}
 	if l.next != nil {
 		l.next.prev = r
@@ -877,12 +1004,16 @@ func (m *wormhole) splitLeafLocked(idx int, l *wormLeaf) {
 func (m *wormhole) appendTailLeafLocked(l *wormLeaf, kv KV) wormRef {
 	kvIdx := m.appendKV(kv)
 	r := &wormLeaf{
-		anchor: kv.Key,
-		high:   kv.Key,
-		items:  make([]wormRef, 0, m.leafCap+1),
-		prev:   l,
+		anchor:   kv.Key,
+		high:     kv.Key,
+		items:    make([]wormRef, 0, m.leafCap+1),
+		keys:     make([]string, 0, m.leafCap+1),
+		prefixes: make([]uint64, 0, m.leafCap+1),
+		prev:     l,
 	}
 	r.items = append(r.items, kvIdx)
+	r.keys = append(r.keys, kv.Key)
+	r.prefixes = append(r.prefixes, wormKeyPrefix(kv.Key))
 	l.next = r
 	m.tail = r
 	m.leaves = append(m.leaves, r)
@@ -914,44 +1045,55 @@ func (m *wormhole) unlinkLeafLocked(idx int, l *wormLeaf) {
 	l.next = nil
 	l.anchor = ""
 	l.high = ""
+	clear(l.keys)
+	clear(l.prefixes)
+	l.items = l.items[:0]
+	l.keys = l.keys[:0]
+	l.prefixes = l.prefixes[:0]
 }
 
 func (m *wormhole) findStringInLeaf(l *wormLeaf, key string) (int, bool) {
-	items := l.items
-	lo, hi := 0, len(items)
+	return m.findStringInLeafWithPrefix(l, key, wormKeyPrefix(key))
+}
+
+func (m *wormhole) findStringInLeafWithPrefix(l *wormLeaf, key string, keyPrefix uint64) (int, bool) {
+	keys := l.keys
+	prefixes := l.prefixes
+	lo, hi := 0, len(keys)
 	for lo < hi {
 		mid := int(uint(lo+hi) >> 1)
-		if m.store.key(items[mid]) >= key {
+		if wormKeyAtGE(keys, prefixes, mid, key, keyPrefix) {
 			hi = mid
 		} else {
 			lo = mid + 1
 		}
 	}
-	return lo, lo < len(items) && m.store.key(items[lo]) == key
+	return lo, lo < len(keys) && wormKeyAtEQ(keys, prefixes, lo, key, keyPrefix)
 }
 
 func (m *wormhole) findStringInLeafWithHint(l *wormLeaf, key string) (int, bool) {
-	items := l.items
-	n := len(items)
+	keys := l.keys
+	prefixes := l.prefixes
+	n := len(keys)
 	if n == 0 {
 		return 0, false
 	}
+	keyPrefix := wormKeyPrefix(key)
 
 	hint := int(l.readHint.Load())
 	if uint(hint) < uint(n) {
-		hintKey := m.store.key(items[hint])
-		if hintKey == key {
+		hintPrefix := prefixes[hint]
+		if hintPrefix == keyPrefix && keys[hint] == key {
 			return hint, true
 		}
-		if hintKey < key {
+		if hintPrefix < keyPrefix || (hintPrefix == keyPrefix && keys[hint] < key) {
 			limit := hint + 4
 			if limit >= n {
 				limit = n - 1
 			}
 			for i := hint + 1; i <= limit; i++ {
-				itemKey := m.store.key(items[i])
-				if itemKey >= key {
-					found := itemKey == key
+				if wormKeyAtGE(keys, prefixes, i, key, keyPrefix) {
+					found := wormKeyAtEQ(keys, prefixes, i, key, keyPrefix)
 					if found {
 						l.readHint.Store(int64(i))
 					}
@@ -964,9 +1106,8 @@ func (m *wormhole) findStringInLeafWithHint(l *wormLeaf, key string) (int, bool)
 				limit = 0
 			}
 			for i := hint - 1; i >= limit; i-- {
-				itemKey := m.store.key(items[i])
-				if itemKey <= key {
-					if itemKey == key {
+				if wormKeyAtLE(keys, prefixes, i, key, keyPrefix) {
+					if wormKeyAtEQ(keys, prefixes, i, key, keyPrefix) {
 						l.readHint.Store(int64(i))
 						return i, true
 					}
@@ -983,21 +1124,29 @@ func (m *wormhole) findStringInLeafWithHint(l *wormLeaf, key string) (int, bool)
 	return pos, found
 }
 
-func (l *wormLeaf) putAt(pos int, found bool, kvIdx wormRef) bool {
+func (l *wormLeaf) putAt(pos int, found bool, key string, keyPrefix uint64, kvIdx wormRef) bool {
 	if found {
 		l.items[pos] = kvIdx
+		l.keys[pos] = key
+		l.prefixes[pos] = keyPrefix
 		return true
 	}
 	l.items = append(l.items, wormRef(0))
 	copy(l.items[pos+1:], l.items[pos:])
 	l.items[pos] = kvIdx
+	l.keys = append(l.keys, "")
+	copy(l.keys[pos+1:], l.keys[pos:])
+	l.keys[pos] = key
+	l.prefixes = append(l.prefixes, 0)
+	copy(l.prefixes[pos+1:], l.prefixes[pos:])
+	l.prefixes[pos] = keyPrefix
 	return false
 }
 
 func (m *wormhole) refreshLeafBounds(l *wormLeaf) {
-	if len(l.items) > 0 {
-		l.anchor = m.store.key(l.items[0])
-		l.high = m.store.key(l.items[len(l.items)-1])
+	if len(l.keys) > 0 {
+		l.anchor = l.keys[0]
+		l.high = l.keys[len(l.keys)-1]
 	} else {
 		l.anchor = ""
 		l.high = ""
