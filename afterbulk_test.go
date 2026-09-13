@@ -35,7 +35,7 @@ func generateBenchKeysNseed(n int, seed0 byte) [][]byte {
 // rog linux: about 75K writes/sec.
 func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	//if !testing.Short() {
-	//t.Skip("long test; only run for -short because it is opposites day.")
+	t.Skip("long test; only run for -short because it is opposites day.")
 	//}
 	dir := t.TempDir()
 	// if we are right on the border of 5 seconds, sometimes the
@@ -102,6 +102,10 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 		expectedVtyps[string(keys2[i])] = vtyp
 	}
 
+	runtime.GC() // get up-to-date statistics
+	m0 := &runtime.MemStats{}
+	runtime.ReadMemStats(m0)
+
 	const profile = true
 	if profile {
 		// --- START PROFILING ---
@@ -115,9 +119,6 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-
-	m0 := &runtime.MemStats{}
-	runtime.ReadMemStats(m0)
 
 	t0 := time.Now()
 	batch = db.NewBatch()
@@ -134,12 +135,13 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 		pprof.StopCPUProfile()
 	}
 
-	// do GC, then output HeapAlloc and HeapInuse numbers
-	WriteMemProfiles("profile.memory.afterbulk_new_writes.out")
-
+	runtime.GC() // get up-to-date statistics
 	m2 := &runtime.MemStats{}
 	runtime.ReadMemStats(m2)
 	vv("end new writes: HeapAlloc = %v (diff: %v);  HeapInuse = %v (diff: %v)", formatUint64Under(m2.HeapAlloc), formatUint64Under(m2.HeapAlloc-m0.HeapAlloc), formatUint64Under(m2.HeapInuse), formatUint64Under(m2.HeapInuse-m0.HeapInuse))
+
+	// do GC, then output HeapAlloc and HeapInuse numbers
+	WriteMemProfiles("profile.memory.afterbulk_new_writes.out")
 
 	//_, metrics, err := batch.CommitGetMetrics(true)
 	insertElapsed := time.Since(t0)
@@ -264,6 +266,10 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 		expectedVtyps[string(keys[i])] = vtyp
 	}
 
+	runtime.GC() // get up-to-date statistics
+	m0 := &runtime.MemStats{}
+	runtime.ReadMemStats(m0)
+
 	// --- START PROFILING ---
 	f, err := os.Create("cpu_afterbulk_replacement.out")
 	if err != nil {
@@ -274,9 +280,6 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 	if err := pprof.StartCPUProfile(f); err != nil {
 		t.Fatal(err)
 	}
-
-	m0 := &runtime.MemStats{}
-	runtime.ReadMemStats(m0)
 
 	t0 := time.Now()
 	batch = db.NewBatch()
@@ -293,6 +296,7 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 	batch.Commit(true)
 	pprof.StopCPUProfile()
 
+	runtime.GC() // get up-to-date statistics
 	m2 := &runtime.MemStats{}
 	runtime.ReadMemStats(m2)
 	vv("end replacements: HeapAlloc = %v (diff: %v);  HeapInuse = %v (diff: %v)", formatUint64Under(m2.HeapAlloc), formatUint64Under(m2.HeapAlloc-m0.HeapAlloc), formatUint64Under(m2.HeapInuse), formatUint64Under(m2.HeapInuse-m0.HeapInuse))
@@ -350,21 +354,3 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 		return nil
 	})
 }
-
-// either: default wormhole:
-/*
-go test -v -run After_Bulk
-=== RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB
-
-afterbulk_test.go:136 [pid 982646] 2026-09-13 03:24:58.735770511 +0000 UTC end new writes: HeapAlloc = 3_580_011_832 (diff: 689_407_920);  HeapInuse = 3_647_299_584 (diff: 732_471_296)
-
-afterbulk_test.go:146 [pid 982646] 2026-09-13 03:24:58.897427917 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 274499.3524071668 writes/sec
-
-keystable:
-
-afterbulk_test.go:139 [pid 984703] 2026-09-13 03:28:08.116100371 +0000 UTC end new writes: HeapAlloc = 4_553_853_288 (diff: 1_914_601_392);  HeapInuse = 4_626_169_856 (diff: 1_966_694_400)
-
-afterbulk_test.go:149 [pid 984703] 2026-09-13 03:28:08.343115056 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 541560.4400940551 writes/sec
-
-
-*/
