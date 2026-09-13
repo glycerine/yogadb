@@ -51,7 +51,7 @@ func BenchmarkDeleteRange(b *testing.B) {
 						batch.Set(string(keys[k]), vals[k], 0)
 					}
 					batch.Commit(false)
-
+					db.AllowReads()
 					n, _, err := db.DeleteRange(true, string(startKey), string(endKey), true, true)
 					if err != nil {
 						b.Fatal(err)
@@ -90,6 +90,7 @@ func BenchmarkBatchPutDeleteCycle(b *testing.B) {
 				if _, err := batch.Commit(false); err != nil {
 					b.Fatal(err)
 				}
+				db.AllowReads()
 
 				// Delete first half
 				startKey := fmt.Sprintf("c%08d_%08d", i, 0)
@@ -316,6 +317,7 @@ func BenchmarkYogaDB_Put(b *testing.B) {
 		keys[i] = k
 	}
 	logicalBytes := int64(b.N) * int64(8+len(value))
+	db.AllowReads()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
