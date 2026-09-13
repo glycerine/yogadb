@@ -35,7 +35,7 @@ func generateBenchKeysNseed(n int, seed0 byte) [][]byte {
 // rog linux: about 75K writes/sec.
 func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	//if !testing.Short() {
-	t.Skip("long test; only run for -short because it is opposites day.")
+	//t.Skip("long test; only run for -short because it is opposites day.")
 	//}
 	dir := t.TempDir()
 	// if we are right on the border of 5 seconds, sometimes the
@@ -355,7 +355,21 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 	})
 }
 
-/* wormhole after prefix addition, and more optimization (no lazy hlc dedup yet)
+/* wormhole after prefix addition, and more optimization (no lazy hlc dedup yet),
+
+with point map maintained always, is 20% slower.
+but we are ready for mixed reads/writes since we are after AllowReads().
+
+go test -v -run After_Bulk
+=== RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB
+
+db.go:1649 [pid 1173462] 2026-09-13 08:23:18.568425332 +0000 UTC using cfg.MemtableKind = wormhole
+
+afterbulk_test.go:141 [pid 1173462] 2026-09-13 08:23:29.900245355 +0000 UTC end new writes: HeapAlloc = 2_550_158_848 (diff: 317_276_376);  HeapInuse = 2_691_047_424 (diff: 311_443_456)
+
+afterbulk_test.go:152 [pid 1173462] 2026-09-13 08:23:30.056351702 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 464712.0048064921 writes/sec
+--------
+without point map maintained:
 
 go test -v -run After_Bulk
 === RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB
