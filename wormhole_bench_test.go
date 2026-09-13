@@ -331,3 +331,26 @@ func wormBenchmarkKeyStableKeys(n int) []string {
 	}
 	return keys
 }
+
+/*
+go test -v -run=xxx -bench BenchmarkKeyStable_Mixed_ReadsWrites
+goos: linux
+goarch: amd64
+pkg: github.com/glycerine/yogadb
+cpu: AMD Ryzen Threadripper 3960X 24-Core Processor
+BenchmarkKeyStable_Mixed_ReadsWrites
+BenchmarkKeyStable_Mixed_ReadsWrites-48    	 6358330	       164.6 ns/op	     140 B/op	       0 allocs/op
+PASS
+ok  	github.com/glycerine/yogadb	1.585s
+
+go test -v -run=xxx -bench BenchmarkWormhole_Mixed_ReadsWrites
+goos: linux
+goarch: amd64
+pkg: github.com/glycerine/yogadb
+cpu: AMD Ryzen Threadripper 3960X 24-Core Processor
+BenchmarkWormhole_Mixed_ReadsWrites
+BenchmarkWormhole_Mixed_ReadsWrites-48    	 8725756	       126.8 ns/op	      23 B/op	       0 allocs/op
+PASS
+ok  	github.com/glycerine/yogadb	1.921s
+
+*/
