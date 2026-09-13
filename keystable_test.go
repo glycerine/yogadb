@@ -112,7 +112,7 @@ func TestKeyStableAppendHelpersAndHashChains(t *testing.T) {
 	s.headmap = nil
 	h := xxhash.Sum64String("nil-map")
 	nilMapIdx := s.appendKeyString("nil-map", h)
-	if got, found := s.findStableByString("nil-map", h); !found || got != nilMapIdx {
+	if got, found := s.findSlotByString("nil-map", h); !found || got != nilMapIdx {
 		t.Fatalf("appendKeyString with nil headmap find = (%d, %v), want (%d, true)", got, found, nilMapIdx)
 	}
 
@@ -128,28 +128,28 @@ func TestKeyStableAppendHelpersAndHashChains(t *testing.T) {
 		t.Fatal("append helpers should mark sortedDirty")
 	}
 	h = xxhash.Sum64String("bytes")
-	if got, found := s.findStableByBytes([]byte("bytes"), h); !found || got != bytesIdx {
-		t.Fatalf("findStableByBytes(bytes) = (%d, %v), want (%d, true)", got, found, bytesIdx)
+	if got, found := s.findSlotByBytes([]byte("bytes"), h); !found || got != bytesIdx {
+		t.Fatalf("findSlotByBytes(bytes) = (%d, %v), want (%d, true)", got, found, bytesIdx)
 	}
 	h = xxhash.Sum64String("string")
-	if got, found := s.findStableByString("string", h); !found || got != stringIdx {
-		t.Fatalf("findStableByString(string) = (%d, %v), want (%d, true)", got, found, stringIdx)
+	if got, found := s.findSlotByString("string", h); !found || got != stringIdx {
+		t.Fatalf("findSlotByString(string) = (%d, %v), want (%d, true)", got, found, stringIdx)
 	}
 
 	h = xxhash.Sum64String("dup")
 	tail := s.appendKeyString("dup", h)
 	head := s.appendKeyString("dup", h)
-	if got, found := s.findStableByString("dup", h); !found || got != head {
-		t.Fatalf("findStableByString(dup) = (%d, %v), want newest head %d", got, found, head)
+	if got, found := s.findSlotByString("dup", h); !found || got != head {
+		t.Fatalf("findSlotByString(dup) = (%d, %v), want newest head %d", got, found, head)
 	}
 
-	s.removeStableFromHeadmap(tail)
-	if got, found := s.findStableByString("dup", h); !found || got != head {
-		t.Fatalf("after tail removal findStableByString(dup) = (%d, %v), want head %d", got, found, head)
+	s.removeSlotFromHeadmap(tail)
+	if got, found := s.findSlotByString("dup", h); !found || got != head {
+		t.Fatalf("after tail removal findSlotByString(dup) = (%d, %v), want head %d", got, found, head)
 	}
 
-	s.removeStableFromHeadmap(head)
-	if _, found := s.findStableByString("dup", h); found {
+	s.removeSlotFromHeadmap(head)
+	if _, found := s.findSlotByString("dup", h); found {
 		t.Fatal("after removing both duplicate chain entries, dup should not be found")
 	}
 }
@@ -166,11 +166,11 @@ func TestKeyStableEnsureHeadmapRebuildSkipsDeletedKeys(t *testing.T) {
 	s.nextSameHash = s.nextSameHash[:0]
 	ha := xxhash.Sum64String("a")
 	hb := xxhash.Sum64String("b")
-	if got, found := s.findStableByBytes([]byte("a"), ha); found {
+	if got, found := s.findSlotByBytes([]byte("a"), ha); found {
 		t.Fatalf("rebuilt headmap found deleted key a at stable index %d", got)
 	}
-	if got, found := s.findStableByString("b", hb); !found || got != bIdx {
-		t.Fatalf("rebuilt headmap findStableByString(b) = (%d, %v), want (%d, true)", got, found, bIdx)
+	if got, found := s.findSlotByString("b", hb); !found || got != bIdx {
+		t.Fatalf("rebuilt headmap findSlotByString(b) = (%d, %v), want (%d, true)", got, found, bIdx)
 	}
 
 	newA := s.addKey([]byte("a"))
@@ -660,8 +660,8 @@ func BenchmarkKeyStableAscendOwnedKeys(b *testing.B) {
 func keyStableSortedKeys(s *keyStable) []string {
 	keys := make([]string, len(s.sorted))
 	s.ensureSorted()
-	for i, stableIdx := range s.sorted {
-		keys[i] = string(s.at(stableIdx))
+	for i, slotIdx := range s.sorted {
+		keys[i] = string(s.at(slotIdx))
 	}
 	return keys
 }

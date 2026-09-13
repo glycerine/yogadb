@@ -104,46 +104,46 @@ func (s *keyStable) clear(x bool) {
 }
 
 // test-only use by keystable_test.go, so does not need to lock mu.
-func (s *keyStable) addKey(key []byte) (whereInStable int) {
+func (s *keyStable) addKey(key []byte) (slotIdx int) {
 	h := xxhash.Sum64(key)
-	whereInStable, found := s.findStableByBytes(key, h)
+	slotIdx, found := s.findSlotByBytes(key, h)
 	if found {
-		return whereInStable
+		return slotIdx
 	}
 	return s.appendKeyBytes(key, h)
 }
 
 // test-only, no mu lock needed.
-func (s *keyStable) appendKeyBytes(key []byte, h uint64) (whereInStable int) {
-	whereInStable = s.appendKeyCommon(h)
-	s.kvs[whereInStable].Key = string(key)
-	return whereInStable
+func (s *keyStable) appendKeyBytes(key []byte, h uint64) (slotIdx int) {
+	slotIdx = s.appendKeyCommon(h)
+	s.kvs[slotIdx].Key = string(key)
+	return slotIdx
 }
 
 // internal: called by set(), mu or x must hold already.
-func (s *keyStable) appendKeyString(key string, h uint64) (whereInStable int) {
-	whereInStable = s.appendKeyCommon(h)
-	s.kvs[whereInStable].Key = key
-	return whereInStable
+func (s *keyStable) appendKeyString(key string, h uint64) (slotIdx int) {
+	slotIdx = s.appendKeyCommon(h)
+	s.kvs[slotIdx].Key = key
+	return slotIdx
 }
 
 // internal: called by appendKeyString() which is called by set(), mu or x must hold already.
-func (s *keyStable) appendKeyCommon(h uint64) (whereInStable int) {
+func (s *keyStable) appendKeyCommon(h uint64) (slotIdx int) {
 	if s.headmap == nil {
 		s.ensureHeadmap()
 	}
-	whereInStable = len(s.kvs)
+	slotIdx = len(s.kvs)
 	s.kvs = append(s.kvs, KV{})
 	s.nextSameHash = append(s.nextSameHash, s.headmap[h]-1)
 	// so nextSameHash of -1 means: end of chain; no earlier value,
 	// since headmap[h] gives 0 for no h present.
 	//
 	// but if there was an earlier headmap[h], we overwrite it now in headmap:
-	s.headmap[h] = whereInStable + 1
+	s.headmap[h] = slotIdx + 1
 
-	s.sorted = append(s.sorted, whereInStable)
+	s.sorted = append(s.sorted, slotIdx)
 	s.sortedDirty = true
-	return whereInStable
+	return slotIdx
 }
 
 // internal: mu or x hold is already handled by our caller.
@@ -205,43 +205,43 @@ func (s *keyStable) ensureHeadmap() {
 	for range s.kvs {
 		s.nextSameHash = append(s.nextSameHash, -1)
 	}
-	for _, stableIdx := range s.sorted {
-		h := xxhash.Sum64String(s.at(stableIdx))
+	for _, slotIdx := range s.sorted {
+		h := xxhash.Sum64String(s.at(slotIdx))
 		// becaue the value 0 back from headmap means not present, we undo the +1 bump
 		// (below) by subtracting 1 after pulling from headmap
-		s.nextSameHash[stableIdx] = s.headmap[h] - 1
-		s.headmap[h] = stableIdx + 1
+		s.nextSameHash[slotIdx] = s.headmap[h] - 1
+		s.headmap[h] = slotIdx + 1
 	}
 }
 
 // internal
-func (s *keyStable) findStableByBytes(key []byte, h uint64) (stableIdx int, found bool) {
+func (s *keyStable) findSlotByBytes(key []byte, h uint64) (slotIdx int, found bool) {
 	s.ensureHeadmap()
-	for stableIdx = s.headmap[h] - 1; stableIdx >= 0; stableIdx = s.nextSameHash[stableIdx] {
-		if compareBytesString(key, s.at(stableIdx)) == 0 {
-			return stableIdx, true
+	for slotIdx = s.headmap[h] - 1; slotIdx >= 0; slotIdx = s.nextSameHash[slotIdx] {
+		if compareBytesString(key, s.at(slotIdx)) == 0 {
+			return slotIdx, true
 		}
 	}
 	return 0, false
 }
 
 // internal
-func (s *keyStable) findStableByString(key string, h uint64) (stableIdx int, found bool) {
+func (s *keyStable) findSlotByString(key string, h uint64) (slotIdx int, found bool) {
 	s.ensureHeadmap()
-	for stableIdx = s.headmap[h] - 1; stableIdx >= 0; stableIdx = s.nextSameHash[stableIdx] {
-		if key == s.at(stableIdx) {
-			return stableIdx, true
+	for slotIdx = s.headmap[h] - 1; slotIdx >= 0; slotIdx = s.nextSameHash[slotIdx] {
+		if key == s.at(slotIdx) {
+			return slotIdx, true
 		}
 	}
 	return 0, false
 }
 
 // internal
-func (s *keyStable) removeStableFromHeadmap(stableIdx int) {
-	h := xxhash.Sum64String(s.at(stableIdx))
+func (s *keyStable) removeSlotFromHeadmap(slotIdx int) {
+	h := xxhash.Sum64String(s.at(slotIdx))
 	prev := -1
 	for cur := s.headmap[h] - 1; cur >= 0; cur = s.nextSameHash[cur] {
-		if cur == stableIdx {
+		if cur == slotIdx {
 			if prev < 0 {
 				s.headmap[h] = s.nextSameHash[cur] + 1
 				if s.headmap[h] == 0 {
@@ -324,8 +324,8 @@ func compareStringBytes(a string, b []byte) int {
 }
 
 // internal
-func (s *keyStable) kvAt(stableIdx int) KV {
-	kv := s.kvs[stableIdx]
+func (s *keyStable) kvAt(slotIdx int) KV {
+	kv := s.kvs[slotIdx]
 	return kv
 }
 
@@ -338,22 +338,22 @@ func (s *keyStable) set(kv KV, x bool) (old KV, replaced bool) {
 		defer s.mu.Unlock()
 	}
 
-	stableIdx, found := s.findStableByString(kv.Key, h)
-	//vv("set(): kv.Key='%v' was found='%v'; stableIdx=%v", kv.Key, found, stableIdx)
+	slotIdx, found := s.findSlotByString(kv.Key, h)
+	//vv("set(): kv.Key='%v' was found='%v'; slotIdx=%v", kv.Key, found, slotIdx)
 	if found {
-		old = s.kvAt(stableIdx)
-		s.kvs[stableIdx] = kv
+		old = s.kvAt(slotIdx)
+		s.kvs[slotIdx] = kv
 		return old, true
 	}
-	stableIdx = s.appendKeyString(kv.Key, h)
-	s.kvs[stableIdx] = kv
+	slotIdx = s.appendKeyString(kv.Key, h)
+	s.kvs[slotIdx] = kv
 	return KV{}, false
 }
 
 // external
 func (s *keyStable) get(key string, x bool) (kv KV, found bool) {
 
-	var stableIdx int
+	var slotIdx int
 	h := xxhash.Sum64String(key)
 
 	if !x {
@@ -361,11 +361,11 @@ func (s *keyStable) get(key string, x bool) (kv KV, found bool) {
 		defer s.mu.Unlock()
 	}
 
-	stableIdx, found = s.findStableByString(key, h)
+	slotIdx, found = s.findSlotByString(key, h)
 	if !found {
 		return
 	}
-	return s.kvAt(stableIdx), true
+	return s.kvAt(slotIdx), true
 }
 
 // external
@@ -463,8 +463,8 @@ func (s *keyStable) Scan(x bool, iter func(KV) bool) {
 		defer s.mu.Unlock()
 	}
 	s.ensureSorted()
-	for _, stableIdx := range s.sorted {
-		if !iter(s.kvAt(stableIdx)) {
+	for _, slotIdx := range s.sorted {
+		if !iter(s.kvAt(slotIdx)) {
 			return
 		}
 	}
@@ -494,7 +494,7 @@ func (s *keyStable) delKey(needle []byte) (found bool) {
 		return
 	}
 	deleted := s.sorted[w]
-	s.removeStableFromHeadmap(deleted)
+	s.removeSlotFromHeadmap(deleted)
 	s.kvs[deleted] = KV{}
 
 	last := len(s.sorted) - 1
