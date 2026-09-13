@@ -19,13 +19,8 @@ import (
 // You can also read it as: "key's table".
 //
 // More importantly, the point is _stable_ storage:
-// The array index stable[i] is a stable and never changing
-// integer reference to the key string (stable for the lifetime
-// of this memtable generation, before it is cleared).
-//
-// We do a single key copy, and we avoid making
-// work for the garbage collector, because there are
-// almost no pointers.
+// The stable indexes never change for the lifetime of this memtable
+// generation, before it is cleared.
 //
 // The benefit: we improved write throughput significantly in the
 // afterbulk_test.go benchmarks of newly written key-value pairs;
@@ -37,7 +32,7 @@ import (
 // but we took inspiration from Entity-Component-System (ECS)
 // designs and just use integer indexing to avoid alot of pointers.
 //
-// INVAR: if i is the index into stable for a given key, s.keys[i] is that key.
+// INVAR: if i is the index into stable for a given key, s.kvs[i].Key is that key.
 //
 // We no longer inspect or analyze or change the KV that we store.
 // We are not responsible for the lifetime of the KV.Key or KV.Value
@@ -54,10 +49,8 @@ import (
 // for deletes or tombstones here. memtable.go only does
 // set(), get(), and clear().
 type keyStable struct {
-	keys []string // key string headers, sharing backing bytes with the inserted KV.Key.
-
 	// stable store. only appended to, or overwritten.
-	stable []int // stable key index into keys[].
+	stable []int // stable key index into kvs[].
 	sorted []int // sorted indexes of stable in ascending key order.
 
 	kvs          []KV  // parallel to stable
@@ -83,7 +76,6 @@ func makeKeyStable(n int) keyStable {
 		n = 256 << 10
 	}
 	return keyStable{
-		keys:         make([]string, 0, n),
 		stable:       make([]int, 0, n),
 		nextSameHash: make([]int, 0, n),
 		sorted:       make([]int, 0, n),
@@ -106,8 +98,6 @@ func (s *keyStable) clear(x bool) {
 	for i := range s.kvs {
 		s.kvs[i] = KV{}
 	}
-	clear(s.keys)
-	s.keys = s.keys[:0]
 	s.stable = s.stable[:0]
 	s.sorted = s.sorted[:0]
 	s.kvs = s.kvs[:0]
@@ -129,14 +119,14 @@ func (s *keyStable) addKey(key []byte) (whereInStable int) {
 // test-only, no mu lock needed.
 func (s *keyStable) appendKeyBytes(key []byte, h uint64) (whereInStable int) {
 	whereInStable = s.appendKeyCommon(h)
-	s.keys = append(s.keys, string(key))
+	s.kvs[whereInStable].Key = string(key)
 	return whereInStable
 }
 
 // internal: called by set(), mu or x must hold already.
 func (s *keyStable) appendKeyString(key string, h uint64) (whereInStable int) {
 	whereInStable = s.appendKeyCommon(h)
-	s.keys = append(s.keys, key)
+	s.kvs[whereInStable].Key = key
 	return whereInStable
 }
 
@@ -146,7 +136,7 @@ func (s *keyStable) appendKeyCommon(h uint64) (whereInStable int) {
 		s.ensureHeadmap()
 	}
 	whereInStable = len(s.stable)
-	s.stable = append(s.stable, len(s.keys))
+	s.stable = append(s.stable, whereInStable)
 	s.kvs = append(s.kvs, KV{})
 	s.nextSameHash = append(s.nextSameHash, s.headmap[h]-1)
 	// so nextSameHash of -1 means: end of chain; no earlier value,
@@ -170,7 +160,7 @@ func (s *keyStable) Less(i, j int) bool {
 
 // internal
 func (s *keyStable) at(i int) string {
-	return s.keys[s.stable[i]]
+	return s.kvs[s.stable[i]].Key
 }
 
 // internal

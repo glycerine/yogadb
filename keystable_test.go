@@ -34,14 +34,14 @@ func TestKeyStableAddFindAndSortedOrder(t *testing.T) {
 	}
 	assertKeyStableMatchesModel(t, s, model)
 
-	stableBefore, keysBefore, sortedBefore := len(s.stable), len(s.keys), len(s.sorted)
+	stableBefore, kvsBefore, sortedBefore := len(s.stable), len(s.kvs), len(s.sorted)
 	dup := s.addKey([]byte("charlie"))
 	if dup != model["charlie"] {
 		t.Fatalf("duplicate add returned stable index %d, want %d", dup, model["charlie"])
 	}
-	if len(s.stable) != stableBefore || len(s.keys) != keysBefore || len(s.sorted) != sortedBefore {
-		t.Fatalf("duplicate add changed lengths: stable=%d/%d keys=%d/%d sorted=%d/%d",
-			len(s.stable), stableBefore, len(s.keys), keysBefore, len(s.sorted), sortedBefore)
+	if len(s.stable) != stableBefore || len(s.kvs) != kvsBefore || len(s.sorted) != sortedBefore {
+		t.Fatalf("duplicate add changed lengths: stable=%d/%d kvs=%d/%d sorted=%d/%d",
+			len(s.stable), stableBefore, len(s.kvs), kvsBefore, len(s.sorted), sortedBefore)
 	}
 	assertKeyStableMatchesModel(t, s, model)
 
@@ -395,9 +395,9 @@ func TestKeyStableClearReusesTable(t *testing.T) {
 	s.delKey([]byte("a"))
 	const x = true
 	s.clear(x)
-	if len(s.keys) != 0 || len(s.stable) != 0 || len(s.sorted) != 0 {
-		t.Fatalf("clear left lengths keys=%d stable=%d sorted=%v",
-			len(s.keys), len(s.stable), len(s.sorted))
+	if len(s.kvs) != 0 || len(s.stable) != 0 || len(s.sorted) != 0 {
+		t.Fatalf("clear left lengths kvs=%d stable=%d sorted=%v",
+			len(s.kvs), len(s.stable), len(s.sorted))
 	}
 
 	idx := s.addKey([]byte("fresh"))
