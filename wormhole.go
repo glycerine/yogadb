@@ -28,7 +28,10 @@ type wormConfig struct {
 // un-recognizable and completely different. But still, its a good name.
 //
 // wormhole now benchmarks better than the alternative memtables we tried:
-// tidwall's Btree, pebble's skiplist, our own keyStable arena.
+// tidwall's Btree, pebble's skiplist. It is still 20% slower than our
+// own keyStable arena at after-AllowReads() writes, but much better
+// at mixed reads and writes and that post-bulk-load environment is
+// where mixed reads and writes will happen.
 type wormhole struct {
 	mu        sync.RWMutex
 	leaves    []*wormLeaf
