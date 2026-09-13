@@ -101,16 +101,17 @@ import (
 // for deletes or tombstones here. memtable.go only does
 // set(), get(), and clear(); and ascend/descend ranges.
 type keyStable struct {
-	// Store is only appended to, or overwritten.
+
+	// kvs is only appended to, or overwritten.
+	kvs          []KV     // stable slot storage.
+	hashes       []uint64 // parallel to kvs. hashes[i] holds the hash of kvs[i].Key
+	nextSameHash []int    // collision chain for headmap; parallel to kvs.
+
+	// headmap is a hashmap. We Hash bucket -> index into kvs.
+	// Stored as slot+1 so zero means empty.
+	headmap []int // we manage the growth of this hashmap ourselves.
+
 	sorted []int // indexes of kvs in ascending key order.
-
-	kvs          []KV // stable slot storage.
-	hashes       []uint64
-	nextSameHash []int // collision chain for headmap; parallel to kvs.
-
-	// Hash bucket -> index in kvs. Stored as slot+1 so zero means empty.
-	headmap     []int // we manage the growth of this hashmap ourselves.
-	sortedDirty bool
 
 	// get() calls can force sorts which are mutation, and
 	// get() can be concurrent from multiple readers at once. so protect
@@ -118,6 +119,9 @@ type keyStable struct {
 	// exclusive db access; that the db.topMutRW is already write locked
 	// by the caller. In this case, we can skip locking mu.
 	mu sync.Mutex
+
+	// does the sorted slice need sorting?
+	sortedDirty bool // at end to avoid messing with other member's alignment
 }
 
 // A sync.Mutex must not be copied after first use, but we
