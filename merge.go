@@ -751,7 +751,7 @@ func (db *FlexDB) MergeFromWithOptions(src *FlexDB, opts MergeOptions) (*MergeSt
 		if err != nil {
 			return KV{}, err
 		}
-		vp, _, err := db.vlog.appendDedupAndSync(val, hlc, db.lookupOldVPtr(kv.Key, x), db.cfg.OmitMemWalFsync)
+		vp, _, err := db.vlog.appendDedupAndSync(val, hlc, db.lookupOldVPtr(kv.Key, x), db.cfg.OmitMemWalFsync, x)
 		if err != nil {
 			return KV{}, err
 		}

@@ -1129,7 +1129,7 @@ func (it *Iter) Seek(target string) {
 }
 
 // seekLE positions the iterator at the last key <= target, with backward prefetch.
-func (it *Iter) seekLE(target string, strict bool, x bool) {
+func (it *Iter) seekLE(target string, strict bool) {
 	if it.closed {
 		return
 	}
@@ -1149,7 +1149,7 @@ func (it *Iter) seekLE(target string, strict bool, x bool) {
 		return
 	}
 
-	it.pKV, it.valid = it.mergedSeekLE(target, strict, x)
+	it.pKV, it.valid = it.mergedSeekLE(target, strict, it.x)
 	it.dir = -1
 	it.valueNeedsCopy = false
 	it.valueResolved = true

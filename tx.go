@@ -102,7 +102,7 @@ func txFind(tx *txBase, smod SearchModifier, key string, x bool) (kvc *KVcloser,
 	smod &^= LAZY_SMALL
 
 	var found bool
-	found, exact = findSeekIter(it, smod, key, x)
+	found, exact = findSeekIter(it, smod, key)
 	if found {
 		zc := findBuildKV(it)
 		resultKey := strings.Clone(zc.Key)
@@ -112,7 +112,7 @@ func txFind(tx *txBase, smod SearchModifier, key string, x bool) (kvc *KVcloser,
 		it.Close()
 
 		if skipValues {
-			kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: tx.db, Vtyp: vtyp, lockHeld: true}
+			kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: tx.db, Vtyp: vtyp, lockHeld: true, x: x}
 			return
 		}
 
@@ -126,6 +126,7 @@ func txFind(tx *txBase, smod SearchModifier, key string, x bool) (kvc *KVcloser,
 				kvc.Key = resultKey
 				kvc.Vtyp = vtyp
 				kvc.lockHeld = true
+				kvc.x = x
 				return
 			}
 		}
@@ -136,7 +137,7 @@ func txFind(tx *txBase, smod SearchModifier, key string, x bool) (kvc *KVcloser,
 		if !zc.HasVPtr() && len(zc.Value) > 0 {
 			owned.Value = append([]byte{}, zc.Value...)
 		}
-		kvc = &KVcloser{KV: owned, db: tx.db, Vtyp: vtyp, lockHeld: true}
+		kvc = &KVcloser{KV: owned, db: tx.db, Vtyp: vtyp, lockHeld: true, x: x}
 
 		// Auto-fetch large value unless LAZY_LARGE was requested.
 		if !lazyLarge && kvc.HasVPtr() {
@@ -174,7 +175,7 @@ func txFindIt(tx *txBase, smod SearchModifier, key string, x bool) (kvc *KVclose
 	smod &^= LAZY_SMALL
 
 	var found bool
-	found, exact = findSeekIter(it, smod, key, x)
+	found, exact = findSeekIter(it, smod, key)
 	if !found {
 		return
 	}
@@ -184,7 +185,7 @@ func txFindIt(tx *txBase, smod SearchModifier, key string, x bool) (kvc *KVclose
 	valueFromCache := it.valueNeedsCopy
 
 	if skipValues {
-		kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: tx.db, Vtyp: vtyp, lockHeld: true}
+		kvc = &KVcloser{KV: KV{Key: resultKey, Hlc: zc.Hlc}, db: tx.db, Vtyp: vtyp, lockHeld: true, x: x}
 		return
 	}
 
@@ -198,6 +199,7 @@ func txFindIt(tx *txBase, smod SearchModifier, key string, x bool) (kvc *KVclose
 			kvc.Key = resultKey
 			kvc.Vtyp = vtyp
 			kvc.lockHeld = true
+			kvc.x = x
 			return
 		}
 	}
@@ -208,7 +210,7 @@ func txFindIt(tx *txBase, smod SearchModifier, key string, x bool) (kvc *KVclose
 	if !zc.HasVPtr() && len(zc.Value) > 0 {
 		owned.Value = append([]byte{}, zc.Value...)
 	}
-	kvc = &KVcloser{KV: owned, db: tx.db, Vtyp: vtyp, lockHeld: true}
+	kvc = &KVcloser{KV: owned, db: tx.db, Vtyp: vtyp, lockHeld: true, x: x}
 
 	// Auto-fetch large value unless LAZY_LARGE was requested.
 	if !lazyLarge && kvc.HasVPtr() {
@@ -593,7 +595,7 @@ func (tx *WriteTx) Descend(pivot string, callback func(key string, value []byte,
 	if pivot == "" {
 		it.SeekLast()
 	} else {
-		it.seekLE(pivot, false, x)
+		it.seekLE(pivot, false)
 	}
 	for it.Valid() {
 		if !callback(it.Key(), it.iterResolvedValue(), it.Vtyp(), it.Hlc()) {
@@ -639,7 +641,7 @@ func (tx *WriteTx) DescendRange(lessOrEqual, greaterThan string, callback func(k
 	if lessOrEqual == "" {
 		it.SeekLast()
 	} else {
-		it.seekLE(lessOrEqual, false, x)
+		it.seekLE(lessOrEqual, false)
 	}
 	for it.Valid() {
 		if greaterThan != "" && it.Key() <= greaterThan {
@@ -747,7 +749,7 @@ func (roTx *ReadOnlyTx) Descend(pivot string, callback func(key string, value []
 	if pivot == "" {
 		it.SeekLast()
 	} else {
-		it.seekLE(pivot, false, x)
+		it.seekLE(pivot, false)
 	}
 	for it.Valid() {
 		if !callback(it.Key(), it.iterResolvedValue(), it.Vtyp(), it.Hlc()) {
@@ -785,7 +787,7 @@ func (roTx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, callback f
 	if lessOrEqual == "" {
 		it.SeekLast()
 	} else {
-		it.seekLE(lessOrEqual, false, x)
+		it.seekLE(lessOrEqual, false)
 	}
 	for it.Valid() {
 		if greaterThan != "" && it.Key() <= greaterThan {

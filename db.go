@@ -443,7 +443,7 @@ func (s *Batch) commitMaybeMetrics(doFsync bool, wantMetrics bool) (interv HLCIn
 		if len(largeValues) > 0 {
 			s.allValuesAliasKeys = false
 			// Batch write + single fsync with blake3 dedup.
-			ptrs, _, err := db.vlog.appendBatchDedupAndSync(largeValues, curHLC, oldVPs, db.cfg.OmitMemWalFsync)
+			ptrs, _, err := db.vlog.appendBatchDedupAndSync(largeValues, curHLC, oldVPs, db.cfg.OmitMemWalFsync, x)
 			if err != nil {
 				return HLCInterval{}, nil, fmt.Errorf("flexdb: vlog batch append: %w", err)
 			}
@@ -3534,7 +3534,7 @@ func (db *FlexDB) writeLockHeldPutWithHook(beforeWrite func() error, key string,
 		// same blake3 checksum, we reuse the old VPtr and skip the VLOG write.
 		// See "HLC STALENESS IN VLOG HEADERS" in vlog.go.
 		oldVP := db.lookupOldVPtr(key, x)
-		vp, _, err := db.vlog.appendDedupAndSync(value, hlcVal, oldVP, db.cfg.OmitMemWalFsync)
+		vp, _, err := db.vlog.appendDedupAndSync(value, hlcVal, oldVP, db.cfg.OmitMemWalFsync, x)
 		if err != nil {
 			return 0, fmt.Errorf("flexdb: vlog append: %w", err)
 		}
@@ -3660,7 +3660,7 @@ const (
 // findSeekIter positions it according to smod and key.
 // Returns (found, exact). On return, it is either Valid
 // (found=true) or invalid (found=false).
-func findSeekIter(it *Iter, smod SearchModifier, key string, x bool) (found, exact bool) {
+func findSeekIter(it *Iter, smod SearchModifier, key string) (found, exact bool) {
 	switch smod {
 	case GTE:
 		it.Seek(key)
@@ -3670,9 +3670,9 @@ func findSeekIter(it *Iter, smod SearchModifier, key string, x bool) (found, exa
 			it.Next()
 		}
 	case LTE:
-		it.seekLE(key, false, x)
+		it.seekLE(key, false)
 	case LT:
-		it.seekLE(key, true, x)
+		it.seekLE(key, true)
 	case Exact:
 		it.Seek(key)
 		if it.Valid() && it.Key() != key {
@@ -3791,7 +3791,7 @@ func (db *FlexDB) Find(smod SearchModifier, key string) (kvc *KVcloser, exact bo
 	smod &^= LAZY_SMALL // strip LAZY_SMALL before passing to findSeekIter
 
 	var found bool
-	found, exact = findSeekIter(it, smod, key, x)
+	found, exact = findSeekIter(it, smod, key)
 	if found {
 		zc := findBuildKV(it)
 		resultKey := strings.Clone(zc.Key)
@@ -3855,6 +3855,7 @@ type KVcloser struct {
 	entry     *intervalCacheEntry     // nil when no pin needed
 	db        *FlexDB
 	lockHeld  bool
+	x         bool // true iff lockHeld is a topMutRW write lock.
 }
 
 // Close must be called when done with the non-nil *KVcloser
@@ -3915,12 +3916,11 @@ func (s *KVcloser) Fetch() error {
 	if !s.HasVPtr() {
 		return nil // inline value already present
 	}
-	const x = false
 	var val []byte
 	var vtyp uint64
 	var err error
 	if s.lockHeld {
-		val, vtyp, _, err = s.db.lockHeldFetchLarge(&s.KV, x)
+		val, vtyp, _, err = s.db.lockHeldFetchLarge(&s.KV, s.x)
 	} else {
 		val, vtyp, _, err = s.db.FetchLarge(&s.KV)
 	}

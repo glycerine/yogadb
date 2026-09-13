@@ -187,9 +187,16 @@ func appendVLOGEntryToBuffer(buf []byte, value []byte, hlc HLC, b3 [32]byte) []b
 
 // appendAndSync writes a value to the VLOG, fsyncs, and returns a VPtr.
 // This ensures the value is durable before the caller writes the VPtr to WAL.
-func (vl *valueLog) appendAndSync(value []byte, hlc HLC, skipSync bool) (VPtr, error) {
-	vl.mu.Lock()
-	defer vl.mu.Unlock()
+// If x is true, the caller holds exclusive database access and vl.mu is elided.
+func (vl *valueLog) appendAndSync(value []byte, hlc HLC, skipSync bool, x bool) (VPtr, error) {
+	if !x {
+		vl.mu.Lock()
+		defer vl.mu.Unlock()
+	}
+	return vl.appendAndSyncLocked(value, hlc, skipSync)
+}
+
+func (vl *valueLog) appendAndSyncLocked(value []byte, hlc HLC, skipSync bool) (VPtr, error) {
 	vp, err := vl.appendLocked(value, hlc)
 	if err != nil {
 		return vp, err
@@ -213,12 +220,18 @@ func (vl *valueLog) appendAndSync(value []byte, hlc HLC, skipSync bool) (VPtr, e
 // See "HLC STALENESS IN VLOG HEADERS" comment at the top of this file:
 // when dedup reuses an old VPtr, the VLOG header HLC becomes stale.
 // The authoritative HLC lives in KV.SLOT_BLOCKS / memtable / WAL.
-func (vl *valueLog) appendDedupAndSync(value []byte, hlc HLC, oldVP VPtr, skipSync bool) (VPtr, bool, error) {
+// If x is true, the caller holds exclusive database access and vl.mu is elided.
+func (vl *valueLog) appendDedupAndSync(value []byte, hlc HLC, oldVP VPtr, skipSync bool, x bool) (VPtr, bool, error) {
 	newB3 := blake3checksum32(value)
 
-	vl.mu.Lock()
-	defer vl.mu.Unlock()
+	if !x {
+		vl.mu.Lock()
+		defer vl.mu.Unlock()
+	}
+	return vl.appendDedupAndSyncLocked(value, hlc, oldVP, skipSync, newB3)
+}
 
+func (vl *valueLog) appendDedupAndSyncLocked(value []byte, hlc HLC, oldVP VPtr, skipSync bool, newB3 [32]byte) (VPtr, bool, error) {
 	// Check if old entry has the same blake3. Length match is implied by
 	// the caller only calling us when oldVP.Length == len(value).
 	if oldVP.Length > 0 {
@@ -246,10 +259,16 @@ func (vl *valueLog) appendDedupAndSync(value []byte, hlc HLC, oldVP VPtr, skipSy
 // for values whose blake3 matches the existing entry at oldVPs[i].
 // An oldVP with Length==0 means "no previous entry" (always append).
 // Returns one VPtr per value and the count of dedup hits.
-func (vl *valueLog) appendBatchDedupAndSync(values [][]byte, hlc HLC, oldVPs []VPtr, skipSync bool) ([]VPtr, int, error) {
-	vl.mu.Lock()
-	defer vl.mu.Unlock()
+// If x is true, the caller holds exclusive database access and vl.mu is elided.
+func (vl *valueLog) appendBatchDedupAndSync(values [][]byte, hlc HLC, oldVPs []VPtr, skipSync bool, x bool) ([]VPtr, int, error) {
+	if !x {
+		vl.mu.Lock()
+		defer vl.mu.Unlock()
+	}
+	return vl.appendBatchDedupAndSyncLocked(values, hlc, oldVPs, skipSync)
+}
 
+func (vl *valueLog) appendBatchDedupAndSyncLocked(values [][]byte, hlc HLC, oldVPs []VPtr, skipSync bool) ([]VPtr, int, error) {
 	if cap(vl.batchB3s) < len(values) {
 		vl.batchB3s = make([][32]byte, len(values))
 	} else {
@@ -391,11 +410,17 @@ func vlogHeaderMatchesB3(hdr []byte, vp VPtr, b3 [32]byte) bool {
 }
 
 // appendBatchAndSync writes multiple values to the VLOG with a single fsync.
-// Returns one VPtr per value. Thread-safe.
-func (vl *valueLog) appendBatchAndSync(values [][]byte, hlcs []HLC, skipSync bool) ([]VPtr, error) {
-	vl.mu.Lock()
-	defer vl.mu.Unlock()
+// Returns one VPtr per value. Thread-safe unless x is true, in which case the
+// caller must already hold exclusive database access.
+func (vl *valueLog) appendBatchAndSync(values [][]byte, hlcs []HLC, skipSync bool, x bool) ([]VPtr, error) {
+	if !x {
+		vl.mu.Lock()
+		defer vl.mu.Unlock()
+	}
+	return vl.appendBatchAndSyncLocked(values, hlcs, skipSync)
+}
 
+func (vl *valueLog) appendBatchAndSyncLocked(values [][]byte, hlcs []HLC, skipSync bool) ([]VPtr, error) {
 	ptrs := make([]VPtr, len(values))
 	for i, v := range values {
 		vp, err := vl.appendLocked(v, hlcs[i])
