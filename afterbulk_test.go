@@ -423,4 +423,14 @@ afterbulk_test.go:309 [pid 1183556] 2026-09-13 08:41:11.895160376 +0000 UTC end 
 
 afterbulk_test.go:319 [pid 1183556] 2026-09-13 08:41:11.992306558 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 95956.10942222615 writes/sec
 
+wormhole with lazy point map: from d6fbf82, same speed as wormhole with top level point map on this workload.
+
+=== RUN   Test_Replacement_After_Bulk_Load_YogaDB
+
+db.go:1649 [pid 1185850] 2026-09-13 08:45:09.971175337 +0000 UTC using cfg.MemtableKind = wormhole
+
+afterbulk_test.go:302 [pid 1185850] 2026-09-13 08:45:37.360911129 +0000 UTC end replacements: HeapAlloc = 1_653_860_304 (diff: 310_153_088);  HeapInuse = 1_801_084_928 (diff: 323_919_872)
+
+afterbulk_test.go:312 [pid 1185850] 2026-09-13 08:45:37.457766132 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 92707.76059367288 writes/sec
+
 */
