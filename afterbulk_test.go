@@ -48,6 +48,8 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 		//MemtableKind: MemtableKeyStable,
 		MemtableKind: MemtableWormhole, // wormhole is the default.
 	}
+	vv("using cfg.MemtableKind = %s", cfg.MemtableKind)
+
 	db, err := OpenFlexDB(dir, cfg)
 	panicOn(err)
 	defer db.Close()
@@ -208,12 +210,17 @@ func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 // replace all of the first set: use same keys in 2nd set.
 func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 	//if !testing.Short() {
-	t.Skip("long test; only run for -short because it is opposites day.")
+	//t.Skip("long test; only run for -short because it is opposites day.")
 	//}
 	dir := t.TempDir()
 	cfg := &Config{
 		DisableBackgroundFlush: true,
+
+		MemtableKind: MemtableKeyStable,
+		//MemtableKind: MemtableWormhole, // wormhole is the default.
 	}
+	vv("using cfg.MemtableKind = %s", cfg.MemtableKind)
+
 	db, err := OpenFlexDB(dir, cfg)
 	panicOn(err)
 	defer db.Close()
@@ -394,5 +401,26 @@ db.go:1649 [pid 1147678] 2026-09-13 07:40:12.655565731 +0000 UTC using cfg.Memta
 afterbulk_test.go:141 [pid 1147678] 2026-09-13 07:40:23.321866412 +0000 UTC end new writes: HeapAlloc = 2_544_389_496 (diff: 423_759_728);  HeapInuse = 2_686_009_344 (diff: 419_340_288)
 
 afterbulk_test.go:152 [pid 1147678] 2026-09-13 07:40:23.471622575 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 562110.3014525231 writes/sec
+
+*/
+/*
+fascinating:
+=== RUN   Test_Replacement_After_Bulk_Load_YogaDB
+
+wormhole:
+
+afterbulk_test.go:302 [pid 1181984] 2026-09-13 08:39:07.318008092 +0000 UTC end replacements: HeapAlloc = 1_765_804_520 (diff: 310_263_664);  HeapInuse = 1_909_121_024 (diff: 322_813_952)
+
+afterbulk_test.go:312 [pid 1181984] 2026-09-13 08:39:07.412607183 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 91455.29651831448 writes/sec
+
+keystable:
+
+=== RUN   Test_Replacement_After_Bulk_Load_YogaDB
+
+afterbulk_test.go:222 [pid 1183556] 2026-09-13 08:40:45.111475138 +0000 UTC using cfg.MemtableKind = keystable
+
+afterbulk_test.go:309 [pid 1183556] 2026-09-13 08:41:11.895160376 +0000 UTC end replacements: HeapAlloc = 1_760_013_120 (diff: 416_721_240);  HeapInuse = 1_913_716_736 (diff: 438_575_104)
+
+afterbulk_test.go:319 [pid 1183556] 2026-09-13 08:41:11.992306558 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 95956.10942222615 writes/sec
 
 */
