@@ -392,4 +392,28 @@ BenchmarkKeyStableGet-48    	28141448	        41.36 ns/op	       0 B/op	       0
 PASS
 ok  	github.com/glycerine/yogadb	2.179s
 
+keystable 50% empty self managed hash chain:
+
+go test -v -run After_Bulk
+=== RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB
+
+afterbulk_test.go:51 [pid 1258529] 2026-09-13 10:33:43.334344869 +0000 UTC using cfg.MemtableKind = keystable
+
+afterbulk_test.go:143 [pid 1258529] 2026-09-13 10:33:53.779767471 +0000 UTC end new writes: HeapAlloc = 2_439_396_248 (diff: 318_830_496);  HeapInuse = 2_575_753_216 (diff: 307_593_216)
+
+afterbulk_test.go:154 [pid 1258529] 2026-09-13 10:33:53.932466484 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 573974.9372770304 writes/sec
+
+
+afterbulk_test.go:167 [pid 1258529] 2026-09-13 10:33:56.338486805 +0000 UTC good: all 4000000 keys were distinct. len(vals) = 2000000; len(vals2) = 2000000
+
+afterbulk_test.go:202 [pid 1258529] 2026-09-13 10:34:08.197679813 +0000 UTC good: verified all 4000000 keys
+--- PASS: Test_Writes_Occuring_After_Bulk_Load_YogaDB (29.40s)
+=== RUN   Test_Replacement_After_Bulk_Load_YogaDB
+
+afterbulk_test.go:222 [pid 1258529] 2026-09-13 10:34:12.731856475 +0000 UTC using cfg.MemtableKind = keystable
+
+afterbulk_test.go:309 [pid 1258529] 2026-09-13 10:34:39.429924517 +0000 UTC end replacements: HeapAlloc = 1_655_057_512 (diff: 311_764_920);  HeapInuse = 1_782_521_856 (diff: 303_063_040)
+
+afterbulk_test.go:319 [pid 1258529] 2026-09-13 10:34:39.525206243 +0000 UTC after bulkload terminated with AllowReads: yogadb replacements: 93741.72542961405 writes/sec
+
 */

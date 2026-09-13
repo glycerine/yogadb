@@ -1162,4 +1162,15 @@ PASS
 ok  	github.com/glycerine/yogadb	26.378s
 
 Compilation finished at Fri Sep 11 22:20:08
+
+go test -v -run=xxx -bench 'BenchmarkKeyStableSet|BenchmarkWormholePut'
+goos: linux
+goarch: amd64
+pkg: github.com/glycerine/yogadb
+cpu: AMD Ryzen Threadripper 3960X 24-Core Processor
+BenchmarkKeyStableSet
+BenchmarkKeyStableSet-48        33146343                35.76 ns/op            0 B/op          0 allocs/op
+BenchmarkWormholePut
+BenchmarkWormholePut-48          3456205               351.7 ns/op            96 B/op          0 allocs/op
+
 */

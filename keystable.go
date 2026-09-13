@@ -14,9 +14,13 @@ import (
 // compare:
 // go test -v -run=xxx -bench BenchmarkWormhole_Mixed_ReadsWrites  126.8 ns/op      23 B/op
 // go test -v -run=xxx -bench BenchmarkKeyStable_Mixed_ReadsWrites 142.7 ns/op     126 B/op
+// 50% load self-managed hash chain: (worse)
+// BenchmarkKeyStable_Mixed_ReadsWrites-48     7557370       148.1 ns/op     128 B/op       0 allocs/op
 //
 // BenchmarkWormholeGet-48     31249660        38.24 ns/op       0 B/op       0 allocs/op
 // BenchmarkKeyStableGet-48    21890116        46.09 ns/op       0 B/op       0 allocs/op
+// 50% load self-managed hash chain:
+// BenchmarkKeyStableGet-48    35613524        33.46 ns/op       0 B/op       0 allocs/op
 //
 // keyStable is a place to keep your keys
 // when you think of them like horses.
