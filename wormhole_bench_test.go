@@ -287,7 +287,8 @@ func BenchmarkWormholeGet(b *testing.B) {
 	for i, key := range keys {
 		s.Put(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)}, x)
 	}
-	s.BuildPointIndex(x)
+	// this is cheating versus the mixed!
+	//s.BuildPointIndex(x)
 
 	b.ReportAllocs()
 	b.ResetTimer()

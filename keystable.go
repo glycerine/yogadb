@@ -19,7 +19,10 @@ import (
 // 50% load self-managed hash chain: (worse)
 // BenchmarkKeyStable_Mixed_ReadsWrites-48     7557370       148.1 ns/op     128 B/op       0 allocs/op
 //
-// BenchmarkWormholeGet-48     31249660        38.24 ns/op       0 B/op       0 allocs/op
+// BenchmarkWormholeGet-48      6712690        162.7 ns/op       0 B/op       0 allocs/op ; 4x slower
+// note:
+// BenchmarkWormholeGet-48     31249660        38.24 ns/op       0 B/op       0 allocs/op (if s.BuildPointIndex(x) called, but that is cheating becasue the mixed read/write bench does not call s.BuildPointIndex(x)).
+//
 // BenchmarkKeyStableGet-48    21890116        46.09 ns/op       0 B/op       0 allocs/op
 // 50% load self-managed hash chain:
 // BenchmarkKeyStableGet-48    35613524        33.46 ns/op       0 B/op       0 allocs/op
@@ -61,7 +64,7 @@ import (
 //
 // conclude: wormhole wins the synthetic mixed reads/write benchmark (2x faster),
 // but keyStable has 2.55x better point Set(Put) writes, and 4-11% faster
-// batch writes in the After_Bulk tests.
+// batch writes in the After_Bulk tests, and 4x faster Get point queries.
 //
 // What is keyStable? A key stable is a place to keep your keys
 // when you think of them like horses.
