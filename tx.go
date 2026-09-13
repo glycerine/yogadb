@@ -67,8 +67,8 @@ type txBase struct {
 	iters []*Iter
 }
 
-func (tx *txBase) newIter() *Iter {
-	it := &Iter{db: tx.db}
+func (tx *txBase) newIter(x bool) *Iter {
+	it := &Iter{db: tx.db, x: x}
 	tx.iters = append(tx.iters, it)
 	return it
 }
@@ -87,7 +87,7 @@ func (tx *txBase) closeAll() {
 // txFind implements Find for both WriteTx and ReadOnlyTx.
 // Caller must hold topMutRW (read or write lock).
 func txFind(tx *txBase, smod SearchModifier, key string, x bool) (kvc *KVcloser, exact bool, err error) {
-	it := tx.newIter()
+	it := tx.newIter(x)
 	lazyLarge := (smod&LAZY_LARGE != 0)
 	lazySmall := (smod&LAZY_SMALL != 0)
 	skipValues := (smod&SKIP_VALUES != 0)
@@ -159,7 +159,7 @@ func txFind(tx *txBase, smod SearchModifier, key string, x bool) (kvc *KVcloser,
 // and an iterator positioned at the result for continued scanning.
 // Caller must hold topMutRW (read or write lock).
 func txFindIt(tx *txBase, smod SearchModifier, key string, x bool) (kvc *KVcloser, exact bool, err error, it *Iter) {
-	it = tx.newIter()
+	it = tx.newIter(x)
 	lazyLarge := (smod&LAZY_LARGE != 0)
 	lazySmall := (smod&LAZY_SMALL != 0)
 	skipValues := (smod&SKIP_VALUES != 0)
@@ -454,7 +454,8 @@ func (tx *WriteTx) NewIter() *Iter {
 		panic(err)
 	}
 	tx.db.requireReadsAllowed()
-	return tx.newIter()
+	const x = true
+	return tx.newIter(x)
 }
 
 // Len returns the total number of live keys in the database.
@@ -566,7 +567,8 @@ func (tx *WriteTx) Ascend(pivot string, callback func(key string, value []byte, 
 		panic(err)
 	}
 	tx.db.requireReadsAllowed()
-	it := tx.newIter()
+	const x = true
+	it := tx.newIter(x)
 	defer it.Close()
 	it.Seek(pivot)
 	for it.Valid() {
@@ -584,9 +586,9 @@ func (tx *WriteTx) Descend(pivot string, callback func(key string, value []byte,
 		panic(err)
 	}
 	tx.db.requireReadsAllowed()
-	it := tx.newIter()
-	defer it.Close()
 	const x = true
+	it := tx.newIter(x)
+	defer it.Close()
 
 	if pivot == "" {
 		it.SeekLast()
@@ -608,7 +610,8 @@ func (tx *WriteTx) AscendRange(greaterOrEqual, lessThan string, callback func(ke
 		panic(err)
 	}
 	tx.db.requireReadsAllowed()
-	it := tx.newIter()
+	const x = true
+	it := tx.newIter(x)
 	defer it.Close()
 	it.Seek(greaterOrEqual)
 	for it.Valid() {
@@ -629,9 +632,9 @@ func (tx *WriteTx) DescendRange(lessOrEqual, greaterThan string, callback func(k
 		panic(err)
 	}
 	tx.db.requireReadsAllowed()
-	it := tx.newIter()
-	defer it.Close()
 	const x = true
+	it := tx.newIter(x)
+	defer it.Close()
 
 	if lessOrEqual == "" {
 		it.SeekLast()
@@ -701,7 +704,8 @@ func (roTx *ReadOnlyTx) FetchLarge(kv *KV) (val []byte, vtyp uint64, hlc HLC, er
 // legal to Close it sooner if you want to release resources
 // early.
 func (roTx *ReadOnlyTx) NewIter() *Iter {
-	return roTx.newIter()
+	const x = false
+	return roTx.newIter(x)
 }
 
 // Len returns the total number of live keys in the database.
@@ -722,7 +726,8 @@ func (roTx *ReadOnlyTx) LenBigSmall() (big, small int64) {
 // Ascend iterates keys >= pivot in ascending order until callback returns false.
 // Use pivot="" to start from the first key.
 func (roTx *ReadOnlyTx) Ascend(pivot string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
-	it := roTx.newIter()
+	const x = false
+	it := roTx.newIter(x)
 	defer it.Close()
 	it.Seek(pivot)
 	for it.Valid() {
@@ -736,9 +741,9 @@ func (roTx *ReadOnlyTx) Ascend(pivot string, callback func(key string, value []b
 // Descend iterates keys <= pivot in descending order until callback returns false.
 // Use pivot="" to start from the last key.
 func (roTx *ReadOnlyTx) Descend(pivot string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
-	it := roTx.newIter()
-	defer it.Close()
 	const x = false
+	it := roTx.newIter(x)
+	defer it.Close()
 	if pivot == "" {
 		it.SeekLast()
 	} else {
@@ -755,7 +760,8 @@ func (roTx *ReadOnlyTx) Descend(pivot string, callback func(key string, value []
 // AscendRange iterates keys in [greaterOrEqual, lessThan) in ascending order.
 // Use "" for either bound to leave it open.
 func (roTx *ReadOnlyTx) AscendRange(greaterOrEqual, lessThan string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
-	it := roTx.newIter()
+	const x = false
+	it := roTx.newIter(x)
 	defer it.Close()
 	it.Seek(greaterOrEqual)
 	for it.Valid() {
@@ -772,9 +778,9 @@ func (roTx *ReadOnlyTx) AscendRange(greaterOrEqual, lessThan string, callback fu
 // DescendRange iterates keys in (greaterThan, lessOrEqual] in descending order.
 // Use "" for either bound to leave it open.
 func (roTx *ReadOnlyTx) DescendRange(lessOrEqual, greaterThan string, callback func(key string, value []byte, vtyp uint64, hlc HLC) bool) {
-	it := roTx.newIter()
-	defer it.Close()
 	const x = false
+	it := roTx.newIter(x)
+	defer it.Close()
 
 	if lessOrEqual == "" {
 		it.SeekLast()

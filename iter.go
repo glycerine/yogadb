@@ -113,6 +113,8 @@ func iterIOPanic(err error) { panic(iterIOErr{err}) }
 type Iter struct {
 	db *FlexDB
 
+	x bool // true iff we have exclusive write access to the db. as in: under a WriteTx.
+
 	// pKV points to the current key-value pair. It may point directly into
 	// cache memory or hold a key borrowed from the memtable key arena, so
 	// user-facing accessors must not write through it or retain borrowed fields.
@@ -1120,8 +1122,7 @@ func (it *Iter) Seek(target string) {
 		return
 	}
 
-	const x = false
-	it.pKV, it.valid = it.mergedSeekGE(target, false, x)
+	it.pKV, it.valid = it.mergedSeekGE(target, false, it.x)
 	it.dir = 1
 	it.valueNeedsCopy = false
 	it.valueResolved = true
@@ -1177,8 +1178,7 @@ func (it *Iter) SeekLast() {
 		return
 	}
 
-	const x = false
-	it.pKV, it.valid = it.mergedSeekLE("", false, x)
+	it.pKV, it.valid = it.mergedSeekLE("", false, it.x)
 	it.dir = -1
 	it.valueNeedsCopy = false
 	it.valueResolved = true
@@ -1189,7 +1189,6 @@ func (it *Iter) Next() {
 	if !it.valid || it.closed {
 		return
 	}
-	const x = false
 
 	currentHLC := it.db.hlc.Aload()
 
@@ -1316,7 +1315,7 @@ func (it *Iter) Next() {
 
 		// Non-empty memtable: single merged seek with cursor reuse.
 		curKey := it.pKV.Key // save before re-seek overwrites pKV
-		it.pKV, it.valid = it.mergedSeekGE(curKey, true, x)
+		it.pKV, it.valid = it.mergedSeekGE(curKey, true, it.x)
 		it.valueNeedsCopy = false
 		it.valueResolved = true
 		return
@@ -1345,7 +1344,7 @@ func (it *Iter) Next() {
 		return
 	}
 
-	it.pKV, it.valid = it.mergedSeekGE(curKey, true, x)
+	it.pKV, it.valid = it.mergedSeekGE(curKey, true, it.x)
 	it.dir = 1
 	it.valueNeedsCopy = false
 	it.valueResolved = true
@@ -1463,9 +1462,8 @@ func (it *Iter) Prev() {
 		}
 
 		// Non-empty memtable: single merged seek.
-		const x = false
 
-		it.pKV, it.valid = it.mergedSeekLE(curKey, true, x)
+		it.pKV, it.valid = it.mergedSeekLE(curKey, true, it.x)
 		it.valueNeedsCopy = false
 		it.valueResolved = true
 		return
@@ -1495,9 +1493,7 @@ func (it *Iter) Prev() {
 		return
 	}
 
-	const x = false
-
-	it.pKV, it.valid = it.mergedSeekLE(curKey, true, x)
+	it.pKV, it.valid = it.mergedSeekLE(curKey, true, it.x)
 	it.dir = -1
 	it.valueNeedsCopy = false
 	it.valueResolved = true
@@ -1652,8 +1648,7 @@ func (it *Iter) FetchV() (val []byte, vtyp uint64, hlc HLC, err error) {
 	if !it.pKV.HasVPtr() {
 		return it.Vin(), it.pKV.Vtyp(), it.pKV.Hlc, nil
 	}
-	const x = false
-	return it.db.resolveVPtr(*it.pKV, x)
+	return it.db.resolveVPtr(*it.pKV, it.x)
 }
 
 // ====================== Callback-based iteration ======================
@@ -1667,8 +1662,8 @@ func (it *Iter) iterResolvedValue() []byte {
 	if !it.pKV.HasVPtr() {
 		return it.Vin()
 	}
-	const x = false
-	val, _, _, err := it.db.resolveVPtr(*it.pKV, x)
+
+	val, _, _, err := it.db.resolveVPtr(*it.pKV, it.x)
 	if err != nil {
 		iterIOPanic(err)
 	}
