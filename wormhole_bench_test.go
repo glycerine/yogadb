@@ -354,3 +354,24 @@ PASS
 ok  	github.com/glycerine/yogadb	1.921s
 
 */
+// if in keystable we do no copying and just use the KV.Key to sort on:
+/*
+go test -v -run=xxx -bench BenchmarkKeyStable_Mixed_ReadsWrites
+goos: linux
+goarch: amd64
+pkg: github.com/glycerine/yogadb
+cpu: AMD Ryzen Threadripper 3960X 24-Core Processor
+BenchmarkKeyStable_Mixed_ReadsWrites
+BenchmarkKeyStable_Mixed_ReadsWrites-48    	 7638578	       146.7 ns/op	     139 B/op	       0 allocs/op
+PASS
+ok  	github.com/glycerine/yogadb	2.672s
+
+AND
+point reads get faster:
+
+  The interesting bit: point reads improved nicely:
+
+  BenchmarkKeyStableSet  ~60-62 ns/op
+  BenchmarkKeyStableGet  ~46-47 ns/op
+
+*/
