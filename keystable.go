@@ -90,7 +90,7 @@ func keyStableBucketCount(n int) int {
 	if n < 8 {
 		n = 8
 	}
-	n *= 2
+	n *= 4
 	buckets := 1
 	for buckets < n {
 		buckets <<= 1
@@ -153,7 +153,7 @@ func (s *keyStable) appendKeyCommon(h uint64) (slotIdx int) {
 	s.kvs = append(s.kvs, KV{})
 	s.hashes = append(s.hashes, h)
 	s.nextSameHash = append(s.nextSameHash, -1)
-	if len(s.kvs) > len(s.headmap) {
+	if len(s.kvs)*2 > len(s.headmap) {
 		s.rebuildHeadmap(keyStableBucketCount(len(s.kvs)))
 	}
 	bucket := s.bucket(h)
