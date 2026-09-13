@@ -420,8 +420,10 @@ func TestKeyStableClearZerosRetainedKVSlots(t *testing.T) {
 	if retained[0].Key != "" || retained[0].Value != nil || retained[0].Vptr != (VPtr{}) || retained[0].Hlc != 0 {
 		t.Fatalf("clear retained stale KV slot: %#v", retained[0])
 	}
-	if len(s.headmap) != 0 {
-		t.Fatalf("clear left headmap length %d, want 0", len(s.headmap))
+	for i, head := range s.headmap {
+		if head != 0 {
+			t.Fatalf("clear left headmap[%d] = %d, want 0", i, head)
+		}
 	}
 	if s.sortedDirty {
 		t.Fatal("clear left sortedDirty=true")
