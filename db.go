@@ -2,10 +2,10 @@ package yogadb
 
 // yogadb/db.go - Go port of flexspace/flexdb.c
 // FlexDB: a persistent ordered key-value store backed by FlexSpace.
-// Uses wormhole's ordered in-memory table for the write buffer (memtable).
+// Uses a configurable ordered in-memory table for the write buffer (memtable).
 //
 // Architecture:
-//   Active Memtable (wormhole + WAL) -> (flush) -> FlexSpace
+//   Active Memtable (ordered table + WAL) -> (flush) -> FlexSpace
 //   Reads: check active memtable -> check FlexSpace via sparse index
 //   Crash recovery: rebuild sparse index from FlexSpace tags, replay WAL logs.
 
@@ -1101,6 +1101,36 @@ func dupBytes(b []byte) []byte {
 // note: DisableVLOG bool is not supported any longer. This options was
 // removed from the Config.
 
+// MemtableKind selects the in-memory table used for post-AllowReads writes.
+// Initial read-disabled bulk loading continues to use the bulk ingest builder
+// and is unaffected by this setting.
+type MemtableKind int
+
+const (
+	// MemtableWormhole uses the wormhole ordered table. This is the default,
+	// preserving the existing zero-value Config behavior.
+	MemtableWormhole MemtableKind = iota
+
+	// MemtableKeyStable uses the keyStable ordered table. This is useful for
+	// A/B testing workloads where keyStable's append-heavy behavior wins.
+	MemtableKeyStable
+)
+
+func (k MemtableKind) valid() bool {
+	return k == MemtableWormhole || k == MemtableKeyStable
+}
+
+func (k MemtableKind) String() string {
+	switch k {
+	case MemtableWormhole:
+		return "wormhole"
+	case MemtableKeyStable:
+		return "keystable"
+	default:
+		return fmt.Sprintf("unknown(%d)", int(k))
+	}
+}
+
 // Config allows configuration of a FlexDB.
 type Config struct {
 	CacheMB uint64 // default 32 (for 32 MB)
@@ -1158,6 +1188,11 @@ type Config struct {
 	// wakes up to flush the memtable. If zero or negative, the default is 5s.
 	// DisableBackgroundFlush still disables the worker entirely.
 	BackgroundFlushInterval time.Duration
+
+	// MemtableKind selects the in-memory table used for ordinary writes after
+	// AllowReads. The zero value is MemtableWormhole. Set MemtableKeyStable
+	// to compare against the older keyStable implementation.
+	MemtableKind MemtableKind
 
 	// PaddedSplits controls whether treeInsertAnchor pads both split
 	// halves to slottedPageMaxSize. Default false uses tight encoding,
@@ -1599,6 +1634,9 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	if cfg.BackgroundFlushInterval <= 0 {
 		cfg.BackgroundFlushInterval = defaultBackgroundFlushInterval
 	}
+	if !cfg.MemtableKind.valid() {
+		return nil, fmt.Errorf("flexdb: invalid Config.MemtableKind %d", cfg.MemtableKind)
+	}
 	if cfg.LowBlockUtilizationPct <= 0 || cfg.LowBlockUtilizationPct > 1 {
 		cfg.LowBlockUtilizationPct = 0.50
 	}
@@ -1686,7 +1724,7 @@ func OpenFlexDB(path string, pCfg *Config) (*FlexDB, error) {
 	for i := range db.cache.partitions {
 		db.cache.partitions[i].db = db
 	}
-	db.mt = *newMemtable(walFD)
+	db.mt = *newMemtableWithKind(walFD, cfg.MemtableKind)
 	db.mt.memWalBytesWritten = &db.MemWALBytesWritten
 	db.mt.memWalFsyncs = &db.MemWALFsyncs
 

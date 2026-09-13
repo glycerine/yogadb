@@ -14,8 +14,12 @@ import (
 // ====================== memtable ======================
 
 type memtable struct {
+	kind MemtableKind
+
 	// backing in-memory ordered write buffer.
-	wh wormhole
+	wh *wormhole
+	ks *keyStable
+
 	// bulk is used only for pristine initial batch loads. It
 	// avoid per-key sorted-table insertion until a read requires materialization or
 	// Sync streams the sorted entries directly to FlexSpace.
@@ -37,14 +41,32 @@ type memtable struct {
 }
 
 func newMemtable(memWalFD vfs.File) *memtable {
+	return newMemtableWithKind(memWalFD, MemtableWormhole)
+}
+
+func newMemtableWithKind(memWalFD vfs.File, kind MemtableKind) *memtable {
 	mt := &memtable{
-		wh:                *newWormhole(wormConfig{}),
+		kind:              kind,
 		memWalFD:          memWalFD,
 		memWalBuf:         make([]byte, 0, memtableWalBufCap),
 		memWalWriteOffset: memWalHeaderSize,
 	}
+	mt.resetBacking()
 	mt.empty.Store(true)
 	return mt
+}
+
+func (m *memtable) resetBacking() {
+	switch m.kind {
+	case MemtableWormhole:
+		m.wh = newWormhole(wormConfig{})
+		m.ks = nil
+	case MemtableKeyStable:
+		m.wh = nil
+		m.ks = newKeyStable(0)
+	default:
+		panicf("invalid memtable kind: %v", m.kind)
+	}
 }
 
 // called with db write lock held.
@@ -54,7 +76,7 @@ func (m *memtable) reset() {
 }
 
 func (m *memtable) clearData(x bool) {
-	m.wh = *newWormhole(wormConfig{})
+	m.resetBacking()
 	m.vtypArena = nil
 	m.empty.Store(true)
 	m.size = 0
@@ -62,7 +84,15 @@ func (m *memtable) clearData(x bool) {
 }
 
 func (m *memtable) activeLen() int64 {
-	return m.wh.Len()
+	switch m.kind {
+	case MemtableWormhole:
+		return m.wh.Len()
+	case MemtableKeyStable:
+		return int64(m.ks.Len())
+	default:
+		panicf("invalid memtable kind: %v", m.kind)
+		return 0
+	}
 }
 
 func (m *memtable) vtypBytes(vtyp uint64) []byte {
@@ -79,10 +109,7 @@ func (m *memtable) vtypBytes(vtyp uint64) []byte {
 // (e.g. db.go:165 in Batch.Commit)
 // Returns the previous KV for the same key and whether it was replaced.
 func (m *memtable) put(kv KV, x bool) (KV, bool) {
-	old, replaced := m.wh.Get(kv.Key, x)
-	if putReplaced := m.wh.Put(kv, x); putReplaced != replaced {
-		panicf("wormhole Put(%q) replaced=%v, want %v", kv.Key, putReplaced, replaced)
-	}
+	old, replaced := m.putBacking(kv, x)
 	if replaced {
 		m.size -= int64(kvSizeApprox(&old))
 	}
@@ -91,6 +118,22 @@ func (m *memtable) put(kv KV, x bool) (KV, bool) {
 		panicf("bad: memtable with some content should have size(%v) > 0: %#v", m.size, m)
 	}
 	return old, replaced
+}
+
+func (m *memtable) putBacking(kv KV, x bool) (KV, bool) {
+	switch m.kind {
+	case MemtableWormhole:
+		old, replaced := m.wh.Get(kv.Key, x)
+		if putReplaced := m.wh.Put(kv, x); putReplaced != replaced {
+			panicf("wormhole Put(%q) replaced=%v, want %v", kv.Key, putReplaced, replaced)
+		}
+		return old, replaced
+	case MemtableKeyStable:
+		return m.ks.set(kv, x)
+	default:
+		panicf("invalid memtable kind: %v", m.kind)
+		return KV{}, false
+	}
 }
 
 func (m *memtable) putBulk(kv KV) (KV, bool) {
@@ -126,7 +169,7 @@ func (m *memtable) materializeBulk() {
 	for si := range m.bulk.segments {
 		seg := &m.bulk.segments[si]
 		for i, n := 0, seg.len(); i < n; i++ {
-			m.wh.Put(seg.kv(i), x)
+			m.putBacking(seg.kv(i), x)
 		}
 	}
 	m.bulk.reset()
@@ -136,27 +179,72 @@ func (m *memtable) get(key string, x bool) (KV, bool) {
 	if kv, ok := m.bulk.get(key); ok {
 		return kv, true
 	}
-	return m.wh.Get(key, x)
+	switch m.kind {
+	case MemtableWormhole:
+		return m.wh.Get(key, x)
+	case MemtableKeyStable:
+		return m.ks.get(key, x)
+	default:
+		panicf("invalid memtable kind: %v", m.kind)
+		return KV{}, false
+	}
 }
 
 func (m *memtable) ascend(start string, x bool, fn func(KV) bool) {
-	m.wh.Ascend(start, x, fn)
+	switch m.kind {
+	case MemtableWormhole:
+		m.wh.Ascend(start, x, fn)
+	case MemtableKeyStable:
+		m.ks.Ascend(x, KV{Key: start}, fn)
+	default:
+		panicf("invalid memtable kind: %v", m.kind)
+	}
 }
 
 func (m *memtable) scan(x bool, fn func(KV) bool) {
-	m.wh.Ascend("", x, fn)
+	switch m.kind {
+	case MemtableWormhole:
+		m.wh.Ascend("", x, fn)
+	case MemtableKeyStable:
+		m.ks.Scan(x, fn)
+	default:
+		panicf("invalid memtable kind: %v", m.kind)
+	}
 }
 
 func (m *memtable) reverse(x bool, fn func(KV) bool) {
-	m.wh.Descend("", x, fn)
+	switch m.kind {
+	case MemtableWormhole:
+		m.wh.Descend("", x, fn)
+	case MemtableKeyStable:
+		m.ks.Reverse(x, fn)
+	default:
+		panicf("invalid memtable kind: %v", m.kind)
+	}
 }
 
 func (m *memtable) seekGE(target string, strict bool, x bool) (KV, bool) {
-	return m.wh.SeekGE(target, strict, x)
+	switch m.kind {
+	case MemtableWormhole:
+		return m.wh.SeekGE(target, strict, x)
+	case MemtableKeyStable:
+		return m.ks.seekGE(target, strict, x)
+	default:
+		panicf("invalid memtable kind: %v", m.kind)
+		return KV{}, false
+	}
 }
 
 func (m *memtable) seekLE(target string, strict bool, x bool) (KV, bool) {
-	return m.wh.SeekLE(target, strict, x)
+	switch m.kind {
+	case MemtableWormhole:
+		return m.wh.SeekLE(target, strict, x)
+	case MemtableKeyStable:
+		return m.ks.seekLE(target, strict, x)
+	default:
+		panicf("invalid memtable kind: %v", m.kind)
+		return KV{}, false
+	}
 }
 
 func (m *memtable) logAppend(kv KV) error {
