@@ -22,6 +22,36 @@ type wormConfig struct {
 	leafCapacity int
 }
 
+/* why is this version of the wormhole the fastest we found (thus far)?
+
+The restored fast wormhole is fast mainly because the
+point index is optional and dormant until explicitly built.
+
+Key differences from the previous plain-map / dirty-tail wormhole:
+
+ - wormhole.point is now atomic.Pointer[pointIndex], not a permanent top-level map[string]wormRef.
+ - If point == nil, Put does no point-map maintenance at all. updatePointIndexPut becomes a no-op.
+ - The mixed benchmark does not call BuildPointIndex, so it runs in this no-point-index mode:
+     - writes update only the ordered leaf structure;
+     - reads use cached leaf lookup plus in-leaf hint search;
+     - no Go map assign, no dirty refs, no point-index flushing.
+
+ - When BuildPointIndex is called, it builds an immutable base map[string]wormRef.
+ - After that:
+     - exclusive x=true writes mutate base directly;
+     - shared x=false writes use a sync.Map delta overlay;
+     - reads check delta first, then base.
+
+ - The old experimental versions paid point-index costs during
+   mixed writes even when the workload mostly did not need them.
+   That was the big tax.
+
+So the 63 ns/op mixed result is not from a cleverer point map.
+It is from avoiding the point map entirely in that workload
+and leaning on the sorted leaf/read-cache path. That is a
+pretty important insight.
+*/
+
 // wormhole is our memtable. The name comes from the wormhole data structure
 // used in the original C FlexDB implementation for the memtable. We
 // have optimized our Go version of wormhole to the point where,
