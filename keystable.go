@@ -8,14 +8,14 @@ import (
 	"github.com/cespare/xxhash/v2"
 )
 
-// Currently our wormhole has better somewhat performance on frequently
+// Currently our wormhole has 2x better performance on frequently
 // mixed and interleaved reads and writes, but keystable is
-// better, much better, with batches of writes and the batches of reads;
-// as well as point queries and point sets (Puts).
+// better with batches of writes and the batches of reads;
+// as well as point sets (Puts).
 //
 // compare:
-// go test -v -run=xxx -bench BenchmarkWormhole_Mixed_ReadsWrites  126.8 ns/op      23 B/op
-// go test -v -run=xxx -bench BenchmarkKeyStable_Mixed_ReadsWrites 142.7 ns/op     126 B/op
+// go test -v -run=xxx -bench BenchmarkWormhole_Mixed_ReadsWrites   67.8 ns/op      23 B/op ; 2x faster
+// go test -v -run=xxx -bench BenchmarkKeyStable_Mixed_ReadsWrites   152 ns/op     117 B/op
 // 50% load self-managed hash chain: (worse)
 // BenchmarkKeyStable_Mixed_ReadsWrites-48     7557370       148.1 ns/op     128 B/op       0 allocs/op
 //
@@ -28,8 +28,8 @@ import (
 //
 // Benchmark    keyStable             wormhole                winner
 // -----------------------------------------------------------------
-// Set / Put    40.37 ns/op, 0 B/op   463.0 ns/op, 145 B/op   keyStable, 11.5x
-// Get          39.57 ns/op           38.78 ns/op             tie
+// Set / Put    40.37 ns/op, 0 B/op   102.0 ns/op, 145 B/op   keyStable, 2.55x
+// Get          35-40 ns/op           32-39 ns/op             tie
 //
 // Mixed_ReadsWrites 167.0 ns/op, 145 B/op   121.0 ns/op, 23 B/op    wormhole, 1.38x
 //
@@ -37,33 +37,33 @@ import (
 //
 // Size                       keyStable                           wormhole    Winner
 // ━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━
-// 4096       1.48 ms, 491 KB, 6 allocs    25.93 ms, 112.8 MB, 8277 allocs    keyStable, 17x
+// 4096       1.48 ms, 491 KB, 6 allocs    1.86 ms, 993KB, 83 allocs           tie, ks slightly better
 // ───────  ─────────────────────────────  ─────────────────────────────────  ──────────────────
-// 65536    28.06 ms, 7.86 MB, 6 allocs    63.25 ms, 119.5 MB, 9343 allocs    keyStable, 2.25x
+// 65536    28.06 ms, 7.86 MB, 6 allocs    30.5 ms, 7.6 MB, 1149 allocs        tie, ks slightly better
 //
 // After_Bulk
 //
 // Test                                keyStable              wormhole    Winner
 // ━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━
-// Fresh writes after bulk    561,504 writes/sec    458,529 writes/sec    keyStable, 1.22x
+// Fresh writes after bulk    561,504 writes/sec    539,947 writes/sec    keyStable, but only 1.04x faster
 // ─────────────────────────  ────────────────────  ────────────────────  ──────────────────
-// Replacements after bulk     94,476 writes/sec     88,828 writes/sec    keyStable, 1.06x
+// Replacements after bulk     94,476 writes/sec     84,803 writes/sec    keyStable, but only 1.11x faster
 //
-// Heap deltas were basically comparable on fresh writes:
+// Heap deltas were comparable on fresh writes, slightly favoring keystable:
 //
 // fresh keyStable:  HeapAlloc diff 318,765,704; HeapInuse diff 307,691,520
-// fresh wormhole:   HeapAlloc diff 317,287,656; HeapInuse diff 312,410,112
+// fresh wormhole:   HeapAlloc diff 317_359_704; HeapInuse diff 314_040_320
 //
-// Replacement HeapInuse favored keyStable:
+// Replacement HeapInuse favored wormhole just barely:
 //
 // replace keyStable: HeapAlloc diff 311,687,688; HeapInuse diff 307,388,416
-// replace wormhole:  HeapAlloc diff 310,218,608; HeapInuse diff 350,314,496
+// replace wormhole:  HeapAlloc diff 310_157_760; HeapInuse diff 300_515_328
 //
 // conclude: wormhole only wins the synthetic mixed benchmark (1.38x faster),
 // but keyStable crushes Set, crushes initial-load+ordered-scan,
 // and wins both After_Bulk tests.
 //
-// What is it? keyStable is a place to keep your keys
+// What is keyStable? A key stable is a place to keep your keys
 // when you think of them like horses.
 // Horses live in a stable. KeyStable is stable storage for your memtable KV.
 //
@@ -71,7 +71,7 @@ import (
 //
 // The benefit: we improved write throughput significantly in the
 // afterbulk_test.go benchmarks of newly written key-value pairs;
-// up to 2x fold for some cases.
+// up to 2x fold for some cases (...versus the in-memory tidwall.Btree, was it?)
 //
 // keyStable is kept as an alternate in-memory table implementation. Earlier
 // yogadb versions used it as the memtable. In-memory B-trees and

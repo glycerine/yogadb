@@ -1107,14 +1107,18 @@ func dupBytes(b []byte) []byte {
 type MemtableKind int
 
 const (
-	// MemtableKeyStable uses the keyStable ordered table. Now the default.
-	MemtableKeyStable MemtableKind = iota
+	// the 0 will be the default:
+
+	// MemtableKeyStable uses the keyStable ordered table.
+	MemtableKeyStable MemtableKind = 0
 
 	// MemtableWormhole uses the wormhole ordered table.
-	// for tightly mixed reads and writes instead of batches of writes
+	//
+	// For tightly mixed reads and writes instead of batches of writes
 	// and batches of reads, wormhole will likely be better. But
 	// most other workloads, the keyStable will be faster.
-	MemtableWormhole
+	// See the top of keystable.go for benchmark summary.
+	MemtableWormhole MemtableKind = 1
 )
 
 func (k MemtableKind) valid() bool {
