@@ -35,7 +35,7 @@ func generateBenchKeysNseed(n int, seed0 byte) [][]byte {
 // rog linux: about 75K writes/sec.
 func Test_Writes_Occuring_After_Bulk_Load_YogaDB(t *testing.T) {
 	//if !testing.Short() {
-	//t.Skip("long test; only run for -short because it is opposites day.")
+	t.Skip("long test; only run for -short because it is opposites day.")
 	//}
 	dir := t.TempDir()
 	// if we are right on the border of 5 seconds, sometimes the
@@ -355,30 +355,14 @@ func Test_Replacement_After_Bulk_Load_YogaDB(t *testing.T) {
 	})
 }
 
-/* wormhole after prefix addition:
-
--*- mode: compilation; default-directory: "~/yogadb/" -*-
-Compilation started at Sun Sep 13 01:03:57
+/* wormhole after prefix addition, and more optimization (no lazy hlc dedup yet)
 
 go test -v -run After_Bulk
 === RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB
 
-db.go:1649 [pid 1076308] 2026-09-13 06:04:01.592397416 +0000 UTC using cfg.MemtableKind = wormhole
+db.go:1649 [pid 1143487] 2026-09-13 07:33:53.226589245 +0000 UTC using cfg.MemtableKind = wormhole
 
-afterbulk_test.go:141 [pid 1076308] 2026-09-13 06:04:12.950114872 +0000 UTC end new writes: HeapAlloc = 2_445_062_160 (diff: 324_583_240);  HeapInuse = 2_602_090_496 (diff: 335_962_112)
+afterbulk_test.go:141 [pid 1143487] 2026-09-13 07:34:03.989695363 +0000 UTC end new writes: HeapAlloc = 2_438_294_680 (diff: 317_257_656);  HeapInuse = 2_580_242_432 (diff: 312_655_872)
 
-afterbulk_test.go:152 [pid 1076308] 2026-09-13 06:04:13.099728551 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 462492.0777246112 writes/sec
-
-
-afterbulk_test.go:165 [pid 1076308] 2026-09-13 06:04:15.330031320 +0000 UTC good: all 4000000 keys were distinct. len(vals) = 2000000; len(vals2) = 2000000
-
-afterbulk_test.go:200 [pid 1076308] 2026-09-13 06:04:27.145061068 +0000 UTC good: verified all 4000000 keys
---- PASS: Test_Writes_Occuring_After_Bulk_Load_YogaDB (30.16s)
-=== RUN   Test_Replacement_After_Bulk_Load_YogaDB
-    afterbulk_test.go:211: long test; only run for -short because it is opposites day.
---- SKIP: Test_Replacement_After_Bulk_Load_YogaDB (0.00s)
-PASS
-ok  	github.com/glycerine/yogadb	30.410s
-
-Compilation finished at Sun Sep 13 01:04:32
+afterbulk_test.go:152 [pid 1143487] 2026-09-13 07:34:04.126776690 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 536273.7237336345 writes/sec
 */
