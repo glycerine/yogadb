@@ -8,19 +8,21 @@ import (
 	"github.com/cespare/xxhash/v2"
 )
 
-// Currently our wormhole has better performance, in
+// Currently our wormhole has better performance; but by only about 12% - 20%, in
 // particular on frequently mixed and interleaved reads and writes.
-// keyStable is kept for now as a backup: see the worm2 branch.
+//
+// compare:
+// go test -v -run=xxx -bench BenchmarkWormhole_Mixed_ReadsWrites  126.8 ns/op      23 B/op
+// go test -v -run=xxx -bench BenchmarkKeyStable_Mixed_ReadsWrites 142.7 ns/op     126 B/op
+//
+// BenchmarkWormholeGet-48     31249660        38.24 ns/op       0 B/op       0 allocs/op
+// BenchmarkKeyStableGet-48    21890116        46.09 ns/op       0 B/op       0 allocs/op
 //
 // keyStable is a place to keep your keys
 // when you think of them like horses.
 // Horses live in a stable.
 //
 // You can also read it as: "key's table".
-//
-// More importantly, the point is _stable_ storage:
-// The stable indexes never change for the lifetime of this memtable
-// generation, before it is cleared.
 //
 // The benefit: we improved write throughput significantly in the
 // afterbulk_test.go benchmarks of newly written key-value pairs;

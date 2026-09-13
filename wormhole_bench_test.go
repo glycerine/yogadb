@@ -333,15 +333,6 @@ func wormBenchmarkKeyStableKeys(n int) []string {
 }
 
 /*
-go test -v -run=xxx -bench BenchmarkKeyStable_Mixed_ReadsWrites
-goos: linux
-goarch: amd64
-pkg: github.com/glycerine/yogadb
-cpu: AMD Ryzen Threadripper 3960X 24-Core Processor
-BenchmarkKeyStable_Mixed_ReadsWrites
-BenchmarkKeyStable_Mixed_ReadsWrites-48    	 6358330	       164.6 ns/op	     140 B/op	       0 allocs/op
-PASS
-ok  	github.com/glycerine/yogadb	1.585s
 
 go test -v -run=xxx -bench BenchmarkWormhole_Mixed_ReadsWrites
 goos: linux
@@ -367,11 +358,38 @@ PASS
 ok  	github.com/glycerine/yogadb	2.724s
 
 AND
-point reads get faster:
+point reads get faster than before on keystable:
 
   The interesting bit: point reads improved nicely:
 
   BenchmarkKeyStableSet  ~60-62 ns/op
   BenchmarkKeyStableGet  ~46-47 ns/op
+
+*/
+/*
+direct map[string]int slot pos; not kept because:
+
+much slower:
+go test -v -run=xxx -bench BenchmarkKeyStable_Mixed_ReadsWrites
+goos: linux
+goarch: amd64
+pkg: github.com/glycerine/yogadb
+cpu: AMD Ryzen Threadripper 3960X 24-Core Processor
+BenchmarkKeyStable_Mixed_ReadsWrites
+BenchmarkKeyStable_Mixed_ReadsWrites-48    	 6932964	       196.2 ns/op	     122 B/op	       0 allocs/op
+PASS
+ok  	github.com/glycerine/yogadb	1.844s
+
+a bit faster:
+
+go test -v -run=xxx -bench BenchmarkKeyStableGet
+goos: linux
+goarch: amd64
+pkg: github.com/glycerine/yogadb
+cpu: AMD Ryzen Threadripper 3960X 24-Core Processor
+BenchmarkKeyStableGet
+BenchmarkKeyStableGet-48    	28141448	        41.36 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/glycerine/yogadb	2.179s
 
 */
