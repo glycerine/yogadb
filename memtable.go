@@ -140,11 +140,7 @@ func (m *memtable) put(kv KV, x bool) (KV, bool) {
 func (m *memtable) putBacking(kv KV, x bool) (KV, bool) {
 	switch m.kind {
 	case MemtableWormhole:
-		old, replaced := m.wh.Get(kv.Key, x)
-		if putReplaced := m.wh.Put(kv, x); putReplaced != replaced {
-			panicf("wormhole Put(%q) replaced=%v, want %v", kv.Key, putReplaced, replaced)
-		}
-		return old, replaced
+		return m.wh.Put(kv, x)
 	case MemtableKeyStable:
 		return m.ks.set(kv, x)
 	default:

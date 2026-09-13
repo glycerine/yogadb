@@ -41,10 +41,16 @@ func TestWormholeRandomizedSetGetDeleteCorrectness(t *testing.T) {
 					Vptr:  VPtr{Offset: uint64(rng.Intn(11)), Length: uint64(len(value))},
 					Hlc:   HLC(run*2048 + step + 1),
 				}
-				_, existed := model[key]
-				replaced := m.Put(kv, x)
+				wantOld, existed := model[key]
+				old, replaced := m.Put(kv, x)
 				if replaced != existed {
 					t.Fatalf("seed=0x%x run=%d step=%d Put(%q) replaced=%v want %v", seed, run, step, key, replaced, existed)
+				}
+				if existed && !equalKV(old, wantOld) {
+					t.Fatalf("seed=0x%x run=%d step=%d Put(%q) old=%#v want %#v", seed, run, step, key, old, wantOld)
+				}
+				if !existed && !equalKV(old, KV{}) {
+					t.Fatalf("seed=0x%x run=%d step=%d Put(%q) old=%#v want zero KV", seed, run, step, key, old)
 				}
 				model[key] = cloneKV(kv)
 			case op < 65:

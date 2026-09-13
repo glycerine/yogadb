@@ -36,18 +36,32 @@ func TestBasicPutGetDeleteScan(t *testing.T) {
 	m := newWormhole(wormConfig{leafCapacity: 4})
 	const x = true
 	for _, i := range []int{7, 1, 9, 3, 5, 2, 4, 6, 8, 0} {
-		if replaced := m.Put(whKV(i), x); replaced {
+		if old, replaced := m.Put(whKV(i), x); replaced || !equalKV(old, KV{}) {
 			t.Fatalf("Put(%d) replaced unexpectedly", i)
 		}
 	}
 	if got := m.Len(); got != 10 {
 		t.Fatalf("Len=%d want 10", got)
 	}
-	if !m.Put(KV{Key: whKey(3), Value: []byte("new"), Vptr: VPtr{Length: 3}, Hlc: 100}, x) {
+	old, replaced := m.Put(KV{Key: whKey(3), Value: []byte("new"), Vptr: VPtr{Length: 3}, Hlc: 100}, x)
+	if !replaced {
 		t.Fatal("overwrite did not report replaced")
+	}
+	if !equalKV(old, whKV(3)) {
+		t.Fatalf("overwrite old=%#v want %#v", old, whKV(3))
 	}
 	if got, ok := m.Get(whKey(3), x); !ok || string(got.Value) != "new" {
 		t.Fatalf("Get overwritten = %q,%v", got.Value, ok)
+	}
+	old, replaced = m.Put(KV{Key: whKey(9), Value: []byte("tail"), Vptr: VPtr{Length: 4}, Hlc: 101}, x)
+	if !replaced {
+		t.Fatal("tail overwrite did not report replaced")
+	}
+	if !equalKV(old, whKV(9)) {
+		t.Fatalf("tail overwrite old=%#v want %#v", old, whKV(9))
+	}
+	if got, ok := m.Get(whKey(9), x); !ok || string(got.Value) != "tail" {
+		t.Fatalf("Get tail overwritten = %q,%v", got.Value, ok)
 	}
 	got := collectAsc(m)
 	want := []string{"k00000", "k00001", "k00002", "k00003", "k00004", "k00005", "k00006", "k00007", "k00008", "k00009"}
@@ -198,15 +212,19 @@ func TestBuildPointIndexTracksMutation(t *testing.T) {
 		t.Fatalf("indexed Get(%q)=%#v,%v", whKey(3), got, ok)
 	}
 
-	if !m.Put(KV{Key: whKey(3), Value: []byte("after"), Vptr: VPtr{Length: 5}, Hlc: 99}, x) {
+	old, replaced := m.Put(KV{Key: whKey(3), Value: []byte("after"), Vptr: VPtr{Length: 5}, Hlc: 99}, x)
+	if !replaced {
 		t.Fatal("overwrite after BuildPointIndex did not report replaced")
+	}
+	if !equalKV(old, whKV(3)) {
+		t.Fatalf("overwrite after BuildPointIndex old=%#v want %#v", old, whKV(3))
 	}
 	got, ok = m.Get(whKey(3), x)
 	if !ok || string(got.Value) != "after" {
 		t.Fatalf("Get after indexed overwrite=%#v,%v", got, ok)
 	}
 
-	if replaced := m.Put(KV{Key: whKey(99), Value: []byte("new"), Vptr: VPtr{Length: 3}, Hlc: 199}, x); replaced {
+	if old, replaced := m.Put(KV{Key: whKey(99), Value: []byte("new"), Vptr: VPtr{Length: 3}, Hlc: 199}, x); replaced || !equalKV(old, KV{}) {
 		t.Fatal("new insert after BuildPointIndex reported replaced")
 	}
 	got, ok = m.Get(whKey(99), x)
@@ -268,7 +286,7 @@ func TestClearReusesStorePages(t *testing.T) {
 		t.Fatalf("clear did not zero old KV slot: %#v", kv)
 	}
 
-	if replaced := m.Put(whKV(100), x); replaced {
+	if old, replaced := m.Put(whKV(100), x); replaced || !equalKV(old, KV{}) {
 		t.Fatal("first Put after clear reported replaced")
 	}
 	got, ok := m.Get(whKey(100), x)

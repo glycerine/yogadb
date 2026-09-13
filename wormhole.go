@@ -260,15 +260,15 @@ func (m *wormhole) BuildPointIndex(x bool) {
 	m.point.Store(&pointIndex{base: byKey})
 }
 
-func (m *wormhole) Put(kv KV, x bool) (replaced bool) {
+func (m *wormhole) Put(kv KV, x bool) (old KV, replaced bool) {
 	if x {
 		return m.putExclusive(kv)
 	}
 
 	key := kv.Key
 
-	if replaced, done := m.putTailAppendFast(kv); done {
-		return replaced
+	if old, replaced, done := m.putTailAppendFast(kv); done {
+		return old, replaced
 	}
 
 	for {
@@ -283,6 +283,9 @@ func (m *wormhole) Put(kv KV, x bool) (replaced bool) {
 		canStayReadLocked := found || (pos > 0 && len(l.items) < m.leafCap)
 		if canStayReadLocked {
 			oldLen := len(l.items)
+			if found {
+				old = m.store.get(l.items[pos])
+			}
 			kvIdx := m.appendKV(kv)
 			replaced = l.putAt(pos, found, kvIdx)
 			if !replaced && pos == oldLen {
@@ -294,7 +297,7 @@ func (m *wormhole) Put(kv KV, x bool) (replaced bool) {
 			if !replaced {
 				m.liveKeys.Add(1)
 			}
-			return replaced
+			return old, replaced
 		}
 		l.mu.Unlock()
 		m.mu.RUnlock()
@@ -304,6 +307,9 @@ func (m *wormhole) Put(kv KV, x bool) (replaced bool) {
 		l = m.leaves[idx]
 		l.mu.Lock()
 		pos, found = m.findInLeaf(l, key)
+		if found {
+			old = m.store.get(l.items[pos])
+		}
 		kvIdx := m.appendKV(kv)
 		replaced = l.putAt(pos, found, kvIdx)
 		m.updatePointIndexPut(key, kvIdx, x)
@@ -316,20 +322,23 @@ func (m *wormhole) Put(kv KV, x bool) (replaced bool) {
 		if !replaced {
 			m.liveKeys.Add(1)
 		}
-		return replaced
+		return old, replaced
 	}
 }
 
-func (m *wormhole) putExclusive(kv KV) (replaced bool) {
+func (m *wormhole) putExclusive(kv KV) (old KV, replaced bool) {
 	key := kv.Key
 
-	if replaced, done := m.putTailAppendFastExclusive(kv); done {
-		return replaced
+	if old, replaced, done := m.putTailAppendFastExclusive(kv); done {
+		return old, replaced
 	}
 
 	idx := m.findLeafIndexLocked(key)
 	l := m.leaves[idx]
 	pos, found := m.findInLeaf(l, key)
+	if found {
+		old = m.store.get(l.items[pos])
+	}
 	kvIdx := m.appendKV(kv)
 	replaced = l.putAt(pos, found, kvIdx)
 	m.updatePointIndexPut(key, kvIdx, true)
@@ -340,30 +349,30 @@ func (m *wormhole) putExclusive(kv KV) (replaced bool) {
 	if !replaced {
 		m.liveKeys.Add(1)
 	}
-	return replaced
+	return old, replaced
 }
 
-func (m *wormhole) putTailAppendFast(kv KV) (replaced bool, done bool) {
+func (m *wormhole) putTailAppendFast(kv KV) (old KV, replaced bool, done bool) {
 	key := kv.Key
 
 	m.mu.RLock()
 	l := m.tail
 	if l == nil {
 		m.mu.RUnlock()
-		return false, false
+		return KV{}, false, false
 	}
 
 	l.mu.Lock()
 	if l.next != nil || (l.anchor != "" && key < l.anchor) {
 		l.mu.Unlock()
 		m.mu.RUnlock()
-		return false, false
+		return KV{}, false, false
 	}
 	n := len(l.items)
 	if n == 0 {
 		l.mu.Unlock()
 		m.mu.RUnlock()
-		return false, false
+		return KV{}, false, false
 	}
 
 	lastKey := l.high
@@ -376,22 +385,23 @@ func (m *wormhole) putTailAppendFast(kv KV) (replaced bool, done bool) {
 		l.mu.Unlock()
 		m.mu.RUnlock()
 		m.liveKeys.Add(1)
-		return false, true
+		return KV{}, false, true
 	case key == lastKey:
+		old = m.store.get(l.items[n-1])
 		kvIdx := m.appendKV(kv)
 		l.items[n-1] = kvIdx
 		l.high = key
 		m.updatePointIndexPut(key, kvIdx, false)
 		l.mu.Unlock()
 		m.mu.RUnlock()
-		return true, true
+		return old, true, true
 	case key > lastKey:
 		l.mu.Unlock()
 		m.mu.RUnlock()
 	default:
 		l.mu.Unlock()
 		m.mu.RUnlock()
-		return false, false
+		return KV{}, false, false
 	}
 
 	m.mu.Lock()
@@ -408,7 +418,7 @@ func (m *wormhole) putTailAppendFast(kv KV) (replaced bool, done bool) {
 			l.mu.Unlock()
 			m.mu.Unlock()
 			m.liveKeys.Add(1)
-			return false, true
+			return KV{}, false, true
 		}
 		lastKey = l.high
 		switch {
@@ -420,34 +430,35 @@ func (m *wormhole) putTailAppendFast(kv KV) (replaced bool, done bool) {
 			l.mu.Unlock()
 			m.mu.Unlock()
 			m.liveKeys.Add(1)
-			return false, true
+			return KV{}, false, true
 		case key > lastKey:
 			kvIdx := m.appendTailLeafLocked(l, kv)
 			m.updatePointIndexPut(key, kvIdx, false)
 			l.mu.Unlock()
 			m.mu.Unlock()
 			m.liveKeys.Add(1)
-			return false, true
+			return KV{}, false, true
 		case key == lastKey:
+			old = m.store.get(l.items[n-1])
 			kvIdx := m.appendKV(kv)
 			l.items[n-1] = kvIdx
 			l.high = key
 			m.updatePointIndexPut(key, kvIdx, false)
 			l.mu.Unlock()
 			m.mu.Unlock()
-			return true, true
+			return old, true, true
 		}
 		l.mu.Unlock()
 	}
 	m.mu.Unlock()
-	return false, false
+	return KV{}, false, false
 }
 
-func (m *wormhole) putTailAppendFastExclusive(kv KV) (replaced bool, done bool) {
+func (m *wormhole) putTailAppendFastExclusive(kv KV) (old KV, replaced bool, done bool) {
 	key := kv.Key
 	l := m.tail
 	if l == nil || l.next != nil || (l.anchor != "" && key < l.anchor) {
-		return false, false
+		return KV{}, false, false
 	}
 
 	n := len(l.items)
@@ -458,7 +469,7 @@ func (m *wormhole) putTailAppendFastExclusive(kv KV) (replaced bool, done bool) 
 		l.items = append(l.items, kvIdx)
 		m.updatePointIndexPut(key, kvIdx, true)
 		m.liveKeys.Add(1)
-		return false, true
+		return KV{}, false, true
 	}
 
 	lastKey := l.high
@@ -469,28 +480,29 @@ func (m *wormhole) putTailAppendFastExclusive(kv KV) (replaced bool, done bool) 
 		l.high = key
 		m.updatePointIndexPut(key, kvIdx, true)
 		m.liveKeys.Add(1)
-		return false, true
+		return KV{}, false, true
 	case key > lastKey:
 		kvIdx := m.appendTailLeafLocked(l, kv)
 		m.updatePointIndexPut(key, kvIdx, true)
 		m.liveKeys.Add(1)
-		return false, true
+		return KV{}, false, true
 	case key == lastKey:
+		old = m.store.get(l.items[n-1])
 		kvIdx := m.appendKV(kv)
 		l.items[n-1] = kvIdx
 		l.high = key
 		m.updatePointIndexPut(key, kvIdx, true)
-		return true, true
+		return old, true, true
 	default:
-		return false, false
+		return KV{}, false, false
 	}
 }
 
-func (m *wormhole) Get(key string, x bool) (KV, bool) {
+func (m *wormhole) Get(key string, x bool) (got KV, found bool) {
 	if idx := m.point.Load(); idx != nil {
 		if idx.delta == nil {
-			kvIdx, found := idx.base[key]
-			if !found {
+			kvIdx, found1 := idx.base[key]
+			if !found1 {
 				return KV{}, false
 			}
 			return m.store.get(kvIdx), true
@@ -512,10 +524,10 @@ func (m *wormhole) Get(key string, x bool) (KV, bool) {
 	l.mu.RLock()
 	m.mu.RUnlock()
 
-	pos, found := m.findInLeafForRead(l, key)
-	if !found {
+	pos, found2 := m.findInLeafForRead(l, key)
+	if !found2 {
 		l.mu.RUnlock()
-		return KV{}, false
+		return
 	}
 	out := m.store.get(l.items[pos])
 	l.mu.RUnlock()
