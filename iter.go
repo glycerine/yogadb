@@ -302,13 +302,13 @@ func (it *Iter) currentValueBytes(src []byte) []byte {
 // memtableSeekGE does a one-shot seek in the active memtable: finds the first item >= target.
 // If strict is true, skips exact matches (finds first item > target).
 func memtableSeekGE(mt *memtable, target string, strict bool, x bool) (KV, bool) {
-	return mt.seekGE(target, strict)
+	return mt.seekGE(target, strict, x)
 }
 
 // memtableSeekLE does a one-shot seek in the active memtable: finds the last item <= target.
 // If strict is true, skips exact matches (finds last item < target).
 func memtableSeekLE(mt *memtable, target string, strict bool, x bool) (KV, bool) {
-	return mt.seekLE(target, strict)
+	return mt.seekLE(target, strict, x)
 }
 
 // ====================== stateful FlexSpace cursor ======================

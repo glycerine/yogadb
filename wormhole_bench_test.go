@@ -69,10 +69,11 @@ func newWormTidwallBtree() *tbtree.BTreeG[KV] {
 func BenchmarkWormholePut(b *testing.B) {
 	m := newWormhole(wormConfig{})
 	kvs := wormBenchKVs(b.N, 0)
+	const x = true
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m.Put(kvs[i])
+		m.Put(kvs[i], x)
 	}
 }
 
@@ -101,15 +102,16 @@ func BenchmarkPebbleSkipPut(b *testing.B) {
 
 func BenchmarkWormholeAscendingScan(b *testing.B) {
 	const n = 65536
+	const x = true
 	m := newWormhole(wormConfig{})
 	for i := 0; i < n; i++ {
-		m.Put(wormBenchKV(i))
+		m.Put(wormBenchKV(i), x)
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		count := 0
-		m.Ascend("", func(KV) bool {
+		m.Ascend("", x, func(KV) bool {
 			count++
 			return true
 		})
@@ -164,9 +166,10 @@ func BenchmarkPebbleSkipAscendingScan(b *testing.B) {
 
 func BenchmarkWormhole_Mixed_ReadsWrites(b *testing.B) {
 	m := newWormhole(wormConfig{})
+	const x = true
 	initial := wormBenchKVs(4096, 0)
 	for i := 0; i < 4096; i++ {
-		m.Put(initial[i])
+		m.Put(initial[i], x)
 	}
 	writes := wormBenchKVs((b.N+3)/4, 4096)
 	readKeys := wormBenchReadKeys(4095)
@@ -175,10 +178,10 @@ func BenchmarkWormhole_Mixed_ReadsWrites(b *testing.B) {
 	writeIdx := 0
 	for i := 0; i < b.N; i++ {
 		if i%4 == 0 {
-			m.Put(writes[writeIdx])
+			m.Put(writes[writeIdx], x)
 			writeIdx++
 		} else {
-			_, _ = m.Get(readKeys[i&4095])
+			_, _ = m.Get(readKeys[i&4095], x)
 		}
 	}
 }
@@ -279,16 +282,17 @@ func BenchmarkWormholeGet(b *testing.B) {
 	keys := wormBenchmarkKeyStableKeys(1 << 16)
 	value := []byte("value")
 	s := newWormhole(wormConfig{})
+	const x = true
 
 	for i, key := range keys {
-		s.Put(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)})
+		s.Put(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)}, x)
 	}
-	s.BuildPointIndex()
+	s.BuildPointIndex(x)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		kv, found := s.Get(keys[i&(len(keys)-1)])
+		kv, found := s.Get(keys[i&(len(keys)-1)], x)
 		if !found {
 			b.Fatalf("get(%q) was not found", keys[i&(len(keys)-1)])
 		}
@@ -300,15 +304,16 @@ func BenchmarkWormholeGetOrdered(b *testing.B) {
 	keys := wormBenchmarkKeyStableKeys(1 << 16)
 	value := []byte("value")
 	s := newWormhole(wormConfig{})
+	const x = true
 
 	for i, key := range keys {
-		s.Put(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)})
+		s.Put(KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)}, x)
 	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		kv, found := s.Get(keys[i&(len(keys)-1)])
+		kv, found := s.Get(keys[i&(len(keys)-1)], x)
 		if !found {
 			b.Fatalf("get(%q) was not found", keys[i&(len(keys)-1)])
 		}

@@ -79,8 +79,8 @@ func (m *memtable) vtypBytes(vtyp uint64) []byte {
 // (e.g. db.go:165 in Batch.Commit)
 // Returns the previous KV for the same key and whether it was replaced.
 func (m *memtable) put(kv KV, x bool) (KV, bool) {
-	old, replaced := m.wh.Get(kv.Key)
-	if putReplaced := m.wh.Put(kv); putReplaced != replaced {
+	old, replaced := m.wh.Get(kv.Key, x)
+	if putReplaced := m.wh.Put(kv, x); putReplaced != replaced {
 		panicf("wormhole Put(%q) replaced=%v, want %v", kv.Key, putReplaced, replaced)
 	}
 	if replaced {
@@ -122,10 +122,11 @@ func (m *memtable) materializeBulk() {
 	if m.bulk.count == 0 {
 		return
 	}
+	const x = true
 	for si := range m.bulk.segments {
 		seg := &m.bulk.segments[si]
 		for i, n := 0, seg.len(); i < n; i++ {
-			m.wh.Put(seg.kv(i))
+			m.wh.Put(seg.kv(i), x)
 		}
 	}
 	m.bulk.reset()
@@ -135,27 +136,27 @@ func (m *memtable) get(key string, x bool) (KV, bool) {
 	if kv, ok := m.bulk.get(key); ok {
 		return kv, true
 	}
-	return m.wh.Get(key)
+	return m.wh.Get(key, x)
 }
 
-func (m *memtable) ascend(start string, fn func(KV) bool) {
-	m.wh.Ascend(start, fn)
+func (m *memtable) ascend(start string, x bool, fn func(KV) bool) {
+	m.wh.Ascend(start, x, fn)
 }
 
-func (m *memtable) scan(fn func(KV) bool) {
-	m.wh.Ascend("", fn)
+func (m *memtable) scan(x bool, fn func(KV) bool) {
+	m.wh.Ascend("", x, fn)
 }
 
-func (m *memtable) reverse(fn func(KV) bool) {
-	m.wh.Descend("", fn)
+func (m *memtable) reverse(x bool, fn func(KV) bool) {
+	m.wh.Descend("", x, fn)
 }
 
-func (m *memtable) seekGE(target string, strict bool) (KV, bool) {
-	return m.wh.SeekGE(target, strict)
+func (m *memtable) seekGE(target string, strict bool, x bool) (KV, bool) {
+	return m.wh.SeekGE(target, strict, x)
 }
 
-func (m *memtable) seekLE(target string, strict bool) (KV, bool) {
-	return m.wh.SeekLE(target, strict)
+func (m *memtable) seekLE(target string, strict bool, x bool) (KV, bool) {
+	return m.wh.SeekLE(target, strict, x)
 }
 
 func (m *memtable) logAppend(kv KV) error {

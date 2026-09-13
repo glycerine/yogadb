@@ -24,7 +24,8 @@ func whKV(i int) KV {
 
 func collectAsc(m *wormhole) []string {
 	var keys []string
-	m.Ascend("", func(kv KV) bool {
+	const x = true
+	m.Ascend("", x, func(kv KV) bool {
 		keys = append(keys, kv.Key)
 		return true
 	})
@@ -33,18 +34,19 @@ func collectAsc(m *wormhole) []string {
 
 func TestBasicPutGetDeleteScan(t *testing.T) {
 	m := newWormhole(wormConfig{leafCapacity: 4})
+	const x = true
 	for _, i := range []int{7, 1, 9, 3, 5, 2, 4, 6, 8, 0} {
-		if replaced := m.Put(whKV(i)); replaced {
+		if replaced := m.Put(whKV(i), x); replaced {
 			t.Fatalf("Put(%d) replaced unexpectedly", i)
 		}
 	}
 	if got := m.Len(); got != 10 {
 		t.Fatalf("Len=%d want 10", got)
 	}
-	if !m.Put(KV{Key: whKey(3), Value: []byte("new"), Vptr: VPtr{Length: 3}, Hlc: 100}) {
+	if !m.Put(KV{Key: whKey(3), Value: []byte("new"), Vptr: VPtr{Length: 3}, Hlc: 100}, x) {
 		t.Fatal("overwrite did not report replaced")
 	}
-	if got, ok := m.Get(whKey(3)); !ok || string(got.Value) != "new" {
+	if got, ok := m.Get(whKey(3), x); !ok || string(got.Value) != "new" {
 		t.Fatalf("Get overwritten = %q,%v", got.Value, ok)
 	}
 	got := collectAsc(m)
@@ -54,7 +56,7 @@ func TestBasicPutGetDeleteScan(t *testing.T) {
 	}
 
 	var desc []string
-	m.Descend("", func(kv KV) bool {
+	m.Descend("", x, func(kv KV) bool {
 		desc = append(desc, kv.Key)
 		return true
 	})
@@ -63,21 +65,22 @@ func TestBasicPutGetDeleteScan(t *testing.T) {
 		t.Fatalf("desc keys=%v want %v", desc, want)
 	}
 
-	if !m.Delete(whKey(0)) || !m.Delete(whKey(9)) || m.Delete("missing") {
+	if !m.Delete(whKey(0), x) || !m.Delete(whKey(9), x) || m.Delete("missing", x) {
 		t.Fatal("delete results not as expected")
 	}
 	if got := m.Len(); got != 8 {
 		t.Fatalf("Len after delete=%d want 8", got)
 	}
-	if _, ok := m.Get(whKey(0)); ok {
+	if _, ok := m.Get(whKey(0), x); ok {
 		t.Fatal("deleted key still found")
 	}
 }
 
 func TestDescendRange(t *testing.T) {
 	m := newWormhole(wormConfig{leafCapacity: 4})
+	const x = true
 	for i := 0; i < 10; i++ {
-		m.Put(whKV(i))
+		m.Put(whKV(i), x)
 	}
 
 	tests := []struct {
@@ -95,7 +98,7 @@ func TestDescendRange(t *testing.T) {
 
 	for _, tc := range tests {
 		var got []string
-		m.DescendRange(tc.lessOrEqual, tc.greaterThan, func(kv KV) bool {
+		m.DescendRange(tc.lessOrEqual, tc.greaterThan, x, func(kv KV) bool {
 			got = append(got, kv.Key)
 			return true
 		})
@@ -105,7 +108,7 @@ func TestDescendRange(t *testing.T) {
 	}
 
 	var early []string
-	m.DescendRange("", "", func(kv KV) bool {
+	m.DescendRange("", "", x, func(kv KV) bool {
 		early = append(early, kv.Key)
 		return len(early) < 3
 	})
@@ -119,21 +122,22 @@ func TestAgainstSortedMapModel(t *testing.T) {
 	m := newWormhole(wormConfig{leafCapacity: 8})
 	model := map[string][]byte{}
 	rng := rand.New(rand.NewSource(1))
+	const x = true
 	for step := 0; step < 5000; step++ {
 		k := whKey(rng.Intn(256))
 		switch rng.Intn(3) {
 		case 0:
 			v := []byte(fmt.Sprintf("step-%d", step))
-			m.Put(KV{Key: k, Value: v, Vptr: VPtr{Length: uint64(len(v))}, Hlc: HLC(step + 1)})
+			m.Put(KV{Key: k, Value: v, Vptr: VPtr{Length: uint64(len(v))}, Hlc: HLC(step + 1)}, x)
 			model[k] = append([]byte(nil), v...)
 		case 1:
-			got, ok := m.Get(k)
+			got, ok := m.Get(k, x)
 			want, wantOK := model[k]
 			if ok != wantOK || !bytes.Equal(got.Value, want) {
 				t.Fatalf("step %d Get(%q)=%q,%v want %q,%v", step, k, got.Value, ok, want, wantOK)
 			}
 		case 2:
-			got := m.Delete(k)
+			got := m.Delete(k, x)
 			_, want := model[k]
 			delete(model, k)
 			if got != want {
@@ -156,20 +160,21 @@ func TestAgainstSortedMapModel(t *testing.T) {
 
 func TestDeleteEmptyMiddleLeafKeepsSearchCorrect(t *testing.T) {
 	m := newWormhole(wormConfig{leafCapacity: 4})
+	const x = true
 	for i := 0; i < 7; i++ {
-		m.Put(whKV(i))
+		m.Put(whKV(i), x)
 	}
 
-	if !m.Delete(whKey(2)) || !m.Delete(whKey(3)) {
+	if !m.Delete(whKey(2), x) || !m.Delete(whKey(3), x) {
 		t.Fatal("expected deletes to remove the middle wormLeaf keys")
 	}
 	for _, i := range []int{0, 1, 4, 5, 6} {
-		got, ok := m.Get(whKey(i))
+		got, ok := m.Get(whKey(i), x)
 		if !ok || got.Key != whKey(i) {
 			t.Fatalf("Get(%q)=%#v,%v after empty wormLeaf delete", whKey(i), got, ok)
 		}
 	}
-	if _, ok := m.Get(whKey(2)); ok {
+	if _, ok := m.Get(whKey(2), x); ok {
 		t.Fatal("deleted key k00002 was found")
 	}
 
@@ -182,42 +187,44 @@ func TestDeleteEmptyMiddleLeafKeepsSearchCorrect(t *testing.T) {
 
 func TestBuildPointIndexTracksMutation(t *testing.T) {
 	m := newWormhole(wormConfig{leafCapacity: 4})
+	const x = true
 	for i := 0; i < 8; i++ {
-		m.Put(whKV(i))
+		m.Put(whKV(i), x)
 	}
-	m.BuildPointIndex()
+	m.BuildPointIndex(x)
 
-	got, ok := m.Get(whKey(3))
+	got, ok := m.Get(whKey(3), x)
 	if !ok || got.Key != whKey(3) {
 		t.Fatalf("indexed Get(%q)=%#v,%v", whKey(3), got, ok)
 	}
 
-	if !m.Put(KV{Key: whKey(3), Value: []byte("after"), Vptr: VPtr{Length: 5}, Hlc: 99}) {
+	if !m.Put(KV{Key: whKey(3), Value: []byte("after"), Vptr: VPtr{Length: 5}, Hlc: 99}, x) {
 		t.Fatal("overwrite after BuildPointIndex did not report replaced")
 	}
-	got, ok = m.Get(whKey(3))
+	got, ok = m.Get(whKey(3), x)
 	if !ok || string(got.Value) != "after" {
 		t.Fatalf("Get after indexed overwrite=%#v,%v", got, ok)
 	}
 
-	if replaced := m.Put(KV{Key: whKey(99), Value: []byte("new"), Vptr: VPtr{Length: 3}, Hlc: 199}); replaced {
+	if replaced := m.Put(KV{Key: whKey(99), Value: []byte("new"), Vptr: VPtr{Length: 3}, Hlc: 199}, x); replaced {
 		t.Fatal("new insert after BuildPointIndex reported replaced")
 	}
-	got, ok = m.Get(whKey(99))
+	got, ok = m.Get(whKey(99), x)
 	if !ok || string(got.Value) != "new" {
 		t.Fatalf("Get after indexed insert=%#v,%v", got, ok)
 	}
 
-	if !m.Delete(whKey(3)) {
+	if !m.Delete(whKey(3), x) {
 		t.Fatal("delete after BuildPointIndex failed")
 	}
-	if got, ok := m.Get(whKey(3)); ok {
+	if got, ok := m.Get(whKey(3), x); ok {
 		t.Fatalf("Get after indexed delete=%#v,true", got)
 	}
 }
 
 func TestConcurrentMixedAccess(t *testing.T) {
 	m := newWormhole(wormConfig{leafCapacity: 16})
+	const x = false
 	const writers = 8
 	const perWriter = 500
 
@@ -228,12 +235,12 @@ func TestConcurrentMixedAccess(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < perWriter; i++ {
 				id := w*perWriter + i
-				m.Put(whKV(id))
+				m.Put(whKV(id), x)
 				if i%7 == 0 {
-					_, _ = m.Get(whKey(id / 2))
+					_, _ = m.Get(whKey(id/2), x)
 				}
 				if i%19 == 0 {
-					m.Delete(whKey(id - 3))
+					m.Delete(whKey(id-3), x)
 				}
 			}
 		}(w)
@@ -244,7 +251,7 @@ func TestConcurrentMixedAccess(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < 300; i++ {
 				prev := ""
-				m.Ascend("", func(kv KV) bool {
+				m.Ascend("", x, func(kv KV) bool {
 					if prev != "" && prev >= kv.Key {
 						t.Errorf("scan out of order: %q >= %q", prev, kv.Key)
 						return false

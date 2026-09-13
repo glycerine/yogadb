@@ -969,17 +969,18 @@ func BenchmarkMemtableInitialLoadThenOrderedScan(b *testing.B) {
 
 		b.Run(fmt.Sprintf("wormhole_%d", n), func(b *testing.B) {
 			total := 0
+			const x = true
 
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				m := newWormhole(wormConfig{})
 				for _, kv := range kvs {
-					m.Put(kv)
+					m.Put(kv, x)
 				}
 
 				count := 0
-				m.Ascend("", func(kv KV) bool {
+				m.Ascend("", x, func(kv KV) bool {
 					total += len(kv.Key) + len(kv.Value)
 					count++
 					return true
