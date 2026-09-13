@@ -5781,32 +5781,176 @@ func (db *FlexDB) flushMemtable(x bool) error {
 	if m.bulk.count > 0 {
 		return fmt.Errorf("flexdb: unmaterialized initial bulk data reached normal memtable flush; call AllowReads before general writes")
 	}
-	var nh memSparseIndexTreeHandler
-	batch := make([]KV, 0, memtableFlushBatch)
+	return db.flushMemtableByAnchor(m, x)
+}
+
+func (db *FlexDB) flushMemtableByAnchor(m *memtable, x bool) error {
+	if db.tree == nil || db.tree.root == nil {
+		return nil
+	}
+
+	group := make([]KV, 0, memtableFlushBatch)
+	var groupEnd string
+	var haveGroupEnd bool
 	var err error
 
-	m.ascend("", x, func(item KV) bool {
-		batch = append(batch, item)
-		if len(batch) >= memtableFlushBatch {
-			for _, kv := range batch {
-				if err = db.putPassthrough(kv, &nh); err != nil {
-					err = fmt.Errorf("putPassthrough key=%q: %w", kv.Key, err)
-					return false
-				}
-			}
-			batch = batch[:0]
+	nextAnchorKey := func(nh *memSparseIndexTreeHandler) (string, bool) {
+		if nh == nil || nh.node == nil {
+			return "", false
 		}
+		if nh.idx+1 < nh.node.count {
+			anchor := nh.node.anchors[nh.idx+1]
+			return anchor.key, anchor != nil
+		}
+		for node := nh.node.next; node != nil; node = node.next {
+			if node.count == 0 {
+				continue
+			}
+			anchor := node.anchors[0]
+			return anchor.key, anchor != nil
+		}
+		return "", false
+	}
+
+	startGroup := func(item KV) {
+		group = append(group[:0], item)
+		var nh memSparseIndexTreeHandler
+		db.tree.treeNodeHandlerNextAnchor(&nh, item.Key)
+		groupEnd, haveGroupEnd = nextAnchorKey(&nh)
+	}
+
+	flushGroup := func() bool {
+		if len(group) == 0 {
+			return true
+		}
+		var nh memSparseIndexTreeHandler
+		if err = db.putPassthroughBatch(group, &nh); err != nil {
+			return false
+		}
+		group = group[:0]
+		groupEnd = ""
+		haveGroupEnd = false
+		return true
+	}
+
+	m.ascend("", x, func(item KV) bool {
+		if len(group) == 0 {
+			startGroup(item)
+			return true
+		}
+		if len(group) >= flexdbSparseIntervalCount || (haveGroupEnd && item.Key >= groupEnd) {
+			if !flushGroup() {
+				return false
+			}
+			startGroup(item)
+			return true
+		}
+		group = append(group, item)
 		return true
 	})
 	if err != nil {
 		return err
 	}
-	for _, kv := range batch {
-		if err = db.putPassthrough(kv, &nh); err != nil {
+	if !flushGroup() {
+		return err
+	}
+	return nil
+}
+
+func (db *FlexDB) putPassthroughBatch(kvs []KV, nh *memSparseIndexTreeHandler) error {
+	if len(kvs) == 0 {
+		return nil
+	}
+	if len(kvs) == 1 {
+		return db.putPassthrough(kvs[0], nh)
+	}
+
+	db.tree.treeNodeHandlerNextAnchor(nh, kvs[0].Key)
+	anchor := nh.node.anchors[nh.idx]
+	if anchor == nil || anchor.psize == 0 {
+		return db.putPassthroughBatchFallback(kvs)
+	}
+	anchorLoff := uint64(anchor.loff + nh.shift)
+	partition := db.cache.getPartition(anchor)
+	fce, err := partition.getEntry(anchor, anchorLoff, db)
+	if err != nil {
+		partition.releaseEntry(fce)
+		return err
+	}
+
+	merged, size := intervalCacheEntryMergeUpsertSorted(fce.kvs[:fce.count], kvs)
+	fitTarget := int(anchor.psize)
+	if fitTarget < slottedPageMaxSize {
+		fitTarget = slottedPageMaxSize
+	}
+	encodedSize := len(slottedPageEncode(merged))
+
+	if len(merged) <= flexdbSparseIntervalCount && encodedSize <= fitTarget {
+		partition.replaceEntryContents(fce, merged, size)
+		db.putPassthroughMarkDirty(nh, anchor, fce)
+		for i := range kvs {
+			db.rememberKeyBloomLocked(kvs[i].Key)
+		}
+		partition.releaseEntry(fce)
+		return nil
+	}
+
+	if len(merged) <= flexdbSparseIntervalCount*2 {
+		leftCount := len(merged) - len(merged)/2
+		if len(slottedPageEncode(merged[:leftCount])) <= slottedPageMaxSize &&
+			len(slottedPageEncode(merged[leftCount:])) <= slottedPageMaxSize {
+			partition.replaceEntryContents(fce, merged, size)
+			if err := db.treeInsertAnchor(nh, partition, fce); err != nil {
+				partition.releaseEntry(fce)
+				return err
+			}
+			db.putPassthroughMarkDirty(nh, anchor, fce)
+			for i := range kvs {
+				db.rememberKeyBloomLocked(kvs[i].Key)
+			}
+			partition.releaseEntry(fce)
+			return nil
+		}
+	}
+
+	partition.releaseEntry(fce)
+	return db.putPassthroughBatchFallback(kvs)
+}
+
+func (db *FlexDB) putPassthroughBatchFallback(kvs []KV) error {
+	var nh memSparseIndexTreeHandler
+	for _, kv := range kvs {
+		if err := db.putPassthrough(kv, &nh); err != nil {
 			return fmt.Errorf("putPassthrough key=%q: %w", kv.Key, err)
 		}
 	}
 	return nil
+}
+
+func intervalCacheEntryMergeUpsertSorted(existing []KV, pending []KV) ([]KV, int) {
+	out := make([]KV, 0, len(existing)+len(pending))
+	i, j := 0, 0
+	for i < len(existing) && j < len(pending) {
+		switch {
+		case existing[i].Key < pending[j].Key:
+			out = append(out, existing[i])
+			i++
+		case existing[i].Key > pending[j].Key:
+			out = append(out, pending[j])
+			j++
+		default:
+			out = append(out, pending[j])
+			i++
+			j++
+		}
+	}
+	out = append(out, existing[i:]...)
+	out = append(out, pending[j:]...)
+	size := 0
+	for i := range out {
+		size += kvSizeApprox(&out[i])
+	}
+	return out, size
 }
 
 func (db *FlexDB) flushMemtableBulkInitial(m *memtable, x bool) (bool, error) {
