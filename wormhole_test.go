@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
-	"sync"
 	"testing"
 )
 
@@ -301,55 +300,6 @@ func TestClearReusesStorePages(t *testing.T) {
 	}
 }
 
-func TestConcurrentMixedAccess(t *testing.T) {
-	m := newWormhole(wormConfig{leafCapacity: 16})
-	const x = false
-	const writers = 8
-	const perWriter = 500
-
-	var wg sync.WaitGroup
-	for w := 0; w < writers; w++ {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
-			for i := 0; i < perWriter; i++ {
-				id := w*perWriter + i
-				m.Put(whKV(id), x)
-				if i%7 == 0 {
-					_, _ = m.Get(whKey(id/2), x)
-				}
-				if i%19 == 0 {
-					m.Delete(whKey(id-3), x)
-				}
-			}
-		}(w)
-	}
-	for r := 0; r < 4; r++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 300; i++ {
-				prev := ""
-				m.Ascend("", x, func(kv KV) bool {
-					if prev != "" && prev >= kv.Key {
-						t.Errorf("scan out of order: %q >= %q", prev, kv.Key)
-						return false
-					}
-					prev = kv.Key
-					return true
-				})
-			}
-		}()
-	}
-	wg.Wait()
-
-	keys := collectAsc(m)
-	for i := 1; i < len(keys); i++ {
-		if keys[i-1] >= keys[i] {
-			t.Fatalf("final keys out of order at %d: %q >= %q", i, keys[i-1], keys[i])
-		}
-	}
-	if int64(len(keys)) != m.Len() {
-		t.Fatalf("scan count=%d Len=%d", len(keys), m.Len())
-	}
-}
+// No x=false Put/Delete concurrency test belongs here: YogaDB never writes a
+// memtable without exclusive access. Puts and deletes happen while holding
+// FlexDB.topMutRW.Lock(), so wormhole writes always arrive with x=true.

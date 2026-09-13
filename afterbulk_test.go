@@ -365,4 +365,20 @@ db.go:1649 [pid 1143487] 2026-09-13 07:33:53.226589245 +0000 UTC using cfg.Memta
 afterbulk_test.go:141 [pid 1143487] 2026-09-13 07:34:03.989695363 +0000 UTC end new writes: HeapAlloc = 2_438_294_680 (diff: 317_257_656);  HeapInuse = 2_580_242_432 (diff: 312_655_872)
 
 afterbulk_test.go:152 [pid 1143487] 2026-09-13 07:34:04.126776690 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 536273.7237336345 writes/sec
+
+----
+keystable still a bit faster at lots of writes, but only about 5% faster (26/536 == 0.0485):
+
+-*- mode: compilation; default-directory: "~/yogadb/" -*-
+Compilation started at Sun Sep 13 02:40:08
+
+go test -v -run After_Bulk
+=== RUN   Test_Writes_Occuring_After_Bulk_Load_YogaDB
+
+db.go:1649 [pid 1147678] 2026-09-13 07:40:12.655565731 +0000 UTC using cfg.MemtableKind = keystable
+
+afterbulk_test.go:141 [pid 1147678] 2026-09-13 07:40:23.321866412 +0000 UTC end new writes: HeapAlloc = 2_544_389_496 (diff: 423_759_728);  HeapInuse = 2_686_009_344 (diff: 419_340_288)
+
+afterbulk_test.go:152 [pid 1147678] 2026-09-13 07:40:23.471622575 +0000 UTC after bulkload terminated with AllowReads: yogadb insert 562110.3014525231 writes/sec
+
 */
