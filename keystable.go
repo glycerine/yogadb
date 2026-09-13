@@ -59,9 +59,9 @@ import (
 // replace keyStable: HeapAlloc diff 311,687,688; HeapInuse diff 307,388,416
 // replace wormhole:  HeapAlloc diff 310_157_760; HeapInuse diff 300_515_328
 //
-// conclude: wormhole only wins the synthetic mixed benchmark (1.38x faster),
-// but keyStable crushes Set, crushes initial-load+ordered-scan,
-// and wins both After_Bulk tests.
+// conclude: wormhole wins the synthetic mixed reads/write benchmark (2x faster),
+// but keyStable has 2.55x better point Set(Put) writes, and 4-11% faster
+// batch writes in the After_Bulk tests.
 //
 // What is keyStable? A key stable is a place to keep your keys
 // when you think of them like horses.
