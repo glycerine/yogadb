@@ -8,23 +8,26 @@ import (
 	"github.com/cespare/xxhash/v2"
 )
 
+// keyStable and wormhole are our two choices for YogaDB's memtable.
+// A memtable accumulates key/value pairs in memory before being flushed
+// and cleared during the persistence to WAL and disk.
+//
 // Currently our wormhole has 2x better performance on frequently
-// mixed and interleaved reads and writes, but keystable is
+// mixed and interleaved reads and writes, but our keyStable is
 // better with batches of writes and the batches of reads;
-// as well as point sets (Puts).
+// as well as point sets (Puts). YogaDB currently optimizes for
+// batches of writes and batches of reads, so keyStable is the
+// default. The wormhole can be used instead by setting a Config
+// option at startup if need be.
 //
 // compare:
 // go test -v -run=xxx -bench BenchmarkWormhole_Mixed_ReadsWrites   67.8 ns/op      23 B/op ; 2x faster
-// go test -v -run=xxx -bench BenchmarkKeyStable_Mixed_ReadsWrites   152 ns/op     117 B/op
-// 50% load self-managed hash chain: (worse)
-// BenchmarkKeyStable_Mixed_ReadsWrites-48     7557370       148.1 ns/op     128 B/op       0 allocs/op
+// go test -v -run=xxx -bench BenchmarkKeyStable_Mixed_ReadsWrites   148.1 ns/op     128 B/op
 //
 // BenchmarkWormholeGet-48      6712690        162.7 ns/op       0 B/op       0 allocs/op ; 4x slower
 // note:
 // BenchmarkWormholeGet-48     31249660        38.24 ns/op       0 B/op       0 allocs/op (if s.BuildPointIndex(x) called, but that is cheating becasue the mixed read/write bench does not call s.BuildPointIndex(x)).
 //
-// BenchmarkKeyStableGet-48    21890116        46.09 ns/op       0 B/op       0 allocs/op
-// 50% load self-managed hash chain:
 // BenchmarkKeyStableGet-48    35613524        33.46 ns/op       0 B/op       0 allocs/op
 //
 // more thoroughly A/B:
@@ -102,7 +105,7 @@ import (
 // set(), get(), and clear(); and ascend/descend ranges.
 type keyStable struct {
 
-	// kvs is only appended to, or overwritten.
+	// kvs is only appended to or overwritten, never moved.
 	kvs          []KV     // stable slot storage.
 	hashes       []uint64 // parallel to kvs. hashes[i] holds the hash of kvs[i].Key
 	nextSameHash []int    // collision chain for headmap; parallel to kvs.
