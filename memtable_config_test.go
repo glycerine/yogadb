@@ -7,7 +7,7 @@ import (
 )
 
 func TestConfigMemtableKindSelectsBackingStore(t *testing.T) {
-	for _, kind := range []MemtableKind{MemtableWormhole, MemtableKeyStable} {
+	for _, kind := range []MemtableKind{MemtableWormhole, MemtableKeyStable, MemtableUart} {
 		t.Run(kind.String(), func(t *testing.T) {
 			db, _ := openTestDB(t, &Config{
 				DisableBackgroundFlush: true,

@@ -1119,10 +1119,13 @@ const (
 	// most other workloads, the keyStable will be faster.
 	// See the top of keystable.go for benchmark summary.
 	MemtableWormhole MemtableKind = 1
+
+	// MemtableUart uses github.com/glycerine/uart's Adaptive Radix Tree.
+	MemtableUart MemtableKind = 2
 )
 
 func (k MemtableKind) valid() bool {
-	return k == MemtableWormhole || k == MemtableKeyStable
+	return k == MemtableWormhole || k == MemtableKeyStable || k == MemtableUart
 }
 
 func (k MemtableKind) String() string {
@@ -1131,6 +1134,8 @@ func (k MemtableKind) String() string {
 		return "wormhole"
 	case MemtableKeyStable:
 		return "keystable"
+	case MemtableUart:
+		return "uart"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(k))
 	}
@@ -1195,8 +1200,8 @@ type Config struct {
 	BackgroundFlushInterval time.Duration
 
 	// MemtableKind selects the in-memory table used for ordinary writes after
-	// AllowReads. The zero value is MemtableWormhole. Set MemtableKeyStable
-	// to compare against the older keyStable implementation.
+	// AllowReads. The zero value is MemtableKeyStable. Set MemtableWormhole or
+	// MemtableUart to compare against the alternate ordered tables.
 	MemtableKind MemtableKind
 
 	// PaddedSplits controls whether treeInsertAnchor pads both split

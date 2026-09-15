@@ -19,6 +19,7 @@ type memtable struct {
 	// backing in-memory ordered write buffer.
 	wh *wormhole
 	ks *keyStable
+	ut *uartMemtable
 
 	// bulk is used only for pristine initial batch loads. It
 	// avoid per-key sorted-table insertion until a read requires materialization or
@@ -62,6 +63,8 @@ func (m *memtable) initBacking() {
 		m.wh = newWormhole(wormConfig{})
 	case MemtableKeyStable:
 		m.ks = newKeyStable(1024)
+	case MemtableUart:
+		m.ut = newUartMemtable()
 	default:
 		panicf("invalid memtable kind: %v", m.kind)
 	}
@@ -80,6 +83,12 @@ func (m *memtable) resetBacking(x bool) {
 			m.ks = newKeyStable(1024)
 		} else {
 			m.ks.clear(x)
+		}
+	case MemtableUart:
+		if m.ut == nil {
+			m.ut = newUartMemtable()
+		} else {
+			m.ut.clear(x)
 		}
 	default:
 		panicf("invalid memtable kind: %v", m.kind)
@@ -106,6 +115,8 @@ func (m *memtable) activeLen() int64 {
 		return m.wh.Len()
 	case MemtableKeyStable:
 		return int64(m.ks.Len())
+	case MemtableUart:
+		return int64(m.ut.Len())
 	default:
 		panicf("invalid memtable kind: %v", m.kind)
 		return 0
@@ -143,6 +154,8 @@ func (m *memtable) putBacking(kv KV, x bool) (KV, bool) {
 		return m.wh.Put(kv, x)
 	case MemtableKeyStable:
 		return m.ks.set(kv, x)
+	case MemtableUart:
+		return m.ut.Put(kv, x)
 	default:
 		panicf("invalid memtable kind: %v", m.kind)
 		return KV{}, false
@@ -197,6 +210,8 @@ func (m *memtable) get(key string, x bool) (KV, bool) {
 		return m.wh.Get(key, x)
 	case MemtableKeyStable:
 		return m.ks.get(key, x)
+	case MemtableUart:
+		return m.ut.Get(key, x)
 	default:
 		panicf("invalid memtable kind: %v", m.kind)
 		return KV{}, false
@@ -209,6 +224,8 @@ func (m *memtable) ascend(start string, x bool, fn func(KV) bool) {
 		m.wh.Ascend(start, x, fn)
 	case MemtableKeyStable:
 		m.ks.Ascend(x, KV{Key: start}, fn)
+	case MemtableUart:
+		m.ut.Ascend(start, x, fn)
 	default:
 		panicf("invalid memtable kind: %v", m.kind)
 	}
@@ -220,6 +237,8 @@ func (m *memtable) scan(x bool, fn func(KV) bool) {
 		m.wh.Ascend("", x, fn)
 	case MemtableKeyStable:
 		m.ks.Scan(x, fn)
+	case MemtableUart:
+		m.ut.Scan(x, fn)
 	default:
 		panicf("invalid memtable kind: %v", m.kind)
 	}
@@ -231,6 +250,8 @@ func (m *memtable) reverse(x bool, fn func(KV) bool) {
 		m.wh.Descend("", x, fn)
 	case MemtableKeyStable:
 		m.ks.Reverse(x, fn)
+	case MemtableUart:
+		m.ut.Reverse(x, fn)
 	default:
 		panicf("invalid memtable kind: %v", m.kind)
 	}
@@ -242,6 +263,8 @@ func (m *memtable) seekGE(target string, strict bool, x bool) (KV, bool) {
 		return m.wh.SeekGE(target, strict, x)
 	case MemtableKeyStable:
 		return m.ks.seekGE(target, strict, x)
+	case MemtableUart:
+		return m.ut.SeekGE(target, strict, x)
 	default:
 		panicf("invalid memtable kind: %v", m.kind)
 		return KV{}, false
@@ -254,6 +277,8 @@ func (m *memtable) seekLE(target string, strict bool, x bool) (KV, bool) {
 		return m.wh.SeekLE(target, strict, x)
 	case MemtableKeyStable:
 		return m.ks.seekLE(target, strict, x)
+	case MemtableUart:
+		return m.ut.SeekLE(target, strict, x)
 	default:
 		panicf("invalid memtable kind: %v", m.kind)
 		return KV{}, false

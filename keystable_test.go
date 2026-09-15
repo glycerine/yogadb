@@ -993,6 +993,31 @@ func BenchmarkMemtableInitialLoadThenOrderedScan(b *testing.B) {
 			}
 			keyStableBenchInt = total
 		})
+
+		b.Run(fmt.Sprintf("uart_%d", n), func(b *testing.B) {
+			total := 0
+			const x = true
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				m := newUartMemtable()
+				for _, kv := range kvs {
+					m.Put(kv, x)
+				}
+
+				count := 0
+				m.Scan(x, func(kv KV) bool {
+					total += len(kv.Key) + len(kv.Value)
+					count++
+					return true
+				})
+				if count != n {
+					b.Fatalf("ordered scan count=%d want %d", count, n)
+				}
+			}
+			keyStableBenchInt = total
+		})
 	}
 }
 
