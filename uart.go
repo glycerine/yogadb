@@ -27,14 +27,14 @@ Benchmark command used:
 
 Medians on this machine, darwin/amd64 Intel i7-1068NG7:
 
-| Workload            | keyStable   | wormhole    | uart       |
-|---------------------|-------------|-------------|------------|
-| Put                 | 125 ns/op   | 101 ns/op   | 502 ns/op  |
-| Mixed reads/writes  | 138 ns/op   | 66.8 ns/op  | 227 ns/op  |
-| Point get ordered   | 54.7 ns/op  | 232.5 ns/op | 56.5 ns/op |
-| Ascending scan, 65K | 0.527 ms/op | 0.514 ms/op | 1.39 ms/op |
-| Build+scan, 4K      | 1.04 ms/op  | 1.21 ms/op  | 4.47 ms/op |
-| Build+scan, 65K     | 31.7 ms/op  | 26.4 ms/op  | 156.5 ms/op|
+| Workload            | keyStable   | wormhole    | uart       | uart conclusion
+|---------------------|-------------|-------------|------------|--------------------
+| Put                 | 125 ns/op   | 101 ns/op   | 502 ns/op  | 4x - 5x slower
+| Mixed reads/writes  | 138 ns/op   | 66.8 ns/op  | 227 ns/op  | 1.6x - 3.3x slower
+| Point get ordered   | 54.7 ns/op  | 232.5 ns/op | 56.5 ns/op | tied with keystable
+| Ascending scan, 65K | 0.527 ms/op | 0.514 ms/op | 1.39 ms/op | 2.6x slower
+| Build+scan, 4K      | 1.04 ms/op  | 1.21 ms/op  | 4.47 ms/op | 3.7x slower
+| Build+scan, 65K     | 31.7 ms/op  | 26.4 ms/op  | 156.5 ms/op| 5.0x slower
 
 Takeaway: `uart` is already excellent for point reads, essentially tied with keyStable and about 4x faster than wormhole without its point index. The current YogaDB wrapper is write-heavy, though: `uart` put is about 4-5x slower than wormhole/keyStable here and allocates `176 B/op, 1 alloc/op`, mainly from storing `KV` through `any` and doing find-before-insert to recover the old value. For this first pass, wormhole still owns mixed workloads; keyStable remains the best all-around write/read baseline; `uart` looks promising if we can reduce value boxing and add a more direct replacement API or bulk path.
 */
