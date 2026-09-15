@@ -69,6 +69,18 @@ import (
 // but keyStable has 2.55x better point Set(Put) writes, and 4-11% faster
 // batch writes in the After_Bulk tests, and 4x faster Get point queries.
 //
+// later runs on linux, as one table:
+// Linux: `amd64`, AMD Ryzen Threadripper 3960X
+//
+// | Workload           | keyStable   | wormhole
+// |--------------------|-------------|-------------
+// | Put                | 36.13 ns/op | 102.1 ns/op
+// | Mixed reads/writes | 149.3 ns/op |  63.7 ns/op
+// | Point get          | 35.40 ns/op | 167.8 ns/op
+//
+// | Build+scan, 4K     | 1.53 ms/op  |   1.84  ms/op
+// | Build+scan, 65K    | 24.8 ms/op  |  30.0   ms/op
+//
 // What is keyStable? A key stable is a place to keep your keys
 // when you think of them like horses.
 // Horses live in a stable. KeyStable is stable storage for your memtable KV.
