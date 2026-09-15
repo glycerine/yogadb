@@ -9,8 +9,8 @@ import (
 	"github.com/blevesearch/bleve/v2/index/upsidedown"
 	"github.com/blevesearch/bleve/v2/mapping"
 	store "github.com/blevesearch/upsidedown_store_api"
-	storetest "github.com/blevesearch/upsidedown_store_api/test"
 	"github.com/glycerine/yogadb"
+	storetest "github.com/glycerine/yogadb/lib/yogableve/blevetests/kvstoretest"
 )
 
 func openTestStore(t *testing.T, mo store.MergeOperator) (*Store, *yogadb.FlexDB) {

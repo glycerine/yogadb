@@ -8,6 +8,7 @@ go 1.25.3
 require (
 	4d63.com/tz v1.2.0
 	github.com/blevesearch/bleve/v2 v2.5.2
+	github.com/blevesearch/bleve_index_api v1.2.8
 	github.com/blevesearch/upsidedown_store_api v1.0.2
 	github.com/blugelabs/bluge v0.1.9
 	github.com/blugelabs/bluge_segment_api v0.2.0
@@ -37,7 +38,6 @@ require (
 	github.com/axiomhq/hyperloglog v0.0.0-20191112132149-a4c4c47bc57f // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.22.0 // indirect
-	github.com/blevesearch/bleve_index_api v1.2.8 // indirect
 	github.com/blevesearch/geo v0.2.3 // indirect
 	github.com/blevesearch/go-faiss v1.0.25 // indirect
 	github.com/blevesearch/go-porterstemmer v1.0.3 // indirect
