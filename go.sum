@@ -57,6 +57,8 @@ github.com/glycerine/rbtree v0.2.1 h1:9nD5PDojW8gu1slYBzzH7VND9gbSjB86tusW5YRKgh
 github.com/glycerine/rbtree v0.2.1/go.mod h1:skpUtSrm1HHyLo+HayukOvAmXtE/F6tsVW0uCpaBGWE=
 github.com/glycerine/uart v0.12.16 h1:yyWJ8muzYdRROHE3wmU0oqM/AFMeWs03fgpVw0204Dk=
 github.com/glycerine/uart v0.12.16/go.mod h1:aqhQKW/Ne4lZ8Zoy5q/fL4dd46F0Um18KXgk4zTooa0=
+github.com/glycerine/uart v0.13.0 h1:uPWzHdvgdBS+FR/JvCpEJAxrwZGZNEdv+bW0PWXITCY=
+github.com/glycerine/uart v0.13.0/go.mod h1:3rkwNvRIqoGIptlekZZm6IP/PNrD4NXxVkLhwy6pXtU=
 github.com/glycerine/vfs v0.3.3 h1:Pn5J81CXT5mIqerH3tFKKk+TbJjefYZo23goy8nfUYo=
 github.com/glycerine/vfs v0.3.3/go.mod h1:uOfnz4vpwzlK0EXecyX19W9bxfpCRMbyYSQY4reEKtw=
 github.com/go-errors/errors v1.4.2 h1:J6MZopCL4uSllY1OfXM374weqZFFItUbrImctkmUxIA=

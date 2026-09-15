@@ -4,9 +4,12 @@ import (
 	"encoding/binary"
 	"testing"
 
+	"github.com/glycerine/uart"
 	"github.com/glycerine/yogadb/pebbleskip"
 	tbtree "github.com/tidwall/btree"
 )
+
+var _ = uart.NewArtTree()
 
 func wormBenchKey(i int) string {
 	var buf [10]byte
