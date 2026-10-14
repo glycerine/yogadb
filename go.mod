@@ -6,7 +6,7 @@ go 1.25.3
 //replace github.com/glycerine/vfs => /Users/jaten/go/src/github.com/glycerine/yogadb/study/vfs
 
 require (
-	4d63.com/tz v1.2.0
+	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/cockroachdb/pebble/v2 v2.1.4
 	github.com/cristalhq/base64 v0.1.2
 	github.com/glycerine/blake3 v1.5.2
@@ -25,12 +25,10 @@ require (
 require github.com/google/go-cmp v0.7.0 // indirect
 
 require (
-	4d63.com/embedfiles v0.0.0-20190311033909-995e0740726f // indirect
 	github.com/DataDog/zstd v1.5.7 // indirect
 	github.com/RaduBerinde/axisds v0.1.0 // indirect
 	github.com/RaduBerinde/btreemap v0.0.0-20250419174037-3d62b7205d54 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cockroachdb/crlib v0.0.0-20251122031428-fe658a2dbda1 // indirect
 	github.com/cockroachdb/errors v1.11.3 // indirect
 	github.com/cockroachdb/logtags v0.0.0-20230118201751-21c54148d20b // indirect
