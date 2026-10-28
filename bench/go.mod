@@ -7,7 +7,7 @@ require (
 	github.com/cristalhq/base64 v0.1.2
 	github.com/glycerine/rbtree v0.2.1
 	github.com/glycerine/uart v0.12.16
-	github.com/glycerine/vfs v0.3.3
+	github.com/glycerine/vfs v0.4.2
 	github.com/glycerine/yogadb v0.20.0
 	github.com/google/btree v1.1.3
 	github.com/puzpuzpuz/xsync/v3 v3.5.1
@@ -30,7 +30,7 @@ require (
 	github.com/cockroachdb/swiss v0.0.0-20260820225851-333444432258 // indirect
 	github.com/cockroachdb/tokenbucket v0.0.0-20230807174530-cc333fc44b06 // indirect
 	github.com/getsentry/sentry-go v0.27.0 // indirect
-	github.com/glycerine/blake3 v1.5.2 // indirect
+	github.com/glycerine/blake3 v1.5.3 // indirect
 	github.com/glycerine/fwd v1.1.4-beta.jea // indirect
 	github.com/glycerine/greenpack v0.542.0 // indirect
 	github.com/glycerine/idem v0.20.7 // indirect
