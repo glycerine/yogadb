@@ -29,8 +29,6 @@ github.com/glycerine/one_tree_rwmut v1.0.0 h1:S9/US5QeXZVrXc/0tSUD58NAxKQY9CaezD
 github.com/glycerine/one_tree_rwmut v1.0.0/go.mod h1:eKKXEG3WkBtQOka9ANdHuIlhqNCc45NcDjBFaG/FMmU=
 github.com/glycerine/porcupine v1.2.8-jea h1:bXoFOdKvVHHofayKR0/AhvKnlS4KNLOIbN5oHt7PbPk=
 github.com/glycerine/porcupine v1.2.8-jea/go.mod h1:1vppLL4iLDWEqe3ETxmvjYLkS6fQo/ljqmGN7oBnm3k=
-github.com/glycerine/rbtree v0.2.1 h1:9nD5PDojW8gu1slYBzzH7VND9gbSjB86tusW5YRKghc=
-github.com/glycerine/rbtree v0.2.1/go.mod h1:skpUtSrm1HHyLo+HayukOvAmXtE/F6tsVW0uCpaBGWE=
 github.com/glycerine/uart v0.12.16 h1:yyWJ8muzYdRROHE3wmU0oqM/AFMeWs03fgpVw0204Dk=
 github.com/glycerine/uart v0.12.16/go.mod h1:aqhQKW/Ne4lZ8Zoy5q/fL4dd46F0Um18KXgk4zTooa0=
 github.com/glycerine/vfs v0.3.3 h1:Pn5J81CXT5mIqerH3tFKKk+TbJjefYZo23goy8nfUYo=

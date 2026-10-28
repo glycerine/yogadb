@@ -12,7 +12,6 @@ require (
 	github.com/glycerine/greenpack v0.541.0
 	github.com/glycerine/idem v0.20.7
 	github.com/glycerine/porcupine v1.2.8-jea
-	github.com/glycerine/rbtree v0.2.1
 	github.com/glycerine/uart v0.12.16
 	github.com/glycerine/vfs v0.3.3
 )
