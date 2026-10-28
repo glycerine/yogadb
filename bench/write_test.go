@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/glycerine/yogadb"
 )
 
 // close the gap on write performance by comparison to pebble which starts 70% faster, maybe?
@@ -17,11 +18,11 @@ func Test202_write_performance_yoga_versus_pebble(t *testing.T) {
 	batchSize := 800
 
 	dir := t.TempDir()
-	cfg := &Config{
+	cfg := &yogadb.Config{
 		// we are slower without the RedoLog batching and amortizing.
 		//OmitFlexSpaceOpsRedoLog: true,
 	}
-	yoga, err := OpenFlexDB(dir, cfg)
+	yoga, err := yogadb.OpenFlexDB(dir, cfg)
 	if err != nil {
 		t.Fatalf("OpenFlexDB: %v", err)
 	}

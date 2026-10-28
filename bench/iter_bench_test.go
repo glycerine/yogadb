@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/glycerine/yogadb"
 	"go.etcd.io/bbolt"
 )
 
@@ -32,8 +33,8 @@ func generateBenchKeys() [][]byte {
 
 func Benchmark_Iter_YogaDB_Ascend(b *testing.B) {
 	dir := b.TempDir()
-	cfg := &Config{}
-	db, err := OpenFlexDB(dir, cfg)
+	cfg := &yogadb.Config{}
+	db, err := yogadb.OpenFlexDB(dir, cfg)
 	panicOn(err)
 	defer db.Close()
 
@@ -63,7 +64,7 @@ func Benchmark_Iter_YogaDB_Ascend(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		t0 := time.Now()
-		db.View(func(roDB *ReadOnlyTx) error {
+		db.View(func(roDB *yogadb.ReadOnlyTx) error {
 			it := roDB.NewIter()
 			it.SeekFirst()
 			count := 0
@@ -87,8 +88,8 @@ func Benchmark_Iter_YogaDB_Ascend(b *testing.B) {
 func Benchmark_Iter_YogaDB_Descend(b *testing.B) {
 
 	dir := b.TempDir()
-	cfg := &Config{}
-	db, err := OpenFlexDB(dir, cfg)
+	cfg := &yogadb.Config{}
+	db, err := yogadb.OpenFlexDB(dir, cfg)
 	panicOn(err)
 	defer db.Close()
 
@@ -118,7 +119,7 @@ func Benchmark_Iter_YogaDB_Descend(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		t0 := time.Now()
-		db.View(func(roDB *ReadOnlyTx) error {
+		db.View(func(roDB *yogadb.ReadOnlyTx) error {
 			it := roDB.NewIter()
 			it.SeekLast()
 			count := 0
@@ -186,8 +187,8 @@ func Benchmark_LoadOnly_YogaDB(b *testing.B) {
 	for n := 0; n < b.N; n++ {
 		b.StopTimer()
 		dir := b.TempDir()
-		cfg := &Config{}
-		db, err := OpenFlexDB(dir, cfg)
+		cfg := &yogadb.Config{}
+		db, err := yogadb.OpenFlexDB(dir, cfg)
 		panicOn(err)
 		b.StartTimer()
 

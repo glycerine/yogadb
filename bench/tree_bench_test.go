@@ -1,4 +1,4 @@
-package yogadb
+package bench
 
 import (
 	"bufio"
@@ -22,6 +22,7 @@ import (
 	//"time"
 
 	rb "github.com/glycerine/rbtree"
+	"github.com/glycerine/yogadb"
 )
 
 const testBenchSeed = 1
@@ -594,7 +595,7 @@ func BenchmarkReadWriteYogaDB(b *testing.B) {
 		b.Run(fmt.Sprintf("frac_%d", i), func(b *testing.B) {
 
 			dir := b.TempDir()
-			db, err := OpenFlexDB(dir, nil)
+			db, err := yogadb.OpenFlexDB(dir, nil)
 			if err != nil {
 				b.Fatalf("OpenFlexDB: %v", err)
 			}

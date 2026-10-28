@@ -184,7 +184,7 @@ func BenchmarkYogaDB_BigRandomRWBatch(b *testing.B) {
 			continue
 		}
 		for redo := 0; redo < 2; redo++ {
-			cfg := &Config{}
+			cfg := &yogadb.Config{}
 			if redo == 0 {
 				cfg.OmitFlexSpaceOpsRedoLog = true
 			}
@@ -197,7 +197,7 @@ func BenchmarkYogaDB_BigRandomRWBatch(b *testing.B) {
 					panicOn(err)
 					defer os.Remove(dir)
 
-					db, err := OpenFlexDB(dir, cfg)
+					db, err := yogadb.OpenFlexDB(dir, cfg)
 					if err != nil {
 						b.Fatalf("OpenFlexDB: %v", err)
 					}
@@ -302,7 +302,7 @@ func BenchmarkYogaDB_Put(b *testing.B) {
 	dir := b.TempDir()
 	//vv("temp dir = '%v'", dir)
 
-	db, err := OpenFlexDB(dir, nil)
+	db, err := yogadb.OpenFlexDB(dir, nil)
 	if err != nil {
 		b.Fatalf("OpenFlexDB: %v", err)
 	}
@@ -481,7 +481,7 @@ Compilation finished at Mon Mar  2 17:01:16
 func BenchmarkYogaDB_Batch(b *testing.B) {
 
 	for redo := 0; redo < 2; redo++ {
-		cfg := &Config{}
+		cfg := &yogadb.Config{}
 		if redo == 0 {
 			cfg.OmitFlexSpaceOpsRedoLog = true
 		}
@@ -496,7 +496,7 @@ func BenchmarkYogaDB_Batch(b *testing.B) {
 				panicOn(err)
 				defer os.Remove(dir)
 
-				db, err := OpenFlexDB(dir, cfg)
+				db, err := yogadb.OpenFlexDB(dir, cfg)
 				if err != nil {
 					b.Fatalf("OpenFlexDB: %v", err)
 				}

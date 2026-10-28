@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/glycerine/yogadb"
 )
 
 func generateAscendingBenchKeys() [][]byte {
@@ -22,8 +23,8 @@ func Benchmark_LoadOnly_YogaDB_Ascending(b *testing.B) {
 	for n := 0; n < b.N; n++ {
 		b.StopTimer()
 		dir := b.TempDir()
-		cfg := &Config{}
-		db, err := OpenFlexDB(dir, cfg)
+		cfg := &yogadb.Config{}
+		db, err := yogadb.OpenFlexDB(dir, cfg)
 		panicOn(err)
 		b.StartTimer()
 
