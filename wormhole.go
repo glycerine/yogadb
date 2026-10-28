@@ -5,6 +5,13 @@ import (
 	"sync/atomic"
 )
 
+// note: this wormhole is not the full wormhole paper design; it is
+// a bunch diverged data structure with the same name. The original
+// flexdb C repo used a version of wormhole and when we ported it
+// to Go initially we lost alot of the design. Then many rounds optimization for
+// memtable purposes arrived at the following. See glycerine/go-wormhole-kv
+// for a full and faithful port of the C (if desired, instead of this).
+
 const (
 	wormPageBits    = 11
 	wormPageSize    = 1 << wormPageBits

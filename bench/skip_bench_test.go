@@ -309,7 +309,7 @@ func BenchmarkWormholeGetOrdered(b *testing.B) {
 	const x = true
 
 	for i, key := range keys {
-		s.Put(yogadb.KV{Key: key, Value: value, Vptr: VPtr{Length: uint64(len(value))}, Hlc: HLC(i + 1)}, x)
+		s.Put(yogadb.KV{Key: key, Value: value, Vptr: yogadb.VPtr{Length: uint64(len(value))}, Hlc: yogadb.HLC(i + 1)}, x)
 	}
 
 	b.ReportAllocs()
