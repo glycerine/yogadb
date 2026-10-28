@@ -7,7 +7,7 @@ go 1.25.3
 require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/cristalhq/base64 v0.1.2
-	github.com/glycerine/blake3 v1.5.2
+	github.com/glycerine/blake3 v1.5.3
 	github.com/glycerine/greenpack v0.542.0
 	github.com/glycerine/idem v0.20.7
 	github.com/glycerine/porcupine v1.2.8-jea
