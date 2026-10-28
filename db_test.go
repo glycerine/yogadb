@@ -28,6 +28,25 @@ func (f *failWriteAtFileForTest) WriteAt(p []byte, off int64) (int, error) {
 
 // ====================== Helpers ======================
 
+const iterBenchKeyCount = 100_000
+
+// generateBenchKeys creates iterBenchKeyCount unique keys using prng.NewCallID().
+func generateBenchKeys() [][]byte {
+	var seed [32]byte
+	prng := newPRNG(seed)
+	keys := make([][]byte, 0, iterBenchKeyCount)
+	dup := make(map[string]bool, iterBenchKeyCount)
+	for len(keys) < iterBenchKeyCount {
+		cid := prng.NewCallID()
+		if dup[cid] {
+			continue
+		}
+		dup[cid] = true
+		keys = append(keys, []byte(cid))
+	}
+	return keys
+}
+
 func openTestDB(t *testing.T, cfg *Config) (*FlexDB, vfs.FS) {
 	t.Helper()
 
