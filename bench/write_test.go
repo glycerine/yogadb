@@ -1,4 +1,4 @@
-package yogadb
+package bench
 
 import (
 	//"fmt"

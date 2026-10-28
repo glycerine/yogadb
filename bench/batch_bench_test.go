@@ -1,4 +1,4 @@
-package yogadb
+package bench
 
 import (
 	"encoding/binary"
@@ -11,6 +11,8 @@ import (
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/glycerine/vfs"
+
+	"github.com/glycerine/yogadb"
 )
 
 // BenchmarkDeleteRange measures DeleteRange throughput after batch-loading N keys.
@@ -20,8 +22,8 @@ func BenchmarkDeleteRange(b *testing.B) {
 		for _, deletePercent := range []int{10} { // , 50, 100} {
 			b.Run(fmt.Sprintf("keys=%d/del=%d%%", totalKeys, deletePercent), func(b *testing.B) {
 				// Use in-memory VFS to avoid fsync overhead in setup.
-				cfg := &Config{NoDisk: true}
-				db, err := OpenFlexDB("bench", cfg)
+				cfg := &yogadb.Config{NoDisk: true}
+				db, err := yogadb.OpenFlexDB("bench", cfg)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -70,8 +72,8 @@ func BenchmarkBatchPutDeleteCycle(b *testing.B) {
 	for _, batchSize := range []int{1_000} { // , 10_000} {
 		b.Run(fmt.Sprintf("batch_%d", batchSize), func(b *testing.B) {
 			dir := b.TempDir()
-			cfg := &Config{FS: vfs.Default}
-			db, err := OpenFlexDB(dir, cfg)
+			cfg := &yogadb.Config{FS: vfs.Default}
+			db, err := yogadb.OpenFlexDB(dir, cfg)
 			if err != nil {
 				b.Fatal(err)
 			}
