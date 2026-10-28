@@ -603,7 +603,7 @@ func BenchmarkReadWriteYogaDB(b *testing.B) {
 				//alwaysPrintf("%v end of test, YogaDB DirSize='%v'", b.Name(), MustDirSize(dir))
 				db.Close()
 			})
-
+			db.AllowReads()
 			b.ResetTimer()
 
 			b.RunParallel(func(pb *testing.PB) {
