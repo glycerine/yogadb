@@ -2,8 +2,6 @@ module github.com/glycerine/yogadb
 
 go 1.25.3
 
-//replace github.com/glycerine/vfs => /Users/jaten/go/src/github.com/glycerine/vfs
-
 require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/cristalhq/base64 v0.1.2
