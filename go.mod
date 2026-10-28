@@ -15,7 +15,6 @@ require (
 	github.com/glycerine/rbtree v0.2.1
 	github.com/glycerine/uart v0.12.16
 	github.com/glycerine/vfs v0.3.3
-	github.com/tidwall/btree v1.8.1
 )
 
 require github.com/google/go-cmp v0.7.0 // indirect
