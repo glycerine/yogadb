@@ -3,13 +3,12 @@ module github.com/glycerine/yogadb
 go 1.25.3
 
 //replace github.com/glycerine/vfs => /Users/jaten/go/src/github.com/glycerine/vfs
-//replace github.com/glycerine/vfs => /Users/jaten/go/src/github.com/glycerine/yogadb/study/vfs
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/cristalhq/base64 v0.1.2
 	github.com/glycerine/blake3 v1.5.2
-	github.com/glycerine/greenpack v0.541.0
+	github.com/glycerine/greenpack v0.542.0
 	github.com/glycerine/idem v0.20.7
 	github.com/glycerine/porcupine v1.2.8-jea
 	github.com/glycerine/uart v0.12.16

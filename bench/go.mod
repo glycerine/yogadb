@@ -32,7 +32,7 @@ require (
 	github.com/getsentry/sentry-go v0.27.0 // indirect
 	github.com/glycerine/blake3 v1.5.2 // indirect
 	github.com/glycerine/fwd v1.1.4-beta.jea // indirect
-	github.com/glycerine/greenpack v0.541.0 // indirect
+	github.com/glycerine/greenpack v0.542.0 // indirect
 	github.com/glycerine/idem v0.20.7 // indirect
 	github.com/glycerine/one_tree_rwmut v1.0.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
